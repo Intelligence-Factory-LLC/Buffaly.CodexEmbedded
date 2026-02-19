@@ -1,0 +1,16 @@
+﻿# Visual Studio
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.log
+_web_run_stdout.log
+_web_run_stderr.log
+msbuild.binlog
+logs/
+lib/
+working/
+codex-runtime/
+*.vsix
+*.db

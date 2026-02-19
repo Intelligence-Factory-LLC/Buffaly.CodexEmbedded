@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Codex Web CLI</title>
+	<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+	<div class="layout">
+		<header class="toolbar">
+			<div class="toolbar-left">
+				<button id="newSessionBtn" type="button">New Session</button>
+				<label for="existingSessionSelect">Existing</label>
+				<select id="existingSessionSelect"></select>
+				<button id="attachSessionBtn" type="button">Attach</button>
+				<button id="stopSessionBtn" type="button" disabled>Stop Session</button>
+				<label for="sessionSelect">Session</label>
+				<select id="sessionSelect"></select>
+				<div id="sessionMeta" class="session-meta"></div>
+			</div>
+			<div class="toolbar-right">
+				<label for="logVerbositySelect">Logs</label>
+				<select id="logVerbositySelect">
+					<option value="errors">Errors</option>
+					<option value="normal" selected>Normal</option>
+					<option value="verbose">Verbose</option>
+				</select>
+				<label for="modelSelect">Model</label>
+				<select id="modelSelect"></select>
+				<input id="modelCustomInput" type="text" placeholder="Custom model" class="hidden">
+				<button id="reloadModelsBtn" type="button">Reload Models</button>
+				<label for="cwdInput">CWD</label>
+				<input id="cwdInput" type="text" placeholder="default cwd">
+			</div>
+		</header>
+		<main class="main">
+			<section class="panel chat-panel">
+				<div class="panel-title">Conversation</div>
+				<div id="chatMessages" class="messages"></div>
+				<div id="approvalPanel" class="approval-panel hidden">
+					<div id="approvalSummary" class="approval-summary"></div>
+					<div id="approvalDetails" class="approval-details"></div>
+					<div class="approval-actions">
+						<button data-decision="accept" type="button">Accept</button>
+						<button data-decision="acceptForSession" type="button">Accept Session</button>
+						<button data-decision="decline" type="button">Decline</button>
+						<button data-decision="cancel" type="button">Cancel</button>
+					</div>
+				</div>
+				<form id="promptForm" class="prompt-form">
+					<input id="promptInput" autocomplete="off" type="text" placeholder="Type a prompt...">
+					<button type="submit">Send</button>
+				</form>
+			</section>
+			<section class="panel logs-panel">
+				<div class="panel-title">Logs</div>
+				<pre id="logOutput" class="log-output"></pre>
+			</section>
+		</main>
+	</div>
+	<script src="/app.js"></script>
+</body>
+</html>

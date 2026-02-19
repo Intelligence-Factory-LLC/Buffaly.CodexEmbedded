@@ -1,0 +1,53 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v9.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v9.0": {
+      "CodexAppServerWeb/1.0.0": {
+        "dependencies": {
+          "CodexAppServerCore": "1.0.0",
+          "BasicUtilities": "1.0.0.0"
+        },
+        "runtime": {
+          "CodexAppServerWeb.dll": {}
+        }
+      },
+      "CodexAppServerCore/1.0.0": {
+        "runtime": {
+          "CodexAppServerCore.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "BasicUtilities/1.0.0.0": {
+        "runtime": {
+          "BasicUtilities.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "CodexAppServerWeb/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "CodexAppServerCore/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "BasicUtilities/1.0.0.0": {
+      "type": "reference",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

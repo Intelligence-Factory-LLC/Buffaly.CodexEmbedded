@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "LoginChatGptResponse",
+  "type": "object",
+  "required": [
+    "authUrl",
+    "loginId"
+  ],
+  "properties": {
+    "authUrl": {
+      "type": "string"
+    },
+    "loginId": {
+      "type": "string"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+C:\dev\CodexAppServer\CodexAppServerWeb\wwwroot\app.js
+C:\dev\CodexAppServer\CodexAppServerWeb\wwwroot\site.css
+C:\dev\CodexAppServer\CodexAppServerWeb\wwwroot\index.html
+wwwroot\app.js
+wwwroot\index.html
+wwwroot\site.css

@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <DisableBuildCompression>true</DisableBuildCompression>
+  </PropertyGroup>
+
+  <Target Name="ClearStaleStaticWebAssetCaches"
+          BeforeTargets="ResolveProjectStaticWebAssets;ResolveBuildCompressedStaticWebAssets;ResolvePublishCompressedStaticWebAssets">
+    <ItemGroup>
+      <_StaticWebAssetCacheFiles Include="$(IntermediateOutputPath)*.dswa.cache.json" />
+      <_StaticWebAssetCacheFiles Include="$(IntermediateOutputPath)staticwebassets.build.json.cache" />
+    </ItemGroup>
+
+    <Delete Files="@(_StaticWebAssetCacheFiles)" />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="BasicUtilities">
+      <HintPath>..\lib\BasicUtilities.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\\Buffaly.CodexEmbedded.Core\\Buffaly.CodexEmbedded.Core.csproj" />
+  </ItemGroup>
+
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent" Condition="'$(Configuration)' != 'Release'">
+    <PropertyGroup>
+      <_DeployDir Condition="'$(SolutionDir)' != '' and '$(SolutionDir)' != '*Undefined*'">$(SolutionDir)Deploy\</_DeployDir>
+      <_DeployDir Condition="'$(_DeployDir)' == ''">$(MSBuildProjectDirectory)\..\Deploy\</_DeployDir>
+    </PropertyGroup>
+
+    <MakeDir Directories="$(_DeployDir)" />
+    <Copy SourceFiles="$(TargetDir)$(ProjectName).dll" DestinationFolder="$(_DeployDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

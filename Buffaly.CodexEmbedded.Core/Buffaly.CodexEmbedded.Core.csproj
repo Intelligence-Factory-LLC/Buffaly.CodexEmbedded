@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent" Condition="'$(Configuration)' != 'Release'">
+    <PropertyGroup>
+      <_DeployDir Condition="'$(SolutionDir)' != '' and '$(SolutionDir)' != '*Undefined*'">$(SolutionDir)Deploy\</_DeployDir>
+      <_DeployDir Condition="'$(_DeployDir)' == ''">$(MSBuildProjectDirectory)\..\Deploy\</_DeployDir>
+    </PropertyGroup>
+
+    <MakeDir Directories="$(_DeployDir)" />
+    <Copy SourceFiles="$(TargetDir)$(ProjectName).dll" DestinationFolder="$(_DeployDir)" SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

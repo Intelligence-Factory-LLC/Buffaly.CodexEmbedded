@@ -1,0 +1,16 @@
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\Buffaly.CodexEmbedded.Web.csproj.AssemblyReference.cache
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\Buffaly.CodexEmbedded.Web.GeneratedMSBuildEditorConfig.editorconfig
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\Buffaly.CodexEmbedded.Web.AssemblyInfoInputs.cache
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\Buffaly.CodexEmbedded.Web.AssemblyInfo.cs
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\Buffaly.CodexEmbedded.Web.csproj.CoreCompileInputs.cache
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\Buffaly.CodexEmbedded.Web.MvcApplicationPartsAssemblyInfo.cache
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\scopedcss\bundle\Buffaly.CodexEmbedded.Web.styles.css
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\compressed\u74quvy42t-1asiy9z7pa.gz
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\compressed\znalwmvoij-v765922z96.gz
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\compressed\tygvgm2gxh-0imzshdlfj.gz
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\compressed\lvtpibpbhk-rosj083wwm.gz
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\compressed\wqa9qcklmx-v765922z96.gz
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\compressed\31h60d2c0u-1asiy9z7pa.gz
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\Buffaly.CodexEmbedded.Web.dll
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\refint\Buffaly.CodexEmbedded.Web.dll
+C:\dev\CodexAppServer\Buffaly.CodexEmbedded.Web\obj\Release\net9.0\Buffaly.CodexEmbedded.Web.pdb
