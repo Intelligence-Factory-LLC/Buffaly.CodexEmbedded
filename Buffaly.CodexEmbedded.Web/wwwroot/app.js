@@ -41,6 +41,11 @@ function wsUrl() {
 
 function appendLog(text) {
   const stamp = new Date().toISOString();
+  if (!logOutput) {
+    console.log(`${stamp} ${text}`);
+    return;
+  }
+
   logOutput.textContent += `${stamp} ${text}\n`;
   logOutput.scrollTop = logOutput.scrollHeight;
 }

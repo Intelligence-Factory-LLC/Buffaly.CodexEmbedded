@@ -26,6 +26,195 @@ app.UseWebSockets(new WebSocketOptions
 	KeepAliveInterval = TimeSpan.FromSeconds(20)
 });
 
+app.MapGet("/logs", async context =>
+{
+	var webRoot = app.Environment.WebRootPath;
+	if (string.IsNullOrWhiteSpace(webRoot))
+	{
+		context.Response.StatusCode = StatusCodes.Status404NotFound;
+		return;
+	}
+
+	var logsPagePath = Path.Combine(webRoot, "logs.html");
+	if (!File.Exists(logsPagePath))
+	{
+		context.Response.StatusCode = StatusCodes.Status404NotFound;
+		return;
+	}
+
+	context.Response.ContentType = "text/html; charset=utf-8";
+	await context.Response.SendFileAsync(logsPagePath);
+});
+
+app.MapGet("/watcher", async context =>
+{
+	var webRoot = app.Environment.WebRootPath;
+	if (string.IsNullOrWhiteSpace(webRoot))
+	{
+		context.Response.StatusCode = StatusCodes.Status404NotFound;
+		return;
+	}
+
+	var watcherPagePath = Path.Combine(webRoot, "watcher.html");
+	if (!File.Exists(watcherPagePath))
+	{
+		context.Response.StatusCode = StatusCodes.Status404NotFound;
+		return;
+	}
+
+	context.Response.ContentType = "text/html; charset=utf-8";
+	await context.Response.SendFileAsync(watcherPagePath);
+});
+
+app.MapGet("/api/logs/sessions", (HttpRequest request, WebRuntimeDefaults defaults) =>
+{
+	var limit = QueryValueParser.GetPositiveInt(request.Query["limit"], fallback: 10, max: 100);
+	var sessions = CodexSessionCatalog.ListSessions(defaults.CodexHomePath, limit: 0)
+		.Where(x => !string.IsNullOrWhiteSpace(x.SessionFilePath))
+		.OrderByDescending(x => x.UpdatedAtUtc ?? DateTimeOffset.MinValue)
+		.ThenBy(x => x.ThreadId, StringComparer.Ordinal)
+		.Take(limit)
+		.Select(x => new
+		{
+			threadId = x.ThreadId,
+			threadName = x.ThreadName,
+			updatedAtUtc = x.UpdatedAtUtc?.ToString("O"),
+			cwd = x.Cwd,
+			model = x.Model,
+			sessionFilePath = x.SessionFilePath
+		})
+		.ToArray();
+
+	return Results.Ok(new
+	{
+		codexHomePath = CodexHomePaths.ResolveCodexHomePath(defaults.CodexHomePath),
+		sessions
+	});
+});
+
+app.MapGet("/api/logs/watch", (HttpRequest request, WebRuntimeDefaults defaults) =>
+{
+	var threadId = request.Query["threadId"].ToString();
+	if (string.IsNullOrWhiteSpace(threadId))
+	{
+		return Results.BadRequest(new { message = "threadId query parameter is required." });
+	}
+
+	var session = CodexSessionCatalog.ListSessions(defaults.CodexHomePath, limit: 0)
+		.FirstOrDefault(x => string.Equals(x.ThreadId, threadId, StringComparison.Ordinal));
+
+	if (session is null || string.IsNullOrWhiteSpace(session.SessionFilePath))
+	{
+		return Results.NotFound(new { message = $"No session file found for threadId '{threadId}'." });
+	}
+
+	var path = Path.GetFullPath(session.SessionFilePath);
+	if (!File.Exists(path))
+	{
+		return Results.NotFound(new { message = $"Session file does not exist: '{path}'." });
+	}
+
+	var maxLines = QueryValueParser.GetPositiveInt(request.Query["maxLines"], fallback: 200, max: 1000);
+	var initial = QueryValueParser.GetBool(request.Query["initial"]);
+	var cursorRaw = request.Query["cursor"].ToString();
+	long? cursor = null;
+	if (!string.IsNullOrWhiteSpace(cursorRaw))
+	{
+		if (!long.TryParse(cursorRaw, out var parsedCursor) || parsedCursor < 0)
+		{
+			return Results.BadRequest(new { message = "cursor must be a non-negative integer." });
+		}
+
+		cursor = parsedCursor;
+	}
+
+	JsonlWatchResult watchResult;
+	try
+	{
+		watchResult = initial || cursor is null
+			? JsonlFileTailReader.ReadInitial(path, maxLines)
+			: JsonlFileTailReader.ReadFromCursor(path, cursor.Value, maxLines);
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem(
+			statusCode: StatusCodes.Status500InternalServerError,
+			title: "Failed to read session log file.",
+			detail: ex.Message);
+	}
+
+	return Results.Ok(new
+	{
+		threadId = session.ThreadId,
+		threadName = session.ThreadName,
+		sessionFilePath = path,
+		updatedAtUtc = session.UpdatedAtUtc?.ToString("O"),
+		cursor = watchResult.Cursor,
+		nextCursor = watchResult.NextCursor,
+		fileLength = watchResult.FileLength,
+		reset = watchResult.Reset,
+		truncated = watchResult.Truncated,
+		lines = watchResult.Lines
+	});
+});
+
+app.MapGet("/api/logs/realtime/current", (HttpRequest request, WebRuntimeDefaults defaults) =>
+{
+	var maxLines = QueryValueParser.GetPositiveInt(request.Query["maxLines"], fallback: 200, max: 1000);
+	var initial = QueryValueParser.GetBool(request.Query["initial"]);
+	var logFileName = request.Query["logFile"].ToString();
+	var logPath = RuntimeSessionLogFinder.ResolveLogPath(defaults.LogRootPath, logFileName);
+
+	if (string.IsNullOrWhiteSpace(logPath))
+	{
+		return Results.NotFound(new { message = "No runtime session log file found." });
+	}
+
+	if (!File.Exists(logPath))
+	{
+		return Results.NotFound(new { message = $"Runtime log file does not exist: '{logPath}'." });
+	}
+
+	var cursorRaw = request.Query["cursor"].ToString();
+	long? cursor = null;
+	if (!string.IsNullOrWhiteSpace(cursorRaw))
+	{
+		if (!long.TryParse(cursorRaw, out var parsedCursor) || parsedCursor < 0)
+		{
+			return Results.BadRequest(new { message = "cursor must be a non-negative integer." });
+		}
+
+		cursor = parsedCursor;
+	}
+
+	JsonlWatchResult watchResult;
+	try
+	{
+		watchResult = initial || cursor is null
+			? JsonlFileTailReader.ReadInitial(logPath, maxLines)
+			: JsonlFileTailReader.ReadFromCursor(logPath, cursor.Value, maxLines);
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem(
+			statusCode: StatusCodes.Status500InternalServerError,
+			title: "Failed to read runtime log file.",
+			detail: ex.Message);
+	}
+
+	return Results.Ok(new
+	{
+		logFile = Path.GetFileName(logPath),
+		logPath,
+		cursor = watchResult.Cursor,
+		nextCursor = watchResult.NextCursor,
+		fileLength = watchResult.FileLength,
+		reset = watchResult.Reset,
+		truncated = watchResult.Truncated,
+		lines = watchResult.Lines
+	});
+});
+
 app.Map("/ws", async context =>
 {
 	var remoteIp = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -1231,5 +1420,168 @@ internal sealed class LocalLogWriter : IDisposable
 		{
 			_writer.Dispose();
 		}
+	}
+}
+
+internal static class QueryValueParser
+{
+	public static int GetPositiveInt(Microsoft.Extensions.Primitives.StringValues rawValues, int fallback, int max)
+	{
+		var raw = rawValues.ToString();
+		if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) || parsed <= 0)
+		{
+			return fallback;
+		}
+
+		return Math.Min(parsed, max);
+	}
+
+	public static bool GetBool(Microsoft.Extensions.Primitives.StringValues rawValues)
+	{
+		var raw = rawValues.ToString();
+		return raw.Equals("1", StringComparison.Ordinal) ||
+			raw.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+			raw.Equals("yes", StringComparison.OrdinalIgnoreCase);
+	}
+}
+
+internal sealed record JsonlWatchResult(
+	long Cursor,
+	long NextCursor,
+	long FileLength,
+	bool Reset,
+	bool Truncated,
+	IReadOnlyList<string> Lines);
+
+internal static class JsonlFileTailReader
+{
+	public static JsonlWatchResult ReadInitial(string path, int maxLines)
+	{
+		using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+		var fileLength = fs.Length;
+		using var reader = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 4096, leaveOpen: true);
+
+		var ring = new Queue<string>(Math.Max(1, maxLines));
+		var truncated = false;
+		while (true)
+		{
+			var line = reader.ReadLine();
+			if (line is null)
+			{
+				break;
+			}
+
+			ring.Enqueue(line);
+			if (ring.Count > maxLines)
+			{
+				ring.Dequeue();
+				truncated = true;
+			}
+		}
+
+		var lines = ring.ToArray();
+		return new JsonlWatchResult(
+			Cursor: fileLength,
+			NextCursor: fileLength,
+			FileLength: fileLength,
+			Reset: false,
+			Truncated: truncated,
+			Lines: lines);
+	}
+
+	public static JsonlWatchResult ReadFromCursor(string path, long cursor, int maxLines)
+	{
+		using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+		var fileLength = fs.Length;
+		var startCursor = cursor;
+		var reset = false;
+		if (startCursor > fileLength)
+		{
+			startCursor = 0;
+			reset = true;
+		}
+
+		fs.Seek(startCursor, SeekOrigin.Begin);
+		using var reader = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 4096, leaveOpen: true);
+
+		var lines = new List<string>();
+		while (true)
+		{
+			var line = reader.ReadLine();
+			if (line is null)
+			{
+				break;
+			}
+
+			lines.Add(line);
+		}
+
+		var truncated = false;
+		if (lines.Count > maxLines)
+		{
+			lines = lines.Skip(lines.Count - maxLines).ToList();
+			truncated = true;
+		}
+
+		var nextCursor = fs.Position;
+		return new JsonlWatchResult(
+			Cursor: startCursor,
+			NextCursor: nextCursor,
+			FileLength: fileLength,
+			Reset: reset,
+			Truncated: truncated,
+			Lines: lines);
+	}
+}
+
+internal static class RuntimeSessionLogFinder
+{
+	public static string? ResolveLogPath(string logRootPath, string? requestedLogFileName)
+	{
+		if (!Directory.Exists(logRootPath))
+		{
+			return null;
+		}
+
+		if (!string.IsNullOrWhiteSpace(requestedLogFileName))
+		{
+			var fileName = Path.GetFileName(requestedLogFileName);
+			if (string.IsNullOrWhiteSpace(fileName))
+			{
+				return null;
+			}
+
+			var exact = Path.Combine(logRootPath, fileName);
+			if (File.Exists(exact) && IsAllowedRuntimeLog(fileName))
+			{
+				return exact;
+			}
+		}
+
+		var candidates = Directory.EnumerateFiles(logRootPath, "session-*.log", SearchOption.TopDirectoryOnly)
+			.Select(path =>
+			{
+				try
+				{
+					return new FileInfo(path);
+				}
+				catch
+				{
+					return null;
+				}
+			})
+			.Where(info => info is not null)
+			.Select(info => info!)
+			.OrderByDescending(info => info.LastWriteTimeUtc)
+			.ThenByDescending(info => info.Name, StringComparer.Ordinal)
+			.ToList();
+
+		return candidates.Count == 0 ? null : candidates[0].FullName;
+	}
+
+	private static bool IsAllowedRuntimeLog(string fileName)
+	{
+		return fileName.StartsWith("session-", StringComparison.OrdinalIgnoreCase) &&
+			fileName.EndsWith(".log", StringComparison.OrdinalIgnoreCase);
 	}
 }

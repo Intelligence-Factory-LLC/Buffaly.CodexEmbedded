@@ -10,6 +10,9 @@
 	<div class="layout">
 		<header class="toolbar">
 			<div class="toolbar-left">
+				<a class="toolbar-link active" href="/">Codex</a>
+				<a class="toolbar-link" href="/logs">Logs</a>
+				<a class="toolbar-link" href="/watcher">Watcher</a>
 				<button id="newSessionBtn" type="button">New Session</button>
 				<label for="existingSessionSelect">Existing</label>
 				<select id="existingSessionSelect"></select>
@@ -34,7 +37,7 @@
 				<input id="cwdInput" type="text" placeholder="default cwd">
 			</div>
 		</header>
-		<main class="main">
+		<main class="main codex-main">
 			<section class="panel chat-panel">
 				<div class="panel-title">Conversation</div>
 				<div id="chatMessages" class="messages"></div>
@@ -52,10 +55,6 @@
 					<input id="promptInput" autocomplete="off" type="text" placeholder="Type a prompt...">
 					<button type="submit">Send</button>
 				</form>
-			</section>
-			<section class="panel logs-panel">
-				<div class="panel-title">Logs</div>
-				<pre id="logOutput" class="log-output"></pre>
 			</section>
 		</main>
 	</div>

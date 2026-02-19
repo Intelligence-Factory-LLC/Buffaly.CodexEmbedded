@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Codex Watcher</title>
+	<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+	<div class="layout">
+		<header class="toolbar">
+			<div class="toolbar-left">
+				<a class="toolbar-link" href="/">Codex</a>
+				<a class="toolbar-link" href="/logs">Logs</a>
+				<a class="toolbar-link active" href="/watcher">Watcher</a>
+			</div>
+			<div class="toolbar-right">
+				<label for="watcherSessionSelect">Session</label>
+				<select id="watcherSessionSelect"></select>
+				<button id="watcherRefreshBtn" type="button">Refresh</button>
+			</div>
+		</header>
+		<main class="main logs-main">
+			<section class="panel">
+				<div class="panel-title">Session Watcher</div>
+				<div id="watcherStatus" class="logs-status">Loading recent sessions...</div>
+				<div id="watcherTimeline" class="watcher-timeline"></div>
+			</section>
+		</main>
+	</div>
+	<script src="/watcher.js"></script>
+</body>
+</html>
