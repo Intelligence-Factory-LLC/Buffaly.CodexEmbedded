@@ -526,6 +526,18 @@ body {
 	justify-content: center;
 }
 
+.prompt-queue-btn {
+	min-width: 2.15rem;
+	padding: 0.55rem 0.6rem !important;
+	background: #334155 !important;
+	color: #ffffff !important;
+	font-weight: 700;
+}
+
+.prompt-queue-btn:hover {
+	background: #1f2937 !important;
+}
+
 .prompt-upload-icon {
 	width: 1.05rem;
 	height: 1.05rem;

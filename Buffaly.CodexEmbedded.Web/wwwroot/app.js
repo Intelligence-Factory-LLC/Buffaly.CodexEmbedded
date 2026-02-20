@@ -57,6 +57,7 @@ const promptQueue = document.getElementById("promptQueue");
 const composerImages = document.getElementById("composerImages");
 const imageUploadInput = document.getElementById("imageUploadInput");
 const imageUploadBtn = document.getElementById("imageUploadBtn");
+const queuePromptBtn = document.getElementById("queuePromptBtn");
 
 const newSessionBtn = document.getElementById("newSessionBtn");
 const newProjectBtn = document.getElementById("newProjectBtn");
@@ -2275,6 +2276,27 @@ async function tryHandleSlashCommand(inputText) {
   return true;
 }
 
+function queueCurrentComposerPrompt() {
+  const prompt = promptInput.value.trim();
+  const images = pendingComposerImages.map((x) => ({ ...x }));
+  if (!prompt && images.length === 0) {
+    return false;
+  }
+
+  if (!activeSessionId) {
+    appendLog("[client] no active session; create or attach one first");
+    return true;
+  }
+
+  queuePrompt(activeSessionId, prompt, images);
+  promptInput.value = "";
+  clearCurrentPromptDraft();
+  clearComposerImages();
+  appendLog(`[turn] queued prompt for session=${activeSessionId}`);
+  renderPromptQueue();
+  return true;
+}
+
 promptForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const prompt = promptInput.value.trim();
@@ -2322,23 +2344,12 @@ promptForm.addEventListener("submit", async (event) => {
 
 promptInput.addEventListener("keydown", (event) => {
   if (event.key === "Tab" && !event.ctrlKey && !event.metaKey && !event.altKey) {
-    const prompt = promptInput.value.trim();
-    const images = pendingComposerImages.map((x) => ({ ...x }));
-    if (!prompt && images.length === 0) {
+    if (!promptInput.value.trim() && pendingComposerImages.length === 0) {
       return;
     }
 
     event.preventDefault();
-    if (!activeSessionId) {
-      appendLog("[client] no active session; create or attach one first");
-      return;
-    }
-
-    queuePrompt(activeSessionId, prompt, images);
-    promptInput.value = "";
-    clearCurrentPromptDraft();
-    clearComposerImages();
-    appendLog(`[turn] queued prompt for session=${activeSessionId}`);
+    queueCurrentComposerPrompt();
     return;
   }
 
@@ -2370,6 +2381,13 @@ promptInput.addEventListener("keydown", (event) => {
     promptForm.requestSubmit();
   }
 });
+
+if (queuePromptBtn) {
+  queuePromptBtn.addEventListener("click", () => {
+    queueCurrentComposerPrompt();
+    promptInput.focus();
+  });
+}
 
 approvalPanel.querySelectorAll("button[data-decision]").forEach((button) => {
   button.addEventListener("click", () => {
