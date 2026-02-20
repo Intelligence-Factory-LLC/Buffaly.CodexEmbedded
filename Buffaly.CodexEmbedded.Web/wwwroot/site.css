@@ -1329,10 +1329,10 @@ body {
 
 	.prompt-actions {
 		width: 100%;
-		grid-template-columns: 1fr auto auto auto;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
 		grid-template-areas:
-			"context context context upload"
-			"queue cancel send send";
+			"context context upload"
+			"queue cancel send";
 		column-gap: 0.28rem;
 		row-gap: 0.22rem;
 		justify-items: stretch;
@@ -1374,9 +1374,10 @@ body {
 		min-width: 0;
 		padding: 0.44rem 0.62rem !important;
 		font-size: 0.95rem;
+		justify-self: stretch;
 	}
 
 	.prompt-form .prompt-send-btn.solo-send {
-		grid-column: 1 / span 4;
+		grid-column: 1 / span 3;
 	}
 }
