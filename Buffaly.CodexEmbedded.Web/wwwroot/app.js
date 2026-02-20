@@ -141,6 +141,7 @@ function updatePromptActionState() {
   const processingActive = !!activeSessionId && isTurnInFlight(activeSessionId);
   queuePromptBtn.classList.toggle("hidden", !processingActive);
   sendPromptBtn.classList.toggle("queue-mode", processingActive);
+  sendPromptBtn.classList.toggle("solo-send", !processingActive);
   queuePromptBtn.title = processingActive ? "Queue prompt while processing" : "Queue prompt";
 }
 
@@ -162,25 +163,19 @@ function updateContextLeftIndicator() {
   contextLeftIndicator.title = `Used ${info.usedTokens.toLocaleString()} / ${info.contextWindow.toLocaleString()} tokens`;
 }
 
-function extractTokenUsagePieces(payload) {
-  if (!payload || typeof payload !== "object") {
+function readTokenCountInfo(payload) {
+  if (!payload || typeof payload !== "object" || payload.type !== "token_count") {
     return null;
   }
 
-  const tokenPayload = payload.type === "token_count"
-    ? (payload.info || null)
-    : (payload.tokenUsage || payload.token_usage || payload);
-  if (!tokenPayload || typeof tokenPayload !== "object") {
+  const info = payload.info;
+  if (!info || typeof info !== "object") {
     return null;
   }
 
-  const contextWindowRaw = tokenPayload.model_context_window
-    ?? tokenPayload.modelContextWindow
-    ?? null;
-  const usedRaw = tokenPayload.total_token_usage?.total_tokens
-    ?? tokenPayload.totalTokenUsage?.totalTokens
-    ?? tokenPayload.total?.totalTokens
-    ?? tokenPayload.total_tokens
+  const contextWindowRaw = info.model_context_window ?? info.modelContextWindow ?? null;
+  const usedRaw = info.total_token_usage?.total_tokens
+    ?? info.totalTokenUsage?.totalTokens
     ?? null;
 
   const contextWindowNumber = Number(contextWindowRaw);
@@ -224,7 +219,7 @@ function updateContextUsageFromLogLines(threadId, lines) {
         }
       }
 
-      const eventPieces = extractTokenUsagePieces(payload);
+      const eventPieces = readTokenCountInfo(payload);
       if (eventPieces) {
         if (eventPieces.contextWindow !== null) {
           contextWindow = eventPieces.contextWindow;
@@ -232,17 +227,6 @@ function updateContextUsageFromLogLines(threadId, lines) {
         if (eventPieces.usedTokens !== null) {
           usedTokens = eventPieces.usedTokens;
         }
-      }
-      continue;
-    }
-
-    const fallbackPieces = extractTokenUsagePieces(parsed.payload || parsed);
-    if (fallbackPieces) {
-      if (fallbackPieces.contextWindow !== null) {
-        contextWindow = fallbackPieces.contextWindow;
-      }
-      if (fallbackPieces.usedTokens !== null) {
-        usedTokens = fallbackPieces.usedTokens;
       }
     }
   }

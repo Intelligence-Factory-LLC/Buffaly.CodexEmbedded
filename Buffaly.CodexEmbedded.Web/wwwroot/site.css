@@ -677,13 +677,20 @@ body {
 }
 
 .prompt-actions {
-	display: flex;
+	display: grid;
+	grid-template-columns: auto auto;
+	grid-template-areas:
+		"context upload"
+		"queue send";
 	align-items: center;
-	gap: 0.4rem;
+	justify-items: end;
+	column-gap: 0.4rem;
+	row-gap: 0.35rem;
+	min-width: 11.5rem;
 }
 
 .context-left-indicator {
-	margin-right: auto;
+	grid-area: context;
 	padding: 0.32rem 0.55rem;
 	border-radius: 999px;
 	border: 1px solid #cbd5e1;
@@ -692,6 +699,10 @@ body {
 	font-size: 0.76rem;
 	font-weight: 600;
 	white-space: nowrap;
+}
+
+#imageUploadBtn {
+	grid-area: upload;
 }
 
 .prompt-form button {
@@ -704,6 +715,7 @@ body {
 }
 
 .prompt-form .prompt-send-btn {
+	grid-area: send;
 	min-width: 4.8rem;
 	border-radius: 999px;
 	background: linear-gradient(180deg, #0ea5e9 0%, #0369a1 100%);
@@ -720,6 +732,11 @@ body {
 	color: #0f172a;
 }
 
+.prompt-form .prompt-send-btn.solo-send {
+	grid-column: 1 / span 2;
+	justify-self: stretch;
+}
+
 .prompt-upload-btn {
 	background: #ffffff !important;
 	color: #111827 !important;
@@ -733,6 +750,7 @@ body {
 }
 
 .prompt-queue-btn {
+	grid-area: queue;
 	min-width: 4.8rem;
 	padding: 0.55rem 0.95rem !important;
 	background: #0f766e !important;
@@ -1048,5 +1066,13 @@ body {
 	.scroll-to-bottom-btn {
 		right: 0.85rem;
 		bottom: 7.2rem;
+	}
+
+	.prompt-actions {
+		min-width: 0;
+	}
+
+	.context-left-indicator {
+		font-size: 0.72rem;
 	}
 }
