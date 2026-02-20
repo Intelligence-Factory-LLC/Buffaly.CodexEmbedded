@@ -823,6 +823,14 @@ body {
 	flex-wrap: wrap;
 }
 
+.watcher-inline-note {
+	padding: 0.35rem 0.5rem;
+	border: 1px solid #dbeafe;
+	border-radius: 8px;
+	background: #eff6ff;
+	border-bottom-style: solid;
+}
+
 .watcher-inline-title {
 	font-weight: 600;
 	color: #1f2937;

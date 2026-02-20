@@ -110,8 +110,18 @@
       return remaining <= this.bottomThresholdPx;
     }
 
-    enqueueSystem(text, title = this.systemTitle) {
-      this.pendingEntries.push(this.createEntry("system", title, String(text || ""), new Date().toISOString(), "system"));
+    enqueueSystem(text, title = this.systemTitle, options = {}) {
+      const entry = this.createEntry("system", title, String(text || ""), new Date().toISOString(), "system");
+      if (options && options.compact === true) {
+        entry.compact = true;
+      }
+      this.pendingEntries.push(entry);
+    }
+
+    enqueueInlineNotice(text) {
+      const entry = this.createEntry("system", "Note", String(text || ""), new Date().toISOString(), "inline_notice");
+      entry.compact = true;
+      this.pendingEntries.push(entry);
     }
 
     enqueueOptimisticUserMessage(text, images) {
@@ -627,14 +637,7 @@
       }
 
       if (type === "turn_context") {
-        const payload = root.payload || {};
-        const details = [];
-        if (payload.turn_id) details.push(`turn=${payload.turn_id}`);
-        if (payload.model) details.push(`model=${payload.model}`);
-        if (payload.cwd) details.push(`cwd=${payload.cwd}`);
-        const entry = this.createEntry("system", "Turn Context", details.join(" | "), timestamp, type);
-        entry.compact = true;
-        return entry;
+        return null;
       }
 
       if (type === "response_item") {
@@ -727,6 +730,9 @@
       if (entry.compact) {
         const row = document.createElement("div");
         row.className = "watcher-inline-entry";
+        if (entry.rawType === "inline_notice") {
+          row.classList.add("watcher-inline-note");
+        }
         row.dataset.entryId = String(entry.id);
 
         const title = document.createElement("span");

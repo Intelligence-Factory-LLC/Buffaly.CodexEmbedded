@@ -1533,7 +1533,7 @@ async function pollTimelineOnce(initial, generation) {
     timeline.enqueueParsedLines(Array.isArray(data.lines) ? data.lines : []);
 
     if (data.truncated === true) {
-      timeline.enqueueSystem("tail update truncated to latest lines");
+      timeline.enqueueInlineNotice("Showing latest log lines.");
     }
   } finally {
     timelinePollInFlight = false;
