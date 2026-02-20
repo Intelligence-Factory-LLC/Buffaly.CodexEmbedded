@@ -153,7 +153,8 @@ function updateContextLeftIndicator() {
   const state = getActiveSessionState();
   const threadId = typeof state?.threadId === "string" ? state.threadId.trim() : "";
   const info = threadId ? contextUsageByThread.get(threadId) : null;
-  if (!info || !Number.isFinite(info.percentLeft)) {
+  if (!info || !Number.isFinite(info.percentLeft) || !Number.isFinite(info.usedTokens) || !Number.isFinite(info.contextWindow)
+      || info.contextWindow <= 0 || info.usedTokens > (info.contextWindow * 1.1)) {
     contextLeftIndicator.textContent = "--% context left";
     contextLeftIndicator.title = "Context usage unavailable";
     return;
@@ -174,14 +175,61 @@ function readTokenCountInfo(payload) {
   }
 
   const contextWindowRaw = info.model_context_window ?? info.modelContextWindow ?? null;
-  const usedRaw = info.total_token_usage?.total_tokens
-    ?? info.totalTokenUsage?.totalTokens
-    ?? null;
-
   const contextWindowNumber = Number(contextWindowRaw);
-  const usedTokensNumber = Number(usedRaw);
   const contextWindow = Number.isFinite(contextWindowNumber) && contextWindowNumber > 0 ? contextWindowNumber : null;
-  const usedTokens = Number.isFinite(usedTokensNumber) && usedTokensNumber >= 0 ? usedTokensNumber : null;
+
+  const lastUsage = info.last_token_usage ?? info.lastTokenUsage ?? info.last ?? null;
+  const totalUsage = info.total_token_usage ?? info.totalTokenUsage ?? info.total ?? null;
+
+  function readNumber(value) {
+    const next = Number(value);
+    return Number.isFinite(next) && next >= 0 ? next : null;
+  }
+
+  function readInputSideTokens(usage) {
+    if (!usage || typeof usage !== "object") {
+      return null;
+    }
+
+    const input = readNumber(usage.input_tokens ?? usage.inputTokens);
+    const cachedInput = readNumber(usage.cached_input_tokens ?? usage.cachedInputTokens);
+    if (input === null && cachedInput === null) {
+      return null;
+    }
+
+    return (input || 0) + (cachedInput || 0);
+  }
+
+  function readTotalTokens(usage) {
+    if (!usage || typeof usage !== "object") {
+      return null;
+    }
+
+    return readNumber(usage.total_tokens ?? usage.totalTokens);
+  }
+
+  const candidates = [];
+  const lastInputSide = readInputSideTokens(lastUsage);
+  const lastTotal = readTotalTokens(lastUsage);
+  const totalInputSide = readInputSideTokens(totalUsage);
+  const cumulativeTotal = readTotalTokens(totalUsage);
+  if (lastInputSide !== null) candidates.push(lastInputSide);
+  if (lastTotal !== null) candidates.push(lastTotal);
+  if (totalInputSide !== null) candidates.push(totalInputSide);
+  if (cumulativeTotal !== null && (contextWindow === null || cumulativeTotal <= contextWindow * 1.05)) {
+    candidates.push(cumulativeTotal);
+  }
+
+  let usedTokens = null;
+  if (contextWindow !== null) {
+    const bounded = candidates.filter((x) => x <= (contextWindow * 1.1));
+    if (bounded.length > 0) {
+      usedTokens = Math.max(...bounded);
+    }
+  }
+  if (usedTokens === null && candidates.length > 0) {
+    usedTokens = candidates[0];
+  }
 
   if (contextWindow === null && usedTokens === null) {
     return null;
