@@ -783,7 +783,9 @@ function buildActionIcon(kind) {
     plus: "bi-plus-lg",
     pencil: "bi-pencil-square",
     archive: "bi-archive",
-    restore: "bi-arrow-counterclockwise"
+    restore: "bi-arrow-counterclockwise",
+    chevronDown: "bi-chevron-down",
+    chevronRight: "bi-chevron-right"
   }[kind] || "bi-plus-lg";
 
   icon.className = `bi ${iconClass}`;
@@ -1302,11 +1304,13 @@ function renderProjectSidebar() {
       header.classList.add("active");
     }
 
+    const projectCollapsed = collapsedProjectKeys.has(group.key);
     const toggleBtn = document.createElement("button");
     toggleBtn.type = "button";
     toggleBtn.className = "project-toggle";
-    toggleBtn.textContent = collapsedProjectKeys.has(group.key) ? ">" : "v";
-    toggleBtn.title = "Collapse/expand project";
+    toggleBtn.appendChild(buildActionIcon(projectCollapsed ? "chevronRight" : "chevronDown"));
+    toggleBtn.title = projectCollapsed ? "Expand project" : "Collapse project";
+    toggleBtn.setAttribute("aria-label", projectCollapsed ? "Expand project" : "Collapse project");
     toggleBtn.addEventListener("click", (event) => {
       event.stopPropagation();
       toggleProjectCollapsed(group.key);
