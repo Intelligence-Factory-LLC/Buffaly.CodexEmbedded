@@ -135,6 +135,10 @@ body {
 	min-height: 0;
 }
 
+.chat-panel {
+	position: relative;
+}
+
 .session-sidebar {
 	overflow: hidden;
 }
@@ -670,6 +674,18 @@ body {
 	cursor: pointer;
 }
 
+.prompt-form .prompt-send-btn {
+	min-width: 4.8rem;
+	border-radius: 999px;
+	background: linear-gradient(180deg, #0ea5e9 0%, #0369a1 100%);
+	font-weight: 700;
+	padding-inline: 1rem;
+}
+
+.prompt-form .prompt-send-btn:hover {
+	filter: brightness(0.96);
+}
+
 .prompt-upload-btn {
 	background: #ffffff !important;
 	color: #111827 !important;
@@ -771,6 +787,28 @@ body {
 	flex-direction: column;
 	gap: 0.6rem;
 	background: #f8fafc;
+}
+
+.scroll-to-bottom-btn {
+	position: absolute;
+	right: 1rem;
+	bottom: 6.25rem;
+	width: 2.2rem;
+	height: 2.2rem;
+	border: 0;
+	border-radius: 999px;
+	background: #0f766e;
+	color: #ffffff;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	box-shadow: 0 8px 18px rgba(15, 118, 110, 0.32);
+	cursor: pointer;
+	z-index: 6;
+}
+
+.scroll-to-bottom-btn:hover {
+	background: #115e59;
 }
 
 .watcher-entry {
@@ -969,5 +1007,10 @@ body {
 
 	.conversation-meta-model select {
 		min-width: 140px;
+	}
+
+	.scroll-to-bottom-btn {
+		right: 0.85rem;
+		bottom: 7.2rem;
 	}
 }

@@ -54,6 +54,7 @@ const logOutput = document.getElementById("logOutput");
 const promptForm = document.getElementById("promptForm");
 const promptInput = document.getElementById("promptInput");
 const promptQueue = document.getElementById("promptQueue");
+const scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
 const composerImages = document.getElementById("composerImages");
 const imageUploadInput = document.getElementById("imageUploadInput");
 const imageUploadBtn = document.getElementById("imageUploadBtn");
@@ -96,6 +97,38 @@ const timeline = new window.CodexSessionTimeline({
   maxRenderedEntries: 1500,
   systemTitle: "Session"
 });
+
+function getMessageListRemainingScroll() {
+  if (!chatMessages) {
+    return 0;
+  }
+
+  return chatMessages.scrollHeight - (chatMessages.scrollTop + chatMessages.clientHeight);
+}
+
+function updateScrollToBottomButton() {
+  if (!scrollToBottomBtn || !chatMessages) {
+    return;
+  }
+
+  const remaining = getMessageListRemainingScroll();
+  const shouldShow = remaining > 96;
+  scrollToBottomBtn.classList.toggle("hidden", !shouldShow);
+}
+
+function scrollMessagesToBottom(smooth = false) {
+  if (!chatMessages) {
+    return;
+  }
+
+  if (smooth && typeof chatMessages.scrollTo === "function") {
+    chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: "smooth" });
+  } else {
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  updateScrollToBottomButton();
+}
 
 function normalizePath(path) {
   if (!path || typeof path !== "string") {
@@ -220,6 +253,130 @@ function restorePromptDraftForActiveSession(options = {}) {
   if (promptInput.value !== normalized) {
     promptInput.value = normalized;
   }
+}
+
+function normalizeQueuedPromptItem(item) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+
+  const text = typeof item.text === "string" ? item.text : String(item.text || "");
+  const images = Array.isArray(item.images)
+    ? item.images
+      .filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0)
+      .slice(0, MAX_COMPOSER_IMAGES)
+      .map((x) => ({
+        url: x.url,
+        name: typeof x.name === "string" ? x.name : "image",
+        mimeType: typeof x.mimeType === "string" ? x.mimeType : "image/*",
+        size: typeof x.size === "number" ? x.size : 0
+      }))
+    : [];
+
+  if (!text.trim() && images.length === 0) {
+    return null;
+  }
+
+  return { text, images };
+}
+
+function normalizeQueuedPromptList(list) {
+  if (!Array.isArray(list)) {
+    return [];
+  }
+
+  const normalized = [];
+  for (const item of list) {
+    const next = normalizeQueuedPromptItem(item);
+    if (next) {
+      normalized.push(next);
+    }
+  }
+
+  return normalized;
+}
+
+function loadQueuedPromptState() {
+  persistedPromptQueuesByThread = new Map();
+  const raw = safeJsonParse(localStorage.getItem(STORAGE_QUEUED_PROMPTS_KEY), {});
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return;
+  }
+
+  for (const [threadId, list] of Object.entries(raw)) {
+    const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+    if (!normalizedThreadId) {
+      continue;
+    }
+
+    const normalizedList = normalizeQueuedPromptList(list);
+    if (normalizedList.length > 0) {
+      persistedPromptQueuesByThread.set(normalizedThreadId, normalizedList);
+    }
+  }
+}
+
+function restorePersistedQueueForSession(sessionId, threadId) {
+  const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedSessionId || !normalizedThreadId) {
+    return;
+  }
+
+  const existing = promptQueuesBySession.get(normalizedSessionId);
+  if (existing && existing.length > 0) {
+    return;
+  }
+
+  const persisted = persistedPromptQueuesByThread.get(normalizedThreadId);
+  if (!persisted || persisted.length === 0) {
+    return;
+  }
+
+  promptQueuesBySession.set(normalizedSessionId, persisted.map((x) => ({
+    text: x.text,
+    images: Array.isArray(x.images) ? x.images.map((img) => ({ ...img })) : []
+  })));
+}
+
+function persistQueuedPromptState() {
+  const nextByThread = new Map();
+
+  for (const [threadId, items] of persistedPromptQueuesByThread.entries()) {
+    const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+    if (!normalizedThreadId) {
+      continue;
+    }
+
+    const normalizedItems = normalizeQueuedPromptList(items);
+    if (normalizedItems.length > 0) {
+      nextByThread.set(normalizedThreadId, normalizedItems);
+    }
+  }
+
+  for (const [sessionId, queue] of promptQueuesBySession.entries()) {
+    const state = sessions.get(sessionId);
+    const threadId = typeof state?.threadId === "string" ? state.threadId.trim() : "";
+    if (!threadId) {
+      continue;
+    }
+
+    const normalizedQueue = normalizeQueuedPromptList(queue);
+    if (normalizedQueue.length > 0) {
+      nextByThread.set(threadId, normalizedQueue);
+    } else {
+      nextByThread.delete(threadId);
+    }
+  }
+
+  persistedPromptQueuesByThread = nextByThread;
+
+  const payload = {};
+  for (const [threadId, queue] of nextByThread.entries()) {
+    payload[threadId] = queue;
+  }
+
+  localStorage.setItem(STORAGE_QUEUED_PROMPTS_KEY, JSON.stringify(payload));
 }
 
 function normalizeProjectCwd(cwd) {
@@ -1268,6 +1425,7 @@ function queuePrompt(sessionId, promptText, images = []) {
     text: String(promptText || ""),
     images: Array.isArray(images) ? images.map((x) => ({ ...x })) : []
   });
+  persistQueuedPromptState();
   if (sessionId === activeSessionId) {
     renderPromptQueue();
   }
@@ -1301,6 +1459,7 @@ function restoreQueuedPromptForEditing(sessionId, itemIndex) {
   }));
   renderComposerImages();
   renderPromptQueue();
+  persistQueuedPromptState();
 
   promptInput.focus();
   promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
@@ -1377,8 +1536,10 @@ function pumpQueuedPrompt(sessionId) {
   const started = startTurn(sessionId, nextPrompt.text, nextPrompt.images || [], { fromQueue: true });
   if (!started) {
     queue.unshift(nextPrompt);
+    persistQueuedPromptState();
     return false;
   }
+  persistQueuedPromptState();
 
   if (sessionId === activeSessionId) {
     renderPromptQueue();
@@ -1405,6 +1566,8 @@ function prunePromptState() {
       lastSentPromptBySession.delete(key);
     }
   }
+
+  persistQueuedPromptState();
 }
 
 function storeLastThreadId(threadId) {
@@ -1643,6 +1806,9 @@ function setActiveSession(sessionId, options = {}) {
   }
   stopSessionBtn.disabled = false;
   const state = sessions.get(sessionId);
+  if (state?.threadId) {
+    restorePersistedQueueForSession(sessionId, state.threadId);
+  }
   if (state && state.threadId) {
     storeLastThreadId(state.threadId);
   }
@@ -1660,6 +1826,8 @@ function setActiveSession(sessionId, options = {}) {
     timeline.clear();
     restartTimelinePolling();
   }
+
+  updateScrollToBottomButton();
 }
 
 function clearActiveSession() {
@@ -1676,6 +1844,7 @@ function clearActiveSession() {
   timeline.clear();
   renderProjectSidebar();
   restartTimelinePolling();
+  updateScrollToBottomButton();
 }
 
 function updateSessionSelect(activeIdFromServer) {
@@ -1911,6 +2080,7 @@ function applyModelFromCommandModal() {
 function applySavedUiSettings() {
   loadProjectUiState();
   loadPromptDraftState();
+  loadQueuedPromptState();
 
   const savedCwd = localStorage.getItem(STORAGE_CWD_KEY);
   if (savedCwd) {
@@ -1966,6 +2136,7 @@ function ensureSocket() {
     appendLog("[ws] disconnected");
     socketReadyPromise = null;
     autoAttachAttempted = false;
+    persistQueuedPromptState();
     sessions = new Map();
     sessionCatalog = [];
     pendingApproval = null;
@@ -2345,6 +2516,22 @@ if (sidebarToggleBtn) {
   });
 }
 
+if (chatMessages) {
+  chatMessages.addEventListener("scroll", () => {
+    updateScrollToBottomButton();
+  });
+
+  chatMessages.addEventListener("codex:timeline-updated", () => {
+    updateScrollToBottomButton();
+  });
+}
+
+if (scrollToBottomBtn) {
+  scrollToBottomBtn.addEventListener("click", () => {
+    scrollMessagesToBottom(true);
+  });
+}
+
 imageUploadBtn.addEventListener("click", () => {
   imageUploadInput.click();
 });
@@ -2625,13 +2812,19 @@ document.addEventListener("keydown", (event) => {
   closeModelCommandModal();
 });
 
+window.addEventListener("resize", () => {
+  updateScrollToBottomButton();
+});
+
 window.addEventListener("beforeunload", () => {
   rememberPromptDraftForState(getActiveSessionState());
+  persistQueuedPromptState();
 });
 
 applySavedUiSettings();
 renderComposerImages();
 renderProjectSidebar();
+updateScrollToBottomButton();
 
 timelineFlushTimer = setInterval(() => timeline.flush(), TIMELINE_POLL_INTERVAL_MS);
 

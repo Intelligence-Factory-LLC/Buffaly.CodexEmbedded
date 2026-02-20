@@ -172,6 +172,8 @@
         this.container.scrollTop = this.container.scrollHeight;
         this.autoScrollPinned = true;
       }
+
+      this.container.dispatchEvent(new CustomEvent("codex:timeline-updated"));
     }
 
     tryParseJson(text) {

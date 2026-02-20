@@ -55,6 +55,9 @@
 					</div>
 				</div>
 				<div id="chatMessages" class="watcher-timeline"></div>
+				<button id="scrollToBottomBtn" class="scroll-to-bottom-btn hidden" type="button" title="Jump to latest messages" aria-label="Jump to latest messages">
+					<i class="bi bi-arrow-down"></i>
+				</button>
 				<div id="approvalPanel" class="approval-panel hidden">
 					<div id="approvalSummary" class="approval-summary"></div>
 					<div id="approvalDetails" class="approval-details"></div>
@@ -77,7 +80,7 @@
 							</svg>
 						</button>
 						<button id="queuePromptBtn" class="prompt-queue-btn" type="button" title="Queue prompt">Q</button>
-						<button type="submit">Send</button>
+						<button id="sendPromptBtn" class="prompt-send-btn" type="submit">Send</button>
 					</div>
 				</form>
 			</section>
