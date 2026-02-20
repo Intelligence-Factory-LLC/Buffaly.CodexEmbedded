@@ -33,6 +33,16 @@ body {
 	display: flex;
 	align-items: center;
 	gap: 0.5rem;
+	flex-wrap: wrap;
+}
+
+.toolbar-left {
+	flex: 1 1 720px;
+	min-width: 0;
+}
+
+.toolbar-right {
+	flex: 0 1 auto;
 }
 
 .toolbar input {
@@ -50,6 +60,19 @@ body {
 	border-radius: 4px;
 	background: #111827;
 	color: #f9fafb;
+	min-width: 130px;
+}
+
+#existingSessionSelect,
+#sessionSelect {
+	min-width: 260px;
+	max-width: 340px;
+}
+
+#watcherDirectorySelect,
+#watcherSessionSelect {
+	min-width: 220px;
+	max-width: 320px;
 }
 
 .toolbar button {
@@ -151,11 +174,15 @@ body {
 	border-top: 1px solid #e5e7eb;
 }
 
-.prompt-form input {
+.prompt-form textarea {
 	flex: 1;
 	padding: 0.55rem 0.7rem;
 	border: 1px solid #d1d5db;
 	border-radius: 4px;
+	min-height: 5.5rem;
+	resize: vertical;
+	font: inherit;
+	line-height: 1.35;
 }
 
 .prompt-form button {
@@ -292,12 +319,14 @@ body {
 }
 
 .session-meta {
+	flex-basis: 100%;
 	font-size: 0.85rem;
 	opacity: 0.9;
-	max-width: 520px;
+	max-width: 100%;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	padding-top: 0.15rem;
 }
 
 @media (max-width: 900px) {

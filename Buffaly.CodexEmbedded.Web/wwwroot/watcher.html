@@ -4,17 +4,19 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>Codex Watcher</title>
-	<link rel="stylesheet" href="/site.css">
+	<link rel="stylesheet" href="site.css">
 </head>
 <body>
 	<div class="layout">
 		<header class="toolbar">
 			<div class="toolbar-left">
-				<a class="toolbar-link" href="/">Codex</a>
-				<a class="toolbar-link" href="/logs">Logs</a>
-				<a class="toolbar-link active" href="/watcher">Watcher</a>
+				<a class="toolbar-link" href="./">Codex</a>
+				<a class="toolbar-link" href="logs">Logs</a>
+				<a class="toolbar-link active" href="watcher">Watcher</a>
 			</div>
 			<div class="toolbar-right">
+				<label for="watcherDirectorySelect">Directory</label>
+				<select id="watcherDirectorySelect"></select>
 				<label for="watcherSessionSelect">Session</label>
 				<select id="watcherSessionSelect"></select>
 				<button id="watcherRefreshBtn" type="button">Refresh</button>
@@ -28,6 +30,6 @@
 			</section>
 		</main>
 	</div>
-	<script src="/watcher.js"></script>
+	<script src="watcher.js"></script>
 </body>
 </html>

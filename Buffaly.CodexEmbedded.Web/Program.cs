@@ -68,7 +68,7 @@ app.MapGet("/watcher", async context =>
 
 app.MapGet("/api/logs/sessions", (HttpRequest request, WebRuntimeDefaults defaults) =>
 {
-	var limit = QueryValueParser.GetPositiveInt(request.Query["limit"], fallback: 10, max: 100);
+	var limit = QueryValueParser.GetPositiveInt(request.Query["limit"], fallback: 20, max: 100);
 	var sessions = CodexSessionCatalog.ListSessions(defaults.CodexHomePath, limit: 0)
 		.Where(x => !string.IsNullOrWhiteSpace(x.SessionFilePath))
 		.OrderByDescending(x => x.UpdatedAtUtc ?? DateTimeOffset.MinValue)

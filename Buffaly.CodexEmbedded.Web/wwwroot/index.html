@@ -4,15 +4,15 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>Codex Web CLI</title>
-	<link rel="stylesheet" href="/site.css">
+	<link rel="stylesheet" href="site.css">
 </head>
 <body>
 	<div class="layout">
 		<header class="toolbar">
 			<div class="toolbar-left">
-				<a class="toolbar-link active" href="/">Codex</a>
-				<a class="toolbar-link" href="/logs">Logs</a>
-				<a class="toolbar-link" href="/watcher">Watcher</a>
+				<a class="toolbar-link active" href="./">Codex</a>
+				<a class="toolbar-link" href="logs">Logs</a>
+				<a class="toolbar-link" href="watcher">Watcher</a>
 				<button id="newSessionBtn" type="button">New Session</button>
 				<label for="existingSessionSelect">Existing</label>
 				<select id="existingSessionSelect"></select>
@@ -52,12 +52,12 @@
 					</div>
 				</div>
 				<form id="promptForm" class="prompt-form">
-					<input id="promptInput" autocomplete="off" type="text" placeholder="Type a prompt...">
+					<textarea id="promptInput" autocomplete="off" rows="4" placeholder="Type a prompt..."></textarea>
 					<button type="submit">Send</button>
 				</form>
 			</section>
 		</main>
 	</div>
-	<script src="/app.js"></script>
+	<script src="app.js"></script>
 </body>
 </html>

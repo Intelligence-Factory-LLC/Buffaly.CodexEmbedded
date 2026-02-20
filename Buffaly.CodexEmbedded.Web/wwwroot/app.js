@@ -34,9 +34,79 @@ const approvalPanel = document.getElementById("approvalPanel");
 const approvalSummary = document.getElementById("approvalSummary");
 const approvalDetails = document.getElementById("approvalDetails");
 
+function normalizePath(path) {
+  if (!path || typeof path !== "string") {
+    return "";
+  }
+
+  return path.replace(/\\/g, "/");
+}
+
+function getCatalogSessionUpdatedTick(session) {
+  if (!session || !session.updatedAtUtc) {
+    return 0;
+  }
+
+  const tick = Date.parse(session.updatedAtUtc);
+  return Number.isFinite(tick) ? tick : 0;
+}
+
+function getCatalogDirectoryInfo(session) {
+  const normalizedCwd = normalizePath(session?.cwd || "").replace(/\/+$/g, "");
+  if (!normalizedCwd) {
+    return { key: "(unknown)", label: "(unknown)" };
+  }
+
+  return {
+    key: normalizedCwd.toLowerCase(),
+    label: normalizedCwd
+  };
+}
+
+function buildCatalogDirectoryGroups() {
+  const map = new Map();
+  for (const session of sessionCatalog) {
+    const info = getCatalogDirectoryInfo(session);
+    if (!map.has(info.key)) {
+      map.set(info.key, {
+        key: info.key,
+        label: info.label,
+        sessions: [],
+        latestTick: 0
+      });
+    }
+
+    const group = map.get(info.key);
+    group.sessions.push(session);
+    const tick = getCatalogSessionUpdatedTick(session);
+    if (tick > group.latestTick) {
+      group.latestTick = tick;
+    }
+  }
+
+  const groups = Array.from(map.values());
+  for (const group of groups) {
+    group.sessions.sort((a, b) => {
+      const tickCompare = getCatalogSessionUpdatedTick(b) - getCatalogSessionUpdatedTick(a);
+      if (tickCompare !== 0) return tickCompare;
+      return (a.threadId || "").localeCompare(b.threadId || "");
+    });
+  }
+
+  groups.sort((a, b) => {
+    const tickCompare = b.latestTick - a.latestTick;
+    if (tickCompare !== 0) return tickCompare;
+    return a.label.localeCompare(b.label);
+  });
+
+  return groups;
+}
+
 function wsUrl() {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${scheme}://${window.location.host}/ws`;
+  const endpoint = new URL("ws", document.baseURI);
+  endpoint.protocol = scheme;
+  return endpoint.toString();
 }
 
 function appendLog(text) {
@@ -95,6 +165,8 @@ function setActiveSession(sessionId) {
 
   const state = sessions.get(sessionId);
   const metaParts = [];
+  const namedCatalogEntry = sessionCatalog.find((s) => s.threadId && state.threadId && s.threadId === state.threadId);
+  if (namedCatalogEntry && namedCatalogEntry.threadName) metaParts.push(`name=${namedCatalogEntry.threadName}`);
   if (state.threadId) metaParts.push(`thread=${state.threadId}`);
   if (state.model) metaParts.push(`model=${state.model}`);
   if (state.cwd) metaParts.push(`cwd=${state.cwd}`);
@@ -114,8 +186,11 @@ function updateSessionSelect(activeIdFromServer) {
     const state = sessions.get(id);
     const option = document.createElement("option");
     option.value = id;
+    const namedCatalogEntry = sessionCatalog.find((s) => s.threadId && state.threadId && s.threadId === state.threadId);
     const threadShort = state.threadId ? state.threadId.slice(0, 8) : "unknown";
-    option.textContent = `${id.slice(0, 8)} (${threadShort})`;
+    const threadName = namedCatalogEntry && namedCatalogEntry.threadName ? namedCatalogEntry.threadName : null;
+    option.textContent = threadName || `${id.slice(0, 8)} (${threadShort})`;
+    option.title = `session=${id} thread=${state.threadId || "unknown"}`;
     sessionSelect.appendChild(option);
   }
 
@@ -139,13 +214,22 @@ function updateExistingSessionSelect() {
   placeholder.textContent = "(select existing thread)";
   existingSessionSelect.appendChild(placeholder);
 
-  for (const s of sessionCatalog) {
-    const option = document.createElement("option");
-    option.value = s.threadId || "";
-    const name = s.threadName ? `${s.threadName} ` : "";
-    const updated = s.updatedAtUtc ? ` @ ${new Date(s.updatedAtUtc).toLocaleString()}` : "";
-    option.textContent = `${name}${s.threadId || "unknown"}${updated}`;
-    existingSessionSelect.appendChild(option);
+  const groups = buildCatalogDirectoryGroups();
+  for (const group of groups) {
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = `${group.label} (${group.sessions.length})`;
+
+    for (const s of group.sessions) {
+      const option = document.createElement("option");
+      option.value = s.threadId || "";
+      const name = s.threadName ? `${s.threadName} ` : "";
+      const updated = s.updatedAtUtc ? ` @ ${new Date(s.updatedAtUtc).toLocaleString()}` : "";
+      option.textContent = `${name}${s.threadId || "unknown"}${updated}`;
+      option.title = `thread=${s.threadId || "unknown"} cwd=${s.cwd || "(unknown)"}`;
+      optgroup.appendChild(option);
+    }
+
+    existingSessionSelect.appendChild(optgroup);
   }
 
   if (prior && Array.from(existingSessionSelect.options).some((o) => o.value === prior)) {
@@ -559,6 +643,13 @@ promptForm.addEventListener("submit", async (event) => {
   renderActiveSession();
 
   send("turn_start", { sessionId: activeSessionId, text: prompt });
+});
+
+promptInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  if (!event.ctrlKey && !event.metaKey) return;
+  event.preventDefault();
+  promptForm.requestSubmit();
 });
 
 approvalPanel.querySelectorAll("button[data-decision]").forEach((button) => {

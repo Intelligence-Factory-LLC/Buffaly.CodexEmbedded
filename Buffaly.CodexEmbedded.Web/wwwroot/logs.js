@@ -58,7 +58,7 @@ async function pollOnce(initial, generation) {
 
   pollInFlight = true;
   try {
-    const url = new URL("/api/logs/realtime/current", window.location.origin);
+    const url = new URL("api/logs/realtime/current", document.baseURI);
     url.searchParams.set("maxLines", "200");
     if (initial || cursor === null) {
       url.searchParams.set("initial", "true");
