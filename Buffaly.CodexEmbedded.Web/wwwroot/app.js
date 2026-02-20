@@ -113,6 +113,111 @@ function safeJsonParse(raw, fallbackValue) {
   }
 }
 
+function getPromptDraftKeyForThreadId(threadId) {
+  const normalized = typeof threadId === "string" ? threadId.trim() : "";
+  return normalized ? `thread:${normalized}` : GLOBAL_PROMPT_DRAFT_KEY;
+}
+
+function getPromptDraftKeyForState(state) {
+  if (!state) {
+    return GLOBAL_PROMPT_DRAFT_KEY;
+  }
+
+  return getPromptDraftKeyForThreadId(state.threadId);
+}
+
+function getCurrentPromptDraftKey() {
+  return getPromptDraftKeyForState(getActiveSessionState());
+}
+
+function loadPromptDraftState() {
+  promptDraftByKey = new Map();
+  const raw = safeJsonParse(localStorage.getItem(STORAGE_PROMPT_DRAFTS_KEY), {});
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return;
+  }
+
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof key !== "string" || !key.trim()) {
+      continue;
+    }
+
+    const text = typeof value === "string" ? value : String(value || "");
+    if (!text) {
+      continue;
+    }
+
+    promptDraftByKey.set(key, text);
+  }
+}
+
+function persistPromptDraftState() {
+  const payload = {};
+  for (const [key, value] of promptDraftByKey.entries()) {
+    if (typeof key !== "string" || !key.trim()) {
+      continue;
+    }
+
+    const text = typeof value === "string" ? value : String(value || "");
+    if (!text) {
+      continue;
+    }
+
+    payload[key] = text;
+  }
+
+  localStorage.setItem(STORAGE_PROMPT_DRAFTS_KEY, JSON.stringify(payload));
+}
+
+function rememberPromptDraftForKey(key, text) {
+  const normalizedKey = typeof key === "string" ? key.trim() : "";
+  if (!normalizedKey) {
+    return;
+  }
+
+  const normalizedText = typeof text === "string" ? text : String(text || "");
+  if (normalizedText) {
+    promptDraftByKey.set(normalizedKey, normalizedText);
+  } else {
+    promptDraftByKey.delete(normalizedKey);
+  }
+}
+
+function rememberPromptDraftForState(state) {
+  if (!promptInput) {
+    return;
+  }
+
+  rememberPromptDraftForKey(getPromptDraftKeyForState(state), promptInput.value);
+  persistPromptDraftState();
+}
+
+function clearCurrentPromptDraft() {
+  rememberPromptDraftForKey(getCurrentPromptDraftKey(), "");
+  persistPromptDraftState();
+}
+
+function restorePromptDraftForActiveSession(options = {}) {
+  if (!promptInput) {
+    return;
+  }
+
+  const includeGlobalFallback = options.includeGlobalFallback !== false;
+  const key = getCurrentPromptDraftKey();
+  let nextValue = promptDraftByKey.get(key);
+
+  if ((nextValue === undefined || nextValue === null || nextValue === "")
+      && includeGlobalFallback
+      && key !== GLOBAL_PROMPT_DRAFT_KEY) {
+    nextValue = promptDraftByKey.get(GLOBAL_PROMPT_DRAFT_KEY);
+  }
+
+  const normalized = typeof nextValue === "string" ? nextValue : "";
+  if (promptInput.value !== normalized) {
+    promptInput.value = normalized;
+  }
+}
+
 function normalizeProjectCwd(cwd) {
   const normalized = normalizePath(cwd || "").replace(/\/+$/g, "");
   return normalized;
@@ -1369,6 +1474,10 @@ function setActiveSession(sessionId, options = {}) {
 
   const restartTimeline = options.restartTimeline !== false;
   const changed = activeSessionId !== sessionId;
+  const previousState = getActiveSessionState();
+  if (changed) {
+    rememberPromptDraftForState(previousState);
+  }
 
   activeSessionId = sessionId;
   if (sessionSelect) {
@@ -1384,6 +1493,7 @@ function setActiveSession(sessionId, options = {}) {
   renderPromptQueue();
   if (changed) {
     clearComposerImages();
+    restorePromptDraftForActiveSession();
   }
   renderProjectSidebar();
 
@@ -1395,11 +1505,15 @@ function setActiveSession(sessionId, options = {}) {
 }
 
 function clearActiveSession() {
+  const previousState = getActiveSessionState();
+  rememberPromptDraftForState(previousState);
+
   activeSessionId = null;
   sessionMeta.textContent = "";
   stopSessionBtn.disabled = true;
   renderPromptQueue();
   clearComposerImages();
+  restorePromptDraftForActiveSession();
   timelineCursor = null;
   timeline.clear();
   renderProjectSidebar();
@@ -1620,6 +1734,7 @@ function applyModelFromCommandModal() {
 
 function applySavedUiSettings() {
   loadProjectUiState();
+  loadPromptDraftState();
 
   const savedCwd = localStorage.getItem(STORAGE_CWD_KEY);
   if (savedCwd) {
@@ -1636,6 +1751,7 @@ function applySavedUiSettings() {
 
   const sidebarCollapsed = localStorage.getItem(STORAGE_SIDEBAR_COLLAPSED_KEY) === "1";
   applySidebarCollapsed(sidebarCollapsed);
+  restorePromptDraftForActiveSession();
 }
 
 function getCurrentLogVerbosity() {
@@ -2062,6 +2178,10 @@ promptInput.addEventListener("paste", async (event) => {
   await addComposerFiles(files);
 });
 
+promptInput.addEventListener("input", () => {
+  rememberPromptDraftForState(getActiveSessionState());
+});
+
 promptInput.addEventListener("dragover", (event) => {
   const hasFiles = Array.from(event.dataTransfer?.types || []).includes("Files");
   if (!hasFiles) {
@@ -2168,6 +2288,7 @@ promptForm.addEventListener("submit", async (event) => {
 
   if (images.length === 0 && await tryHandleSlashCommand(prompt)) {
     promptInput.value = "";
+    clearCurrentPromptDraft();
     return;
   }
 
@@ -2186,12 +2307,14 @@ promptForm.addEventListener("submit", async (event) => {
   if (isTurnInFlight(activeSessionId)) {
     queuePrompt(activeSessionId, prompt, images);
     promptInput.value = "";
+    clearCurrentPromptDraft();
     clearComposerImages();
     appendLog(`[turn] queued prompt for session=${activeSessionId}`);
     return;
   }
 
   promptInput.value = "";
+  clearCurrentPromptDraft();
   clearComposerImages();
   startTurn(activeSessionId, prompt, images);
   renderPromptQueue();
@@ -2213,6 +2336,7 @@ promptInput.addEventListener("keydown", (event) => {
 
     queuePrompt(activeSessionId, prompt, images);
     promptInput.value = "";
+    clearCurrentPromptDraft();
     clearComposerImages();
     appendLog(`[turn] queued prompt for session=${activeSessionId}`);
     return;
@@ -2237,6 +2361,7 @@ promptInput.addEventListener("keydown", (event) => {
     event.preventDefault();
     promptInput.value = lastSent;
     promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
+    rememberPromptDraftForState(getActiveSessionState());
     return;
   }
 
@@ -2277,6 +2402,10 @@ document.addEventListener("keydown", (event) => {
 
   event.preventDefault();
   closeModelCommandModal();
+});
+
+window.addEventListener("beforeunload", () => {
+  rememberPromptDraftForState(getActiveSessionState());
 });
 
 applySavedUiSettings();
