@@ -20,8 +20,8 @@ body {
 
 .toolbar {
 	display: flex;
-	justify-content: space-between;
 	align-items: center;
+	flex-wrap: wrap;
 	padding: 0.75rem 1rem;
 	background: #1f2937;
 	color: #f9fafb;
@@ -37,7 +37,7 @@ body {
 }
 
 .toolbar-left {
-	flex: 1 1 720px;
+	flex: 1 1 auto;
 	min-width: 0;
 }
 
@@ -102,6 +102,10 @@ body {
 	color: #ffffff;
 	border-color: #60a5fa;
 	background: #1d4ed8;
+}
+
+.toolbar .nav-link {
+	line-height: 1.15;
 }
 
 .toolbar button:disabled {
@@ -1036,19 +1040,54 @@ body {
 @media (max-width: 900px) {
 	.main {
 		grid-template-columns: 1fr;
+		padding: 0.5rem;
+		gap: 0.5rem;
 	}
 
 	.toolbar {
-		flex-direction: column;
-		align-items: flex-start;
+		padding: 0.55rem 0.6rem;
+		gap: 0.45rem;
 	}
 
 	.codex-main {
 		grid-template-columns: 1fr;
+		gap: 0.5rem;
 	}
 
 	.session-sidebar {
-		max-height: 38vh;
+		max-height: 32vh;
+	}
+
+	.panel-title {
+		padding: 0.55rem 0.65rem;
+	}
+
+	.prompt-form {
+		flex-direction: column;
+		align-items: stretch;
+		padding: 0.6rem;
+		gap: 0.45rem;
+	}
+
+	.prompt-form textarea {
+		width: 100%;
+		min-height: 4.8rem;
+	}
+
+	.prompt-actions {
+		width: 100%;
+		grid-template-columns: 1fr auto;
+		grid-template-areas:
+			"context upload"
+			"queue send";
+		column-gap: 0.35rem;
+		row-gap: 0.32rem;
+		justify-items: stretch;
+	}
+
+	.context-left-indicator {
+		align-self: center;
+		justify-self: start;
 	}
 
 	.conversation-meta {
@@ -1065,7 +1104,7 @@ body {
 
 	.scroll-to-bottom-btn {
 		right: 0.85rem;
-		bottom: 7.2rem;
+		bottom: 8.9rem;
 	}
 
 	.prompt-actions {
