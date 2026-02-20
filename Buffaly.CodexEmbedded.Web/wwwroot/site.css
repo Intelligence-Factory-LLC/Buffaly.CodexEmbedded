@@ -1184,7 +1184,7 @@ body {
 		transform: translateX(0);
 	}
 
-	.sidebar-backdrop {
+	.sidebar-backdrop:not(.hidden) {
 		display: block;
 		position: fixed;
 		inset: 3.45rem 0 0 0;
