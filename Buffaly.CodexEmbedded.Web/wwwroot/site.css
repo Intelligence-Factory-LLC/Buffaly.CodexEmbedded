@@ -443,18 +443,60 @@ body {
 
 .conversation-title-row {
 	gap: 0.75rem;
+	align-items: flex-start;
 }
 
 .conversation-meta {
 	flex: 1;
 	min-width: 0;
-	font-size: 0.8rem;
-	font-weight: 500;
-	color: #64748b;
-	white-space: nowrap;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem 0.45rem;
+	justify-content: flex-end;
+}
+
+.conversation-meta-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	max-width: 100%;
+	padding: 0.22rem 0.5rem;
+	border-radius: 999px;
+	border: 1px solid #d1d5db;
+	background: #ffffff;
+	font-size: 0.76rem;
+	color: #334155;
+}
+
+.conversation-meta-label {
+	font-weight: 700;
+	color: #475569;
+}
+
+.conversation-meta-value {
+	max-width: 360px;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	text-align: right;
+	white-space: nowrap;
+}
+
+.conversation-meta-model {
+	padding-right: 0.32rem;
+}
+
+.conversation-meta-model select {
+	border: 0;
+	background: transparent;
+	font: inherit;
+	color: #0f172a;
+	min-width: 170px;
+	padding: 0 0.1rem;
+	outline: none;
+	cursor: pointer;
+}
+
+.conversation-meta-cwd .conversation-meta-value {
+	max-width: 420px;
 }
 
 .messages {
@@ -918,6 +960,14 @@ body {
 	}
 
 	.conversation-meta {
-		text-align: left;
+		justify-content: flex-start;
+	}
+
+	.conversation-meta-value {
+		max-width: 220px;
+	}
+
+	.conversation-meta-model select {
+		min-width: 140px;
 	}
 }

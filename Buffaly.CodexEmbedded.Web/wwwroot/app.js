@@ -29,6 +29,7 @@ let timelineFlushTimer = null;
 let timelinePollGeneration = 0;
 let timelinePollInFlight = false;
 let autoAttachAttempted = false;
+let syncingConversationModelSelect = false;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -66,6 +67,11 @@ const existingSessionSelect = document.getElementById("existingSessionSelect");
 const stopSessionBtn = document.getElementById("stopSessionBtn");
 const sessionSelect = document.getElementById("sessionSelect");
 const sessionMeta = document.getElementById("sessionMeta");
+const sessionMetaNameItem = document.getElementById("sessionMetaNameItem");
+const sessionMetaNameValue = document.getElementById("sessionMetaNameValue");
+const sessionMetaThreadValue = document.getElementById("sessionMetaThreadValue");
+const sessionMetaCwdValue = document.getElementById("sessionMetaCwdValue");
+const conversationModelSelect = document.getElementById("conversationModelSelect");
 const sessionSidebar = document.getElementById("sessionSidebar");
 const sidebarToggleBtn = document.getElementById("sidebarToggleBtn");
 const projectList = document.getElementById("projectList");
@@ -1304,6 +1310,7 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
   const normalizedText = String(promptText || "").trim();
   const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
   const turnCwd = cwdInput.value.trim();
+  const turnModel = modelValueForCreate();
   if (!sessionId || (!normalizedText && safeImages.length === 0)) {
     return false;
   }
@@ -1313,14 +1320,27 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
     text: normalizedText,
     images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" }))
   };
+
+  const state = sessions.get(sessionId);
+  if (state && turnModel) {
+    state.model = turnModel;
+  }
+
   if (turnCwd) {
     payload.cwd = turnCwd;
-    const state = sessions.get(sessionId);
     if (state) {
       state.cwd = turnCwd;
       if (sessionId === activeSessionId) {
         refreshSessionMeta();
       }
+      renderProjectSidebar();
+    }
+  }
+
+  if (turnModel) {
+    payload.model = turnModel;
+    if (state && sessionId === activeSessionId && !turnCwd) {
+      refreshSessionMeta();
       renderProjectSidebar();
     }
   }
@@ -1436,6 +1456,41 @@ async function tryAutoAttachStoredThread() {
   send("session_attach", { threadId });
 }
 
+function syncConversationModelOptions(preferredValue = null) {
+  if (!conversationModelSelect || !modelSelect) {
+    return;
+  }
+
+  const targetValue = preferredValue === null || preferredValue === undefined
+    ? (conversationModelSelect.value || modelSelect.value || "")
+    : String(preferredValue || "");
+
+  syncingConversationModelSelect = true;
+  conversationModelSelect.textContent = "";
+
+  for (const option of Array.from(modelSelect.options)) {
+    const next = document.createElement("option");
+    next.value = option.value;
+    next.textContent = option.textContent || option.value;
+    conversationModelSelect.appendChild(next);
+  }
+
+  if (targetValue && Array.from(conversationModelSelect.options).some((x) => x.value === targetValue)) {
+    conversationModelSelect.value = targetValue;
+  } else if (targetValue && targetValue.trim()) {
+    const custom = targetValue.trim();
+    const adHocOption = document.createElement("option");
+    adHocOption.value = custom;
+    adHocOption.textContent = `${custom} (active)`;
+    conversationModelSelect.appendChild(adHocOption);
+    conversationModelSelect.value = custom;
+  } else {
+    conversationModelSelect.value = modelSelect.value || "";
+  }
+
+  syncingConversationModelSelect = false;
+}
+
 function refreshSessionMeta() {
   if (!sessionMeta) {
     return;
@@ -1443,17 +1498,47 @@ function refreshSessionMeta() {
 
   const state = getActiveSessionState();
   if (!state) {
-    sessionMeta.textContent = "";
+    sessionMeta.classList.add("hidden");
+    if (sessionMetaNameItem) sessionMetaNameItem.classList.add("hidden");
+    if (sessionMetaNameValue) sessionMetaNameValue.textContent = "";
+    if (sessionMetaThreadValue) sessionMetaThreadValue.textContent = "";
+    if (sessionMetaCwdValue) sessionMetaCwdValue.textContent = "";
+    syncConversationModelOptions(modelSelect.value || "");
+    sessionMeta.title = "";
     return;
   }
 
-  const metaParts = [];
   const namedCatalogEntry = getCatalogEntryByThreadId(state.threadId);
-  if (namedCatalogEntry && namedCatalogEntry.threadName) metaParts.push(`name=${namedCatalogEntry.threadName}`);
-  if (state.threadId) metaParts.push(`thread=${state.threadId}`);
-  if (state.model) metaParts.push(`model=${state.model}`);
-  if (state.cwd) metaParts.push(`cwd=${state.cwd}`);
-  sessionMeta.textContent = metaParts.join("  ");
+  const threadName = namedCatalogEntry?.threadName || state.threadName || "";
+  const threadId = state.threadId || "";
+  const cwd = state.cwd || "";
+  const selectedModel = state.model || modelValueForCreate() || "";
+  sessionMeta.classList.remove("hidden");
+
+  if (sessionMetaNameItem && sessionMetaNameValue) {
+    if (threadName) {
+      sessionMetaNameItem.classList.remove("hidden");
+      sessionMetaNameValue.textContent = threadName;
+      sessionMetaNameValue.title = threadName;
+    } else {
+      sessionMetaNameItem.classList.add("hidden");
+      sessionMetaNameValue.textContent = "";
+      sessionMetaNameValue.title = "";
+    }
+  }
+
+  if (sessionMetaThreadValue) {
+    sessionMetaThreadValue.textContent = threadId || "(none)";
+    sessionMetaThreadValue.title = threadId || "";
+  }
+
+  if (sessionMetaCwdValue) {
+    sessionMetaCwdValue.textContent = cwd || "(default)";
+    sessionMetaCwdValue.title = cwd || "";
+  }
+
+  syncConversationModelOptions(selectedModel);
+  sessionMeta.title = "";
 }
 
 function restartTimelinePolling() {
@@ -1582,9 +1667,7 @@ function clearActiveSession() {
   rememberPromptDraftForState(previousState);
 
   activeSessionId = null;
-  if (sessionMeta) {
-    sessionMeta.textContent = "";
-  }
+  refreshSessionMeta();
   stopSessionBtn.disabled = true;
   renderPromptQueue();
   clearComposerImages();
@@ -1709,31 +1792,31 @@ function populateModelSelect(models) {
 }
 
 function syncModelCommandOptionsFromToolbar() {
-  if (!modelCommandSelect) {
-    return;
+  if (modelCommandSelect) {
+    const previous = modelCommandSelect.value;
+    modelCommandSelect.textContent = "";
+    for (const option of Array.from(modelSelect.options)) {
+      const next = document.createElement("option");
+      next.value = option.value;
+      next.textContent = option.textContent || option.value;
+      modelCommandSelect.appendChild(next);
+    }
+
+    if (previous && Array.from(modelCommandSelect.options).some((x) => x.value === previous)) {
+      modelCommandSelect.value = previous;
+    } else {
+      modelCommandSelect.value = modelSelect.value || "";
+    }
+
+    if (modelCommandSelect.value === "__custom__") {
+      modelCommandCustomInput.classList.remove("hidden");
+      modelCommandCustomInput.value = modelCustomInput.value || "";
+    } else {
+      modelCommandCustomInput.classList.add("hidden");
+    }
   }
 
-  const previous = modelCommandSelect.value;
-  modelCommandSelect.textContent = "";
-  for (const option of Array.from(modelSelect.options)) {
-    const next = document.createElement("option");
-    next.value = option.value;
-    next.textContent = option.textContent || option.value;
-    modelCommandSelect.appendChild(next);
-  }
-
-  if (previous && Array.from(modelCommandSelect.options).some((x) => x.value === previous)) {
-    modelCommandSelect.value = previous;
-  } else {
-    modelCommandSelect.value = modelSelect.value || "";
-  }
-
-  if (modelCommandSelect.value === "__custom__") {
-    modelCommandCustomInput.classList.remove("hidden");
-    modelCommandCustomInput.value = modelCustomInput.value || "";
-  } else {
-    modelCommandCustomInput.classList.add("hidden");
-  }
+  syncConversationModelOptions();
 }
 
 function applyModelSelection(value) {
@@ -1742,6 +1825,12 @@ function applyModelSelection(value) {
     modelSelect.value = "";
     modelCustomInput.classList.add("hidden");
     syncModelCommandOptionsFromToolbar();
+    const state = getActiveSessionState();
+    if (state) {
+      state.model = null;
+    }
+    refreshSessionMeta();
+    renderProjectSidebar();
     return;
   }
 
@@ -1755,6 +1844,12 @@ function applyModelSelection(value) {
       modelCustomInput.classList.add("hidden");
     }
     syncModelCommandOptionsFromToolbar();
+    const state = getActiveSessionState();
+    if (state) {
+      state.model = modelValueForCreate() || null;
+    }
+    refreshSessionMeta();
+    renderProjectSidebar();
     return;
   }
 
@@ -1762,6 +1857,12 @@ function applyModelSelection(value) {
   modelCustomInput.classList.remove("hidden");
   modelCustomInput.value = normalized;
   syncModelCommandOptionsFromToolbar();
+  const state = getActiveSessionState();
+  if (state) {
+    state.model = modelValueForCreate() || null;
+  }
+  refreshSessionMeta();
+  renderProjectSidebar();
 }
 
 function openModelCommandModal() {
@@ -2124,7 +2225,51 @@ modelSelect.addEventListener("change", () => {
     modelCustomInput.classList.add("hidden");
   }
   syncModelCommandOptionsFromToolbar();
+
+  const nextModel = modelValueForCreate();
+  if (activeSessionId && sessions.has(activeSessionId)) {
+    const state = sessions.get(activeSessionId);
+    if (state) {
+      state.model = nextModel || null;
+    }
+    refreshSessionMeta();
+    renderProjectSidebar();
+  }
 });
+
+if (conversationModelSelect) {
+  conversationModelSelect.addEventListener("change", () => {
+    if (syncingConversationModelSelect) {
+      return;
+    }
+
+    let selectedValue = conversationModelSelect.value || "";
+    if (selectedValue === "__custom__") {
+      const proposed = window.prompt("Custom model:", modelCustomInput.value || "");
+      if (proposed === null) {
+        syncConversationModelOptions(modelSelect.value || "");
+        return;
+      }
+
+      const custom = String(proposed || "").trim();
+      if (!custom) {
+        appendLog("[model] custom model cannot be empty");
+        syncConversationModelOptions(modelSelect.value || "");
+        return;
+      }
+
+      selectedValue = custom;
+    }
+
+    applyModelSelection(selectedValue);
+    const nextModel = modelValueForCreate();
+    if (nextModel) {
+      appendLog(`[model] selected '${nextModel}'`);
+    } else {
+      appendLog("[model] reverted to default");
+    }
+  });
+}
 
 modelCommandSelect.addEventListener("change", () => {
   if (modelCommandSelect.value === "__custom__") {

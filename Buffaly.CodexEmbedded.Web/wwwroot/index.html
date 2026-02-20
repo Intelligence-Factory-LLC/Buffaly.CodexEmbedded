@@ -35,7 +35,24 @@
 			<section class="panel chat-panel">
 				<div class="panel-title panel-title-row conversation-title-row">
 					<span>Conversation</span>
-					<span id="sessionMeta" class="conversation-meta"></span>
+					<div id="sessionMeta" class="conversation-meta">
+						<span id="sessionMetaNameItem" class="conversation-meta-item hidden">
+							<span class="conversation-meta-label">Name</span>
+							<span id="sessionMetaNameValue" class="conversation-meta-value"></span>
+						</span>
+						<span class="conversation-meta-item">
+							<span class="conversation-meta-label">Thread</span>
+							<span id="sessionMetaThreadValue" class="conversation-meta-value"></span>
+						</span>
+						<label class="conversation-meta-item conversation-meta-model" for="conversationModelSelect">
+							<span class="conversation-meta-label">Model</span>
+							<select id="conversationModelSelect"></select>
+						</label>
+						<span class="conversation-meta-item conversation-meta-cwd">
+							<span class="conversation-meta-label">CWD</span>
+							<span id="sessionMetaCwdValue" class="conversation-meta-value"></span>
+						</span>
+					</div>
 				</div>
 				<div id="chatMessages" class="watcher-timeline"></div>
 				<div id="approvalPanel" class="approval-panel hidden">
