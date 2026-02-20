@@ -195,6 +195,7 @@ public sealed class CodexClient : IAsyncDisposable
 			{
 				threadId,
 				model = options?.Model,
+				cwd = options?.Cwd,
 				input = input.ToArray()
 			},
 			cancellationToken);

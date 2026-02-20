@@ -39,6 +39,10 @@ public sealed class CodexSession
 			{
 				effectiveOptions = effectiveOptions with { Model = Model };
 			}
+			if (string.IsNullOrWhiteSpace(effectiveOptions.Cwd))
+			{
+				effectiveOptions = effectiveOptions with { Cwd = Cwd };
+			}
 
 			return await _client.SendMessageAsync(ThreadId, text, effectiveOptions, images, progress, cancellationToken);
 		}

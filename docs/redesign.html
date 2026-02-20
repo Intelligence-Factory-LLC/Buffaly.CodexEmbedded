@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Codex Web CLI</title>
+    <style>
+        :root {
+            --bg-base: #f3f4f6;
+            --bg-surface: #ffffff;
+            --bg-sidebar: #f9fafb;
+            --bg-hover: #f1f5f9;
+            --bg-active: #eef2ff;
+            
+            --text-main: #1e293b;
+            --text-muted: #64748b;
+            --text-accent: #4f46e5;
+            
+            --border-color: #e2e8f0;
+            --accent: #4f46e5;
+            --accent-hover: #4338ca;
+            
+            --success: #10b981;
+            --danger: #ef4444;
+
+            --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            --shadow-sm: 0 1px 2px rgba(0,0,0,0.05);
+            --radius: 8px;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-base: #0f172a;
+                --bg-surface: #1e293b;
+                --bg-sidebar: #111827;
+                --bg-hover: #334155;
+                --bg-active: rgba(79, 70, 229, 0.2);
+                --text-main: #f1f5f9;
+                --text-muted: #94a3b8;
+                --border-color: #334155;
+            }
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: var(--font-family);
+            background-color: var(--bg-base);
+            color: var(--text-main);
+            height: 100vh;
+            overflow: hidden;
+            line-height: 1.5;
+        }
+
+        .layout { display: flex; flex-direction: column; height: 100%; }
+
+        /* --- Toolbar --- */
+        .toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 20px;
+            height: 56px;
+            background-color: var(--bg-surface);
+            border-bottom: 1px solid var(--border-color);
+            z-index: 10;
+        }
+
+        .toolbar-left { display: flex; gap: 12px; align-items: center; }
+
+        .toolbar-link {
+            text-decoration: none;
+            color: var(--text-muted);
+            padding: 8px 16px;
+            font-size: 14px;
+            font-weight: 500;
+            border-radius: var(--radius);
+            transition: all 0.2s;
+        }
+
+        .toolbar-link:hover { background-color: var(--bg-hover); color: var(--text-main); }
+        .toolbar-link.active { background-color: var(--bg-active); color: var(--accent); }
+
+        /* --- Main Layout --- */
+        .main { display: flex; flex: 1; overflow: hidden; }
+
+        .session-sidebar {
+            width: 320px;
+            background-color: var(--bg-sidebar);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+
+        .panel-title {
+            font-size: 12px;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: var(--text-muted);
+            padding: 20px 20px 10px;
+            letter-spacing: 0.05em;
+        }
+
+        .session-sidebar-controls {
+            padding: 0 20px 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        button {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-surface);
+            color: var(--text-main);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        button:hover { background: var(--bg-hover); }
+        button#newProjectSidebarBtn { background: var(--accent); color: white; border: none; }
+        button#newProjectSidebarBtn:hover { background: var(--accent-hover); }
+
+        .session-sidebar-archive-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: var(--text-muted);
+            cursor: pointer;
+        }
+
+        .session-meta {
+            padding: 10px 20px;
+            font-size: 11px;
+            background: var(--bg-hover);
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--border-color);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .project-list { flex: 1; overflow-y: auto; padding: 10px 0; }
+
+        /* --- Project & Session Rows --- */
+        .project-group { margin-bottom: 8px; }
+        .project-header {
+            display: flex;
+            align-items: center;
+            padding: 8px 20px;
+            gap: 10px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .project-header:hover { background: var(--bg-hover); }
+
+        .project-toggle {
+            width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+            font-size: 10px; color: var(--text-muted); border: none; background: none; padding: 0;
+        }
+
+        .project-name-wrap { flex: 1; min-width: 0; }
+        .project-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .project-path { font-size: 11px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        .project-actions { display: flex; gap: 4px; }
+        .icon-btn {
+            width: 28px; height: 28px; padding: 0; display: flex; align-items: center; justify-content: center;
+            background: none; border: none; color: var(--text-muted); border-radius: 4px;
+        }
+        .icon-btn:hover { background: var(--bg-hover); color: var(--text-main); }
+        .icon-btn svg { width: 14px; height: 14px; stroke-width: 2; fill: none; stroke: currentColor; }
+
+        .session-row { padding-left: 40px; }
+        .session-row-head {
+            display: flex;
+            align-items: center;
+            padding: 6px 20px 6px 10px;
+            border-radius: 6px;
+            margin: 0 10px;
+            transition: background 0.2s;
+        }
+        .session-row.active .session-row-head { background: var(--bg-active); }
+        .session-row-head:hover { background: var(--bg-hover); }
+
+        .session-open-btn {
+            flex: 1; text-align: left; background: none; border: none; padding: 0; min-width: 0; cursor: pointer;
+        }
+        .session-title { font-size: 13px; color: var(--text-main); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .session-subtitle { font-size: 11px; color: var(--text-muted); }
+        
+        .session-badges { margin-left: auto; display: flex; gap: 4px; padding-left: 8px; }
+        .session-badge {
+            font-size: 9px; text-transform: uppercase; font-weight: 700; padding: 2px 6px; border-radius: 10px;
+        }
+        .badge-live { background: #dcfce7; color: #166534; }
+
+        .more-sessions-btn {
+            padding: 6px 20px 6px 50px; font-size: 12px; color: var(--accent); cursor: pointer; font-weight: 500;
+        }
+        .more-sessions-btn:hover { text-decoration: underline; }
+
+        /* --- Chat Panel --- */
+        .chat-panel { flex: 1; display: flex; flex-direction: column; background: var(--bg-surface); }
+        .watcher-timeline { flex: 1; overflow-y: auto; padding: 30px; display: flex; flex-direction: column; gap: 20px; }
+
+        .watcher-entry { max-width: 85%; align-self: flex-start; }
+        .watcher-entry.user { align-self: flex-end; }
+        
+        .watcher-entry-header { display: flex; gap: 10px; font-size: 12px; color: var(--text-muted); margin-bottom: 5px; }
+        .watcher-entry-text {
+            background: var(--bg-hover); padding: 15px; border-radius: 12px; border-bottom-left-radius: 2px;
+            font-size: 14px; white-space: pre-wrap; font-family: inherit;
+        }
+        .user .watcher-entry-text {
+            background: var(--accent); color: white; border-bottom-left-radius: 12px; border-bottom-right-radius: 2px;
+        }
+
+        .prompt-form {
+            padding: 20px; border-top: 1px solid var(--border-color); background: var(--bg-surface);
+            display: flex; flex-direction: column; gap: 12px;
+        }
+        textarea {
+            width: 100%; border: 1px solid var(--border-color); border-radius: var(--radius); padding: 12px;
+            font-family: inherit; font-size: 14px; resize: none; background: var(--bg-base); color: var(--text-main);
+        }
+        textarea:focus { outline: 2px solid var(--accent); border-color: transparent; }
+
+        .prompt-actions { display: flex; justify-content: space-between; align-items: center; }
+        button[type="submit"] { background: var(--accent); color: white; border: none; padding: 8px 24px; }
+        button[type="submit"]:hover { background: var(--accent-hover); }
+
+        .hidden { display: none !important; }
+
+        /* --- SVG Helpers --- */
+        .icon-pencil { stroke: currentColor; }
+        .icon-trash { stroke: #ef4444; }
+
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <header class="toolbar">
+            <div class="toolbar-left">
+                <a class="toolbar-link active" href="#">Codex</a>
+                <a class="toolbar-link" href="#">Logs</a>
+                <a class="toolbar-link" href="#">Watcher</a>
+            </div>
+        </header>
+        <main class="main">
+            <aside id="sessionSidebar" class="session-sidebar">
+                <div class="panel-title">Projects</div>
+                <div class="session-sidebar-controls">
+                    <button id="newProjectSidebarBtn" type="button">New Project</button>
+                    <label class="session-sidebar-archive-toggle" for="showArchivedToggle">
+                        <input id="showArchivedToggle" type="checkbox">
+                        Show Archived
+                    </label>
+                </div>
+                <div id="sessionMeta" class="session-meta">thread=019c7774... model=gpt-5.3-codex</div>
+                <div id="projectList" class="project-list"></div>
+            </aside>
+            <section class="chat-panel">
+                <div class="panel-title">Conversation</div>
+                <div id="chatMessages" class="watcher-timeline"></div>
+                <div id="promptQueue" class="prompt-queue hidden"></div>
+                <form id="promptForm" class="prompt-form">
+                    <textarea id="promptInput" rows="4" placeholder="Type a prompt..."></textarea>
+                    <div class="prompt-actions">
+                        <button id="imageUploadBtn" class="icon-btn" type="button" title="Attach image">
+                            <svg viewBox="0 0 24 24"><path d="M7 13.5l6.2-6.2a3.5 3.5 0 1 1 5 5L10 20.5a6 6 0 1 1-8.5-8.5l8-8"></path></svg>
+                        </button>
+                        <button type="submit">Send</button>
+                    </div>
+                </form>
+            </section>
+        </main>
+    </div>
+
+    <!-- UI Modal Mockup -->
+    <div id="namingModal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100;">
+        <div style="background: var(--bg-surface); padding: 25px; border-radius: 12px; width: 350px; box-shadow: var(--shadow-sm);">
+            <h3 style="margin-bottom: 15px; font-size: 16px;">Name Selection</h3>
+            <input type="text" id="nameInput" style="width: 100%; padding: 10px; border: 1px solid var(--border-color); border-radius: 6px; margin-bottom: 20px;">
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button onclick="closeNamingModal()">Cancel</button>
+                <button id="confirmNameBtn" style="background: var(--accent); color: white; border: none;">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Persistence Logic ---
+        const DRAFT_KEY = "codex_prompt_draft";
+        const QUEUE_KEY = "codex_prompt_queue";
+
+        const promptInput = document.getElementById('promptInput');
+        promptInput.value = localStorage.getItem(DRAFT_KEY) || "";
+        promptInput.addEventListener('input', (e) => localStorage.setItem(DRAFT_KEY, e.target.value));
+
+        // --- Mock Data ---
+        let projects = [
+            { id: 1, name: "Buffaly.CodexEmbedded", path: "C:/dev/Buffaly.CodexEmbedded", sessions: [], expanded: true },
+            { id: 2, name: "Buffaly.Development", path: "C:/dev/Buffaly.Development", sessions: [], expanded: true }
+        ];
+
+        // Seed some sessions
+        for(let i=1; i<=10; i++) {
+            projects[0].sessions.push({ id: `s${i}`, name: i === 1 ? "Auth Logic Refactor" : `Session ${i}`, time: new Date(Date.now() - i * 3600000), live: i===1 });
+        }
+
+        const projectListEl = document.getElementById('projectList');
+        const chatMessages = document.getElementById('chatMessages');
+
+        function getIcon(type) {
+            if (type === 'pencil') return `<svg class="icon-pencil" viewBox="0 0 24 24"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>`;
+            if (type === 'trash') return `<svg class="icon-trash" viewBox="0 0 24 24"><path d="M3 6h18m-2 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>`;
+            if (type === 'plus') return `<svg viewBox="0 0 24 24"><path d="M12 5v14m-7-7h14"></path></svg>`;
+            if (type === 'chevron') return `<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"></path></svg>`;
+            return '';
+        }
+
+        function renderSidebar() {
+            projectListEl.innerHTML = '';
+            projects.forEach(proj => {
+                const group = document.createElement('div');
+                group.className = 'project-group';
+
+                const header = document.createElement('div');
+                header.className = 'project-header';
+                header.innerHTML = `
+                    <button class="project-toggle">${proj.expanded ? '▼' : '▶'}</button>
+                    <div class="project-name-wrap">
+                        <div class="project-name">${proj.name} (${proj.sessions.length})</div>
+                        <div class="project-path">${proj.path}</div>
+                    </div>
+                    <div class="project-actions">
+                        <button class="icon-btn" onclick="createNewSession(${proj.id})">${getIcon('plus')}</button>
+                        <button class="icon-btn">${getIcon('pencil')}</button>
+                    </div>
+                `;
+                header.onclick = (e) => {
+                    if(!e.target.closest('.icon-btn')) {
+                        proj.expanded = !proj.expanded;
+                        renderSidebar();
+                    }
+                };
+                group.appendChild(header);
+
+                if (proj.expanded) {
+                    const sessions = [...proj.sessions].sort((a,b) => b.time - a.time);
+                    const visible = sessions.slice(0, 4);
+                    const hiddenCount = sessions.length - 4;
+
+                    visible.forEach(sess => {
+                        const sessRow = document.createElement('div');
+                        sessRow.className = `session-row ${sess.live ? 'active' : ''}`;
+                        sessRow.innerHTML = `
+                            <div class="session-row-head">
+                                <div class="session-open-btn">
+                                    <div class="session-title">${sess.name}</div>
+                                    <div class="session-subtitle">${sess.time.toLocaleTimeString()}</div>
+                                </div>
+                                <div class="session-badges">
+                                    ${sess.live ? '<span class="session-badge badge-live">Live</span>' : ''}
+                                </div>
+                                <div class="project-actions">
+                                    <button class="icon-btn" onclick="renameSession('${sess.id}')">${getIcon('pencil')}</button>
+                                    <button class="icon-btn">${getIcon('trash')}</button>
+                                </div>
+                            </div>
+                        `;
+                        group.appendChild(sessRow);
+                    });
+
+                    if (hiddenCount > 0) {
+                        const moreBtn = document.createElement('div');
+                        moreBtn.className = 'more-sessions-btn';
+                        moreBtn.textContent = `Show ${hiddenCount} more...`;
+                        moreBtn.onclick = () => {
+                            // In a real app, this would expand the list locally or navigate
+                            alert("Showing all sessions for " + proj.name);
+                        };
+                        group.appendChild(moreBtn);
+                    }
+                }
+
+                projectListEl.appendChild(group);
+            });
+        }
+
+        // --- Session Actions ---
+        let currentTargetId = null;
+        let currentTargetType = null;
+
+        function renameSession(id) {
+            currentTargetId = id;
+            currentTargetType = 'session';
+            openNamingModal("Rename Session", "Auth Refactor");
+        }
+
+        function createNewSession(projId) {
+            currentTargetId = projId;
+            currentTargetType = 'new_session';
+            openNamingModal("New Session Name", "New Thread");
+        }
+
+        function openNamingModal(title, defaultVal) {
+            document.getElementById('namingModal').classList.remove('hidden');
+            document.getElementById('namingModal').querySelector('h3').textContent = title;
+            document.getElementById('nameInput').value = defaultVal;
+            document.getElementById('nameInput').focus();
+        }
+
+        function closeNamingModal() {
+            document.getElementById('namingModal').classList.add('hidden');
+        }
+
+        document.getElementById('confirmNameBtn').onclick = () => {
+            const name = document.getElementById('nameInput').value;
+            if (currentTargetType === 'new_session') {
+                const proj = projects.find(p => p.id === currentTargetId);
+                proj.sessions.unshift({ id: Date.now(), name, time: new Date(), live: true });
+                // Make all others not live for this demo
+                proj.sessions.slice(1).forEach(s => s.live = false);
+            } else if (currentTargetType === 'session') {
+                projects.forEach(p => {
+                    const s = p.sessions.find(s => s.id === currentTargetId);
+                    if(s) s.name = name;
+                });
+            }
+            closeNamingModal();
+            renderSidebar();
+        };
+
+        // --- Message Handling ---
+        document.getElementById('promptForm').onsubmit = (e) => {
+            e.preventDefault();
+            const text = promptInput.value.trim();
+            if(!text) return;
+
+            addMessage(text, true);
+            promptInput.value = '';
+            localStorage.setItem(DRAFT_KEY, "");
+
+            setTimeout(() => {
+                addMessage("I have processed your request. Changes are pending approval.", false);
+            }, 1000);
+        };
+
+        function addMessage(text, isUser) {
+            const msg = document.createElement('div');
+            msg.className = `watcher-entry ${isUser ? 'user' : 'bot'}`;
+            msg.innerHTML = `
+                <div class="watcher-entry-header">
+                    <span>${isUser ? 'User' : 'Assistant'}</span>
+                    <span>${new Date().toLocaleTimeString()}</span>
+                </div>
+                <div class="watcher-entry-text">${text}</div>
+            `;
+            chatMessages.appendChild(msg);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // Initial Load
+        renderSidebar();
+        addMessage("Welcome to Codex. Select a project session to begin.", false);
+
+    </script>
+</body>
+</html>

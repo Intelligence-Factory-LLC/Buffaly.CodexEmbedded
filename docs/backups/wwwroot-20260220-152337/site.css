@@ -263,12 +263,6 @@ body {
 	stroke-linejoin: round;
 }
 
-.icon-btn .bi {
-	font-size: 0.92rem;
-	line-height: 1;
-	pointer-events: none;
-}
-
 .project-sessions {
 	padding: 0.25rem;
 	display: flex;

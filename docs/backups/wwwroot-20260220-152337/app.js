@@ -228,18 +228,41 @@ function getProjectDisplayName(project) {
 }
 
 function buildActionIcon(kind) {
-  const icon = document.createElement("i");
-  icon.setAttribute("aria-hidden", "true");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
 
-  const iconClass = {
-    plus: "bi-plus-lg",
-    pencil: "bi-pencil-square",
-    archive: "bi-archive",
-    restore: "bi-arrow-counterclockwise"
-  }[kind] || "bi-plus-lg";
+  function path(d) {
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", d);
+    svg.appendChild(p);
+  }
 
-  icon.className = `bi ${iconClass}`;
-  return icon;
+  if (kind === "pencil") {
+    path("M3 21l3.8-1 10.9-10.9a2.2 2.2 0 0 0 0-3.1l-.7-.7a2.2 2.2 0 0 0-3.1 0L3 16.2 2 20z");
+    path("M13.2 5.2l5.6 5.6");
+    return svg;
+  }
+
+  if (kind === "archive") {
+    path("M3 7h18l-2 13H5L3 7z");
+    path("M9 7V4h6v3");
+    path("M12 11v5");
+    path("M10 13l2 2 2-2");
+    return svg;
+  }
+
+  if (kind === "restore") {
+    path("M3 7h18l-2 13H5L3 7z");
+    path("M9 7V4h6v3");
+    path("M12 16v-5");
+    path("M10 13l2-2 2 2");
+    return svg;
+  }
+
+  path("M12 5v14");
+  path("M5 12h14");
+  return svg;
 }
 
 function getCatalogSessionUpdatedTick(session) {
@@ -779,9 +802,8 @@ function renderProjectSidebar() {
     const newSessionAction = document.createElement("button");
     newSessionAction.type = "button";
     newSessionAction.className = "icon-btn";
+    newSessionAction.textContent = "+";
     newSessionAction.title = "New session in this project";
-    newSessionAction.setAttribute("aria-label", "New session in this project");
-    newSessionAction.appendChild(buildActionIcon("plus"));
     newSessionAction.addEventListener("click", (event) => {
       event.stopPropagation();
       createSessionForCwd(group.cwd || cwdInput.value.trim());
@@ -791,9 +813,8 @@ function renderProjectSidebar() {
     const renameProjectAction = document.createElement("button");
     renameProjectAction.type = "button";
     renameProjectAction.className = "icon-btn";
+    renameProjectAction.textContent = "R";
     renameProjectAction.title = "Rename project";
-    renameProjectAction.setAttribute("aria-label", "Rename project");
-    renameProjectAction.appendChild(buildActionIcon("pencil"));
     renameProjectAction.addEventListener("click", (event) => {
       event.stopPropagation();
       renameProject(group);
@@ -864,9 +885,8 @@ function renderProjectSidebar() {
       const renameSessionAction = document.createElement("button");
       renameSessionAction.type = "button";
       renameSessionAction.className = "icon-btn";
+      renameSessionAction.textContent = "R";
       renameSessionAction.title = "Rename session";
-      renameSessionAction.setAttribute("aria-label", "Rename session");
-      renameSessionAction.appendChild(buildActionIcon("pencil"));
       renameSessionAction.addEventListener("click", (event) => {
         event.stopPropagation();
         renameSessionFromSidebar(entry);
@@ -876,9 +896,8 @@ function renderProjectSidebar() {
       const archiveAction = document.createElement("button");
       archiveAction.type = "button";
       archiveAction.className = "icon-btn";
+      archiveAction.textContent = entry.isArchived ? "U" : "A";
       archiveAction.title = entry.isArchived ? "Unarchive session" : "Archive session";
-      archiveAction.setAttribute("aria-label", archiveAction.title);
-      archiveAction.appendChild(buildActionIcon(entry.isArchived ? "restore" : "archive"));
       archiveAction.addEventListener("click", (event) => {
         event.stopPropagation();
         toggleSessionArchived(entry.threadId);

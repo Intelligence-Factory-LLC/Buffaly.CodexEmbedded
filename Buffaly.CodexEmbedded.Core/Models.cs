@@ -31,6 +31,7 @@ public sealed record CodexSessionAttachOptions
 public sealed record CodexTurnOptions
 {
 	public string? Model { get; init; }
+	public string? Cwd { get; init; }
 }
 
 public sealed record CodexDelta(string ThreadId, string TurnId, string Text);
