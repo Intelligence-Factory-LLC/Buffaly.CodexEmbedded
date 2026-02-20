@@ -27,7 +27,7 @@ using Buffaly.CodexEmbedded.Core;
 
 await using var client = await CodexClient.StartAsync(new CodexClientOptions
 {
-    CodexPath = @"C:\Users\Administrator\AppData\Roaming\npm\codex.cmd",
+    CodexPath = "codex",
     WorkingDirectory = @"C:\dev\your-workdir",
     // Optional: isolate sessions/auth/skills for this integration
     // CodexHomePath = @"C:\dev\your-app\.codex"
@@ -63,7 +63,7 @@ var threadId = known.First().ThreadId;
 
 await using var client = await CodexClient.StartAsync(new CodexClientOptions
 {
-    CodexPath = @"C:\Users\Administrator\AppData\Roaming\npm\codex.cmd",
+    CodexPath = "codex",
     WorkingDirectory = @"C:\dev\your-workdir"
 });
 
@@ -100,7 +100,7 @@ If Codex asks for approvals or tool input, provide `ServerRequestHandler`:
 ```csharp
 var client = await CodexClient.StartAsync(new CodexClientOptions
 {
-    CodexPath = @"C:\Users\Administrator\AppData\Roaming\npm\codex.cmd",
+    CodexPath = "codex",
     WorkingDirectory = @"C:\dev\your-workdir",
     ServerRequestHandler = async (req, ct) =>
     {

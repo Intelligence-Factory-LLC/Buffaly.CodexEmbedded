@@ -1,29 +1,38 @@
 # Buffaly.CodexEmbedded.Web
 
-Web-based CLI for Codex App Server.
+Web UI for Codex App Server.
 
-## Run
+## Install-and-run users
+
+If you installed from a GitHub release package, run:
+
+```powershell
+buffaly-web
+```
+
+Then open the URL shown in the terminal (usually `http://localhost:5000`).
+
+## Source developers
+
+Run directly from source:
 
 ```powershell
 dotnet run --project Buffaly.CodexEmbedded.Web
 ```
 
-Then open `http://localhost:5000` (or the URL shown in console).
-
 ## How It Works
 
 - Browser connects to `/ws`.
-- Click **New Session** to start `codex app-server`, run `initialize`, and open a thread.
-- Use **Existing + Attach** to load a previously saved thread from `CODEX_HOME/sessions`.
-- Send prompts from the input box to run `turn/start`.
-- Assistant text streams in the conversation pane.
-- Set **Logs** verbosity (`errors|normal|verbose|trace`) to control how much core transport data is streamed to the browser.
-- Logs (connection + core events) stream into the logs pane and are also written to local files.
-- Approval requests are shown in the approval panel with action buttons.
+- **New Session** starts `codex app-server`, runs `initialize`, and opens a thread.
+- **Existing + Attach** loads a saved thread from `CODEX_HOME/sessions`.
+- Prompts are sent with `turn/start`.
+- Assistant deltas stream into the conversation pane.
+- Approval/tool requests are surfaced in the UI.
 
 ## Config
 
-`appsettings.json`:
+`appsettings.json` keys:
+
 - `CodexPath`
 - `DefaultCwd`
 - `CodexHomePath` (optional)

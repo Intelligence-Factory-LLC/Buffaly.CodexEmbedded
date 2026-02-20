@@ -12,5 +12,7 @@ logs/
 lib/
 working/
 codex-runtime/
+artifacts/
+release-downloads/
 *.vsix
 *.db

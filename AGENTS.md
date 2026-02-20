@@ -47,4 +47,8 @@ Optional flags:
 
 - The harness has been validated to complete an end-to-end turn (`turn/completed` with `completed` status) when `codex` can reach the OpenAI API.
 
+## Commit Workflow Rule
+
+- After each completed feature group (or when switching to a new feature), roll up the finished changes and create a checkpoint commit before starting the next feature.
+
 

@@ -1,0 +1,70 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (example: v1.2.0). Optional for manual runs."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Determine release version
+        id: vars
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch" -and -not [string]::IsNullOrWhiteSpace("${{ inputs.version }}")) {
+            $version = "${{ inputs.version }}"
+          }
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "Release version could not be determined."
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Build and test
+        shell: pwsh
+        run: ./scripts/release/build.ps1 -Configuration Release
+
+      - name: Publish binaries
+        shell: pwsh
+        run: ./scripts/release/publish.ps1 -Runtime win-x64 -Configuration Release -OutputRoot artifacts/publish
+
+      - name: Package release
+        shell: pwsh
+        run: ./scripts/release/package.ps1 -Runtime win-x64 -Version "${{ steps.vars.outputs.version }}" -Repository "${{ github.repository }}" -PublishRoot artifacts/publish -OutputRoot artifacts/release
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-win-x64-${{ steps.vars.outputs.version }}
+          path: |
+            artifacts/release/*.zip
+            artifacts/release/*.txt
+          if-no-files-found: error
+
+      - name: Attach files to GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/release/*.zip
+            artifacts/release/*.txt
