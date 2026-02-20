@@ -18,7 +18,6 @@ let selectedProjectKey = null;
 let projectNameByKey = new Map();
 let collapsedProjectKeys = new Set();
 let archivedThreadIds = new Set();
-let showArchivedSessions = false;
 let expandedProjectKeys = new Set();
 let customProjects = [];
 let pendingCreateRequests = new Map(); // requestId -> { threadName }
@@ -39,7 +38,6 @@ const STORAGE_PROMPT_DRAFTS_KEY = "codex-web-prompt-drafts-v1";
 const STORAGE_PROJECT_META_KEY = "codex-web-project-meta";
 const STORAGE_COLLAPSED_PROJECTS_KEY = "codex-web-collapsed-projects";
 const STORAGE_ARCHIVED_THREADS_KEY = "codex-web-archived-threads";
-const STORAGE_SHOW_ARCHIVED_KEY = "codex-web-show-archived";
 const STORAGE_SIDEBAR_COLLAPSED_KEY = "codex-web-sidebar-collapsed";
 const STORAGE_CUSTOM_PROJECTS_KEY = "codex-web-custom-projects";
 const MAX_QUEUE_PREVIEW = 3;
@@ -62,7 +60,6 @@ const queuePromptBtn = document.getElementById("queuePromptBtn");
 
 const newSessionBtn = document.getElementById("newSessionBtn");
 const newProjectBtn = document.getElementById("newProjectBtn");
-const newSessionInProjectBtn = document.getElementById("newSessionInProjectBtn");
 const newProjectSidebarBtn = document.getElementById("newProjectSidebarBtn");
 const attachSessionBtn = document.getElementById("attachSessionBtn");
 const existingSessionSelect = document.getElementById("existingSessionSelect");
@@ -71,7 +68,6 @@ const sessionSelect = document.getElementById("sessionSelect");
 const sessionMeta = document.getElementById("sessionMeta");
 const sessionSidebar = document.getElementById("sessionSidebar");
 const sidebarToggleBtn = document.getElementById("sidebarToggleBtn");
-const showArchivedToggle = document.getElementById("showArchivedToggle");
 const projectList = document.getElementById("projectList");
 
 const logVerbositySelect = document.getElementById("logVerbositySelect");
@@ -291,12 +287,6 @@ function loadProjectUiState() {
 
   const archived = safeJsonParse(localStorage.getItem(STORAGE_ARCHIVED_THREADS_KEY), []);
   archivedThreadIds = new Set(Array.isArray(archived) ? archived.filter((x) => typeof x === "string" && x.trim()) : []);
-
-  const showArchivedRaw = localStorage.getItem(STORAGE_SHOW_ARCHIVED_KEY);
-  showArchivedSessions = showArchivedRaw === "1";
-  if (showArchivedToggle) {
-    showArchivedToggle.checked = showArchivedSessions;
-  }
 
   const custom = safeJsonParse(localStorage.getItem(STORAGE_CUSTOM_PROJECTS_KEY), []);
   customProjects = Array.isArray(custom)
@@ -566,8 +556,14 @@ function applySidebarCollapsed(isCollapsed) {
   layoutRoot.classList.toggle("sidebar-collapsed", isCollapsed);
   localStorage.setItem(STORAGE_SIDEBAR_COLLAPSED_KEY, isCollapsed ? "1" : "0");
   if (sidebarToggleBtn) {
-    sidebarToggleBtn.textContent = isCollapsed ? "Show Projects" : "Hide Projects";
+    const label = isCollapsed ? "Show projects" : "Hide projects";
+    sidebarToggleBtn.title = label;
+    sidebarToggleBtn.setAttribute("aria-label", label);
     sidebarToggleBtn.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+    const icon = sidebarToggleBtn.querySelector("i");
+    if (icon) {
+      icon.className = isCollapsed ? "bi bi-layout-sidebar-inset" : "bi bi-layout-sidebar-inset-reverse";
+    }
   }
 }
 
@@ -833,15 +829,13 @@ function renderProjectSidebar() {
   }
 
   for (const group of groups) {
-    const visibleSessions = showArchivedSessions
-      ? group.sessions
-      : group.sessions.filter((x) => !x.isArchived || x.attachedSessionId === activeSessionId);
+    const visibleSessions = group.sessions.filter((x) => !x.isArchived || x.attachedSessionId === activeSessionId);
     const hasSessionOverflow = visibleSessions.length > MAX_PROJECT_SESSIONS_COLLAPSED;
     const projectSessionsExpanded = expandedProjectKeys.has(group.key);
     const sessionsToRender = hasSessionOverflow && !projectSessionsExpanded
       ? visibleSessions.slice(0, MAX_PROJECT_SESSIONS_COLLAPSED)
       : visibleSessions;
-    if (visibleSessions.length === 0 && !showArchivedSessions && !group.isCustom) {
+    if (visibleSessions.length === 0 && !group.isCustom) {
       continue;
     }
 
@@ -1005,7 +999,7 @@ function renderProjectSidebar() {
     if (visibleSessions.length === 0) {
       const empty = document.createElement("div");
       empty.className = "sidebar-empty";
-      empty.textContent = showArchivedSessions ? "No sessions in this project." : "No unarchived sessions.";
+      empty.textContent = "No sessions in this project.";
       sessionsWrap.appendChild(empty);
     } else if (hasSessionOverflow) {
       const toggleMoreBtn = document.createElement("button");
@@ -1038,7 +1032,7 @@ function renderProjectSidebar() {
   if (!projectList.firstChild) {
     const empty = document.createElement("div");
     empty.className = "sidebar-empty";
-    empty.textContent = "No unarchived sessions. Enable 'Show Archived' to view hidden sessions.";
+    empty.textContent = "No sessions to display.";
     projectList.appendChild(empty);
   }
 }
@@ -1443,6 +1437,10 @@ async function tryAutoAttachStoredThread() {
 }
 
 function refreshSessionMeta() {
+  if (!sessionMeta) {
+    return;
+  }
+
   const state = getActiveSessionState();
   if (!state) {
     sessionMeta.textContent = "";
@@ -1584,7 +1582,9 @@ function clearActiveSession() {
   rememberPromptDraftForState(previousState);
 
   activeSessionId = null;
-  sessionMeta.textContent = "";
+  if (sessionMeta) {
+    sessionMeta.textContent = "";
+  }
   stopSessionBtn.disabled = true;
   renderPromptQueue();
   clearComposerImages();
@@ -2076,14 +2076,6 @@ newSessionBtn.addEventListener("click", async () => {
   await createSessionForCwd(preferredCwd);
 });
 
-if (newSessionInProjectBtn) {
-  newSessionInProjectBtn.addEventListener("click", async () => {
-    const selectedGroup = buildSidebarProjectGroups().find((x) => x.key === selectedProjectKey) || null;
-    const preferredCwd = selectedGroup?.cwd || cwdInput.value.trim();
-    await createSessionForCwd(preferredCwd);
-  });
-}
-
 if (newProjectBtn) {
   newProjectBtn.addEventListener("click", () => {
     promptCreateProject();
@@ -2201,14 +2193,6 @@ cwdInput.addEventListener("change", () => {
   }
   renderProjectSidebar();
 });
-
-if (showArchivedToggle) {
-  showArchivedToggle.addEventListener("change", () => {
-    showArchivedSessions = !!showArchivedToggle.checked;
-    localStorage.setItem(STORAGE_SHOW_ARCHIVED_KEY, showArchivedSessions ? "1" : "0");
-    renderProjectSidebar();
-  });
-}
 
 if (sidebarToggleBtn) {
   sidebarToggleBtn.addEventListener("click", () => {

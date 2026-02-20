@@ -18,21 +18,25 @@
 		</header>
 		<main class="main codex-main">
 			<aside id="sessionSidebar" class="panel session-sidebar">
-				<div class="panel-title">Projects</div>
-				<div class="session-sidebar-controls">
-					<button id="sidebarToggleBtn" type="button" class="toolbar-secondary">Hide Projects</button>
-					<button id="newProjectSidebarBtn" type="button">New Project</button>
-					<button id="newSessionInProjectBtn" type="button">New Session</button>
-					<label class="session-sidebar-archive-toggle" for="showArchivedToggle">
-						<input id="showArchivedToggle" type="checkbox">
-						Show Archived
-					</label>
+				<div class="panel-title panel-title-row">
+					<span>Projects</span>
+					<button id="sidebarToggleBtn" type="button" class="sidebar-collapse-btn" title="Hide projects" aria-label="Hide projects">
+						<i class="bi bi-layout-sidebar-inset-reverse" aria-hidden="true"></i>
+					</button>
 				</div>
-				<div id="sessionMeta" class="session-meta"></div>
+				<div class="session-sidebar-controls">
+					<button id="newProjectSidebarBtn" class="new-project-btn" type="button">
+						<i class="bi bi-plus-circle-fill" aria-hidden="true"></i>
+						<span>New Project</span>
+					</button>
+				</div>
 				<div id="projectList" class="project-list"></div>
 			</aside>
 			<section class="panel chat-panel">
-				<div class="panel-title">Conversation</div>
+				<div class="panel-title panel-title-row conversation-title-row">
+					<span>Conversation</span>
+					<span id="sessionMeta" class="conversation-meta"></span>
+				</div>
 				<div id="chatMessages" class="watcher-timeline"></div>
 				<div id="approvalPanel" class="approval-panel hidden">
 					<div id="approvalSummary" class="approval-summary"></div>

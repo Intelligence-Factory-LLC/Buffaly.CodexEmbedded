@@ -141,8 +141,8 @@ body {
 
 .session-sidebar-controls {
 	display: flex;
-	flex-wrap: wrap;
-	gap: 0.45rem;
+	flex-wrap: nowrap;
+	gap: 0.35rem;
 	padding: 0.65rem 0.75rem;
 	border-bottom: 1px solid #e5e7eb;
 	background: #f8fafc;
@@ -158,12 +158,26 @@ body {
 	font: inherit;
 }
 
-.session-sidebar-archive-toggle {
+.new-project-btn {
 	display: inline-flex;
 	align-items: center;
+	justify-content: center;
 	gap: 0.4rem;
-	font-size: 0.86rem;
-	color: #334155;
+	width: 100%;
+	padding: 0.52rem 0.72rem !important;
+	border-radius: 8px !important;
+	border: 1px solid #0f766e !important;
+	background: linear-gradient(180deg, #14b8a6 0%, #0f766e 100%) !important;
+	color: #ffffff !important;
+	font-weight: 700;
+}
+
+.new-project-btn:hover {
+	filter: brightness(0.96);
+}
+
+.new-project-btn i {
+	font-size: 0.9rem;
 }
 
 .project-list {
@@ -373,10 +387,25 @@ body {
 }
 
 .layout.sidebar-collapsed .codex-main {
-	grid-template-columns: 1fr;
+	grid-template-columns: 56px 1fr;
+}
+
+.layout.sidebar-collapsed .session-sidebar-controls,
+.layout.sidebar-collapsed .project-list {
+	display: none;
 }
 
 .layout.sidebar-collapsed .session-sidebar {
+	width: 56px;
+	min-width: 56px;
+}
+
+.layout.sidebar-collapsed .session-sidebar .panel-title-row {
+	justify-content: center;
+	padding-inline: 0.25rem;
+}
+
+.layout.sidebar-collapsed .session-sidebar .panel-title-row > span {
 	display: none;
 }
 
@@ -384,6 +413,48 @@ body {
 	padding: 0.65rem 0.8rem;
 	border-bottom: 1px solid #e5e7eb;
 	font-weight: 600;
+}
+
+.panel-title-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+}
+
+.sidebar-collapse-btn {
+	width: 1.85rem;
+	height: 1.85rem;
+	padding: 0;
+	border: 1px solid #cbd5e1;
+	border-radius: 6px;
+	background: #ffffff;
+	color: #334155;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+}
+
+.sidebar-collapse-btn:hover {
+	background: #f8fafc;
+	color: #0f172a;
+}
+
+.conversation-title-row {
+	gap: 0.75rem;
+}
+
+.conversation-meta {
+	flex: 1;
+	min-width: 0;
+	font-size: 0.8rem;
+	font-weight: 500;
+	color: #64748b;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	text-align: right;
 }
 
 .messages {
@@ -809,16 +880,6 @@ body {
 	display: none;
 }
 
-.session-meta {
-	padding: 0.45rem 0.75rem;
-	border-bottom: 1px solid #e5e7eb;
-	font-size: 0.8rem;
-	color: #64748b;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
 @media (max-width: 900px) {
 	.main {
 		grid-template-columns: 1fr;
@@ -835,5 +896,9 @@ body {
 
 	.session-sidebar {
 		max-height: 38vh;
+	}
+
+	.conversation-meta {
+		text-align: left;
 	}
 }
