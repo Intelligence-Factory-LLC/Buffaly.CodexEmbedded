@@ -325,6 +325,23 @@ body {
 	margin-top: 0.15rem;
 }
 
+.more-sessions-btn {
+	width: 100%;
+	margin-top: 0.2rem;
+	padding: 0.3rem 0.45rem;
+	border: 0;
+	background: transparent;
+	color: #2563eb;
+	font-size: 0.78rem;
+	font-weight: 600;
+	text-align: left;
+	cursor: pointer;
+}
+
+.more-sessions-btn:hover {
+	text-decoration: underline;
+}
+
 .session-badges {
 	display: inline-flex;
 	align-items: center;

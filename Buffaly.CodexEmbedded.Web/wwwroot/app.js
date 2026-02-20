@@ -44,6 +44,7 @@ const STORAGE_SIDEBAR_COLLAPSED_KEY = "codex-web-sidebar-collapsed";
 const STORAGE_CUSTOM_PROJECTS_KEY = "codex-web-custom-projects";
 const MAX_QUEUE_PREVIEW = 3;
 const MAX_QUEUE_TEXT_CHARS = 90;
+const MAX_PROJECT_SESSIONS_COLLAPSED = 4;
 const MAX_COMPOSER_IMAGES = 4;
 const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
@@ -835,6 +836,11 @@ function renderProjectSidebar() {
     const visibleSessions = showArchivedSessions
       ? group.sessions
       : group.sessions.filter((x) => !x.isArchived || x.attachedSessionId === activeSessionId);
+    const hasSessionOverflow = visibleSessions.length > MAX_PROJECT_SESSIONS_COLLAPSED;
+    const projectSessionsExpanded = expandedProjectKeys.has(group.key);
+    const sessionsToRender = hasSessionOverflow && !projectSessionsExpanded
+      ? visibleSessions.slice(0, MAX_PROJECT_SESSIONS_COLLAPSED)
+      : visibleSessions;
     if (visibleSessions.length === 0 && !showArchivedSessions && !group.isCustom) {
       continue;
     }
@@ -911,7 +917,7 @@ function renderProjectSidebar() {
 
     const sessionsWrap = document.createElement("div");
     sessionsWrap.className = "project-sessions";
-    for (const entry of visibleSessions) {
+    for (const entry of sessionsToRender) {
       const row = document.createElement("div");
       row.className = "session-row";
       if (entry.attachedSessionId && entry.attachedSessionId === activeSessionId) {
@@ -1001,6 +1007,28 @@ function renderProjectSidebar() {
       empty.className = "sidebar-empty";
       empty.textContent = showArchivedSessions ? "No sessions in this project." : "No unarchived sessions.";
       sessionsWrap.appendChild(empty);
+    } else if (hasSessionOverflow) {
+      const toggleMoreBtn = document.createElement("button");
+      toggleMoreBtn.type = "button";
+      toggleMoreBtn.className = "more-sessions-btn";
+      if (projectSessionsExpanded) {
+        toggleMoreBtn.textContent = "Show less";
+      } else {
+        const remainingCount = visibleSessions.length - sessionsToRender.length;
+        toggleMoreBtn.textContent = `Read more (${remainingCount})`;
+      }
+
+      toggleMoreBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (expandedProjectKeys.has(group.key)) {
+          expandedProjectKeys.delete(group.key);
+        } else {
+          expandedProjectKeys.add(group.key);
+        }
+
+        renderProjectSidebar();
+      });
+      sessionsWrap.appendChild(toggleMoreBtn);
     }
 
     groupEl.appendChild(sessionsWrap);
