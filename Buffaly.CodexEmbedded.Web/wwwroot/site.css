@@ -1051,14 +1051,32 @@ body {
 	border-left-color: #0ea5e9 !important;
 }
 
+.watcher-task-start.watcher-task-start-clickable {
+	cursor: pointer;
+}
+
+.watcher-task-start.watcher-task-start-clickable:hover {
+	background: #eff6ff;
+}
+
+.watcher-task-start.watcher-task-start-clickable:focus-visible {
+	outline: 2px solid #60a5fa;
+	outline-offset: 2px;
+	border-radius: 6px;
+}
+
+.watcher-task-start.watcher-task-collapsed {
+	background: #f1f5f9;
+}
+
 .watcher-task-end {
 	background: #f8fafc;
 	border-left-color: #94a3b8 !important;
 }
 
 .watcher-task-child {
-	margin-left: calc(var(--task-depth, 1) * 0.45rem);
-	padding-left: 0.42rem;
+	margin-left: calc(var(--task-depth, 1) * 0.62rem);
+	padding-left: 0.56rem;
 	border-left: 2px dashed #cbd5e1;
 }
 
@@ -1069,12 +1087,13 @@ body {
 .watcher-task-toggle {
 	border: 1px solid #cbd5e1;
 	border-radius: 999px;
-	background: #ffffff;
-	color: #334155;
-	font-size: 0.67rem;
+	background: #eff6ff;
+	color: #1e3a8a;
+	font-size: 0.64rem;
 	font-weight: 700;
 	line-height: 1;
-	padding: 0.18rem 0.42rem;
+	padding: 0.2rem 0.38rem;
+	font-family: Consolas, "Courier New", monospace;
 }
 
 .watcher-task-collapsed-hidden {

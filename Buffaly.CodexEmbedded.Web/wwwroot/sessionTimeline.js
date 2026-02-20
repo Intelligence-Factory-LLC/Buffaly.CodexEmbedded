@@ -191,8 +191,10 @@
       }
 
       const collapsed = this.collapsedTaskIds.has(entry.taskId);
-      node.taskToggle.textContent = collapsed ? "Expand" : "Collapse";
-      node.taskToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      node.taskToggle.textContent = collapsed ? "[+]" : "[-]";
+      node.card.classList.toggle("watcher-task-collapsed", collapsed);
+      node.card.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      node.card.setAttribute("aria-label", collapsed ? "Expand task block" : "Collapse task block");
     }
 
     refreshTaskVisualState() {
@@ -914,14 +916,31 @@
 
         let taskToggle = null;
         if (entry.taskBoundary === "start" && entry.taskId) {
-          taskToggle = document.createElement("button");
-          taskToggle.type = "button";
+          taskToggle = document.createElement("span");
           taskToggle.className = "watcher-task-toggle";
-          taskToggle.addEventListener("click", (event) => {
-            event.preventDefault();
-            event.stopPropagation();
+          taskToggle.setAttribute("aria-hidden", "true");
+          row.classList.add("watcher-task-start-clickable");
+          row.tabIndex = 0;
+          row.setAttribute("role", "button");
+
+          const toggle = () => {
             this.toggleTaskCollapsed(entry.taskId);
+          };
+
+          row.addEventListener("click", () => {
+            const selected = typeof window !== "undefined" && window.getSelection ? String(window.getSelection() || "") : "";
+            if (selected.trim().length > 0) {
+              return;
+            }
+            toggle();
           });
+          row.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              toggle();
+            }
+          });
+
           row.appendChild(taskToggle);
         }
 
