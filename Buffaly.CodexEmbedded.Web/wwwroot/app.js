@@ -144,7 +144,8 @@ function updatePromptActionState() {
   queuePromptBtn.classList.toggle("hidden", !processingActive);
   sendPromptBtn.classList.toggle("queue-mode", processingActive);
   sendPromptBtn.classList.toggle("solo-send", !processingActive);
-  queuePromptBtn.title = processingActive ? "Queue prompt while processing" : "Queue prompt";
+  sendPromptBtn.title = processingActive ? "Send now (Enter)" : "Send (Enter)";
+  queuePromptBtn.title = "Queue prompt (Tab)";
 }
 
 function updateContextLeftIndicator() {
@@ -3052,24 +3053,20 @@ promptForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  if (isTurnInFlight(activeSessionId)) {
-    queuePrompt(activeSessionId, prompt, images);
-    promptInput.value = "";
-    clearCurrentPromptDraft();
-    clearComposerImages();
-    appendLog(`[turn] queued prompt for session=${activeSessionId}`);
+  const started = startTurn(activeSessionId, prompt, images);
+  if (!started) {
+    appendLog(`[turn] failed to send prompt for session=${activeSessionId}`);
     return;
   }
 
   promptInput.value = "";
   clearCurrentPromptDraft();
   clearComposerImages();
-  startTurn(activeSessionId, prompt, images);
   renderPromptQueue();
 });
 
 promptInput.addEventListener("keydown", (event) => {
-  if (event.key === "Tab" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+  if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
     if (!promptInput.value.trim() && pendingComposerImages.length === 0) {
       return;
     }
