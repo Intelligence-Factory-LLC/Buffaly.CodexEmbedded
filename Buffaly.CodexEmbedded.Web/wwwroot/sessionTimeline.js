@@ -601,11 +601,17 @@
       }
 
       if (eventType === "task_started") {
-        return this.createEntry("system", "Task Started", payload.title || payload.message || "", timestamp, eventType);
+        const summary = payload.title || payload.message || "Task started";
+        const entry = this.createEntry("system", "Task Started", this.truncateText(summary, 240), timestamp, eventType);
+        entry.compact = true;
+        return entry;
       }
 
       if (eventType === "task_complete") {
-        return this.createEntry("system", "Task Complete", payload.message || "", timestamp, eventType);
+        const summary = payload.message || "Task complete";
+        const entry = this.createEntry("system", "Task Complete", this.truncateText(summary, 240), timestamp, eventType);
+        entry.compact = true;
+        return entry;
       }
 
       const message = payload.message || payload.summary || "";
@@ -732,6 +738,9 @@
         row.className = "watcher-inline-entry";
         if (entry.rawType === "inline_notice") {
           row.classList.add("watcher-inline-note");
+        }
+        if (entry.rawType === "task_started" || entry.rawType === "task_complete") {
+          row.classList.add("watcher-inline-task");
         }
         row.dataset.entryId = String(entry.id);
 

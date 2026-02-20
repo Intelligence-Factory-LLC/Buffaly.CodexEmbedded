@@ -831,6 +831,12 @@ body {
 	border-bottom-style: solid;
 }
 
+.watcher-inline-task {
+	padding: 0.32rem 0.1rem;
+	border-top: 1px solid #e5e7eb;
+	border-bottom: 1px solid #e5e7eb;
+}
+
 .watcher-inline-title {
 	font-weight: 600;
 	color: #1f2937;
@@ -842,6 +848,11 @@ body {
 	white-space: pre-wrap;
 	word-break: break-word;
 	flex: 1 1 360px;
+}
+
+.watcher-inline-task .watcher-inline-text {
+	font-family: "Segoe UI", Tahoma, sans-serif;
+	color: #334155;
 }
 
 .watcher-inline-time {
