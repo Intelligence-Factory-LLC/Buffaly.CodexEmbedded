@@ -20,7 +20,7 @@ let collapsedProjectKeys = new Set();
 let archivedThreadIds = new Set();
 let expandedProjectKeys = new Set();
 let customProjects = [];
-let pendingCreateRequests = new Map(); // requestId -> { threadName }
+let pendingCreateRequests = new Map(); // requestId -> { threadName, cwd }
 let pendingRenameOnAttach = new Map(); // threadId -> threadName
 
 let timelineCursor = null;
@@ -934,9 +934,10 @@ function buildSidebarProjectGroups() {
       continue;
     }
 
-    const project = ensureProject(entry.cwd || "");
     const attachedSessionId = getAttachedSessionIdByThreadId(entry.threadId);
     const attachedState = attachedSessionId ? sessions.get(attachedSessionId) : null;
+    const effectiveCwd = normalizeProjectCwd(entry.cwd || attachedState?.cwd || "");
+    const project = ensureProject(effectiveCwd);
     const tick = Math.max(getCatalogSessionUpdatedTick(entry), attachedState?.createdAtTick || 0);
     if (tick > project.latestTick) {
       project.latestTick = tick;
@@ -947,7 +948,7 @@ function buildSidebarProjectGroups() {
       threadName: entry.threadName || attachedState?.threadName || "",
       updatedAtUtc: entry.updatedAtUtc || (tick > 0 ? new Date(tick).toISOString() : null),
       sortTick: tick,
-      cwd: normalizeProjectCwd(entry.cwd || ""),
+      cwd: effectiveCwd,
       model: entry.model || "",
       attachedSessionId,
       isAttached: !!attachedSessionId,
@@ -1093,8 +1094,8 @@ async function createSessionForCwd(cwd, options = {}) {
 
   const requestId = createRequestId();
   payload.requestId = requestId;
-  if (threadName) {
-    pendingCreateRequests.set(requestId, { threadName });
+  if (threadName || normalizedCwd) {
+    pendingCreateRequests.set(requestId, { threadName, cwd: normalizedCwd });
   }
 
   if (normalizedCwd) {
@@ -2503,24 +2504,34 @@ function handleServerEvent(frame) {
       state.threadId = payload.threadId || state.threadId;
       state.cwd = payload.cwd || state.cwd;
       state.model = payload.model || state.model;
+      let pendingCreate = null;
+      const requestId = payload.requestId || null;
+      if (requestId && pendingCreateRequests.has(requestId)) {
+        pendingCreate = pendingCreateRequests.get(requestId) || null;
+        pendingCreateRequests.delete(requestId);
+      }
+      if (!normalizeProjectCwd(state.cwd || "") && pendingCreate?.cwd) {
+        state.cwd = pendingCreate.cwd;
+      }
       if (state.threadId) {
         const permissionInfo = readPermissionInfoFromPayload(payload);
         if (permissionInfo) {
           setPermissionLevelForThread(state.threadId, permissionInfo);
         }
       }
+      if (state.threadId && normalizeProjectCwd(state.cwd || "")) {
+        const entry = getCatalogEntryByThreadId(state.threadId);
+        if (entry && !normalizeProjectCwd(entry.cwd || "")) {
+          entry.cwd = state.cwd;
+        }
+      }
       setTurnInFlight(sessionId, false);
       const mode = payload.attached || type === "session_attached" ? "attached" : "created";
       appendLog(`[session] ${mode} id=${sessionId} thread=${state.threadId || "unknown"} log=${payload.logPath || "n/a"}`);
 
-      const requestId = payload.requestId || null;
-      if (requestId && pendingCreateRequests.has(requestId)) {
-        const pending = pendingCreateRequests.get(requestId);
-        pendingCreateRequests.delete(requestId);
-        if (pending && pending.threadName) {
-          send("session_rename", { sessionId, threadName: pending.threadName });
+      if (pendingCreate && pendingCreate.threadName) {
+        send("session_rename", { sessionId, threadName: pendingCreate.threadName });
           send("session_catalog_list");
-        }
       }
 
       if (state.threadId && pendingRenameOnAttach.has(state.threadId)) {
