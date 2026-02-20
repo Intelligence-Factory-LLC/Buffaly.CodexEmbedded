@@ -74,7 +74,10 @@
 				<form id="promptForm" class="prompt-form">
 					<textarea id="promptInput" autocomplete="off" rows="4" placeholder="Type a prompt..."></textarea>
 					<div class="prompt-actions">
-						<div id="contextLeftIndicator" class="context-left-indicator" title="Context window usage">--% context left</div>
+						<div class="composer-status-stack">
+							<div id="contextLeftIndicator" class="context-left-indicator" title="Context window usage">--% context left</div>
+							<div id="permissionLevelIndicator" class="permission-level-indicator" title="Session permissions">perm: --</div>
+						</div>
 						<input id="imageUploadInput" type="file" accept="image/*" multiple class="hidden">
 						<button id="imageUploadBtn" class="prompt-upload-btn" type="button" title="Attach image" aria-label="Attach image">
 							<svg class="prompt-upload-icon" viewBox="0 0 24 24" aria-hidden="true">

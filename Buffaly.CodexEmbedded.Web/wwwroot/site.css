@@ -693,14 +693,32 @@ body {
 	min-width: 11.5rem;
 }
 
-.context-left-indicator {
+.composer-status-stack {
 	grid-area: context;
+	display: flex;
+	flex-direction: column;
+	gap: 0.28rem;
+	align-items: flex-start;
+}
+
+.context-left-indicator {
 	padding: 0.32rem 0.55rem;
 	border-radius: 999px;
 	border: 1px solid #cbd5e1;
 	background: #ffffff;
 	color: #334155;
 	font-size: 0.76rem;
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+.permission-level-indicator {
+	padding: 0.28rem 0.5rem;
+	border-radius: 999px;
+	border: 1px solid #cbd5e1;
+	background: #ffffff;
+	color: #334155;
+	font-size: 0.72rem;
 	font-weight: 600;
 	white-space: nowrap;
 }
@@ -1113,5 +1131,9 @@ body {
 
 	.context-left-indicator {
 		font-size: 0.72rem;
+	}
+
+	.permission-level-indicator {
+		font-size: 0.68rem;
 	}
 }

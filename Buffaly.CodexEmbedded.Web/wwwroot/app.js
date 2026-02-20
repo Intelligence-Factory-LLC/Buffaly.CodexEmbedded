@@ -31,6 +31,7 @@ let timelinePollInFlight = false;
 let autoAttachAttempted = false;
 let syncingConversationModelSelect = false;
 let contextUsageByThread = new Map(); // threadId -> { usedTokens, contextWindow, percentLeft }
+let permissionLevelByThread = new Map(); // threadId -> { approval, sandbox }
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -57,6 +58,7 @@ const promptInput = document.getElementById("promptInput");
 const promptQueue = document.getElementById("promptQueue");
 const scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
 const contextLeftIndicator = document.getElementById("contextLeftIndicator");
+const permissionLevelIndicator = document.getElementById("permissionLevelIndicator");
 const composerImages = document.getElementById("composerImages");
 const imageUploadInput = document.getElementById("imageUploadInput");
 const imageUploadBtn = document.getElementById("imageUploadBtn");
@@ -162,6 +164,99 @@ function updateContextLeftIndicator() {
 
   contextLeftIndicator.textContent = `${info.percentLeft}% context left`;
   contextLeftIndicator.title = `Used ${info.usedTokens.toLocaleString()} / ${info.contextWindow.toLocaleString()} tokens`;
+}
+
+function normalizePermissionPolicy(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (typeof value === "string") {
+    return value.trim();
+  }
+
+  if (typeof value !== "object") {
+    return String(value || "").trim();
+  }
+
+  const fromNamedField = value.mode || value.kind || value.type || value.name;
+  if (typeof fromNamedField === "string" && fromNamedField.trim()) {
+    return fromNamedField.trim();
+  }
+
+  const objectKeys = Object.keys(value);
+  if (objectKeys.length === 1 && typeof objectKeys[0] === "string" && objectKeys[0].trim()) {
+    return objectKeys[0].trim();
+  }
+
+  return "";
+}
+
+function setPermissionLevelForThread(threadId, nextValue) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !nextValue || typeof nextValue !== "object") {
+    return;
+  }
+
+  const prior = permissionLevelByThread.get(normalizedThreadId) || { approval: "", sandbox: "" };
+  const merged = {
+    approval: nextValue.approval || prior.approval || "",
+    sandbox: nextValue.sandbox || prior.sandbox || ""
+  };
+
+  permissionLevelByThread.set(normalizedThreadId, merged);
+  const activeThreadId = typeof getActiveSessionState()?.threadId === "string" ? getActiveSessionState().threadId.trim() : "";
+  if (activeThreadId === normalizedThreadId) {
+    updatePermissionLevelIndicator();
+  }
+}
+
+function updatePermissionLevelIndicator() {
+  if (!permissionLevelIndicator) {
+    return;
+  }
+
+  const state = getActiveSessionState();
+  const threadId = typeof state?.threadId === "string" ? state.threadId.trim() : "";
+  const info = threadId ? permissionLevelByThread.get(threadId) : null;
+  const approval = info?.approval || "";
+  const sandbox = info?.sandbox || "";
+  if (!approval && !sandbox) {
+    permissionLevelIndicator.textContent = "perm: --";
+    permissionLevelIndicator.title = "Permission level unavailable";
+    return;
+  }
+
+  const approvalLabel = approval || "?";
+  const sandboxLabel = sandbox || "?";
+  permissionLevelIndicator.textContent = `perm: ${approvalLabel} / ${sandboxLabel}`;
+  permissionLevelIndicator.title = `Approval: ${approvalLabel} | Sandbox: ${sandboxLabel}`;
+}
+
+function readPermissionInfoFromPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const approvalRaw = payload.approval_policy
+    ?? payload.approvalPolicy
+    ?? payload.approval_mode
+    ?? payload.approvalMode
+    ?? null;
+  const sandboxRaw = payload.sandbox_policy
+    ?? payload.sandboxPolicy
+    ?? payload.sandbox_mode
+    ?? payload.sandboxMode
+    ?? payload.sandbox
+    ?? null;
+
+  const approval = normalizePermissionPolicy(approvalRaw);
+  const sandbox = normalizePermissionPolicy(sandboxRaw);
+  if (!approval && !sandbox) {
+    return null;
+  }
+
+  return { approval, sandbox };
 }
 
 function readTokenCountInfo(payload) {
@@ -286,6 +381,39 @@ function updateContextUsageFromLogLines(threadId, lines) {
     const activeThreadId = typeof getActiveSessionState()?.threadId === "string" ? getActiveSessionState().threadId.trim() : "";
     if (activeThreadId === normalizedThreadId) {
       updateContextLeftIndicator();
+    }
+  }
+}
+
+function updatePermissionInfoFromLogLines(threadId, lines) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !Array.isArray(lines) || lines.length === 0) {
+    return;
+  }
+
+  for (const line of lines) {
+    if (typeof line !== "string" || !line.trim()) {
+      continue;
+    }
+
+    const parsed = safeJsonParse(line, null);
+    if (!parsed || typeof parsed !== "object") {
+      continue;
+    }
+
+    if (parsed.type === "event_msg" && parsed.payload && typeof parsed.payload === "object") {
+      const next = readPermissionInfoFromPayload(parsed.payload);
+      if (next) {
+        setPermissionLevelForThread(normalizedThreadId, next);
+      }
+      continue;
+    }
+
+    if (parsed.type === "session_meta" || parsed.type === "turn_context") {
+      const next = readPermissionInfoFromPayload(parsed.payload || null);
+      if (next) {
+        setPermissionLevelForThread(normalizedThreadId, next);
+      }
     }
   }
 }
@@ -1837,6 +1965,7 @@ function refreshSessionMeta() {
     syncConversationModelOptions(modelSelect.value || "");
     sessionMeta.title = "";
     updateContextLeftIndicator();
+    updatePermissionLevelIndicator();
     return;
   }
 
@@ -1872,6 +2001,7 @@ function refreshSessionMeta() {
   syncConversationModelOptions(selectedModel);
   sessionMeta.title = "";
   updateContextLeftIndicator();
+  updatePermissionLevelIndicator();
 }
 
 function restartTimelinePolling() {
@@ -1950,6 +2080,7 @@ async function pollTimelineOnce(initial, generation) {
     timelineCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
     const lines = Array.isArray(data.lines) ? data.lines : [];
     updateContextUsageFromLogLines(state.threadId, lines);
+    updatePermissionInfoFromLogLines(state.threadId, lines);
     timeline.enqueueParsedLines(lines);
 
     if (data.truncated === true) {
@@ -1987,6 +2118,7 @@ function setActiveSession(sessionId, options = {}) {
   syncSelectedProjectFromActiveSession();
   refreshSessionMeta();
   updateContextLeftIndicator();
+  updatePermissionLevelIndicator();
   updatePromptActionState();
   renderPromptQueue();
   if (changed) {
@@ -2015,6 +2147,7 @@ function clearActiveSession() {
   clearComposerImages();
   restorePromptDraftForActiveSession();
   updateContextLeftIndicator();
+  updatePermissionLevelIndicator();
   updatePromptActionState();
   timelineCursor = null;
   timeline.clear();
@@ -2366,6 +2499,12 @@ function handleServerEvent(frame) {
       state.threadId = payload.threadId || state.threadId;
       state.cwd = payload.cwd || state.cwd;
       state.model = payload.model || state.model;
+      if (state.threadId) {
+        const permissionInfo = readPermissionInfoFromPayload(payload);
+        if (permissionInfo) {
+          setPermissionLevelForThread(state.threadId, permissionInfo);
+        }
+      }
       setTurnInFlight(sessionId, false);
       const mode = payload.attached || type === "session_attached" ? "attached" : "created";
       appendLog(`[session] ${mode} id=${sessionId} thread=${state.threadId || "unknown"} log=${payload.logPath || "n/a"}`);
@@ -2402,6 +2541,12 @@ function handleServerEvent(frame) {
         st.threadId = s.threadId || st.threadId || null;
         st.cwd = s.cwd || st.cwd || null;
         st.model = s.model || st.model || null;
+        if (st.threadId) {
+          const permissionInfo = readPermissionInfoFromPayload(s);
+          if (permissionInfo) {
+            setPermissionLevelForThread(st.threadId, permissionInfo);
+          }
+        }
         next.set(s.sessionId, st);
       }
       sessions = next;
@@ -3003,6 +3148,7 @@ renderProjectSidebar();
 updateScrollToBottomButton();
 updatePromptActionState();
 updateContextLeftIndicator();
+updatePermissionLevelIndicator();
 
 timelineFlushTimer = setInterval(() => timeline.flush(), TIMELINE_POLL_INTERVAL_MS);
 
