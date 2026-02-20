@@ -83,7 +83,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					await StopSessionAsync(GetSessionIdOrActive(root), cancellationToken);
 					return;
 				case "prompt":
-					await StartTurnAsync(GetSessionIdOrActive(root), TryGetString(root, "text"), cancellationToken);
+					await StartTurnAsync(GetSessionIdOrActive(root), TryGetString(root, "text"), images: null, cancellationToken);
 					return;
 
 				// Multi-session protocol.
@@ -106,8 +106,15 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				case "session_stop":
 					await StopSessionAsync(TryGetString(root, "sessionId"), cancellationToken);
 					return;
+				case "session_rename":
+					await RenameSessionAsync(TryGetString(root, "sessionId"), TryGetString(root, "threadName"), cancellationToken);
+					return;
 				case "turn_start":
-					await StartTurnAsync(TryGetString(root, "sessionId"), TryGetString(root, "text"), cancellationToken);
+					await StartTurnAsync(
+						TryGetString(root, "sessionId"),
+						TryGetString(root, "text"),
+						TryGetTurnImageInputs(root),
+						cancellationToken);
 					return;
 				case "approval_response":
 					HandleApprovalResponse(root);
@@ -443,7 +450,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 	}
 
-	private async Task StartTurnAsync(string? sessionId, string? text, CancellationToken cancellationToken)
+	private async Task StartTurnAsync(string? sessionId, string? text, IReadOnlyList<CodexUserImageInput>? images, CancellationToken cancellationToken)
 	{
 		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
 		if (string.IsNullOrWhiteSpace(sessionId))
@@ -452,9 +459,11 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
-		if (string.IsNullOrWhiteSpace(text))
+		var normalizedText = text?.Trim() ?? string.Empty;
+		var imageCount = images?.Count ?? 0;
+		if (string.IsNullOrWhiteSpace(normalizedText) && imageCount <= 0)
 		{
-			await SendEventAsync("error", new { message = "Prompt text is required." }, cancellationToken);
+			await SendEventAsync("error", new { message = "Prompt text or at least one image is required." }, cancellationToken);
 			return;
 		}
 
@@ -474,14 +483,14 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			try
 			{
 				await SendEventAsync("status", new { sessionId, message = "Turn started." }, CancellationToken.None);
-				session.Log.Write($"[prompt] {text}");
+				session.Log.Write($"[prompt] {(string.IsNullOrWhiteSpace(normalizedText) ? "(no text)" : normalizedText)} images={imageCount}");
 
 				var progress = new Progress<CodexDelta>(d =>
 				{
 					_ = SendEventAsync("assistant_delta", new { sessionId, text = d.Text }, CancellationToken.None);
 				});
 
-				var result = await session.Session.SendMessageAsync(text, progress: progress, cancellationToken: turnToken);
+				var result = await session.Session.SendMessageAsync(normalizedText, images: images, progress: progress, cancellationToken: turnToken);
 
 				_ = SendEventAsync("assistant_done", new { sessionId }, CancellationToken.None);
 				_ = SendEventAsync("turn_complete", new { sessionId, status = result.Status, errorMessage = result.ErrorMessage }, CancellationToken.None);
@@ -576,6 +585,53 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		await SendEventAsync("session_stopped", new { sessionId, message = "Session stopped." }, cancellationToken);
 		await SendSessionListAsync(cancellationToken);
+	}
+
+	private async Task RenameSessionAsync(string? sessionId, string? threadName, CancellationToken cancellationToken)
+	{
+		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			await SendEventAsync("error", new { message = "No active session to rename." }, cancellationToken);
+			return;
+		}
+
+		var session = TryGetSession(sessionId);
+		if (session is null)
+		{
+			await SendEventAsync("error", new { message = $"Unknown session: {sessionId}" }, cancellationToken);
+			return;
+		}
+
+		var normalizedName = threadName?.Trim();
+		if (string.IsNullOrWhiteSpace(normalizedName))
+		{
+			await SendEventAsync("error", new { message = "threadName is required." }, cancellationToken);
+			return;
+		}
+
+		if (normalizedName.Length > 200)
+		{
+			await SendEventAsync("error", new { message = "threadName must be 200 characters or fewer." }, cancellationToken);
+			return;
+		}
+
+		var threadId = session.Session.ThreadId;
+		var writeResult = await CodexSessionIndexMutator.TryAppendThreadRenameAsync(
+			_defaults.CodexHomePath,
+			threadId,
+			normalizedName,
+			cancellationToken);
+
+		if (!writeResult.Success)
+		{
+			await SendEventAsync("error", new { message = $"Failed to rename session: {writeResult.ErrorMessage}" }, cancellationToken);
+			return;
+		}
+
+		await WriteConnectionLogAsync($"[session] renamed thread={threadId} name={normalizedName}", cancellationToken);
+		await SendEventAsync("status", new { message = $"Renamed session '{threadId}' to '{normalizedName}'." }, cancellationToken);
+		await SendSessionCatalogAsync(cancellationToken);
 	}
 
 	private ManagedSession? TryGetSession(string sessionId)
@@ -843,6 +899,54 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return null;
 		}
 		return value.ToString();
+	}
+
+	private static IReadOnlyList<CodexUserImageInput> TryGetTurnImageInputs(JsonElement root)
+	{
+		const int maxImages = 4;
+		const int maxUrlChars = 12_000_000;
+		var output = new List<CodexUserImageInput>();
+		if (root.ValueKind != JsonValueKind.Object)
+		{
+			return output;
+		}
+
+		if (!root.TryGetProperty("images", out var imagesElement) || imagesElement.ValueKind != JsonValueKind.Array)
+		{
+			return output;
+		}
+
+		foreach (var item in imagesElement.EnumerateArray())
+		{
+			if (item.ValueKind != JsonValueKind.Object)
+			{
+				continue;
+			}
+
+			var url = TryGetString(item, "url")?.Trim();
+			if (string.IsNullOrWhiteSpace(url))
+			{
+				continue;
+			}
+
+			if (url.Length > maxUrlChars)
+			{
+				continue;
+			}
+
+			if (url.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase)
+				|| url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+				|| url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+			{
+				output.Add(new CodexUserImageInput(url));
+				if (output.Count >= maxImages)
+				{
+					break;
+				}
+			}
+		}
+
+		return output;
 	}
 
 	private static string? TryGetPathString(JsonElement root, params string[] path)

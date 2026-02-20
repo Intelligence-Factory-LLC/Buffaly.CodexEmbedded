@@ -40,7 +40,7 @@
 		<main class="main codex-main">
 			<section class="panel chat-panel">
 				<div class="panel-title">Conversation</div>
-				<div id="chatMessages" class="messages"></div>
+				<div id="chatMessages" class="watcher-timeline"></div>
 				<div id="approvalPanel" class="approval-panel hidden">
 					<div id="approvalSummary" class="approval-summary"></div>
 					<div id="approvalDetails" class="approval-details"></div>
@@ -51,13 +51,35 @@
 						<button data-decision="cancel" type="button">Cancel</button>
 					</div>
 				</div>
+				<div id="promptQueue" class="prompt-queue hidden"></div>
+				<div id="composerImages" class="composer-images hidden"></div>
 				<form id="promptForm" class="prompt-form">
 					<textarea id="promptInput" autocomplete="off" rows="4" placeholder="Type a prompt..."></textarea>
-					<button type="submit">Send</button>
+					<div class="prompt-actions">
+						<input id="imageUploadInput" type="file" accept="image/*" multiple class="hidden">
+						<button id="imageUploadBtn" class="prompt-upload-btn" type="button">Image</button>
+						<button type="submit">Send</button>
+					</div>
 				</form>
 			</section>
 		</main>
+
+		<div id="modelCommandModal" class="command-modal hidden" role="dialog" aria-modal="true" aria-labelledby="modelCommandTitle">
+			<div class="command-modal-card">
+				<div id="modelCommandTitle" class="command-modal-title">Select Model</div>
+				<div class="command-modal-body">
+					<label for="modelCommandSelect">Model</label>
+					<select id="modelCommandSelect"></select>
+					<input id="modelCommandCustomInput" type="text" placeholder="Custom model" class="hidden">
+				</div>
+				<div class="command-modal-actions">
+					<button id="modelCommandApplyBtn" type="button">Apply</button>
+					<button id="modelCommandCancelBtn" type="button">Cancel</button>
+				</div>
+			</div>
+		</div>
 	</div>
+	<script src="sessionTimeline.js"></script>
 	<script src="app.js"></script>
 </body>
 </html>

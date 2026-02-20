@@ -151,10 +151,43 @@ public sealed class CodexClient : IAsyncDisposable
 		string threadId,
 		string text,
 		CodexTurnOptions? options,
+		IReadOnlyList<CodexUserImageInput>? images,
 		IProgress<CodexDelta>? progress,
 		CancellationToken cancellationToken)
 	{
 		await InitializeAsync(cancellationToken);
+
+		var input = new List<object>();
+		if (!string.IsNullOrWhiteSpace(text))
+		{
+			input.Add(new
+			{
+				type = "text",
+				text
+			});
+		}
+
+		if (images is not null)
+		{
+			foreach (var image in images)
+			{
+				if (image is null || string.IsNullOrWhiteSpace(image.Url))
+				{
+					continue;
+				}
+
+				input.Add(new
+				{
+					type = "image",
+					url = image.Url
+				});
+			}
+		}
+
+		if (input.Count == 0)
+		{
+			throw new ArgumentException("Either message text or at least one image is required.");
+		}
 
 		var turnStartResult = await _rpc.SendRequestAsync(
 			method: "turn/start",
@@ -162,14 +195,7 @@ public sealed class CodexClient : IAsyncDisposable
 			{
 				threadId,
 				model = options?.Model,
-				input = new object[]
-				{
-					new
-					{
-						type = "text",
-						text
-					}
-				}
+				input = input.ToArray()
 			},
 			cancellationToken);
 

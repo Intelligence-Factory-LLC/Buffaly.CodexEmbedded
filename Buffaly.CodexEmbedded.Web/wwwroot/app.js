@@ -1,21 +1,39 @@
+const TIMELINE_POLL_INTERVAL_MS = 2000;
+
 let socket = null;
 let socketReadyPromise = null;
 
-let sessions = new Map(); // sessionId -> { threadId, cwd, model, messages: [], streamingIndex: null|number }
+let sessions = new Map(); // sessionId -> { threadId, cwd, model }
 let sessionCatalog = []; // [{ threadId, threadName, updatedAtUtc, cwd, model, sessionFilePath }]
 let activeSessionId = null;
 let pendingApproval = null; // { sessionId, approvalId }
+let promptQueuesBySession = new Map(); // sessionId -> [{ text, images }]
+let turnInFlightBySession = new Map(); // sessionId -> boolean
+let lastSentPromptBySession = new Map(); // sessionId -> string
+let pendingComposerImages = [];
+let nextComposerImageId = 1;
 
-let activeAssistantDiv = null;
-let activeAssistantDivSessionId = null;
+let timelineCursor = null;
+let timelinePollTimer = null;
+let timelineFlushTimer = null;
+let timelinePollGeneration = 0;
+let timelinePollInFlight = false;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
+const MAX_QUEUE_PREVIEW = 3;
+const MAX_QUEUE_TEXT_CHARS = 90;
+const MAX_COMPOSER_IMAGES = 4;
+const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 
 const chatMessages = document.getElementById("chatMessages");
 const logOutput = document.getElementById("logOutput");
 const promptForm = document.getElementById("promptForm");
 const promptInput = document.getElementById("promptInput");
+const promptQueue = document.getElementById("promptQueue");
+const composerImages = document.getElementById("composerImages");
+const imageUploadInput = document.getElementById("imageUploadInput");
+const imageUploadBtn = document.getElementById("imageUploadBtn");
 
 const newSessionBtn = document.getElementById("newSessionBtn");
 const attachSessionBtn = document.getElementById("attachSessionBtn");
@@ -33,6 +51,17 @@ const cwdInput = document.getElementById("cwdInput");
 const approvalPanel = document.getElementById("approvalPanel");
 const approvalSummary = document.getElementById("approvalSummary");
 const approvalDetails = document.getElementById("approvalDetails");
+const modelCommandModal = document.getElementById("modelCommandModal");
+const modelCommandSelect = document.getElementById("modelCommandSelect");
+const modelCommandCustomInput = document.getElementById("modelCommandCustomInput");
+const modelCommandApplyBtn = document.getElementById("modelCommandApplyBtn");
+const modelCommandCancelBtn = document.getElementById("modelCommandCancelBtn");
+
+const timeline = new window.CodexSessionTimeline({
+  container: chatMessages,
+  maxRenderedEntries: 1500,
+  systemTitle: "Session"
+});
 
 function normalizePath(path) {
   if (!path || typeof path !== "string") {
@@ -126,44 +155,270 @@ function setApprovalVisible(show) {
 
 function ensureSessionState(sessionId) {
   if (!sessions.has(sessionId)) {
-    sessions.set(sessionId, { threadId: null, cwd: null, model: null, messages: [], streamingIndex: null });
+    sessions.set(sessionId, { threadId: null, cwd: null, model: null });
   }
   return sessions.get(sessionId);
 }
 
-function renderActiveSession() {
-  chatMessages.textContent = "";
-  activeAssistantDiv = null;
-  activeAssistantDivSessionId = null;
-
+function getActiveSessionState() {
   if (!activeSessionId || !sessions.has(activeSessionId)) {
-    return;
+    return null;
   }
 
-  const state = sessions.get(activeSessionId);
-  for (let i = 0; i < state.messages.length; i++) {
-    const msg = state.messages[i];
-    const div = document.createElement("div");
-    div.className = `msg ${msg.role}`;
-    div.textContent = msg.text;
-    chatMessages.appendChild(div);
-
-    if (msg.role === "assistant" && state.streamingIndex === i) {
-      activeAssistantDiv = div;
-      activeAssistantDivSessionId = activeSessionId;
-    }
-  }
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+  return sessions.get(activeSessionId) || null;
 }
 
-function setActiveSession(sessionId) {
-  if (!sessionId || !sessions.has(sessionId)) {
+function clearComposerImages() {
+  pendingComposerImages = [];
+  renderComposerImages();
+}
+
+function renderComposerImages() {
+  if (!composerImages) {
     return;
   }
-  activeSessionId = sessionId;
-  sessionSelect.value = sessionId;
 
-  const state = sessions.get(sessionId);
+  composerImages.textContent = "";
+  if (pendingComposerImages.length === 0) {
+    composerImages.classList.add("hidden");
+    return;
+  }
+
+  for (const image of pendingComposerImages) {
+    const pill = document.createElement("div");
+    pill.className = "composer-image-pill";
+
+    const preview = document.createElement("img");
+    preview.src = image.url;
+    preview.alt = image.name || "attached image";
+    preview.loading = "lazy";
+    pill.appendChild(preview);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "composer-image-remove";
+    removeBtn.textContent = "x";
+    removeBtn.title = "Remove image";
+    removeBtn.addEventListener("click", () => {
+      pendingComposerImages = pendingComposerImages.filter((x) => x.id !== image.id);
+      renderComposerImages();
+    });
+    pill.appendChild(removeBtn);
+
+    composerImages.appendChild(pill);
+  }
+
+  composerImages.classList.remove("hidden");
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(new Error(`failed reading image '${file.name || "unnamed"}'`));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addComposerFiles(filesLike) {
+  const files = Array.from(filesLike || []);
+  const imageFiles = files.filter((f) => f && typeof f.type === "string" && f.type.startsWith("image/"));
+  if (imageFiles.length === 0) {
+    return;
+  }
+
+  for (const file of imageFiles) {
+    if (pendingComposerImages.length >= MAX_COMPOSER_IMAGES) {
+      appendLog(`[image] max ${MAX_COMPOSER_IMAGES} attachments reached`);
+      break;
+    }
+
+    if (typeof file.size === "number" && file.size > MAX_COMPOSER_IMAGE_BYTES) {
+      appendLog(`[image] '${file.name || "image"}' is too large (max ${Math.floor(MAX_COMPOSER_IMAGE_BYTES / (1024 * 1024))}MB)`);
+      continue;
+    }
+
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      if (!dataUrl.startsWith("data:image/")) {
+        appendLog(`[image] '${file.name || "image"}' is not a supported image`);
+        continue;
+      }
+
+      pendingComposerImages.push({
+        id: nextComposerImageId++,
+        name: file.name || "image",
+        mimeType: file.type || "image/*",
+        size: file.size || 0,
+        url: dataUrl
+      });
+    } catch (error) {
+      appendLog(`[image] ${error}`);
+    }
+  }
+
+  renderComposerImages();
+}
+
+function getQueueForSession(sessionId) {
+  if (!sessionId) {
+    return [];
+  }
+
+  if (!promptQueuesBySession.has(sessionId)) {
+    promptQueuesBySession.set(sessionId, []);
+  }
+
+  return promptQueuesBySession.get(sessionId);
+}
+
+function isTurnInFlight(sessionId) {
+  if (!sessionId) {
+    return false;
+  }
+
+  return turnInFlightBySession.get(sessionId) === true;
+}
+
+function setTurnInFlight(sessionId, value) {
+  if (!sessionId) {
+    return;
+  }
+
+  turnInFlightBySession.set(sessionId, !!value);
+}
+
+function trimPromptPreview(text) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= MAX_QUEUE_TEXT_CHARS) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, MAX_QUEUE_TEXT_CHARS)}...`;
+}
+
+function renderPromptQueue() {
+  if (!promptQueue) {
+    return;
+  }
+
+  if (!activeSessionId) {
+    promptQueue.textContent = "";
+    promptQueue.classList.add("hidden");
+    return;
+  }
+
+  const queue = getQueueForSession(activeSessionId);
+  if (!queue || queue.length === 0) {
+    promptQueue.textContent = "";
+    promptQueue.classList.add("hidden");
+    return;
+  }
+
+  const previews = queue
+    .slice(0, MAX_QUEUE_PREVIEW)
+    .map((item, index) => {
+      const imageCount = Array.isArray(item.images) ? item.images.length : 0;
+      const imageSuffix = imageCount > 0 ? ` (+${imageCount} image${imageCount > 1 ? "s" : ""})` : "";
+      const rawPreview = (item.text || "").trim() || (imageCount > 0 ? "(image only)" : "");
+      return `${index + 1}. ${trimPromptPreview(rawPreview)}${imageSuffix}`;
+    });
+  const overflow = queue.length > MAX_QUEUE_PREVIEW ? ` +${queue.length - MAX_QUEUE_PREVIEW} more` : "";
+  promptQueue.textContent = `Queued (${queue.length}): ${previews.join(" | ")}${overflow}`;
+  promptQueue.classList.remove("hidden");
+}
+
+function queuePrompt(sessionId, promptText, images = []) {
+  if (!sessionId) {
+    return;
+  }
+
+  const queue = getQueueForSession(sessionId);
+  queue.push({
+    text: String(promptText || ""),
+    images: Array.isArray(images) ? images.map((x) => ({ ...x })) : []
+  });
+  if (sessionId === activeSessionId) {
+    renderPromptQueue();
+  }
+}
+
+function startTurn(sessionId, promptText, images = [], options = {}) {
+  const normalizedText = String(promptText || "").trim();
+  const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
+  if (!sessionId || (!normalizedText && safeImages.length === 0)) {
+    return false;
+  }
+
+  if (!send("turn_start", { sessionId, text: normalizedText, images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" })) })) {
+    return false;
+  }
+
+  setTurnInFlight(sessionId, true);
+  if (normalizedText) {
+    lastSentPromptBySession.set(sessionId, normalizedText);
+  }
+  timeline.enqueueOptimisticUserMessage(normalizedText, safeImages.map((x) => x.url));
+  timeline.flush();
+
+  if (options.fromQueue === true) {
+    appendLog(`[turn] dequeued next prompt for session=${sessionId}`);
+  }
+
+  return true;
+}
+
+function pumpQueuedPrompt(sessionId) {
+  if (!sessionId || isTurnInFlight(sessionId)) {
+    return false;
+  }
+
+  const queue = getQueueForSession(sessionId);
+  if (!queue || queue.length === 0) {
+    return false;
+  }
+
+  const nextPrompt = queue.shift();
+  const started = startTurn(sessionId, nextPrompt.text, nextPrompt.images || [], { fromQueue: true });
+  if (!started) {
+    queue.unshift(nextPrompt);
+    return false;
+  }
+
+  if (sessionId === activeSessionId) {
+    renderPromptQueue();
+  }
+  return true;
+}
+
+function prunePromptState() {
+  const validIds = new Set(sessions.keys());
+  for (const key of Array.from(promptQueuesBySession.keys())) {
+    if (!validIds.has(key)) {
+      promptQueuesBySession.delete(key);
+    }
+  }
+
+  for (const key of Array.from(turnInFlightBySession.keys())) {
+    if (!validIds.has(key)) {
+      turnInFlightBySession.delete(key);
+    }
+  }
+
+  for (const key of Array.from(lastSentPromptBySession.keys())) {
+    if (!validIds.has(key)) {
+      lastSentPromptBySession.delete(key);
+    }
+  }
+}
+
+function refreshSessionMeta() {
+  const state = getActiveSessionState();
+  if (!state) {
+    sessionMeta.textContent = "";
+    return;
+  }
+
   const metaParts = [];
   const namedCatalogEntry = sessionCatalog.find((s) => s.threadId && state.threadId && s.threadId === state.threadId);
   if (namedCatalogEntry && namedCatalogEntry.threadName) metaParts.push(`name=${namedCatalogEntry.threadName}`);
@@ -171,9 +426,125 @@ function setActiveSession(sessionId) {
   if (state.model) metaParts.push(`model=${state.model}`);
   if (state.cwd) metaParts.push(`cwd=${state.cwd}`);
   sessionMeta.textContent = metaParts.join("  ");
+}
 
+function restartTimelinePolling() {
+  timelinePollGeneration += 1;
+  const generation = timelinePollGeneration;
+
+  if (timelinePollTimer) {
+    clearInterval(timelinePollTimer);
+    timelinePollTimer = null;
+  }
+
+  const state = getActiveSessionState();
+  if (!state || !state.threadId) {
+    return;
+  }
+
+  pollTimelineOnce(true, generation).catch((error) => {
+    timeline.enqueueSystem(`[error] ${error}`);
+  });
+
+  timelinePollTimer = setInterval(() => {
+    pollTimelineOnce(false, generation).catch((error) => {
+      timeline.enqueueSystem(`[error] ${error}`);
+    });
+  }, TIMELINE_POLL_INTERVAL_MS);
+}
+
+async function pollTimelineOnce(initial, generation) {
+  if (timelinePollInFlight) {
+    return;
+  }
+
+  const state = getActiveSessionState();
+  if (!state || !state.threadId) {
+    return;
+  }
+
+  timelinePollInFlight = true;
+  try {
+    const url = new URL("api/logs/watch", document.baseURI);
+    url.searchParams.set("threadId", state.threadId);
+    url.searchParams.set("maxLines", "200");
+
+    if (initial || timelineCursor === null) {
+      url.searchParams.set("initial", "true");
+    } else {
+      url.searchParams.set("cursor", String(timelineCursor));
+    }
+
+    const response = await fetch(url, { cache: "no-store" });
+    if (generation !== timelinePollGeneration) {
+      return;
+    }
+
+    if (response.status === 404) {
+      return;
+    }
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`watch failed (${response.status}): ${detail}`);
+    }
+
+    const data = await response.json();
+    if (generation !== timelinePollGeneration) {
+      return;
+    }
+
+    if (initial || data.reset === true) {
+      timeline.clear();
+      if (data.reset === true) {
+        timeline.enqueueSystem("session file was reset or rotated");
+      }
+    }
+
+    timelineCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
+    timeline.enqueueParsedLines(Array.isArray(data.lines) ? data.lines : []);
+
+    if (data.truncated === true) {
+      timeline.enqueueSystem("tail update truncated to latest lines");
+    }
+  } finally {
+    timelinePollInFlight = false;
+  }
+}
+
+function setActiveSession(sessionId, options = {}) {
+  if (!sessionId || !sessions.has(sessionId)) {
+    return;
+  }
+
+  const restartTimeline = options.restartTimeline !== false;
+  const changed = activeSessionId !== sessionId;
+
+  activeSessionId = sessionId;
+  sessionSelect.value = sessionId;
   stopSessionBtn.disabled = false;
-  renderActiveSession();
+  refreshSessionMeta();
+  renderPromptQueue();
+  if (changed) {
+    clearComposerImages();
+  }
+
+  if (changed || restartTimeline) {
+    timelineCursor = null;
+    timeline.clear();
+    restartTimelinePolling();
+  }
+}
+
+function clearActiveSession() {
+  activeSessionId = null;
+  sessionMeta.textContent = "";
+  stopSessionBtn.disabled = true;
+  renderPromptQueue();
+  clearComposerImages();
+  timelineCursor = null;
+  timeline.clear();
+  restartTimelinePolling();
 }
 
 function updateSessionSelect(activeIdFromServer) {
@@ -196,12 +567,10 @@ function updateSessionSelect(activeIdFromServer) {
 
   const toSelect = activeIdFromServer || activeSessionId || current || (ids.length > 0 ? ids[0] : null);
   if (toSelect && sessions.has(toSelect)) {
-    setActiveSession(toSelect);
+    const changed = activeSessionId !== toSelect;
+    setActiveSession(toSelect, { restartTimeline: changed });
   } else {
-    activeSessionId = null;
-    sessionMeta.textContent = "";
-    stopSessionBtn.disabled = true;
-    chatMessages.textContent = "";
+    clearActiveSession();
   }
 }
 
@@ -277,6 +646,107 @@ function populateModelSelect(models) {
   } else {
     modelCustomInput.classList.add("hidden");
   }
+
+  syncModelCommandOptionsFromToolbar();
+}
+
+function syncModelCommandOptionsFromToolbar() {
+  if (!modelCommandSelect) {
+    return;
+  }
+
+  const previous = modelCommandSelect.value;
+  modelCommandSelect.textContent = "";
+  for (const option of Array.from(modelSelect.options)) {
+    const next = document.createElement("option");
+    next.value = option.value;
+    next.textContent = option.textContent || option.value;
+    modelCommandSelect.appendChild(next);
+  }
+
+  if (previous && Array.from(modelCommandSelect.options).some((x) => x.value === previous)) {
+    modelCommandSelect.value = previous;
+  } else {
+    modelCommandSelect.value = modelSelect.value || "";
+  }
+
+  if (modelCommandSelect.value === "__custom__") {
+    modelCommandCustomInput.classList.remove("hidden");
+    modelCommandCustomInput.value = modelCustomInput.value || "";
+  } else {
+    modelCommandCustomInput.classList.add("hidden");
+  }
+}
+
+function applyModelSelection(value) {
+  const normalized = (value || "").trim();
+  if (!normalized) {
+    modelSelect.value = "";
+    modelCustomInput.classList.add("hidden");
+    syncModelCommandOptionsFromToolbar();
+    return;
+  }
+
+  const matching = Array.from(modelSelect.options).find((o) => o.value === normalized);
+  if (matching) {
+    modelSelect.value = normalized;
+    if (normalized === "__custom__") {
+      modelCustomInput.classList.remove("hidden");
+      modelCustomInput.focus();
+    } else {
+      modelCustomInput.classList.add("hidden");
+    }
+    syncModelCommandOptionsFromToolbar();
+    return;
+  }
+
+  modelSelect.value = "__custom__";
+  modelCustomInput.classList.remove("hidden");
+  modelCustomInput.value = normalized;
+  syncModelCommandOptionsFromToolbar();
+}
+
+function openModelCommandModal() {
+  syncModelCommandOptionsFromToolbar();
+  modelCommandModal.classList.remove("hidden");
+  if (modelCommandSelect.value === "__custom__") {
+    modelCommandCustomInput.classList.remove("hidden");
+    modelCommandCustomInput.focus();
+  } else {
+    modelCommandCustomInput.classList.add("hidden");
+    modelCommandSelect.focus();
+  }
+}
+
+function closeModelCommandModal() {
+  modelCommandModal.classList.add("hidden");
+  modelCommandCustomInput.classList.add("hidden");
+  promptInput.focus();
+}
+
+function applyModelFromCommandModal() {
+  const selected = modelCommandSelect.value || "";
+  if (selected === "__custom__") {
+    const custom = modelCommandCustomInput.value.trim();
+    if (!custom) {
+      appendLog("[model] custom model cannot be empty");
+      modelCommandCustomInput.focus();
+      return;
+    }
+
+    applyModelSelection(custom);
+    appendLog(`[model] selected custom model '${custom}'`);
+    closeModelCommandModal();
+    return;
+  }
+
+  applyModelSelection(selected);
+  if (selected) {
+    appendLog(`[model] selected '${selected}'`);
+  } else {
+    appendLog("[model] reverted to default");
+  }
+  closeModelCommandModal();
 }
 
 function applySavedUiSettings() {
@@ -328,10 +798,14 @@ function ensureSocket() {
     socketReadyPromise = null;
     sessions = new Map();
     sessionCatalog = [];
-    activeSessionId = null;
     pendingApproval = null;
+    promptQueuesBySession = new Map();
+    turnInFlightBySession = new Map();
+    lastSentPromptBySession = new Map();
+    pendingComposerImages = [];
     updateSessionSelect(null);
     updateExistingSessionSelect();
+    renderComposerImages();
     setApprovalVisible(false);
   });
   socket.addEventListener("error", () => {
@@ -352,9 +826,10 @@ function ensureSocket() {
 function send(type, payload = {}) {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
     appendLog(`[client] cannot send ${type}; websocket is closed`);
-    return;
+    return false;
   }
   socket.send(JSON.stringify({ type, ...payload }));
+  return true;
 }
 
 function handleServerEvent(frame) {
@@ -374,10 +849,10 @@ function handleServerEvent(frame) {
       state.threadId = payload.threadId || state.threadId;
       state.cwd = payload.cwd || state.cwd;
       state.model = payload.model || state.model;
+      setTurnInFlight(sessionId, false);
       const mode = payload.attached || type === "session_attached" ? "attached" : "created";
       appendLog(`[session] ${mode} id=${sessionId} thread=${state.threadId || "unknown"} log=${payload.logPath || "n/a"}`);
       updateSessionSelect(sessionId);
-      setActiveSession(sessionId);
       return;
     }
 
@@ -386,13 +861,14 @@ function handleServerEvent(frame) {
       const next = new Map();
       for (const s of list) {
         const existing = sessions.get(s.sessionId);
-        const st = existing || { threadId: null, cwd: null, model: null, messages: [], streamingIndex: null };
+        const st = existing || { threadId: null, cwd: null, model: null };
         st.threadId = s.threadId || st.threadId || null;
         st.cwd = s.cwd || st.cwd || null;
         st.model = s.model || st.model || null;
         next.set(s.sessionId, st);
       }
       sessions = next;
+      prunePromptState();
       updateSessionSelect(payload.activeSessionId || null);
       return;
     }
@@ -403,6 +879,7 @@ function handleServerEvent(frame) {
         .filter((s) => s && s.threadId)
         .sort((a, b) => (b.updatedAtUtc || "").localeCompare(a.updatedAtUtc || ""));
       updateExistingSessionSelect();
+      refreshSessionMeta();
       appendLog(`[catalog] loaded ${sessionCatalog.length} existing sessions from ${payload.codexHomePath || "default CODEX_HOME"}`);
       return;
     }
@@ -412,59 +889,32 @@ function handleServerEvent(frame) {
       if (sessionId && sessions.has(sessionId)) {
         sessions.delete(sessionId);
       }
+      if (sessionId) {
+        promptQueuesBySession.delete(sessionId);
+        turnInFlightBySession.delete(sessionId);
+        lastSentPromptBySession.delete(sessionId);
+      }
       appendLog(`[session] stopped id=${sessionId || "unknown"}`);
       updateSessionSelect(payload.activeSessionId || null);
       return;
     }
 
-    case "assistant_delta": {
-      const sessionId = payload.sessionId;
-      const text = payload.text || "";
-      if (!sessionId || !text) return;
-
-      const state = ensureSessionState(sessionId);
-      if (state.streamingIndex === null) {
-        state.messages.push({ role: "assistant", text: "" });
-        state.streamingIndex = state.messages.length - 1;
-      }
-      state.messages[state.streamingIndex].text += text;
-
-      if (sessionId === activeSessionId && activeAssistantDiv && activeAssistantDivSessionId === sessionId) {
-        activeAssistantDiv.textContent += text;
-        chatMessages.scrollTop = chatMessages.scrollHeight;
-      } else if (sessionId === activeSessionId) {
-        renderActiveSession();
-      }
+    case "assistant_delta":
       return;
-    }
 
-    case "assistant_done": {
-      const sessionId = payload.sessionId;
-      if (!sessionId) return;
-      const state = ensureSessionState(sessionId);
-      state.streamingIndex = null;
-      if (sessionId === activeSessionId) {
-        activeAssistantDiv = null;
-        activeAssistantDivSessionId = null;
-      }
+    case "assistant_done":
       return;
-    }
 
     case "turn_complete": {
-      const sessionId = payload.sessionId;
-      const state = sessionId ? ensureSessionState(sessionId) : null;
-      if (state) state.streamingIndex = null;
-
+      const sessionId = payload.sessionId || null;
+      if (sessionId) {
+        setTurnInFlight(sessionId, false);
+        pumpQueuedPrompt(sessionId);
+      }
       const status = payload.status || "unknown";
       const errorMessage = payload.errorMessage || null;
-      appendLog(`[turn] session=${sessionId || "unknown"} status=${status}${errorMessage ? " error=" + errorMessage : ""}`);
-
-      if (sessionId) {
-        const s = ensureSessionState(sessionId);
-        s.messages.push({ role: "system", text: `Turn complete: ${status}` });
-        if (errorMessage) s.messages.push({ role: "system", text: errorMessage });
-        if (sessionId === activeSessionId) renderActiveSession();
-      }
+      appendLog(`[turn] session=${payload.sessionId || "unknown"} status=${status}${errorMessage ? " error=" + errorMessage : ""}`);
+      renderPromptQueue();
       return;
     }
 
@@ -521,7 +971,6 @@ function handleServerEvent(frame) {
       appendLog(`[error] ${payload.message || "unknown error"}`);
       return;
 
-    // Back-compat events: ignore quietly.
     case "session_started":
       return;
 
@@ -592,6 +1041,44 @@ modelSelect.addEventListener("change", () => {
   } else {
     modelCustomInput.classList.add("hidden");
   }
+  syncModelCommandOptionsFromToolbar();
+});
+
+modelCommandSelect.addEventListener("change", () => {
+  if (modelCommandSelect.value === "__custom__") {
+    modelCommandCustomInput.classList.remove("hidden");
+    modelCommandCustomInput.focus();
+  } else {
+    modelCommandCustomInput.classList.add("hidden");
+  }
+});
+
+modelCommandApplyBtn.addEventListener("click", () => {
+  applyModelFromCommandModal();
+});
+
+modelCommandCancelBtn.addEventListener("click", () => {
+  closeModelCommandModal();
+});
+
+modelCommandSelect.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    applyModelFromCommandModal();
+  }
+});
+
+modelCommandCustomInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    applyModelFromCommandModal();
+  }
+});
+
+modelCommandModal.addEventListener("click", (event) => {
+  if (event.target === modelCommandModal) {
+    closeModelCommandModal();
+  }
 });
 
 logVerbositySelect.addEventListener("change", async () => {
@@ -619,15 +1106,148 @@ cwdInput.addEventListener("change", () => {
   localStorage.setItem(STORAGE_CWD_KEY, cwdInput.value.trim());
 });
 
+imageUploadBtn.addEventListener("click", () => {
+  imageUploadInput.click();
+});
+
+imageUploadInput.addEventListener("change", async () => {
+  const files = imageUploadInput.files;
+  if (!files || files.length === 0) {
+    return;
+  }
+
+  await addComposerFiles(files);
+  imageUploadInput.value = "";
+  promptInput.focus();
+});
+
+promptInput.addEventListener("paste", async (event) => {
+  const items = Array.from(event.clipboardData?.items || []);
+  const files = [];
+  for (const item of items) {
+    if (!item || item.kind !== "file" || !item.type.startsWith("image/")) {
+      continue;
+    }
+
+    const file = item.getAsFile();
+    if (file) {
+      files.push(file);
+    }
+  }
+
+  if (files.length === 0) {
+    return;
+  }
+
+  event.preventDefault();
+  await addComposerFiles(files);
+});
+
+promptInput.addEventListener("dragover", (event) => {
+  const hasFiles = Array.from(event.dataTransfer?.types || []).includes("Files");
+  if (!hasFiles) {
+    return;
+  }
+
+  event.preventDefault();
+  promptInput.classList.add("drag-over");
+});
+
+promptInput.addEventListener("dragleave", () => {
+  promptInput.classList.remove("drag-over");
+});
+
+promptInput.addEventListener("drop", async (event) => {
+  const files = Array.from(event.dataTransfer?.files || []);
+  if (files.length === 0) {
+    return;
+  }
+
+  event.preventDefault();
+  promptInput.classList.remove("drag-over");
+  await addComposerFiles(files);
+});
+
+async function tryHandleSlashCommand(inputText) {
+  const raw = (inputText || "").trim();
+  if (!raw.startsWith("/")) {
+    return false;
+  }
+
+  const body = raw.slice(1);
+  const firstSpace = body.indexOf(" ");
+  const command = (firstSpace >= 0 ? body.slice(0, firstSpace) : body).trim().toLowerCase();
+  const args = firstSpace >= 0 ? body.slice(firstSpace + 1).trim() : "";
+
+  if (!command) {
+    appendLog("[client] empty slash command");
+    return true;
+  }
+
+  if (command === "model") {
+    if (args.length > 0) {
+      applyModelSelection(args);
+      appendLog(`[model] selected '${args}'`);
+      return true;
+    }
+
+    try {
+      await ensureSocket();
+      send("models_list");
+    } catch (error) {
+      appendLog(`[models] refresh failed: ${error}`);
+    }
+
+    openModelCommandModal();
+    return true;
+  }
+
+  if (command === "rename") {
+    if (!activeSessionId || !sessions.has(activeSessionId)) {
+      appendLog("[rename] no active session selected");
+      return true;
+    }
+
+    const nextName = args;
+    if (!nextName) {
+      appendLog("[rename] usage: /rename <new name>");
+      return true;
+    }
+
+    if (nextName.length > 200) {
+      appendLog("[rename] name must be 200 characters or fewer");
+      return true;
+    }
+
+    try {
+      await ensureSocket();
+    } catch (error) {
+      appendLog(`[ws] connect failed: ${error}`);
+      return true;
+    }
+
+    send("session_rename", { sessionId: activeSessionId, threadName: nextName });
+    appendLog(`[rename] requested '${nextName}'`);
+    return true;
+  }
+
+  appendLog(`[client] unknown slash command: /${command}`);
+  return true;
+}
+
 promptForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const prompt = promptInput.value.trim();
-  if (!prompt) return;
+  const images = pendingComposerImages.map((x) => ({ ...x }));
+  if (!prompt && images.length === 0) {
+    if (activeSessionId && pumpQueuedPrompt(activeSessionId)) {
+      renderPromptQueue();
+    }
+    return;
+  }
 
-  try {
-    await ensureSocket();
-  } catch (error) {
-    appendLog(`[ws] connect failed: ${error}`);
+  if (images.length === 0 && await tryHandleSlashCommand(prompt)) {
+    promptInput.value = "";
     return;
   }
 
@@ -636,20 +1256,74 @@ promptForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  const state = ensureSessionState(activeSessionId);
-  state.messages.push({ role: "user", text: prompt });
-  state.streamingIndex = null;
-  promptInput.value = "";
-  renderActiveSession();
+  try {
+    await ensureSocket();
+  } catch (error) {
+    appendLog(`[ws] connect failed: ${error}`);
+    return;
+  }
 
-  send("turn_start", { sessionId: activeSessionId, text: prompt });
+  if (isTurnInFlight(activeSessionId)) {
+    queuePrompt(activeSessionId, prompt, images);
+    promptInput.value = "";
+    clearComposerImages();
+    appendLog(`[turn] queued prompt for session=${activeSessionId}`);
+    return;
+  }
+
+  promptInput.value = "";
+  clearComposerImages();
+  startTurn(activeSessionId, prompt, images);
+  renderPromptQueue();
 });
 
 promptInput.addEventListener("keydown", (event) => {
-  if (event.key !== "Enter") return;
-  if (!event.ctrlKey && !event.metaKey) return;
-  event.preventDefault();
-  promptForm.requestSubmit();
+  if (event.key === "Tab" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    const prompt = promptInput.value.trim();
+    const images = pendingComposerImages.map((x) => ({ ...x }));
+    if (!prompt && images.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    if (!activeSessionId) {
+      appendLog("[client] no active session; create or attach one first");
+      return;
+    }
+
+    queuePrompt(activeSessionId, prompt, images);
+    promptInput.value = "";
+    clearComposerImages();
+    appendLog(`[turn] queued prompt for session=${activeSessionId}`);
+    return;
+  }
+
+  if (event.key === "ArrowUp" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+    const isEmpty = promptInput.value.trim().length === 0;
+    const isAtStart = promptInput.selectionStart === 0 && promptInput.selectionEnd === 0;
+    if (!isEmpty && !isAtStart) {
+      return;
+    }
+
+    if (!activeSessionId) {
+      return;
+    }
+
+    const lastSent = lastSentPromptBySession.get(activeSessionId);
+    if (!lastSent) {
+      return;
+    }
+
+    event.preventDefault();
+    promptInput.value = lastSent;
+    promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
+    return;
+  }
+
+  if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    promptForm.requestSubmit();
+  }
 });
 
 approvalPanel.querySelectorAll("button[data-decision]").forEach((button) => {
@@ -672,7 +1346,22 @@ approvalPanel.querySelectorAll("button[data-decision]").forEach((button) => {
   });
 });
 
-applySavedUiSettings();
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") {
+    return;
+  }
 
-// Auto-connect so sessions/models/catalog populate without clicking anything.
+  if (modelCommandModal.classList.contains("hidden")) {
+    return;
+  }
+
+  event.preventDefault();
+  closeModelCommandModal();
+});
+
+applySavedUiSettings();
+renderComposerImages();
+
+timelineFlushTimer = setInterval(() => timeline.flush(), TIMELINE_POLL_INTERVAL_MS);
+
 ensureSocket().catch((error) => appendLog(`[ws] connect failed: ${error}`));

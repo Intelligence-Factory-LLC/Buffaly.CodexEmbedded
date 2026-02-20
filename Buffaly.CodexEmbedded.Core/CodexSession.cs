@@ -19,13 +19,16 @@ public sealed class CodexSession
 
 	public async Task<CodexTurnResult> SendMessageAsync(
 		string text,
+		IReadOnlyList<CodexUserImageInput>? images = null,
 		CodexTurnOptions? options = null,
 		IProgress<CodexDelta>? progress = null,
 		CancellationToken cancellationToken = default)
 	{
-		if (string.IsNullOrWhiteSpace(text))
+		var hasText = !string.IsNullOrWhiteSpace(text);
+		var hasImages = images is { Count: > 0 };
+		if (!hasText && !hasImages)
 		{
-			throw new ArgumentException("Message text is required.", nameof(text));
+			throw new ArgumentException("Either message text or at least one image is required.", nameof(text));
 		}
 
 		await _turnLock.WaitAsync(cancellationToken);
@@ -37,7 +40,7 @@ public sealed class CodexSession
 				effectiveOptions = effectiveOptions with { Model = Model };
 			}
 
-			return await _client.SendMessageAsync(ThreadId, text, effectiveOptions, progress, cancellationToken);
+			return await _client.SendMessageAsync(ThreadId, text, effectiveOptions, images, progress, cancellationToken);
 		}
 		finally
 		{

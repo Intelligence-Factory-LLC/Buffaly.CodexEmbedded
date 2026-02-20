@@ -172,6 +172,81 @@ body {
 	padding: 0.75rem;
 	gap: 0.5rem;
 	border-top: 1px solid #e5e7eb;
+	align-items: flex-end;
+}
+
+.prompt-queue {
+	margin: 0.6rem 0.75rem 0;
+	padding: 0.4rem 0.55rem;
+	border: 1px solid #cbd5e1;
+	border-radius: 6px;
+	background: #f8fafc;
+	color: #334155;
+	font-size: 0.82rem;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.command-modal {
+	position: fixed;
+	inset: 0;
+	background: rgba(15, 23, 42, 0.5);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 20;
+	padding: 1rem;
+}
+
+.command-modal-card {
+	width: min(520px, 100%);
+	background: #ffffff;
+	border: 1px solid #d1d5db;
+	border-radius: 10px;
+	box-shadow: 0 20px 40px rgba(2, 6, 23, 0.18);
+	padding: 0.8rem;
+}
+
+.command-modal-title {
+	font-weight: 700;
+	color: #111827;
+	margin-bottom: 0.65rem;
+}
+
+.command-modal-body {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+.command-modal-body select,
+.command-modal-body input {
+	padding: 0.5rem 0.6rem;
+	border: 1px solid #d1d5db;
+	border-radius: 6px;
+	font: inherit;
+}
+
+.command-modal-actions {
+	margin-top: 0.75rem;
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.45rem;
+}
+
+.command-modal-actions button {
+	padding: 0.45rem 0.75rem;
+	border-radius: 6px;
+	border: 1px solid #d1d5db;
+	background: #ffffff;
+	cursor: pointer;
+}
+
+.command-modal-actions button:first-child {
+	background: #0f766e;
+	color: #ffffff;
+	border-color: #0f766e;
 }
 
 .prompt-form textarea {
@@ -185,12 +260,70 @@ body {
 	line-height: 1.35;
 }
 
+.prompt-form textarea.drag-over {
+	border-color: #0f766e;
+	box-shadow: inset 0 0 0 1px #0f766e;
+	background: #f0fdfa;
+}
+
+.prompt-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+}
+
 .prompt-form button {
 	padding: 0.55rem 0.8rem;
 	border: 0;
 	border-radius: 4px;
 	background: #0f766e;
 	color: #fff;
+	cursor: pointer;
+}
+
+.prompt-upload-btn {
+	background: #ffffff !important;
+	color: #111827 !important;
+	border: 1px solid #d1d5db !important;
+}
+
+.composer-images {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.45rem;
+	padding: 0.55rem 0.75rem 0;
+}
+
+.composer-image-pill {
+	position: relative;
+	width: 64px;
+	height: 64px;
+	border-radius: 12px;
+	overflow: hidden;
+	border: 1px solid #d1d5db;
+	background: #ffffff;
+}
+
+.composer-image-pill img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+}
+
+.composer-image-remove {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	width: 20px;
+	height: 20px;
+	border: 0;
+	border-radius: 999px;
+	background: rgba(17, 24, 39, 0.72);
+	color: #ffffff;
+	font-size: 0.72rem;
+	line-height: 20px;
+	padding: 0;
 	cursor: pointer;
 }
 
@@ -279,6 +412,60 @@ body {
 	color: #111827;
 	background: transparent;
 	font-family: Consolas, "Courier New", monospace;
+}
+
+.watcher-entry-images {
+	margin-top: 0.45rem;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.45rem;
+}
+
+.watcher-entry-image {
+	width: 120px;
+	height: 90px;
+	border-radius: 10px;
+	overflow: hidden;
+	border: 1px solid #d1d5db;
+	background: #f8fafc;
+}
+
+.watcher-entry-image img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+}
+
+.watcher-inline-entry {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.2rem 0.1rem;
+	font-size: 0.84rem;
+	color: #374151;
+	border-bottom: 1px dashed #e5e7eb;
+	flex-wrap: wrap;
+}
+
+.watcher-inline-title {
+	font-weight: 600;
+	color: #1f2937;
+}
+
+.watcher-inline-text {
+	font-family: Consolas, "Courier New", monospace;
+	color: #111827;
+	white-space: pre-wrap;
+	word-break: break-word;
+	flex: 1 1 360px;
+}
+
+.watcher-inline-time {
+	font-size: 0.78rem;
+	color: #6b7280;
+	white-space: nowrap;
+	margin-left: auto;
 }
 
 .approval-panel {
