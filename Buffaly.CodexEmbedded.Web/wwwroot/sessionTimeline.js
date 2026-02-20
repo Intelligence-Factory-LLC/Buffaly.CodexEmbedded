@@ -25,6 +25,9 @@
       this.entryNodeById = new Map(); // entryId -> { card, body, time, compact }
       this.toolEntriesByCallId = new Map(); // callId -> entry
       this.pendingOptimisticUserKeys = [];
+      this.nextTaskGroupId = 1;
+      this.activeTaskStack = [];
+      this.collapsedTaskIds = new Set();
 
       this.container.addEventListener("scroll", () => {
         this.autoScrollPinned = this.isNearBottom();
@@ -102,12 +105,119 @@
       this.entryNodeById.clear();
       this.toolEntriesByCallId.clear();
       this.pendingOptimisticUserKeys = [];
+      this.nextTaskGroupId = 1;
+      this.activeTaskStack = [];
+      this.collapsedTaskIds.clear();
       this.autoScrollPinned = true;
     }
 
     isNearBottom() {
       const remaining = this.container.scrollHeight - (this.container.scrollTop + this.container.clientHeight);
       return remaining <= this.bottomThresholdPx;
+    }
+
+    markTaskStart(entry) {
+      const taskId = `task-${this.nextTaskGroupId++}`;
+      this.activeTaskStack.push(taskId);
+      entry.taskId = taskId;
+      entry.taskDepth = this.activeTaskStack.length;
+      entry.taskBoundary = "start";
+      entry.taskPath = this.activeTaskStack.slice();
+      return entry;
+    }
+
+    markTaskEnd(entry) {
+      const depth = this.activeTaskStack.length;
+      const taskId = depth > 0 ? this.activeTaskStack[depth - 1] : null;
+      entry.taskId = taskId;
+      entry.taskDepth = depth;
+      entry.taskBoundary = "end";
+      entry.taskPath = this.activeTaskStack.slice();
+      if (depth > 0) {
+        this.activeTaskStack.pop();
+      }
+      return entry;
+    }
+
+    annotateEntryWithTaskContext(entry) {
+      if (!entry) {
+        return null;
+      }
+
+      if (!entry.taskBoundary && this.activeTaskStack.length > 0) {
+        entry.taskId = this.activeTaskStack[this.activeTaskStack.length - 1];
+        entry.taskDepth = this.activeTaskStack.length;
+        entry.taskPath = this.activeTaskStack.slice();
+      }
+
+      return entry;
+    }
+
+    isEntryHiddenForCollapsedTask(entry) {
+      if (!entry || !Array.isArray(entry.taskPath) || entry.taskPath.length === 0) {
+        return false;
+      }
+
+      for (const taskId of entry.taskPath) {
+        if (!this.collapsedTaskIds.has(taskId)) {
+          continue;
+        }
+
+        if (entry.taskBoundary === "start" && entry.taskId === taskId) {
+          continue;
+        }
+
+        if (entry.taskBoundary === "end" && entry.taskId === taskId) {
+          continue;
+        }
+
+        return true;
+      }
+
+      return false;
+    }
+
+    applyTaskVisibility(node, entry) {
+      if (!node || !node.card) {
+        return;
+      }
+
+      node.card.classList.toggle("watcher-task-collapsed-hidden", this.isEntryHiddenForCollapsedTask(entry));
+    }
+
+    updateTaskToggleState(node, entry) {
+      if (!node || !node.taskToggle || !entry || entry.taskBoundary !== "start" || !entry.taskId) {
+        return;
+      }
+
+      const collapsed = this.collapsedTaskIds.has(entry.taskId);
+      node.taskToggle.textContent = collapsed ? "Expand" : "Collapse";
+      node.taskToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    }
+
+    refreshTaskVisualState() {
+      for (const node of this.entryNodeById.values()) {
+        if (!node || !node.entry) {
+          continue;
+        }
+
+        this.applyTaskVisibility(node, node.entry);
+        this.updateTaskToggleState(node, node.entry);
+      }
+    }
+
+    toggleTaskCollapsed(taskId) {
+      if (!taskId) {
+        return;
+      }
+
+      if (this.collapsedTaskIds.has(taskId)) {
+        this.collapsedTaskIds.delete(taskId);
+      } else {
+        this.collapsedTaskIds.add(taskId);
+      }
+
+      this.refreshTaskVisualState();
     }
 
     enqueueSystem(text, title = this.systemTitle, options = {}) {
@@ -649,14 +759,14 @@
         const summary = payload.title || payload.message || "Task started";
         const entry = this.createEntry("system", "Task Started", this.truncateText(summary, 240), timestamp, eventType);
         entry.compact = true;
-        return entry;
+        return this.markTaskStart(entry);
       }
 
       if (eventType === "task_complete") {
         const summary = payload.message || "Task complete";
         const entry = this.createEntry("system", "Task Complete", this.truncateText(summary, 240), timestamp, eventType);
         entry.compact = true;
-        return entry;
+        return this.markTaskEnd(entry);
       }
 
       const message = payload.message || payload.summary || "";
@@ -672,7 +782,9 @@
       try {
         root = JSON.parse(line);
       } catch {
-        return this.createEntry("system", "Invalid JSONL Line", this.truncateText(line, 800), null, "invalid_json");
+        return this.annotateEntryWithTaskContext(
+          this.createEntry("system", "Invalid JSONL Line", this.truncateText(line, 800), null, "invalid_json")
+        );
       }
 
       const timestamp = root.timestamp || null;
@@ -684,7 +796,9 @@
         if (payload.id) details.push(`thread=${payload.id}`);
         if (payload.model_provider) details.push(`provider=${payload.model_provider}`);
         if (payload.cwd) details.push(`cwd=${payload.cwd}`);
-        return this.createEntry("system", "Session Meta", details.join(" | "), timestamp, type);
+        return this.annotateEntryWithTaskContext(
+          this.createEntry("system", "Session Meta", details.join(" | "), timestamp, type)
+        );
       }
 
       if (type === "turn_context") {
@@ -692,11 +806,11 @@
       }
 
       if (type === "response_item") {
-        return this.parseResponseItem(timestamp, root.payload || {});
+        return this.annotateEntryWithTaskContext(this.parseResponseItem(timestamp, root.payload || {}));
       }
 
       if (type === "event_msg") {
-        return this.parseEventMsg(timestamp, root.payload || {});
+        return this.annotateEntryWithTaskContext(this.parseEventMsg(timestamp, root.payload || {}));
       }
 
       return null;
@@ -787,7 +901,29 @@
         if (entry.rawType === "task_started" || entry.rawType === "task_complete") {
           row.classList.add("watcher-inline-task");
         }
+        if (entry.taskDepth > 0 && !entry.taskBoundary) {
+          row.classList.add("watcher-task-child");
+          row.style.setProperty("--task-depth", String(entry.taskDepth));
+        }
+        if (entry.taskBoundary === "start") {
+          row.classList.add("watcher-task-start");
+        } else if (entry.taskBoundary === "end") {
+          row.classList.add("watcher-task-end");
+        }
         row.dataset.entryId = String(entry.id);
+
+        let taskToggle = null;
+        if (entry.taskBoundary === "start" && entry.taskId) {
+          taskToggle = document.createElement("button");
+          taskToggle.type = "button";
+          taskToggle.className = "watcher-task-toggle";
+          taskToggle.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.toggleTaskCollapsed(entry.taskId);
+          });
+          row.appendChild(taskToggle);
+        }
 
         const title = document.createElement("span");
         title.className = "watcher-inline-title";
@@ -808,13 +944,25 @@
 
         entry.rendered = true;
         this.renderCount += 1;
-        this.entryNodeById.set(entry.id, { card: row, body: text, time, compact: true });
+        const node = { card: row, body: text, time, compact: true, taskToggle, entry };
+        this.entryNodeById.set(entry.id, node);
+        this.updateTaskToggleState(node, entry);
+        this.applyTaskVisibility(node, entry);
         this.trimIfNeeded();
         return;
       }
 
       const card = document.createElement("article");
       card.className = `watcher-entry ${entry.role}`;
+      if (entry.taskDepth > 0 && !entry.taskBoundary) {
+        card.classList.add("watcher-task-child");
+        card.style.setProperty("--task-depth", String(entry.taskDepth));
+      }
+      if (entry.taskBoundary === "start") {
+        card.classList.add("watcher-task-start");
+      } else if (entry.taskBoundary === "end") {
+        card.classList.add("watcher-task-end");
+      }
       card.dataset.entryId = String(entry.id);
 
       const header = document.createElement("div");
@@ -841,7 +989,9 @@
       this.container.appendChild(card);
       entry.rendered = true;
       this.renderCount += 1;
-      this.entryNodeById.set(entry.id, { card, body, time, compact: false, imagesWrap, detailsWrap: bodyNode.detailsWrap });
+      const node = { card, body, time, compact: false, imagesWrap, detailsWrap: bodyNode.detailsWrap, entry };
+      this.entryNodeById.set(entry.id, node);
+      this.applyTaskVisibility(node, entry);
       this.trimIfNeeded();
     }
 
@@ -850,10 +1000,13 @@
       if (!node) {
         return;
       }
+      node.entry = entry;
 
       if (node.compact) {
         node.body.textContent = this.getEntryBodyText(entry);
         node.time.textContent = this.formatTime(entry.timestamp);
+        this.updateTaskToggleState(node, entry);
+        this.applyTaskVisibility(node, entry);
         return;
       }
 
@@ -883,6 +1036,7 @@
 
       this.updateEntryImages(node, entry.images || []);
       node.time.textContent = this.formatTime(entry.timestamp);
+      this.applyTaskVisibility(node, entry);
     }
   }
 

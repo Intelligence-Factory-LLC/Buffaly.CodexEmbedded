@@ -1046,6 +1046,41 @@ body {
 	border-bottom: 1px solid #e5e7eb;
 }
 
+.watcher-task-start {
+	background: #f8fafc;
+	border-left-color: #0ea5e9 !important;
+}
+
+.watcher-task-end {
+	background: #f8fafc;
+	border-left-color: #94a3b8 !important;
+}
+
+.watcher-task-child {
+	margin-left: calc(var(--task-depth, 1) * 0.45rem);
+	padding-left: 0.42rem;
+	border-left: 2px dashed #cbd5e1;
+}
+
+.watcher-inline-entry.watcher-task-child {
+	padding-left: 0.5rem;
+}
+
+.watcher-task-toggle {
+	border: 1px solid #cbd5e1;
+	border-radius: 999px;
+	background: #ffffff;
+	color: #334155;
+	font-size: 0.67rem;
+	font-weight: 700;
+	line-height: 1;
+	padding: 0.18rem 0.42rem;
+}
+
+.watcher-task-collapsed-hidden {
+	display: none !important;
+}
+
 .watcher-inline-title {
 	font-weight: 600;
 	color: #1f2937;
