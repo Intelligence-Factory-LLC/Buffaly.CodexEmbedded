@@ -31,6 +31,7 @@ let timelinePollInFlight = false;
 let sessionListPollTimer = null;
 let autoAttachAttempted = false;
 let syncingConversationModelSelect = false;
+let sessionMetaDetailsExpanded = false;
 let contextUsageByThread = new Map(); // threadId -> { usedTokens, contextWindow, percentLeft }
 let permissionLevelByThread = new Map(); // threadId -> { approval, sandbox }
 
@@ -67,6 +68,8 @@ const imageUploadBtn = document.getElementById("imageUploadBtn");
 const queuePromptBtn = document.getElementById("queuePromptBtn");
 const cancelTurnBtn = document.getElementById("cancelTurnBtn");
 const sendPromptBtn = document.getElementById("sendPromptBtn");
+const mobileProjectsBtn = document.getElementById("mobileProjectsBtn");
+const sidebarBackdrop = document.getElementById("sidebarBackdrop");
 
 const newSessionBtn = document.getElementById("newSessionBtn");
 const newProjectBtn = document.getElementById("newProjectBtn");
@@ -76,9 +79,15 @@ const existingSessionSelect = document.getElementById("existingSessionSelect");
 const stopSessionBtn = document.getElementById("stopSessionBtn");
 const sessionSelect = document.getElementById("sessionSelect");
 const sessionMeta = document.getElementById("sessionMeta");
+const sessionMetaDetailsBtn = document.getElementById("sessionMetaDetailsBtn");
+const sessionMetaSummaryItem = document.getElementById("sessionMetaSummaryItem");
+const sessionMetaSummaryValue = document.getElementById("sessionMetaSummaryValue");
 const sessionMetaNameItem = document.getElementById("sessionMetaNameItem");
 const sessionMetaNameValue = document.getElementById("sessionMetaNameValue");
+const sessionMetaThreadItem = document.getElementById("sessionMetaThreadItem");
 const sessionMetaThreadValue = document.getElementById("sessionMetaThreadValue");
+const sessionMetaModelItem = document.getElementById("sessionMetaModelItem");
+const sessionMetaCwdItem = document.getElementById("sessionMetaCwdItem");
 const sessionMetaCwdValue = document.getElementById("sessionMetaCwdValue");
 const conversationModelSelect = document.getElementById("conversationModelSelect");
 const sessionSidebar = document.getElementById("sessionSidebar");
@@ -1008,8 +1017,109 @@ function buildSidebarProjectGroups() {
   return groups;
 }
 
+function isMobileViewport() {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia("(max-width: 900px)").matches
+    : false;
+}
+
+function isMobileProjectsOpen() {
+  return !!layoutRoot && layoutRoot.classList.contains("mobile-projects-open");
+}
+
+function updateMobileProjectsButton() {
+  const mobile = isMobileViewport();
+  const open = mobile && isMobileProjectsOpen();
+
+  if (mobileProjectsBtn) {
+    mobileProjectsBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    mobileProjectsBtn.title = open ? "Hide projects" : "Show projects";
+    mobileProjectsBtn.setAttribute("aria-label", mobileProjectsBtn.title);
+  }
+
+  if (sidebarToggleBtn) {
+    const icon = sidebarToggleBtn.querySelector("i");
+    if (mobile) {
+      sidebarToggleBtn.title = "Close projects";
+      sidebarToggleBtn.setAttribute("aria-label", "Close projects");
+      sidebarToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+      if (icon) {
+        icon.className = "bi bi-x-lg";
+      }
+      return;
+    }
+
+    const collapsed = isSidebarCollapsed();
+    const label = collapsed ? "Show projects" : "Hide projects";
+    sidebarToggleBtn.title = label;
+    sidebarToggleBtn.setAttribute("aria-label", label);
+    sidebarToggleBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    if (icon) {
+      icon.className = collapsed ? "bi bi-layout-sidebar-inset" : "bi bi-layout-sidebar-inset-reverse";
+    }
+  }
+}
+
+function setMobileProjectsOpen(isOpen) {
+  if (!layoutRoot) {
+    return;
+  }
+
+  const mobile = isMobileViewport();
+  const open = mobile ? !!isOpen : false;
+  layoutRoot.classList.toggle("mobile-projects-open", open);
+  if (sidebarBackdrop) {
+    sidebarBackdrop.classList.toggle("hidden", !open);
+  }
+
+  updateMobileProjectsButton();
+}
+
+function updateConversationMetaVisibility() {
+  if (!sessionMeta) {
+    return;
+  }
+
+  const state = getActiveSessionState();
+  const hasState = !!state;
+  const mobile = isMobileViewport();
+
+  if (sessionMetaDetailsBtn) {
+    const showToggle = hasState && mobile;
+    sessionMetaDetailsBtn.classList.toggle("hidden", !showToggle);
+    sessionMetaDetailsBtn.textContent = sessionMetaDetailsExpanded ? "Hide details" : "Details";
+    sessionMetaDetailsBtn.setAttribute("aria-expanded", sessionMetaDetailsExpanded ? "true" : "false");
+  }
+
+  if (sessionMetaSummaryItem) {
+    sessionMetaSummaryItem.classList.toggle("hidden", !(hasState && mobile));
+  }
+
+  const detailItems = [
+    sessionMetaNameItem,
+    sessionMetaThreadItem,
+    sessionMetaModelItem,
+    sessionMetaCwdItem
+  ];
+
+  for (const item of detailItems) {
+    if (!item) {
+      continue;
+    }
+    const available = item.dataset.available !== "0";
+    const show = hasState && available && (!mobile || sessionMetaDetailsExpanded);
+    item.classList.toggle("hidden", !show);
+  }
+}
+
 function applySidebarCollapsed(isCollapsed) {
   if (!layoutRoot) {
+    return;
+  }
+
+  if (isMobileViewport()) {
+    layoutRoot.classList.remove("sidebar-collapsed");
+    updateMobileProjectsButton();
     return;
   }
 
@@ -1040,6 +1150,9 @@ function selectProject(projectKey, projectCwd = "") {
   }
 
   renderProjectSidebar();
+  if (isMobileViewport()) {
+    setMobileProjectsOpen(false);
+  }
 }
 
 function syncSelectedProjectFromActiveSession() {
@@ -1969,7 +2082,24 @@ function refreshSessionMeta() {
   const state = getActiveSessionState();
   if (!state) {
     sessionMeta.classList.add("hidden");
-    if (sessionMetaNameItem) sessionMetaNameItem.classList.add("hidden");
+    if (sessionMetaSummaryItem) sessionMetaSummaryItem.classList.add("hidden");
+    if (sessionMetaSummaryValue) sessionMetaSummaryValue.textContent = "";
+    if (sessionMetaNameItem) {
+      sessionMetaNameItem.classList.add("hidden");
+      sessionMetaNameItem.dataset.available = "0";
+    }
+    if (sessionMetaThreadItem) {
+      sessionMetaThreadItem.classList.add("hidden");
+      sessionMetaThreadItem.dataset.available = "0";
+    }
+    if (sessionMetaModelItem) {
+      sessionMetaModelItem.classList.add("hidden");
+      sessionMetaModelItem.dataset.available = "0";
+    }
+    if (sessionMetaCwdItem) {
+      sessionMetaCwdItem.classList.add("hidden");
+      sessionMetaCwdItem.dataset.available = "0";
+    }
     if (sessionMetaNameValue) sessionMetaNameValue.textContent = "";
     if (sessionMetaThreadValue) sessionMetaThreadValue.textContent = "";
     if (sessionMetaCwdValue) sessionMetaCwdValue.textContent = "";
@@ -1977,6 +2107,7 @@ function refreshSessionMeta() {
     sessionMeta.title = "";
     updateContextLeftIndicator();
     updatePermissionLevelIndicator();
+    updateConversationMetaVisibility();
     return;
   }
 
@@ -1985,15 +2116,21 @@ function refreshSessionMeta() {
   const threadId = state.threadId || "";
   const cwd = state.cwd || "";
   const selectedModel = state.model || modelValueForCreate() || "";
+  const summary = threadName || (threadId ? threadId.slice(0, 12) : "(none)");
   sessionMeta.classList.remove("hidden");
+
+  if (sessionMetaSummaryValue) {
+    sessionMetaSummaryValue.textContent = summary;
+    sessionMetaSummaryValue.title = threadName || threadId || "";
+  }
 
   if (sessionMetaNameItem && sessionMetaNameValue) {
     if (threadName) {
-      sessionMetaNameItem.classList.remove("hidden");
+      sessionMetaNameItem.dataset.available = "1";
       sessionMetaNameValue.textContent = threadName;
       sessionMetaNameValue.title = threadName;
     } else {
-      sessionMetaNameItem.classList.add("hidden");
+      sessionMetaNameItem.dataset.available = "0";
       sessionMetaNameValue.textContent = "";
       sessionMetaNameValue.title = "";
     }
@@ -2003,16 +2140,26 @@ function refreshSessionMeta() {
     sessionMetaThreadValue.textContent = threadId || "(none)";
     sessionMetaThreadValue.title = threadId || "";
   }
+  if (sessionMetaThreadItem) {
+    sessionMetaThreadItem.dataset.available = "1";
+  }
 
   if (sessionMetaCwdValue) {
     sessionMetaCwdValue.textContent = cwd || "(default)";
     sessionMetaCwdValue.title = cwd || "";
   }
+  if (sessionMetaCwdItem) {
+    sessionMetaCwdItem.dataset.available = "1";
+  }
 
   syncConversationModelOptions(selectedModel);
+  if (sessionMetaModelItem) {
+    sessionMetaModelItem.dataset.available = "1";
+  }
   sessionMeta.title = "";
   updateContextLeftIndicator();
   updatePermissionLevelIndicator();
+  updateConversationMetaVisibility();
 }
 
 function restartTimelinePolling() {
@@ -2137,6 +2284,9 @@ function setActiveSession(sessionId, options = {}) {
     restorePromptDraftForActiveSession();
   }
   renderProjectSidebar();
+  if (changed && isMobileViewport()) {
+    setMobileProjectsOpen(false);
+  }
 
   if (changed || restartTimeline) {
     timelineCursor = null;
@@ -2417,6 +2567,7 @@ function applySavedUiSettings() {
 
   const sidebarCollapsed = localStorage.getItem(STORAGE_SIDEBAR_COLLAPSED_KEY) === "1";
   applySidebarCollapsed(sidebarCollapsed);
+  setMobileProjectsOpen(false);
   restorePromptDraftForActiveSession();
 }
 
@@ -2480,6 +2631,7 @@ function ensureSocket() {
     appendLog("[ws] disconnected");
     socketReadyPromise = null;
     stopSessionListSync();
+    setMobileProjectsOpen(false);
     autoAttachAttempted = false;
     persistQueuedPromptState();
     sessions = new Map();
@@ -2897,7 +3049,30 @@ cwdInput.addEventListener("change", () => {
 
 if (sidebarToggleBtn) {
   sidebarToggleBtn.addEventListener("click", () => {
+    if (isMobileViewport()) {
+      setMobileProjectsOpen(false);
+      return;
+    }
     applySidebarCollapsed(!isSidebarCollapsed());
+  });
+}
+
+if (mobileProjectsBtn) {
+  mobileProjectsBtn.addEventListener("click", () => {
+    setMobileProjectsOpen(!isMobileProjectsOpen());
+  });
+}
+
+if (sidebarBackdrop) {
+  sidebarBackdrop.addEventListener("click", () => {
+    setMobileProjectsOpen(false);
+  });
+}
+
+if (sessionMetaDetailsBtn) {
+  sessionMetaDetailsBtn.addEventListener("click", () => {
+    sessionMetaDetailsExpanded = !sessionMetaDetailsExpanded;
+    updateConversationMetaVisibility();
   });
 }
 
@@ -3211,15 +3386,24 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
-  if (modelCommandModal.classList.contains("hidden")) {
+  if (!modelCommandModal.classList.contains("hidden")) {
+    event.preventDefault();
+    closeModelCommandModal();
     return;
   }
 
-  event.preventDefault();
-  closeModelCommandModal();
+  if (isMobileProjectsOpen()) {
+    event.preventDefault();
+    setMobileProjectsOpen(false);
+  }
 });
 
 window.addEventListener("resize", () => {
+  if (!isMobileViewport()) {
+    setMobileProjectsOpen(false);
+  }
+  updateMobileProjectsButton();
+  updateConversationMetaVisibility();
   updateScrollToBottomButton();
 });
 
@@ -3235,6 +3419,8 @@ updateScrollToBottomButton();
 updatePromptActionState();
 updateContextLeftIndicator();
 updatePermissionLevelIndicator();
+updateMobileProjectsButton();
+updateConversationMetaVisibility();
 
 timelineFlushTimer = setInterval(() => timeline.flush(), TIMELINE_POLL_INTERVAL_MS);
 

@@ -490,6 +490,49 @@
       return entry.text || "";
     }
 
+    isNarrowViewport() {
+      return typeof window !== "undefined"
+        && typeof window.matchMedia === "function"
+        && window.matchMedia("(max-width: 900px)").matches;
+    }
+
+    shouldUseCollapsibleBody(entry) {
+      return this.isNarrowViewport() && entry && entry.role === "tool";
+    }
+
+    createBodyNodeForEntry(card, entry, bodyText) {
+      if (!bodyText) {
+        return { body: null, detailsWrap: null };
+      }
+
+      if (!this.shouldUseCollapsibleBody(entry)) {
+        const body = document.createElement("pre");
+        body.className = "watcher-entry-text";
+        body.textContent = bodyText;
+        card.appendChild(body);
+        return { body, detailsWrap: null };
+      }
+
+      const details = document.createElement("details");
+      details.className = "watcher-entry-collapsible";
+
+      const toggle = document.createElement("summary");
+      toggle.textContent = "Show details";
+      details.appendChild(toggle);
+
+      const body = document.createElement("pre");
+      body.className = "watcher-entry-text";
+      body.textContent = bodyText;
+      details.appendChild(body);
+
+      details.addEventListener("toggle", () => {
+        toggle.textContent = details.open ? "Hide details" : "Show details";
+      });
+
+      card.appendChild(details);
+      return { body, detailsWrap: details };
+    }
+
     queueEntryUpdate(entry) {
       if (!entry || !entry.rendered) {
         return;
@@ -790,20 +833,15 @@
       card.appendChild(header);
 
       const bodyText = this.getEntryBodyText(entry);
-      let body = null;
-      if (bodyText) {
-        body = document.createElement("pre");
-        body.className = "watcher-entry-text";
-        body.textContent = bodyText;
-        card.appendChild(body);
-      }
+      const bodyNode = this.createBodyNodeForEntry(card, entry, bodyText);
+      const body = bodyNode.body;
 
       const imagesWrap = this.renderEntryImages(card, entry.images || []);
 
       this.container.appendChild(card);
       entry.rendered = true;
       this.renderCount += 1;
-      this.entryNodeById.set(entry.id, { card, body, time, compact: false, imagesWrap });
+      this.entryNodeById.set(entry.id, { card, body, time, compact: false, imagesWrap, detailsWrap: bodyNode.detailsWrap });
       this.trimIfNeeded();
     }
 
@@ -820,13 +858,26 @@
       }
 
       const bodyText = this.getEntryBodyText(entry);
+      const shouldCollapse = this.shouldUseCollapsibleBody(entry);
+
       if (!node.body && bodyText) {
-        const body = document.createElement("pre");
-        body.className = "watcher-entry-text";
-        body.textContent = bodyText;
-        node.card.appendChild(body);
-        node.body = body;
+        const bodyNode = this.createBodyNodeForEntry(node.card, entry, bodyText);
+        node.body = bodyNode.body;
+        node.detailsWrap = bodyNode.detailsWrap;
       } else if (node.body) {
+        if (shouldCollapse && !node.detailsWrap) {
+          const bodyNode = this.createBodyNodeForEntry(node.card, entry, bodyText);
+          if (bodyNode.body) {
+            const parent = node.body.parentElement;
+            if (parent && parent.classList && parent.classList.contains("watcher-entry-collapsible")) {
+              parent.remove();
+            } else if (parent === node.card) {
+              node.card.removeChild(node.body);
+            }
+            node.body = bodyNode.body;
+            node.detailsWrap = bodyNode.detailsWrap;
+          }
+        }
         node.body.textContent = bodyText;
       }
 

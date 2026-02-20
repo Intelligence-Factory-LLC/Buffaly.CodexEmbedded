@@ -16,6 +16,10 @@
 				<a class="toolbar-link nav-link" href="logs">Logs</a>
 				<a class="toolbar-link nav-link" href="watcher">Watcher</a>
 			</div>
+			<button id="mobileProjectsBtn" class="toolbar-mobile-projects-btn" type="button" title="Show projects" aria-label="Show projects" aria-expanded="false">
+				<i class="bi bi-kanban" aria-hidden="true"></i>
+				<span>Projects</span>
+			</button>
 		</header>
 		<main class="main codex-main">
 			<aside id="sessionSidebar" class="panel session-sidebar">
@@ -36,20 +40,25 @@
 			<section class="panel chat-panel">
 				<div class="panel-title panel-title-row conversation-title-row">
 					<span>Conversation</span>
+					<button id="sessionMetaDetailsBtn" class="conversation-meta-toggle hidden" type="button" aria-expanded="false">Details</button>
 					<div id="sessionMeta" class="conversation-meta">
-						<span id="sessionMetaNameItem" class="conversation-meta-item hidden">
+						<span id="sessionMetaSummaryItem" class="conversation-meta-item conversation-meta-summary hidden">
+							<span class="conversation-meta-label">Session</span>
+							<span id="sessionMetaSummaryValue" class="conversation-meta-value"></span>
+						</span>
+						<span id="sessionMetaNameItem" class="conversation-meta-item conversation-meta-detail hidden">
 							<span class="conversation-meta-label">Name</span>
 							<span id="sessionMetaNameValue" class="conversation-meta-value"></span>
 						</span>
-						<span class="conversation-meta-item">
+						<span id="sessionMetaThreadItem" class="conversation-meta-item conversation-meta-detail">
 							<span class="conversation-meta-label">Thread</span>
 							<span id="sessionMetaThreadValue" class="conversation-meta-value"></span>
 						</span>
-						<label class="conversation-meta-item conversation-meta-model" for="conversationModelSelect">
+						<label id="sessionMetaModelItem" class="conversation-meta-item conversation-meta-model conversation-meta-detail" for="conversationModelSelect">
 							<span class="conversation-meta-label">Model</span>
 							<select id="conversationModelSelect"></select>
 						</label>
-						<span class="conversation-meta-item conversation-meta-cwd">
+						<span id="sessionMetaCwdItem" class="conversation-meta-item conversation-meta-cwd conversation-meta-detail">
 							<span class="conversation-meta-label">CWD</span>
 							<span id="sessionMetaCwdValue" class="conversation-meta-value"></span>
 						</span>
@@ -91,6 +100,7 @@
 				</form>
 			</section>
 		</main>
+		<button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close projects"></button>
 
 		<div id="modelCommandModal" class="command-modal hidden" role="dialog" aria-modal="true" aria-labelledby="modelCommandTitle">
 			<div class="command-modal-card">

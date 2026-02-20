@@ -108,6 +108,10 @@ body {
 	line-height: 1.15;
 }
 
+.toolbar-mobile-projects-btn {
+	display: none;
+}
+
 .toolbar button:disabled {
 	opacity: 0.5;
 	cursor: not-allowed;
@@ -471,6 +475,18 @@ body {
 	align-items: flex-start;
 }
 
+.conversation-meta-toggle {
+	display: none;
+	padding: 0.28rem 0.52rem;
+	border: 1px solid #cbd5e1;
+	border-radius: 999px;
+	background: #ffffff;
+	color: #334155;
+	font-size: 0.74rem;
+	font-weight: 700;
+	line-height: 1;
+}
+
 .conversation-meta {
 	flex: 1;
 	min-width: 0;
@@ -503,6 +519,10 @@ body {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+.conversation-meta-summary {
+	display: none;
 }
 
 .conversation-meta-model {
@@ -961,6 +981,23 @@ body {
 	font-family: Consolas, "Courier New", monospace;
 }
 
+.watcher-entry-collapsible {
+	margin-top: 0.18rem;
+}
+
+.watcher-entry-collapsible > summary {
+	cursor: pointer;
+	list-style: none;
+	font-size: 0.76rem;
+	font-weight: 700;
+	color: #334155;
+	user-select: none;
+}
+
+.watcher-entry-collapsible > summary::-webkit-details-marker {
+	display: none;
+}
+
 .watcher-entry-images {
 	margin-top: 0.45rem;
 	display: flex;
@@ -1067,89 +1104,279 @@ body {
 	cursor: pointer;
 }
 
+.sidebar-backdrop {
+	display: none;
+}
+
 .hidden {
 	display: none;
 }
 
 @media (max-width: 900px) {
+	.layout {
+		position: relative;
+		overflow: hidden;
+	}
+
 	.main {
 		grid-template-columns: 1fr;
-		padding: 0.5rem;
-		gap: 0.5rem;
+		padding: 0.35rem;
+		gap: 0.35rem;
 	}
 
 	.toolbar {
-		padding: 0.55rem 0.6rem;
-		gap: 0.45rem;
+		padding: 0.45rem 0.5rem;
+		gap: 0.35rem;
+		min-height: 3.25rem;
+	}
+
+	.toolbar-left {
+		gap: 0.32rem;
+	}
+
+	.toolbar-link {
+		padding: 0.33rem 0.45rem;
+		font-size: 0.95rem;
+	}
+
+	.toolbar-mobile-projects-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+		padding: 0.38rem 0.58rem !important;
+		border: 1px solid #475569 !important;
+		border-radius: 999px !important;
+		background: #0f172a !important;
+		color: #dbeafe !important;
+		font-size: 0.82rem;
+		line-height: 1;
+	}
+
+	.toolbar-mobile-projects-btn i {
+		font-size: 0.86rem;
 	}
 
 	.codex-main {
 		grid-template-columns: 1fr;
-		gap: 0.5rem;
+		gap: 0.35rem;
+		min-height: calc(100dvh - 3.45rem);
+	}
+
+	.chat-panel {
+		height: calc(100dvh - 4.05rem);
 	}
 
 	.session-sidebar {
-		max-height: 32vh;
+		position: fixed;
+		top: 3.45rem;
+		bottom: 0;
+		left: 0;
+		width: min(88vw, 360px);
+		max-height: none;
+		z-index: 40;
+		border-radius: 0 10px 10px 0;
+		box-shadow: 0 20px 35px rgba(2, 6, 23, 0.34);
+		transform: translateX(-105%);
+		transition: transform 0.2s ease;
+	}
+
+	.layout.mobile-projects-open .session-sidebar {
+		transform: translateX(0);
+	}
+
+	.sidebar-backdrop {
+		display: block;
+		position: fixed;
+		inset: 3.45rem 0 0 0;
+		border: 0;
+		background: rgba(15, 23, 42, 0.46);
+		z-index: 30;
+		padding: 0;
+		margin: 0;
+	}
+
+	.layout.sidebar-collapsed .session-sidebar {
+		width: min(88vw, 360px);
+		min-width: 0;
+	}
+
+	.layout.sidebar-collapsed .session-sidebar .panel-title-row {
+		justify-content: space-between;
+		padding-inline: 0.55rem;
+	}
+
+	.layout.sidebar-collapsed .session-sidebar .panel-title-row > span {
+		display: inline;
+	}
+
+	.layout.sidebar-collapsed .session-sidebar-controls {
+		display: flex;
+	}
+
+	.layout.sidebar-collapsed .project-list {
+		display: flex;
 	}
 
 	.panel-title {
-		padding: 0.55rem 0.65rem;
+		padding: 0.5rem 0.58rem;
+	}
+
+	.conversation-title-row {
+		gap: 0.4rem;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+
+	.conversation-meta-toggle {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.conversation-meta {
+		width: 100%;
+		justify-content: flex-start;
+		gap: 0.28rem 0.35rem;
+	}
+
+	.conversation-meta-summary {
+		display: inline-flex;
+	}
+
+	.conversation-meta-value {
+		max-width: 180px;
+	}
+
+	.conversation-meta-model select {
+		min-width: 120px;
+	}
+
+	.watcher-timeline {
+		padding: 0.42rem;
+		gap: 0.36rem;
+	}
+
+	.watcher-entry {
+		padding: 0.38rem 0.45rem;
+		border-left-width: 3px;
+		border-radius: 6px;
+	}
+
+	.watcher-entry-header {
+		margin-bottom: 0.2rem;
+		gap: 0.45rem;
+	}
+
+	.watcher-entry-title {
+		font-size: 0.82rem;
+	}
+
+	.watcher-entry-time {
+		font-size: 0.7rem;
+	}
+
+	.watcher-entry-text {
+		font-size: 0.77rem;
+		line-height: 1.3;
+	}
+
+	.watcher-inline-entry {
+		padding: 0.16rem 0.3rem;
+		font-size: 0.73rem;
+		gap: 0.24rem;
+	}
+
+	.prompt-queue {
+		margin: 0.35rem 0.45rem 0;
+		padding: 0.3rem 0.4rem;
+		font-size: 0.77rem;
+		max-height: 88px;
+		overflow: auto;
+	}
+
+	.composer-images {
+		gap: 0.34rem;
+		padding: 0.35rem 0.45rem 0;
+	}
+
+	.composer-image-pill {
+		width: 52px;
+		height: 52px;
 	}
 
 	.prompt-form {
 		flex-direction: column;
 		align-items: stretch;
-		padding: 0.6rem;
-		gap: 0.45rem;
+		padding: 0.45rem;
+		gap: 0.36rem;
+		position: sticky;
+		bottom: 0;
+		z-index: 6;
+		background: rgba(255, 255, 255, 0.96);
+		backdrop-filter: saturate(120%) blur(2px);
 	}
 
 	.prompt-form textarea {
 		width: 100%;
+		min-height: 2.85rem;
+		max-height: 8rem;
+		padding: 0.45rem 0.55rem;
+	}
+
+	.prompt-form textarea:focus {
 		min-height: 4.8rem;
 	}
 
 	.prompt-actions {
 		width: 100%;
-		grid-template-columns: 1fr auto auto;
+		grid-template-columns: 1fr auto auto auto;
 		grid-template-areas:
-			"context upload upload"
-			"queue cancel send";
-		column-gap: 0.35rem;
-		row-gap: 0.32rem;
+			"context context context upload"
+			"queue cancel send send";
+		column-gap: 0.28rem;
+		row-gap: 0.22rem;
 		justify-items: stretch;
-	}
-
-	.context-left-indicator {
-		align-self: center;
-		justify-self: start;
-	}
-
-	.conversation-meta {
-		justify-content: flex-start;
-	}
-
-	.conversation-meta-value {
-		max-width: 220px;
-	}
-
-	.conversation-meta-model select {
-		min-width: 140px;
-	}
-
-	.scroll-to-bottom-btn {
-		right: 0.85rem;
-		bottom: 8.9rem;
-	}
-
-	.prompt-actions {
 		min-width: 0;
 	}
 
+	.scroll-to-bottom-btn {
+		right: 0.6rem;
+		bottom: 5rem;
+		width: 1.95rem;
+		height: 1.95rem;
+	}
+
+	.composer-status-stack {
+		flex-direction: row;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.25rem;
+	}
+
 	.context-left-indicator {
-		font-size: 0.72rem;
+		font-size: 0.66rem;
+		padding: 0.22rem 0.42rem;
 	}
 
 	.permission-level-indicator {
-		font-size: 0.68rem;
+		font-size: 0.64rem;
+		padding: 0.2rem 0.38rem;
+	}
+
+	.prompt-upload-btn {
+		width: 2rem;
+		height: 2rem;
+	}
+
+	.prompt-queue-btn,
+	.prompt-cancel-btn,
+	.prompt-form .prompt-send-btn {
+		min-width: 0;
+		padding: 0.44rem 0.62rem !important;
+		font-size: 0.95rem;
+	}
+
+	.prompt-form .prompt-send-btn.solo-send {
+		grid-column: 1 / span 4;
 	}
 }
