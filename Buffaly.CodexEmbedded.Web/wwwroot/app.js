@@ -30,6 +30,7 @@ let timelinePollGeneration = 0;
 let timelinePollInFlight = false;
 let autoAttachAttempted = false;
 let syncingConversationModelSelect = false;
+let contextUsageByThread = new Map(); // threadId -> { usedTokens, contextWindow, percentLeft }
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -55,10 +56,12 @@ const promptForm = document.getElementById("promptForm");
 const promptInput = document.getElementById("promptInput");
 const promptQueue = document.getElementById("promptQueue");
 const scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
+const contextLeftIndicator = document.getElementById("contextLeftIndicator");
 const composerImages = document.getElementById("composerImages");
 const imageUploadInput = document.getElementById("imageUploadInput");
 const imageUploadBtn = document.getElementById("imageUploadBtn");
 const queuePromptBtn = document.getElementById("queuePromptBtn");
+const sendPromptBtn = document.getElementById("sendPromptBtn");
 
 const newSessionBtn = document.getElementById("newSessionBtn");
 const newProjectBtn = document.getElementById("newProjectBtn");
@@ -128,6 +131,131 @@ function scrollMessagesToBottom(smooth = false) {
   }
 
   updateScrollToBottomButton();
+}
+
+function updatePromptActionState() {
+  if (!queuePromptBtn || !sendPromptBtn) {
+    return;
+  }
+
+  const processingActive = !!activeSessionId && isTurnInFlight(activeSessionId);
+  queuePromptBtn.classList.toggle("hidden", !processingActive);
+  sendPromptBtn.classList.toggle("queue-mode", processingActive);
+  queuePromptBtn.title = processingActive ? "Queue prompt while processing" : "Queue prompt";
+}
+
+function updateContextLeftIndicator() {
+  if (!contextLeftIndicator) {
+    return;
+  }
+
+  const state = getActiveSessionState();
+  const threadId = typeof state?.threadId === "string" ? state.threadId.trim() : "";
+  const info = threadId ? contextUsageByThread.get(threadId) : null;
+  if (!info || !Number.isFinite(info.percentLeft)) {
+    contextLeftIndicator.textContent = "--% context left";
+    contextLeftIndicator.title = "Context usage unavailable";
+    return;
+  }
+
+  contextLeftIndicator.textContent = `${info.percentLeft}% context left`;
+  contextLeftIndicator.title = `Used ${info.usedTokens.toLocaleString()} / ${info.contextWindow.toLocaleString()} tokens`;
+}
+
+function extractTokenUsagePieces(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const tokenPayload = payload.type === "token_count"
+    ? (payload.info || null)
+    : (payload.tokenUsage || payload.token_usage || payload);
+  if (!tokenPayload || typeof tokenPayload !== "object") {
+    return null;
+  }
+
+  const contextWindowRaw = tokenPayload.model_context_window
+    ?? tokenPayload.modelContextWindow
+    ?? null;
+  const usedRaw = tokenPayload.total_token_usage?.total_tokens
+    ?? tokenPayload.totalTokenUsage?.totalTokens
+    ?? tokenPayload.total?.totalTokens
+    ?? tokenPayload.total_tokens
+    ?? null;
+
+  const contextWindowNumber = Number(contextWindowRaw);
+  const usedTokensNumber = Number(usedRaw);
+  const contextWindow = Number.isFinite(contextWindowNumber) && contextWindowNumber > 0 ? contextWindowNumber : null;
+  const usedTokens = Number.isFinite(usedTokensNumber) && usedTokensNumber >= 0 ? usedTokensNumber : null;
+
+  if (contextWindow === null && usedTokens === null) {
+    return null;
+  }
+
+  return { contextWindow, usedTokens };
+}
+
+function updateContextUsageFromLogLines(threadId, lines) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !Array.isArray(lines) || lines.length === 0) {
+    return;
+  }
+
+  const prior = contextUsageByThread.get(normalizedThreadId) || null;
+  let contextWindow = Number.isFinite(prior?.contextWindow) ? prior.contextWindow : null;
+  let usedTokens = Number.isFinite(prior?.usedTokens) ? prior.usedTokens : null;
+
+  for (const line of lines) {
+    if (typeof line !== "string" || !line.trim()) {
+      continue;
+    }
+
+    const parsed = safeJsonParse(line, null);
+    if (!parsed || typeof parsed !== "object") {
+      continue;
+    }
+
+    if (parsed.type === "event_msg" && parsed.payload && typeof parsed.payload === "object") {
+      const payload = parsed.payload;
+      if (payload.type === "task_started") {
+        const startedWindow = Number(payload.model_context_window ?? payload.modelContextWindow ?? null);
+        if (Number.isFinite(startedWindow) && startedWindow > 0) {
+          contextWindow = startedWindow;
+        }
+      }
+
+      const eventPieces = extractTokenUsagePieces(payload);
+      if (eventPieces) {
+        if (eventPieces.contextWindow !== null) {
+          contextWindow = eventPieces.contextWindow;
+        }
+        if (eventPieces.usedTokens !== null) {
+          usedTokens = eventPieces.usedTokens;
+        }
+      }
+      continue;
+    }
+
+    const fallbackPieces = extractTokenUsagePieces(parsed.payload || parsed);
+    if (fallbackPieces) {
+      if (fallbackPieces.contextWindow !== null) {
+        contextWindow = fallbackPieces.contextWindow;
+      }
+      if (fallbackPieces.usedTokens !== null) {
+        usedTokens = fallbackPieces.usedTokens;
+      }
+    }
+  }
+
+  if (Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(usedTokens) && usedTokens >= 0) {
+    const ratio = Math.min(1, Math.max(0, usedTokens / contextWindow));
+    const percentLeft = Math.max(0, Math.min(100, Math.round((1 - ratio) * 100)));
+    contextUsageByThread.set(normalizedThreadId, { usedTokens, contextWindow, percentLeft });
+    const activeThreadId = typeof getActiveSessionState()?.threadId === "string" ? getActiveSessionState().threadId.trim() : "";
+    if (activeThreadId === normalizedThreadId) {
+      updateContextLeftIndicator();
+    }
+  }
 }
 
 function normalizePath(path) {
@@ -1122,7 +1250,12 @@ function renderProjectSidebar() {
       if (entry.isProcessing) {
         const processing = document.createElement("span");
         processing.className = "session-badge processing";
-        processing.textContent = "Processing";
+        processing.title = "Processing";
+        processing.setAttribute("aria-label", "Processing");
+        const spinner = document.createElement("i");
+        spinner.className = "bi bi-arrow-repeat session-processing-icon";
+        spinner.setAttribute("aria-hidden", "true");
+        processing.appendChild(spinner);
         badges.appendChild(processing);
       }
       head.appendChild(badges);
@@ -1359,6 +1492,9 @@ function setTurnInFlight(sessionId, value) {
   turnInFlightBySession.set(sessionId, normalized);
   if (prior !== normalized) {
     renderProjectSidebar();
+    if (sessionId === activeSessionId) {
+      updatePromptActionState();
+    }
   }
 }
 
@@ -1668,6 +1804,7 @@ function refreshSessionMeta() {
     if (sessionMetaCwdValue) sessionMetaCwdValue.textContent = "";
     syncConversationModelOptions(modelSelect.value || "");
     sessionMeta.title = "";
+    updateContextLeftIndicator();
     return;
   }
 
@@ -1702,6 +1839,7 @@ function refreshSessionMeta() {
 
   syncConversationModelOptions(selectedModel);
   sessionMeta.title = "";
+  updateContextLeftIndicator();
 }
 
 function restartTimelinePolling() {
@@ -1778,7 +1916,9 @@ async function pollTimelineOnce(initial, generation) {
     }
 
     timelineCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
-    timeline.enqueueParsedLines(Array.isArray(data.lines) ? data.lines : []);
+    const lines = Array.isArray(data.lines) ? data.lines : [];
+    updateContextUsageFromLogLines(state.threadId, lines);
+    timeline.enqueueParsedLines(lines);
 
     if (data.truncated === true) {
       timeline.enqueueInlineNotice("Showing latest log lines.");
@@ -1814,6 +1954,8 @@ function setActiveSession(sessionId, options = {}) {
   }
   syncSelectedProjectFromActiveSession();
   refreshSessionMeta();
+  updateContextLeftIndicator();
+  updatePromptActionState();
   renderPromptQueue();
   if (changed) {
     clearComposerImages();
@@ -1840,6 +1982,8 @@ function clearActiveSession() {
   renderPromptQueue();
   clearComposerImages();
   restorePromptDraftForActiveSession();
+  updateContextLeftIndicator();
+  updatePromptActionState();
   timelineCursor = null;
   timeline.clear();
   renderProjectSidebar();
@@ -2825,6 +2969,8 @@ applySavedUiSettings();
 renderComposerImages();
 renderProjectSidebar();
 updateScrollToBottomButton();
+updatePromptActionState();
+updateContextLeftIndicator();
 
 timelineFlushTimer = setInterval(() => timeline.flush(), TIMELINE_POLL_INTERVAL_MS);
 
