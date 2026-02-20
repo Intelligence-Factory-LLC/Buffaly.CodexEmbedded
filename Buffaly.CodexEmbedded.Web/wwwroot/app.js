@@ -1232,16 +1232,29 @@ function renderPromptQueue() {
     return;
   }
 
-  const previews = queue
-    .slice(0, MAX_QUEUE_PREVIEW)
-    .map((item, index) => {
-      const imageCount = Array.isArray(item.images) ? item.images.length : 0;
-      const imageSuffix = imageCount > 0 ? ` (+${imageCount} image${imageCount > 1 ? "s" : ""})` : "";
-      const rawPreview = (item.text || "").trim() || (imageCount > 0 ? "(image only)" : "");
-      return `${index + 1}. ${trimPromptPreview(rawPreview)}${imageSuffix}`;
+  promptQueue.textContent = "";
+  const header = document.createElement("div");
+  header.className = "prompt-queue-header";
+  header.textContent = `Queued (${queue.length}) - tap to edit before sending`;
+  promptQueue.appendChild(header);
+
+  const list = document.createElement("div");
+  list.className = "prompt-queue-list";
+  for (let i = 0; i < queue.length; i++) {
+    const item = queue[i];
+    const imageCount = Array.isArray(item.images) ? item.images.length : 0;
+    const imageSuffix = imageCount > 0 ? ` (+${imageCount} image${imageCount > 1 ? "s" : ""})` : "";
+    const rawPreview = (item.text || "").trim() || (imageCount > 0 ? "(image only)" : "");
+    const itemButton = document.createElement("button");
+    itemButton.type = "button";
+    itemButton.className = "prompt-queue-item";
+    itemButton.textContent = `${i + 1}. ${trimPromptPreview(rawPreview)}${imageSuffix}`;
+    itemButton.addEventListener("click", () => {
+      restoreQueuedPromptForEditing(activeSessionId, i);
     });
-  const overflow = queue.length > MAX_QUEUE_PREVIEW ? ` +${queue.length - MAX_QUEUE_PREVIEW} more` : "";
-  promptQueue.textContent = `Queued (${queue.length}): ${previews.join(" | ")}${overflow}`;
+    list.appendChild(itemButton);
+  }
+  promptQueue.appendChild(list);
   promptQueue.classList.remove("hidden");
 }
 
@@ -1258,6 +1271,39 @@ function queuePrompt(sessionId, promptText, images = []) {
   if (sessionId === activeSessionId) {
     renderPromptQueue();
   }
+}
+
+function restoreQueuedPromptForEditing(sessionId, itemIndex) {
+  if (!sessionId) {
+    return;
+  }
+
+  const queue = getQueueForSession(sessionId);
+  if (!queue || itemIndex < 0 || itemIndex >= queue.length) {
+    return;
+  }
+
+  const [item] = queue.splice(itemIndex, 1);
+  const text = String(item?.text || "");
+  const restoredImages = Array.isArray(item?.images)
+    ? item.images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0)
+    : [];
+
+  promptInput.value = text;
+  rememberPromptDraftForState(getActiveSessionState());
+
+  pendingComposerImages = restoredImages.slice(0, MAX_COMPOSER_IMAGES).map((x) => ({
+    id: nextComposerImageId++,
+    name: x.name || "image",
+    mimeType: x.mimeType || "image/*",
+    size: typeof x.size === "number" ? x.size : 0,
+    url: x.url
+  }));
+  renderComposerImages();
+  renderPromptQueue();
+
+  promptInput.focus();
+  promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
 }
 
 function startTurn(sessionId, promptText, images = [], options = {}) {

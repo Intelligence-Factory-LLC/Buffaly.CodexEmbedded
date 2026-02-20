@@ -433,9 +433,35 @@ body {
 	background: #f8fafc;
 	color: #334155;
 	font-size: 0.82rem;
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
+	white-space: normal;
+}
+
+.prompt-queue-header {
+	font-weight: 600;
+	margin-bottom: 0.3rem;
+}
+
+.prompt-queue-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+}
+
+.prompt-queue-item {
+	width: 100%;
+	text-align: left;
+	padding: 0.35rem 0.45rem;
+	border: 1px solid #d1d5db;
+	border-radius: 5px;
+	background: #ffffff;
+	color: #0f172a;
+	font-size: 0.8rem;
+	cursor: pointer;
+}
+
+.prompt-queue-item:hover {
+	background: #eef2ff;
+	border-color: #a5b4fc;
 }
 
 .command-modal {
