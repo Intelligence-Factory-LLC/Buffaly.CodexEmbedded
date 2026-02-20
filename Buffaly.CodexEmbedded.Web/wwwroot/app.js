@@ -28,6 +28,7 @@ let timelinePollTimer = null;
 let timelineFlushTimer = null;
 let timelinePollGeneration = 0;
 let timelinePollInFlight = false;
+let sessionListPollTimer = null;
 let autoAttachAttempted = false;
 let syncingConversationModelSelect = false;
 let contextUsageByThread = new Map(); // threadId -> { usedTokens, contextWindow, percentLeft }
@@ -49,6 +50,7 @@ const MAX_PROJECT_SESSIONS_COLLAPSED = 4;
 const MAX_COMPOSER_IMAGES = 4;
 const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
+const SESSION_LIST_SYNC_INTERVAL_MS = 2500;
 
 const layoutRoot = document.querySelector(".layout");
 const chatMessages = document.getElementById("chatMessages");
@@ -63,6 +65,7 @@ const composerImages = document.getElementById("composerImages");
 const imageUploadInput = document.getElementById("imageUploadInput");
 const imageUploadBtn = document.getElementById("imageUploadBtn");
 const queuePromptBtn = document.getElementById("queuePromptBtn");
+const cancelTurnBtn = document.getElementById("cancelTurnBtn");
 const sendPromptBtn = document.getElementById("sendPromptBtn");
 
 const newSessionBtn = document.getElementById("newSessionBtn");
@@ -136,16 +139,18 @@ function scrollMessagesToBottom(smooth = false) {
 }
 
 function updatePromptActionState() {
-  if (!queuePromptBtn || !sendPromptBtn) {
+  if (!queuePromptBtn || !sendPromptBtn || !cancelTurnBtn) {
     return;
   }
 
   const processingActive = !!activeSessionId && isTurnInFlight(activeSessionId);
   queuePromptBtn.classList.toggle("hidden", !processingActive);
+  cancelTurnBtn.classList.toggle("hidden", !processingActive);
   sendPromptBtn.classList.toggle("queue-mode", processingActive);
   sendPromptBtn.classList.toggle("solo-send", !processingActive);
   sendPromptBtn.title = processingActive ? "Send now (Enter)" : "Send (Enter)";
   queuePromptBtn.title = "Queue prompt (Tab)";
+  cancelTurnBtn.title = "Cancel running turn";
 }
 
 function updateContextLeftIndicator() {
@@ -2423,8 +2428,31 @@ function sendCurrentLogVerbosity() {
   send("log_verbosity_set", { verbosity: getCurrentLogVerbosity() });
 }
 
+function stopSessionListSync() {
+  if (sessionListPollTimer) {
+    clearInterval(sessionListPollTimer);
+    sessionListPollTimer = null;
+  }
+}
+
+function startSessionListSync() {
+  stopSessionListSync();
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  sessionListPollTimer = setInterval(() => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      stopSessionListSync();
+      return;
+    }
+    send("session_list");
+  }, SESSION_LIST_SYNC_INTERVAL_MS);
+}
+
 function ensureSocket() {
   if (socket && socket.readyState === WebSocket.OPEN) {
+    startSessionListSync();
     return Promise.resolve();
   }
 
@@ -2442,6 +2470,7 @@ function ensureSocket() {
   socket.addEventListener("open", () => {
     appendLog("[ws] connected");
     socketReadyPromise = null;
+    startSessionListSync();
     send("session_list");
     send("session_catalog_list");
     send("models_list");
@@ -2450,6 +2479,7 @@ function ensureSocket() {
   socket.addEventListener("close", () => {
     appendLog("[ws] disconnected");
     socketReadyPromise = null;
+    stopSessionListSync();
     autoAttachAttempted = false;
     persistQueuedPromptState();
     sessions = new Map();
@@ -2563,6 +2593,7 @@ function handleServerEvent(frame) {
             setPermissionLevelForThread(st.threadId, permissionInfo);
           }
         }
+        setTurnInFlight(s.sessionId, s.isTurnInFlight === true || s.turnInFlight === true);
         next.set(s.sessionId, st);
       }
       sessions = next;
@@ -2614,6 +2645,23 @@ function handleServerEvent(frame) {
       const errorMessage = payload.errorMessage || null;
       appendLog(`[turn] session=${payload.sessionId || "unknown"} status=${status}${errorMessage ? " error=" + errorMessage : ""}`);
       renderPromptQueue();
+      return;
+    }
+
+    case "turn_started": {
+      const sessionId = payload.sessionId || null;
+      if (sessionId) {
+        setTurnInFlight(sessionId, true);
+      }
+      return;
+    }
+
+    case "turn_cancel_requested": {
+      const sessionId = payload.sessionId || null;
+      if (sessionId) {
+        setTurnInFlight(sessionId, true);
+      }
+      appendLog(`[turn] cancel requested for session=${sessionId || "unknown"}`);
       return;
     }
 
@@ -3024,6 +3072,25 @@ function queueCurrentComposerPrompt() {
   return true;
 }
 
+function cancelCurrentTurn() {
+  if (!activeSessionId) {
+    appendLog("[turn] no active session to cancel");
+    return;
+  }
+
+  if (!isTurnInFlight(activeSessionId)) {
+    appendLog(`[turn] no running turn to cancel for session=${activeSessionId}`);
+    return;
+  }
+
+  if (!send("turn_cancel", { sessionId: activeSessionId })) {
+    appendLog("[turn] failed to send cancel; websocket is closed");
+    return;
+  }
+
+  appendLog(`[turn] cancel requested for session=${activeSessionId}`);
+}
+
 promptForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const prompt = promptInput.value.trim();
@@ -3108,6 +3175,13 @@ promptInput.addEventListener("keydown", (event) => {
 if (queuePromptBtn) {
   queuePromptBtn.addEventListener("click", () => {
     queueCurrentComposerPrompt();
+    promptInput.focus();
+  });
+}
+
+if (cancelTurnBtn) {
+  cancelTurnBtn.addEventListener("click", () => {
+    cancelCurrentTurn();
     promptInput.focus();
   });
 }

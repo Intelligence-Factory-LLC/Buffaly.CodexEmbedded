@@ -117,6 +117,9 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						TryGetTurnImageInputs(root),
 						cancellationToken);
 					return;
+				case "turn_cancel":
+					await CancelTurnAsync(TryGetString(root, "sessionId"), cancellationToken);
+					return;
 				case "approval_response":
 					HandleApprovalResponse(root);
 					return;
@@ -401,7 +404,14 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		lock (_sessionsLock)
 		{
 			sessions = _sessions.Values
-				.Select(s => (object)new { sessionId = s.SessionId, threadId = s.Session.ThreadId, cwd = s.Cwd, model = s.Model })
+				.Select(s => (object)new
+				{
+					sessionId = s.SessionId,
+					threadId = s.Session.ThreadId,
+					cwd = s.Cwd,
+					model = s.Model,
+					isTurnInFlight = s.IsTurnInFlight
+				})
 				.ToList();
 		}
 
@@ -483,13 +493,23 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		_ = Task.Run(async () =>
 		{
-			using var timeoutCts = new CancellationTokenSource();
-			timeoutCts.CancelAfter(TimeSpan.FromSeconds(_defaults.TurnTimeoutSeconds));
-			using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(session.LifetimeToken, timeoutCts.Token);
-			var turnToken = turnCts.Token;
+			var lockTaken = false;
+			CancellationTokenSource? timeoutCts = null;
+			CancellationTokenSource? turnCts = null;
 
 			try
 			{
+				await session.WaitForTurnSlotAsync(session.LifetimeToken);
+				lockTaken = true;
+
+				timeoutCts = new CancellationTokenSource();
+				timeoutCts.CancelAfter(TimeSpan.FromSeconds(_defaults.TurnTimeoutSeconds));
+				turnCts = CancellationTokenSource.CreateLinkedTokenSource(session.LifetimeToken, timeoutCts.Token);
+				var turnToken = turnCts.Token;
+				session.MarkTurnStarted(turnCts);
+				_ = SendEventSafeAsync("turn_started", new { sessionId });
+				_ = SendSessionListSafeAsync();
+
 				await SendEventSafeAsync("status", new { sessionId, message = "Turn started." });
 				session.Log.Write($"[prompt] {(string.IsNullOrWhiteSpace(normalizedText) ? "(no text)" : normalizedText)} images={imageCount} cwd={normalizedCwd ?? session.Cwd ?? "(default)"}");
 
@@ -510,13 +530,13 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			}
 			catch (OperationCanceledException)
 			{
-				if (timeoutCts.IsCancellationRequested)
+				if (timeoutCts?.IsCancellationRequested == true)
 				{
 					_ = SendEventSafeAsync("turn_complete", new { sessionId, status = "timedOut", errorMessage = "Timed out." });
 				}
 				else
 				{
-					_ = SendEventSafeAsync("turn_complete", new { sessionId, status = "interrupted", errorMessage = "Session interrupted." });
+					_ = SendEventSafeAsync("turn_complete", new { sessionId, status = "interrupted", errorMessage = "Turn canceled." });
 				}
 			}
 			catch (Exception ex)
@@ -525,7 +545,47 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				session.Log.Write($"[turn_error] {ex.Message}");
 				_ = SendEventSafeAsync("turn_complete", new { sessionId, status = "failed", errorMessage = ex.Message });
 			}
+			finally
+			{
+				if (lockTaken)
+				{
+					session.MarkTurnCompleted();
+					session.ReleaseTurnSlot();
+					_ = SendSessionListSafeAsync();
+				}
+
+				turnCts?.Dispose();
+				timeoutCts?.Dispose();
+			}
 		}, CancellationToken.None);
+	}
+
+	private async Task CancelTurnAsync(string? sessionId, CancellationToken cancellationToken)
+	{
+		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			await SendEventAsync("error", new { message = "No active session to cancel." }, cancellationToken);
+			return;
+		}
+
+		var session = TryGetSession(sessionId);
+		if (session is null)
+		{
+			await SendEventAsync("error", new { message = $"Unknown session: {sessionId}" }, cancellationToken);
+			return;
+		}
+
+		if (!session.CancelActiveTurn())
+		{
+			await SendEventAsync("status", new { sessionId, message = "No running turn to cancel." }, cancellationToken);
+			return;
+		}
+
+		session.Log.Write("[turn_cancel] requested by user");
+		await SendEventAsync("turn_cancel_requested", new { sessionId }, cancellationToken);
+		await SendEventAsync("status", new { sessionId, message = "Cancel requested." }, cancellationToken);
+		await SendSessionListAsync(cancellationToken);
 	}
 
 	private void HandleApprovalResponse(JsonElement request)
@@ -758,6 +818,17 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		try
 		{
 			await SendEventAsync(type, payload, CancellationToken.None);
+		}
+		catch
+		{
+		}
+	}
+
+	private async Task SendSessionListSafeAsync()
+	{
+		try
+		{
+			await SendSessionListAsync(CancellationToken.None);
 		}
 		catch
 		{
@@ -1027,8 +1098,75 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		ConcurrentDictionary<string, TaskCompletionSource<string>> PendingApprovals)
 	{
 		private readonly CancellationTokenSource _lifetimeCts = new();
+		private readonly SemaphoreSlim _turnGate = new(1, 1);
+		private readonly object _turnSync = new();
+		private CancellationTokenSource? _activeTurnCts;
+		private bool _turnInFlight;
+
 		public string? PendingApprovalId => PendingApprovals.Keys.FirstOrDefault();
 		public CancellationToken LifetimeToken => _lifetimeCts.Token;
+		public bool IsTurnInFlight
+		{
+			get
+			{
+				lock (_turnSync)
+				{
+					return _turnInFlight;
+				}
+			}
+		}
+
+		public async Task WaitForTurnSlotAsync(CancellationToken cancellationToken)
+		{
+			await _turnGate.WaitAsync(cancellationToken);
+		}
+
+		public void ReleaseTurnSlot()
+		{
+			_turnGate.Release();
+		}
+
+		public void MarkTurnStarted(CancellationTokenSource turnCts)
+		{
+			lock (_turnSync)
+			{
+				_activeTurnCts = turnCts;
+				_turnInFlight = true;
+			}
+		}
+
+		public void MarkTurnCompleted()
+		{
+			lock (_turnSync)
+			{
+				_activeTurnCts = null;
+				_turnInFlight = false;
+			}
+		}
+
+		public bool CancelActiveTurn()
+		{
+			CancellationTokenSource? active;
+			lock (_turnSync)
+			{
+				active = _activeTurnCts;
+			}
+
+			if (active is null)
+			{
+				return false;
+			}
+
+			try
+			{
+				active.Cancel();
+				return true;
+			}
+			catch
+			{
+				return false;
+			}
+		}
 
 		public void CancelLifetimeOperations()
 		{
@@ -1039,10 +1177,13 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			catch
 			{
 			}
+
+			CancelActiveTurn();
 		}
 
 		public void DisposeLifetimeCancellation()
 		{
+			_turnGate.Dispose();
 			_lifetimeCts.Dispose();
 		}
 	}
