@@ -163,7 +163,7 @@ function updatePromptActionState() {
   sendPromptBtn.classList.toggle("solo-send", !processingActive);
   sendPromptBtn.title = processingActive ? "Send now (Enter)" : "Send (Enter)";
   queuePromptBtn.title = "Queue prompt (Tab)";
-  cancelTurnBtn.title = "Cancel running turn";
+  cancelTurnBtn.title = "Stop running turn";
 }
 
 function updateContextLeftIndicator() {

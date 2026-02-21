@@ -852,13 +852,21 @@ body {
 }
 
 .prompt-cancel-btn {
-	min-width: 4.8rem;
-	padding: 0.55rem 0.95rem !important;
+	width: 2.3rem;
+	height: 2.3rem;
+	min-width: 2.3rem;
+	padding: 0 !important;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
 	background: #b91c1c !important;
 	color: #ffffff !important;
-	font-weight: 700;
 	border-radius: 999px !important;
 	box-shadow: 0 8px 18px rgba(185, 28, 28, 0.24);
+}
+
+.prompt-cancel-btn i {
+	font-size: 0.92rem;
 }
 
 .prompt-cancel-btn:hover {
@@ -1469,6 +1477,13 @@ body {
 		min-width: 0;
 		padding: 0.44rem 0.62rem !important;
 		font-size: 0.95rem;
+	}
+
+	.prompt-cancel-btn {
+		width: 2rem;
+		height: 2rem;
+		min-width: 2rem;
+		padding: 0 !important;
 	}
 
 	.prompt-form .prompt-send-btn,
