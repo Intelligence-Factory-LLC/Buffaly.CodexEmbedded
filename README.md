@@ -2,6 +2,10 @@
 
 Simple desktop-friendly harness for `codex app-server` with:
 
+Built by Buffaly (Intelligence Factory LLC): https://buffa.ly
+
+Not affiliated with OpenAI. This is a local UI for Codex app-server. It can execute commands and modify files. Bind to localhost and access over a private network (recommended: Tailscale tailnet-only).
+
 - A terminal app: `Buffaly.CodexEmbedded.Cli`
 - A web app: `Buffaly.CodexEmbedded.Web`
 - A reusable .NET library: `Buffaly.CodexEmbedded.Core`
@@ -80,6 +84,18 @@ tailscale set --accept-dns=true
 
 More: docs/tailscale.md (slugs, multiple ports, HTTPS upstream, troubleshooting)
 
+## Security
+
+This tool can run code and modify your filesystem through Codex.
+
+Do not expose it to the public internet.
+
+Recommended: bind to 127.0.0.1 only and publish privately via Tailscale Serve.
+
+WebSocket connections require an auth token by default.
+
+More: docs/security.md (threat model, safe deployment patterns, troubleshooting)
+
 ## Configure After Install
 
 You can edit defaults in:
@@ -153,3 +169,13 @@ Workflow: `.github/workflows/release.yml`
 - `Buffaly.CodexEmbedded.Core`: reusable client library
 - `scripts/release`: maintainer build/publish/package scripts
 - `install/package`: installer/update/uninstall scripts bundled into release zip
+
+## Disclaimers
+
+Experimental software. Protocols and schemas may change as Codex evolves.
+
+No warranty. Use at your own risk.
+
+Not affiliated with OpenAI.
+
+Do not run on machines containing secrets you are not willing to expose to a tool-driven agent.
