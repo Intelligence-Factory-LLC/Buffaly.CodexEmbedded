@@ -37,6 +37,7 @@ let sessionMetaDetailsExpanded = false;
 let contextUsageByThread = new Map(); // threadId -> { usedTokens, contextWindow, percentLeft }
 let permissionLevelByThread = new Map(); // threadId -> { approval, sandbox }
 let preferredModelByThread = new Map(); // threadId -> model string ("" means default)
+let timelineHasTruncatedHead = false;
 let runtimeSecurityConfig = null;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
@@ -66,6 +67,7 @@ const logOutput = document.getElementById("logOutput");
 const promptForm = document.getElementById("promptForm");
 const promptInput = document.getElementById("promptInput");
 const promptQueue = document.getElementById("promptQueue");
+const timelineTruncationNotice = document.getElementById("timelineTruncationNotice");
 const scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
 const contextLeftIndicator = document.getElementById("contextLeftIndicator");
 const permissionLevelIndicator = document.getElementById("permissionLevelIndicator");
@@ -147,6 +149,16 @@ function updateScrollToBottomButton() {
   scrollToBottomBtn.classList.toggle("hidden", !shouldShow);
 }
 
+function updateTimelineTruncationNotice() {
+  if (!timelineTruncationNotice || !chatMessages) {
+    return;
+  }
+
+  const isAtTop = chatMessages.scrollTop <= 2;
+  const shouldShow = timelineHasTruncatedHead && isAtTop;
+  timelineTruncationNotice.classList.toggle("hidden", !shouldShow);
+}
+
 function scrollMessagesToBottom(smooth = false) {
   if (!chatMessages) {
     return;
@@ -159,6 +171,7 @@ function scrollMessagesToBottom(smooth = false) {
   }
 
   updateScrollToBottomButton();
+  updateTimelineTruncationNotice();
 }
 
 function updatePromptActionState() {
@@ -1024,6 +1037,8 @@ function beginPendingSessionLoad(threadId, displayName = "") {
   }
   timelineCursor = null;
   timeline.clear();
+  timelineHasTruncatedHead = false;
+  updateTimelineTruncationNotice();
   const title = displayName && displayName.trim().length > 0
     ? `Loading ${displayName.trim()}...`
     : `Loading ${normalizedThreadId}...`;
@@ -2451,6 +2466,7 @@ async function pollTimelineOnce(initial, generation) {
 
     if (initial || data.reset === true) {
       timeline.clear();
+      timelineHasTruncatedHead = false;
       if (data.reset === true) {
         timeline.enqueueSystem("session file was reset or rotated");
       }
@@ -2463,8 +2479,9 @@ async function pollTimelineOnce(initial, generation) {
     timeline.enqueueParsedLines(lines);
 
     if (data.truncated === true) {
-      timeline.enqueueInlineNotice("Showing latest log lines.");
+      timelineHasTruncatedHead = true;
     }
+    updateTimelineTruncationNotice();
   } finally {
     timelinePollInFlight = false;
   }
@@ -2521,6 +2538,8 @@ function setActiveSession(sessionId, options = {}) {
   if (changed || restartTimeline) {
     timelineCursor = null;
     timeline.clear();
+    timelineHasTruncatedHead = false;
+    updateTimelineTruncationNotice();
     restartTimelinePolling();
   }
 
@@ -2542,6 +2561,8 @@ function clearActiveSession() {
   updatePromptActionState();
   timelineCursor = null;
   timeline.clear();
+  timelineHasTruncatedHead = false;
+  updateTimelineTruncationNotice();
   renderProjectSidebar();
   restartTimelinePolling();
   updateScrollToBottomButton();
@@ -3410,10 +3431,12 @@ if (sessionMetaDetailsBtn) {
 if (chatMessages) {
   chatMessages.addEventListener("scroll", () => {
     updateScrollToBottomButton();
+    updateTimelineTruncationNotice();
   });
 
   chatMessages.addEventListener("codex:timeline-updated", () => {
     updateScrollToBottomButton();
+    updateTimelineTruncationNotice();
   });
 }
 
@@ -3742,6 +3765,7 @@ window.addEventListener("resize", () => {
   updateMobileProjectsButton();
   updateConversationMetaVisibility();
   updateScrollToBottomButton();
+  updateTimelineTruncationNotice();
 });
 
 window.addEventListener("beforeunload", () => {
@@ -3753,6 +3777,7 @@ applySavedUiSettings();
 renderComposerImages();
 renderProjectSidebar();
 updateScrollToBottomButton();
+updateTimelineTruncationNotice();
 updatePromptActionState();
 updateContextLeftIndicator();
 updatePermissionLevelIndicator();

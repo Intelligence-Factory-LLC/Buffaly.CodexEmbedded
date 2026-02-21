@@ -861,6 +861,15 @@
       return !!this.parseEnvironmentContext(bodyText);
     }
 
+    shouldUseEmbeddedInstructionPresentation(entry, bodyText) {
+      if (!entry || entry.role !== "user") {
+        return false;
+      }
+
+      return this.shouldUseAgentsCollapsedBody(entry, bodyText)
+        || this.shouldUseEnvironmentCollapsedBody(entry, bodyText);
+    }
+
     isNarrowViewport() {
       return typeof window !== "undefined"
         && typeof window.matchMedia === "function"
@@ -1354,6 +1363,26 @@
         return;
       }
 
+      const bodyText = this.getEntryBodyText(entry);
+      if (this.shouldUseEmbeddedInstructionPresentation(entry, bodyText)) {
+        const wrap = document.createElement("div");
+        wrap.className = "watcher-embedded-entry";
+        wrap.dataset.entryId = String(entry.id);
+
+        const bodyNode = this.createBodyNodeForEntry(wrap, entry, bodyText);
+        const body = bodyNode.body;
+        const imagesWrap = this.renderEntryImages(wrap, entry.images || []);
+
+        this.container.appendChild(wrap);
+        entry.rendered = true;
+        this.renderCount += 1;
+        const node = { card: wrap, body, time: null, compact: false, imagesWrap, detailsWrap: bodyNode.detailsWrap, entry };
+        this.entryNodeById.set(entry.id, node);
+        this.applyTaskVisibility(node, entry);
+        this.trimIfNeeded();
+        return;
+      }
+
       const card = document.createElement("article");
       card.className = `watcher-entry ${entry.role}`;
       if (entry.taskDepth > 0 && !entry.taskBoundary) {
@@ -1382,7 +1411,6 @@
       header.appendChild(time);
       card.appendChild(header);
 
-      const bodyText = this.getEntryBodyText(entry);
       const bodyNode = this.createBodyNodeForEntry(card, entry, bodyText);
       const body = bodyNode.body;
 
@@ -1437,7 +1465,9 @@
       }
 
       this.updateEntryImages(node, entry.images || []);
-      node.time.textContent = this.formatTime(entry.timestamp);
+      if (node.time) {
+        node.time.textContent = this.formatTime(entry.timestamp);
+      }
       this.applyTaskVisibility(node, entry);
     }
   }

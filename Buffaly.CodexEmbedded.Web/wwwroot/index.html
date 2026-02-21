@@ -4,40 +4,50 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>Codex Web CLI</title>
+	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 	<link rel="stylesheet" href="site.css">
 </head>
 <body>
 	<div class="layout">
-		<header class="toolbar navbar navbar-dark">
-			<div class="toolbar-left nav nav-pills">
-				<a class="toolbar-link nav-link active" href="./">Codex</a>
-				<a class="toolbar-link nav-link" href="logs">Logs</a>
-				<a class="toolbar-link nav-link" href="watcher">Watcher</a>
-			</div>
-			<div class="toolbar-right">
-				<button id="aboutBtn" class="toolbar-secondary toolbar-about-btn" type="button" title="About this project" aria-label="About this project">
-					About
-				</button>
-			</div>
-			<button id="mobileProjectsBtn" class="toolbar-mobile-projects-btn" type="button" title="Show projects" aria-label="Show projects" aria-expanded="false">
-				<i class="bi bi-kanban" aria-hidden="true"></i>
-				<span>Projects</span>
-			</button>
-		</header>
+		<button id="mobileProjectsBtn" class="toolbar-mobile-projects-btn" type="button" title="Show projects" aria-label="Show projects" aria-expanded="false">
+			<i class="bi bi-layout-sidebar-inset-reverse" aria-hidden="true"></i>
+			<span>Projects</span>
+		</button>
 		<div id="securityWarningBanner" class="security-warning-banner hidden" role="alert"></div>
 		<main class="main codex-main">
 			<aside id="sessionSidebar" class="panel session-sidebar">
-				<div class="panel-title panel-title-row">
-					<span>Projects</span>
-					<button id="sidebarToggleBtn" type="button" class="sidebar-collapse-btn" title="Hide projects" aria-label="Hide projects">
+				<div class="sidebar-shell-header">
+					<a class="sidebar-logo-btn" href="./" title="Codex" aria-label="Codex">
+						<img class="sidebar-logo-image" src="images/bf_logo_fav_Large.png" alt="">
+					</a>
+					<button id="sidebarToggleBtn" type="button" class="sidebar-collapse-btn sidebar-shell-toggle-btn" title="Hide projects" aria-label="Hide projects">
 						<i class="bi bi-layout-sidebar-inset-reverse" aria-hidden="true"></i>
 					</button>
 				</div>
-				<div class="session-sidebar-controls">
+				<nav class="sidebar-nav" aria-label="Main navigation">
+					<a class="sidebar-nav-link active" href="./" aria-current="page">
+						<i class="bi bi-chat-square-text" aria-hidden="true"></i>
+						<span>Codex</span>
+					</a>
+					<a class="sidebar-nav-link" href="logs">
+						<i class="bi bi-journal-text" aria-hidden="true"></i>
+						<span>Logs</span>
+					</a>
+					<a class="sidebar-nav-link" href="watcher">
+						<i class="bi bi-eye" aria-hidden="true"></i>
+						<span>Watcher</span>
+					</a>
+					<button id="aboutBtn" class="sidebar-nav-link sidebar-nav-button" type="button" title="About this project" aria-label="About this project">
+						<i class="bi bi-info-circle" aria-hidden="true"></i>
+						<span>About</span>
+					</button>
+				</nav>
+				<div class="sidebar-divider" aria-hidden="true"></div>
+				<div class="sidebar-create-row">
 					<button id="newProjectSidebarBtn" class="new-project-btn" type="button">
-						<i class="bi bi-plus-circle-fill" aria-hidden="true"></i>
+						<i class="bi bi-plus-lg" aria-hidden="true"></i>
 						<span>New Project</span>
 					</button>
 				</div>
@@ -53,6 +63,10 @@
 						</label>
 						<div id="permissionLevelIndicator" class="conversation-meta-item permission-level-indicator" title="Session permissions">perm: --</div>
 					</div>
+				</div>
+				<div id="timelineTruncationNotice" class="timeline-truncation-note hidden">
+					<strong>Note</strong>
+					<span>Showing latest log lines.</span>
 				</div>
 				<div id="chatMessages" class="watcher-timeline"></div>
 				<button id="scrollToBottomBtn" class="scroll-to-bottom-btn hidden" type="button" title="Jump to latest messages" aria-label="Jump to latest messages">
