@@ -29,6 +29,8 @@
       this.activeTaskStack = [];
       this.collapsedTaskIds = new Set();
       this.latestContextUsage = null; // { usedTokens, contextWindow, percentLeft }
+      this.latestTurnModel = "";
+      this.taskModelById = new Map(); // taskId -> model
 
       this.container.addEventListener("scroll", () => {
         this.autoScrollPinned = this.isNearBottom();
@@ -175,6 +177,80 @@
       return `${percent}% context left`;
     }
 
+    normalizeModelName(value) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized) {
+        return "";
+      }
+
+      return normalized.length > 200 ? normalized.slice(0, 200) : normalized;
+    }
+
+    extractModelFromText(text) {
+      const normalized = typeof text === "string" ? text.trim() : "";
+      if (!normalized) {
+        return "";
+      }
+
+      for (const segment of normalized.split("|")) {
+        const match = segment.match(/model\s*=\s*(.+)$/i);
+        if (match && typeof match[1] === "string") {
+          const extracted = this.normalizeModelName(match[1]);
+          if (extracted) {
+            return extracted;
+          }
+        }
+      }
+
+      const fallbackMatch = normalized.match(/\bmodel\s*=\s*([^\s|]+)/i);
+      if (fallbackMatch && typeof fallbackMatch[1] === "string") {
+        return this.normalizeModelName(fallbackMatch[1]);
+      }
+
+      return "";
+    }
+
+    extractModelFromContextPayload(payload) {
+      if (!payload || typeof payload !== "object") {
+        return "";
+      }
+
+      const directKeys = ["model", "modelName", "model_name", "selectedModel", "selected_model"];
+      for (const key of directKeys) {
+        if (typeof payload[key] === "string" && payload[key].trim()) {
+          return this.normalizeModelName(payload[key]);
+        }
+      }
+
+      const nested = payload.info;
+      if (nested && typeof nested === "object") {
+        for (const key of directKeys) {
+          if (typeof nested[key] === "string" && nested[key].trim()) {
+            return this.normalizeModelName(nested[key]);
+          }
+        }
+      }
+
+      const textKeys = ["summary", "message", "text", "context", "value", "line"];
+      for (const key of textKeys) {
+        if (typeof payload[key] === "string") {
+          const parsed = this.extractModelFromText(payload[key]);
+          if (parsed) {
+            return parsed;
+          }
+        }
+      }
+
+      return "";
+    }
+
+    updateLatestTurnModelFromPayload(payload) {
+      const model = this.extractModelFromContextPayload(payload);
+      if (model) {
+        this.latestTurnModel = model;
+      }
+    }
+
     createEntry(role, title, text, timestamp, rawType, images) {
       return {
         id: this.nextEntryId++,
@@ -217,6 +293,8 @@
       this.activeTaskStack = [];
       this.collapsedTaskIds.clear();
       this.latestContextUsage = null;
+      this.latestTurnModel = "";
+      this.taskModelById.clear();
       this.autoScrollPinned = true;
     }
 
@@ -876,16 +954,42 @@
         const summary = payload.title || payload.message || "Task started";
         const entry = this.createEntry("system", "Task Started", this.truncateText(summary, 240), timestamp, eventType);
         entry.compact = true;
-        return this.markTaskStart(entry);
+        const started = this.markTaskStart(entry);
+        if (started?.taskId && this.latestTurnModel) {
+          this.taskModelById.set(started.taskId, this.latestTurnModel);
+        }
+        return started;
       }
 
       if (eventType === "task_complete") {
         const summary = payload.message || "Task complete";
         const contextLeftLabel = this.formatLatestContextLeftLabel();
-        const displayText = contextLeftLabel ? `${summary} | ${contextLeftLabel}` : summary;
+        const taskId = this.activeTaskStack.length > 0 ? this.activeTaskStack[this.activeTaskStack.length - 1] : null;
+        const payloadModel = this.extractModelFromContextPayload(payload);
+        if (payloadModel) {
+          this.latestTurnModel = payloadModel;
+          if (taskId) {
+            this.taskModelById.set(taskId, payloadModel);
+          }
+        }
+
+        const taskModel = taskId ? (this.taskModelById.get(taskId) || "") : this.latestTurnModel;
+        const parts = [summary];
+        if (contextLeftLabel) {
+          parts.push(contextLeftLabel);
+        }
+        if (taskModel) {
+          parts.push(`Model: ${taskModel}`);
+        }
+
+        const displayText = parts.join(" | ");
         const entry = this.createEntry("system", "Task Complete", this.truncateText(displayText, 240), timestamp, eventType);
         entry.compact = true;
-        return this.markTaskEnd(entry);
+        const completed = this.markTaskEnd(entry);
+        if (completed?.taskId) {
+          this.taskModelById.delete(completed.taskId);
+        }
+        return completed;
       }
 
       const message = payload.message || payload.summary || "";
@@ -911,6 +1015,7 @@
 
       if (type === "session_meta") {
         const payload = root.payload || {};
+        this.updateLatestTurnModelFromPayload(payload);
         const details = [];
         if (payload.id) details.push(`thread=${payload.id}`);
         if (payload.model_provider) details.push(`provider=${payload.model_provider}`);
@@ -921,6 +1026,7 @@
       }
 
       if (type === "turn_context") {
+        this.updateLatestTurnModelFromPayload(root.payload || {});
         return null;
       }
 

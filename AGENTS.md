@@ -1,54 +1,50 @@
-# Codex App-Server Harness Overview
+# Buffaly.CodexEmbedded
 
-This repository contains a basic test harness for integrating with Codex through `codex app-server`.
+## Overview
+This repository hosts a Codex App-Server harness plus a multi-session web UI.
+Primary goals are stable Codex protocol integration, reliable session and thread state, and fast UI feedback for long-running tasks.
 
-## What This Solution Does
+## Solution Map
+- `Buffaly.CodexEmbedded.Core`: shared runtime and session abstractions plus catalog helpers.
+- `Buffaly.CodexEmbedded.Web`: web host, websocket session bridge, and browser UI.
+- `Buffaly.CodexEmbedded.Cli`: CLI harness for direct protocol testing.
+- `documentation/`: protocol notes, specs, and JSON schema references.
 
-- Starts `codex app-server` as a child process.
-- Communicates over JSON-RPC JSONL (`stdin`/`stdout`).
-- Executes the required flow:
-1. `initialize`
-2. `thread/start`
-3. `turn/start`
-- Streams assistant deltas from `item/agentMessage/delta`.
-- Handles server-initiated approval/tool requests so turns can continue.
+## Key Runtime Behaviors
+- Web client and websocket server must stay in sync for visible session state: `sessionId`, `threadId`, `cwd`, `model`, and turn-in-flight.
+- Session model is per-thread/per-session state. UI model changes must update both client state and server managed session state.
+- Timeline may hide noisy transport lines (`turn_context`, etc.), but important metadata should still be surfaced in concise UI summaries.
 
-## Main Implementation
+## Development Commands
+- JS syntax check: `node --check Buffaly.CodexEmbedded.Web/wwwroot/app.js`
+- Timeline syntax check: `node --check Buffaly.CodexEmbedded.Web/wwwroot/sessionTimeline.js`
+- Web build (safe when app is running): `dotnet build Buffaly.CodexEmbedded.Web/Buffaly.CodexEmbedded.Web.csproj -p:BaseOutputPath=artifacts/build/`
+- Full solution build (when files are not locked): `dotnet build`
 
-- Harness project: `Buffaly.CodexEmbedded.Cli`
-- Entry point: `Buffaly.CodexEmbedded.Cli/Program.cs`
-- Usage guide: `Buffaly.CodexEmbedded.Cli/README.md`
-- Planning/spec notes: `documentation/specs.md`
-- Protocol schema bundle: `documentation/*.json` and `documentation/v1`, `documentation/v2`
+## UI / Websocket Guardrails
+- Prefer immediate visual responsiveness:
+- Select session row before attach completes.
+- Show loading and processing badges while awaiting state.
+- Persist per-thread UI state in localStorage with explicit versioned keys.
+- Keep polling idempotent. Incoming `session_list` and `session_catalog` should reconcile state, not clobber in-progress user intent.
+- For new client->server websocket actions, add:
+- Message case in `MultiSessionWebCliSocketSession`.
+- Status/error logging.
+- Session list refresh if sidebar/header-visible state changed.
 
-## Why It Is Structured This Way
+## Source Control Workflow
+- Commit changes after every significant group of updates.
+- Commit current work before making any major change.
+- Commit current work before starting a new task.
+- Keep commits focused and use clear commit messages that describe the scope of grouped updates.
+- Do not mix unrelated refactors in the same checkpoint commit.
+- If a feature touches UI and websocket protocol, complete both sides before checkpointing.
 
-- The harness keeps transport dynamic (`System.Text.Json`) to stay resilient as the app-server protocol evolves.
-- Schema files are used as a contract reference for method names and payload shapes.
-- The project is intended as a smoke-test and integration baseline for future production clients.
-
-## How To Run
-
-From `Buffaly.CodexEmbedded.Cli`:
-
-```powershell
-dotnet build
-dotnet run -- run --prompt "Say hello in one sentence" --codex-path "C:\Users\Administrator\AppData\Roaming\npm\codex.cmd"
-```
-
-Optional flags:
-- `--model`
-- `--cwd`
-- `--auto-approve`
-- `--timeout-seconds`
-- `--json-events`
-
-## Current Status
-
-- The harness has been validated to complete an end-to-end turn (`turn/completed` with `completed` status) when `codex` can reach the OpenAI API.
-
-## Commit Workflow Rule
-
-- After each completed feature group (or when switching to a new feature), roll up the finished changes and create a checkpoint commit before starting the next feature.
-
-
+## Done Criteria
+- Relevant JS files pass `node --check`.
+- Web project builds successfully (use `BaseOutputPath=artifacts/build/` when `bin/Debug` is locked).
+- No obvious regressions in:
+- Session attach/select behavior.
+- Per-session model selection persistence.
+- Queue/send/cancel controls.
+- Timeline task start/complete rendering.

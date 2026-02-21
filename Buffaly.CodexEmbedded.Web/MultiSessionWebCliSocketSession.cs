@@ -109,6 +109,9 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				case "session_rename":
 					await RenameSessionAsync(TryGetString(root, "sessionId"), TryGetString(root, "threadName"), cancellationToken);
 					return;
+				case "session_set_model":
+					await SetSessionModelAsync(TryGetString(root, "sessionId"), TryGetString(root, "model"), cancellationToken);
+					return;
 				case "turn_start":
 					await StartTurnAsync(
 						TryGetString(root, "sessionId"),
@@ -381,6 +384,31 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}, cancellationToken);
 	}
 
+	private async Task SetSessionModelAsync(string? sessionId, string? model, CancellationToken cancellationToken)
+	{
+		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			await SendEventAsync("error", new { message = "No active session to set model for." }, cancellationToken);
+			return;
+		}
+
+		var session = TryGetSession(sessionId);
+		if (session is null)
+		{
+			await SendEventAsync("error", new { message = $"Unknown session: {sessionId}" }, cancellationToken);
+			return;
+		}
+
+		var normalizedModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+		session.SetModel(normalizedModel);
+
+		await WriteConnectionLogAsync(
+			$"[session] model updated session={sessionId} thread={session.Session.ThreadId} model={(normalizedModel ?? "(default)")}",
+			cancellationToken);
+		await SendSessionListAsync(cancellationToken);
+	}
+
 	private async Task SetLogVerbosityAsync(JsonElement request, CancellationToken cancellationToken)
 	{
 		var verbosityRaw = TryGetString(request, "verbosity");
@@ -409,7 +437,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					sessionId = s.SessionId,
 					threadId = s.Session.ThreadId,
 					cwd = s.Cwd,
-					model = s.Model,
+					model = s.CurrentModel,
 					isTurnInFlight = s.IsTurnInFlight
 				})
 				.ToList();
@@ -521,7 +549,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				var turnOptions = new CodexTurnOptions
 				{
 					Cwd = normalizedCwd,
-					Model = session.Model
+					Model = session.ResolveTurnModel(_defaults.DefaultModel)
 				};
 				var result = await session.Session.SendMessageAsync(normalizedText, images: images, options: turnOptions, progress: progress, cancellationToken: turnToken);
 
@@ -1140,11 +1168,22 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		private readonly CancellationTokenSource _lifetimeCts = new();
 		private readonly SemaphoreSlim _turnGate = new(1, 1);
 		private readonly object _turnSync = new();
+		private string? _model = string.IsNullOrWhiteSpace(Model) ? null : Model.Trim();
 		private CancellationTokenSource? _activeTurnCts;
 		private bool _turnInFlight;
 
 		public string? PendingApprovalId => PendingApprovals.Keys.FirstOrDefault();
 		public CancellationToken LifetimeToken => _lifetimeCts.Token;
+		public string? CurrentModel
+		{
+			get
+			{
+				lock (_turnSync)
+				{
+					return _model;
+				}
+			}
+		}
 		public bool IsTurnInFlight
 		{
 			get
@@ -1153,6 +1192,20 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				{
 					return _turnInFlight;
 				}
+			}
+		}
+
+		public string? ResolveTurnModel(string? defaultModel)
+		{
+			var model = CurrentModel;
+			return string.IsNullOrWhiteSpace(model) ? defaultModel : model;
+		}
+
+		public void SetModel(string? model)
+		{
+			lock (_turnSync)
+			{
+				_model = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
 			}
 		}
 

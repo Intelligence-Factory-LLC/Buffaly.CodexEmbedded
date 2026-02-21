@@ -36,12 +36,14 @@ let syncingConversationModelSelect = false;
 let sessionMetaDetailsExpanded = false;
 let contextUsageByThread = new Map(); // threadId -> { usedTokens, contextWindow, percentLeft }
 let permissionLevelByThread = new Map(); // threadId -> { approval, sandbox }
+let preferredModelByThread = new Map(); // threadId -> model string ("" means default)
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
 const STORAGE_LAST_THREAD_ID_KEY = "codex-web-last-thread-id";
 const STORAGE_QUEUED_PROMPTS_KEY = "codex-web-queued-prompts-v1";
 const STORAGE_PROMPT_DRAFTS_KEY = "codex-web-prompt-drafts-v1";
+const STORAGE_THREAD_MODELS_KEY = "codex-web-thread-models-v1";
 const STORAGE_PROJECT_META_KEY = "codex-web-project-meta";
 const STORAGE_COLLAPSED_PROJECTS_KEY = "codex-web-collapsed-projects";
 const STORAGE_ARCHIVED_THREADS_KEY = "codex-web-archived-threads";
@@ -455,6 +457,88 @@ function safeJsonParse(raw, fallbackValue) {
   } catch {
     return fallbackValue;
   }
+}
+
+function normalizeModelValue(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  return String(value).trim();
+}
+
+function loadThreadModelState() {
+  preferredModelByThread = new Map();
+  const raw = safeJsonParse(localStorage.getItem(STORAGE_THREAD_MODELS_KEY), {});
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return;
+  }
+
+  for (const [threadId, model] of Object.entries(raw)) {
+    const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+    if (!normalizedThreadId) {
+      continue;
+    }
+
+    preferredModelByThread.set(normalizedThreadId, normalizeModelValue(model));
+  }
+}
+
+function persistThreadModelState() {
+  const payload = {};
+  for (const [threadId, model] of preferredModelByThread.entries()) {
+    const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+    if (!normalizedThreadId) {
+      continue;
+    }
+
+    payload[normalizedThreadId] = normalizeModelValue(model);
+  }
+
+  localStorage.setItem(STORAGE_THREAD_MODELS_KEY, JSON.stringify(payload));
+}
+
+function getPreferredModelForThread(threadId) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !preferredModelByThread.has(normalizedThreadId)) {
+    return { found: false, model: "" };
+  }
+
+  return {
+    found: true,
+    model: normalizeModelValue(preferredModelByThread.get(normalizedThreadId))
+  };
+}
+
+function setPreferredModelForThread(threadId, model, options = {}) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId) {
+    return;
+  }
+
+  preferredModelByThread.set(normalizedThreadId, normalizeModelValue(model));
+  if (options.persist !== false) {
+    persistThreadModelState();
+  }
+}
+
+function ensureThreadModelPreference(threadId, model, options = {}) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId) {
+    return false;
+  }
+
+  const normalizedModel = normalizeModelValue(model);
+  if (preferredModelByThread.has(normalizedThreadId)) {
+    return false;
+  }
+
+  preferredModelByThread.set(normalizedThreadId, normalizedModel);
+  if (options.persist !== false) {
+    persistThreadModelState();
+  }
+
+  return true;
 }
 
 function getPromptDraftKeyForThreadId(threadId) {
@@ -1303,7 +1387,10 @@ async function attachSessionByThreadId(threadId, cwd) {
   }
 
   const payload = { threadId };
-  const model = modelValueForCreate();
+  const preferred = getPreferredModelForThread(threadId);
+  const model = preferred.found
+    ? preferred.model
+    : normalizeModelValue(getCatalogEntryByThreadId(threadId)?.model || modelValueForCreate() || "");
   if (model) {
     payload.model = model;
   }
@@ -2123,7 +2210,8 @@ async function tryAutoAttachStoredThread() {
   }
 
   appendLog(`[session] auto-attaching previous thread=${threadId}`);
-  send("session_attach", { threadId });
+  const catalogEntry = getCatalogEntryByThreadId(threadId);
+  await attachSessionByThreadId(threadId, catalogEntry?.cwd || cwdInput.value.trim());
 }
 
 function syncConversationModelOptions(preferredValue = null) {
@@ -2185,7 +2273,10 @@ function refreshSessionMeta() {
   const namedCatalogEntry = getCatalogEntryByThreadId(state.threadId);
   const threadName = namedCatalogEntry?.threadName || state.threadName || "";
   const threadId = state.threadId || "";
-  const selectedModel = state.model || modelValueForCreate() || "";
+  const preferred = getPreferredModelForThread(state.threadId);
+  const selectedModel = preferred.found
+    ? preferred.model
+    : normalizeModelValue(state.model || "");
   const titleValue = threadName || threadId || "Conversation";
   if (conversationTitle) {
     conversationTitle.textContent = titleValue;
@@ -2307,6 +2398,12 @@ function setActiveSession(sessionId, options = {}) {
   }
   stopSessionBtn.disabled = false;
   const state = sessions.get(sessionId);
+  if (state?.threadId) {
+    const preferred = getPreferredModelForThread(state.threadId);
+    if (preferred.found) {
+      state.model = preferred.model || null;
+    }
+  }
   if (state?.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
     clearPendingSessionLoad();
   }
@@ -2501,16 +2598,25 @@ function syncModelCommandOptionsFromToolbar() {
   syncConversationModelOptions();
 }
 
+function applyModelSelectionToActiveSession(selectedModel) {
+  const state = getActiveSessionState();
+  if (!state || !state.threadId || !activeSessionId) {
+    return;
+  }
+
+  const normalized = normalizeModelValue(selectedModel);
+  state.model = normalized || null;
+  setPreferredModelForThread(state.threadId, normalized);
+  send("session_set_model", { sessionId: activeSessionId, model: normalized });
+}
+
 function applyModelSelection(value) {
-  const normalized = (value || "").trim();
+  const normalized = normalizeModelValue(value);
   if (!normalized) {
     modelSelect.value = "";
     modelCustomInput.classList.add("hidden");
     syncModelCommandOptionsFromToolbar();
-    const state = getActiveSessionState();
-    if (state) {
-      state.model = null;
-    }
+    applyModelSelectionToActiveSession("");
     refreshSessionMeta();
     renderProjectSidebar();
     return;
@@ -2526,10 +2632,7 @@ function applyModelSelection(value) {
       modelCustomInput.classList.add("hidden");
     }
     syncModelCommandOptionsFromToolbar();
-    const state = getActiveSessionState();
-    if (state) {
-      state.model = modelValueForCreate() || null;
-    }
+    applyModelSelectionToActiveSession(modelValueForCreate() || "");
     refreshSessionMeta();
     renderProjectSidebar();
     return;
@@ -2539,10 +2642,7 @@ function applyModelSelection(value) {
   modelCustomInput.classList.remove("hidden");
   modelCustomInput.value = normalized;
   syncModelCommandOptionsFromToolbar();
-  const state = getActiveSessionState();
-  if (state) {
-    state.model = modelValueForCreate() || null;
-  }
+  applyModelSelectionToActiveSession(modelValueForCreate() || "");
   refreshSessionMeta();
   renderProjectSidebar();
 }
@@ -2594,6 +2694,7 @@ function applySavedUiSettings() {
   loadProjectUiState();
   loadPromptDraftState();
   loadQueuedPromptState();
+  loadThreadModelState();
 
   const savedCwd = localStorage.getItem(STORAGE_CWD_KEY);
   if (savedCwd) {
@@ -2730,7 +2831,19 @@ function handleServerEvent(frame) {
       const state = ensureSessionState(sessionId);
       state.threadId = payload.threadId || state.threadId;
       state.cwd = payload.cwd || state.cwd;
-      state.model = payload.model || state.model;
+      state.model = normalizeModelValue(payload.model || state.model || "") || null;
+      let persistedModelUpdated = false;
+      if (state.threadId) {
+        const preferred = getPreferredModelForThread(state.threadId);
+        if (preferred.found) {
+          state.model = preferred.model || null;
+          if (payload.model !== undefined && preferred.model !== normalizeModelValue(payload.model || "")) {
+            send("session_set_model", { sessionId, model: preferred.model });
+          }
+        } else if (payload.model !== undefined) {
+          persistedModelUpdated = ensureThreadModelPreference(state.threadId, payload.model, { persist: false }) || persistedModelUpdated;
+        }
+      }
       let pendingCreate = null;
       const requestId = payload.requestId || null;
       if (requestId && pendingCreateRequests.has(requestId)) {
@@ -2754,6 +2867,12 @@ function handleServerEvent(frame) {
         if (entry && !normalizeProjectCwd(entry.cwd || "")) {
           entry.cwd = state.cwd;
         }
+        if (entry && state.model !== null && state.model !== undefined) {
+          entry.model = state.model;
+        }
+      }
+      if (persistedModelUpdated) {
+        persistThreadModelState();
       }
       touchSessionActivity(sessionId);
       if (state.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
@@ -2785,12 +2904,29 @@ function handleServerEvent(frame) {
       const list = Array.isArray(payload.sessions) ? payload.sessions : [];
       const next = new Map();
       let matchedPendingThread = false;
+      let persistedModelUpdated = false;
       for (const s of list) {
         const existing = sessions.get(s.sessionId);
         const st = existing || { threadId: null, cwd: null, model: null, createdAtTick: Date.now(), lastActivityTick: 0 };
         st.threadId = s.threadId || st.threadId || null;
         st.cwd = s.cwd || st.cwd || null;
-        st.model = s.model || st.model || null;
+        const serverModel = normalizeModelValue(s.model);
+        if (st.threadId) {
+          const preferred = getPreferredModelForThread(st.threadId);
+          if (preferred.found) {
+            st.model = preferred.model || null;
+            if (s.model !== undefined && preferred.model !== serverModel) {
+              send("session_set_model", { sessionId: s.sessionId, model: preferred.model });
+            }
+          } else {
+            st.model = serverModel || st.model || null;
+            if (s.model !== undefined) {
+              persistedModelUpdated = ensureThreadModelPreference(st.threadId, serverModel, { persist: false }) || persistedModelUpdated;
+            }
+          }
+        } else {
+          st.model = serverModel || st.model || null;
+        }
         st.createdAtTick = st.createdAtTick || Date.now();
         st.lastActivityTick = Number.isFinite(st.lastActivityTick) ? st.lastActivityTick : st.createdAtTick;
         if (st.threadId) {
@@ -2805,6 +2941,9 @@ function handleServerEvent(frame) {
         setTurnInFlight(s.sessionId, s.isTurnInFlight === true || s.turnInFlight === true);
         next.set(s.sessionId, st);
       }
+      if (persistedModelUpdated) {
+        persistThreadModelState();
+      }
       if (matchedPendingThread) {
         clearPendingSessionLoad();
       }
@@ -2816,9 +2955,25 @@ function handleServerEvent(frame) {
 
     case "session_catalog": {
       const list = Array.isArray(payload.sessions) ? payload.sessions : [];
+      let persistedModelUpdated = false;
       sessionCatalog = list
         .filter((s) => s && s.threadId)
+        .map((s) => {
+          const preferred = getPreferredModelForThread(s.threadId);
+          if (preferred.found) {
+            return { ...s, model: preferred.model };
+          }
+
+          const normalizedServerModel = normalizeModelValue(s.model);
+          if (ensureThreadModelPreference(s.threadId, normalizedServerModel, { persist: false })) {
+            persistedModelUpdated = true;
+          }
+          return { ...s, model: normalizedServerModel };
+        })
         .sort((a, b) => (b.updatedAtUtc || "").localeCompare(a.updatedAtUtc || ""));
+      if (persistedModelUpdated) {
+        persistThreadModelState();
+      }
       updateExistingSessionSelect();
       refreshSessionMeta();
       appendLog(`[catalog] loaded ${sessionCatalog.length} existing sessions from ${payload.codexHomePath || "default CODEX_HOME"}`);
@@ -3001,11 +3156,11 @@ modelSelect.addEventListener("change", () => {
   syncModelCommandOptionsFromToolbar();
 
   const nextModel = modelValueForCreate();
+  if (modelSelect.value === "__custom__" && !nextModel) {
+    return;
+  }
   if (activeSessionId && sessions.has(activeSessionId)) {
-    const state = sessions.get(activeSessionId);
-    if (state) {
-      state.model = nextModel || null;
-    }
+    applyModelSelectionToActiveSession(nextModel || "");
     refreshSessionMeta();
     renderProjectSidebar();
   }
@@ -3021,14 +3176,14 @@ if (conversationModelSelect) {
     if (selectedValue === "__custom__") {
       const proposed = window.prompt("Custom model:", modelCustomInput.value || "");
       if (proposed === null) {
-        syncConversationModelOptions(modelSelect.value || "");
+        syncConversationModelOptions(normalizeModelValue(getActiveSessionState()?.model || ""));
         return;
       }
 
       const custom = String(proposed || "").trim();
       if (!custom) {
         appendLog("[model] custom model cannot be empty");
-        syncConversationModelOptions(modelSelect.value || "");
+        syncConversationModelOptions(normalizeModelValue(getActiveSessionState()?.model || ""));
         return;
       }
 
