@@ -284,7 +284,7 @@ app.Map("/ws", async context =>
 		Logs.DebugLog.WriteEvent(
 			"WebSocket",
 			$"Accepted websocket connection id={context.Connection.Id} subProtocol={socket.SubProtocol ?? "(none)"}");
-		var session = new MultiSessionWebCliSocketSession(socket, defaults, context.Connection.Id);
+		await using var session = new MultiSessionWebCliSocketSession(socket, defaults, context.Connection.Id);
 		await session.RunAsync(context.RequestAborted);
 		Logs.DebugLog.WriteEvent(
 			"WebSocket",
@@ -350,6 +350,10 @@ internal sealed class WebRuntimeDefaults
 	public required bool NonLocalBindConfigured { get; init; }
 	public required bool UnsafeConfigurationDetected { get; init; }
 	public required string[] UnsafeConfigurationReasons { get; init; }
+	public required int RunningRecoveryRefreshSeconds { get; init; }
+	public required int RunningRecoveryActiveWindowMinutes { get; init; }
+	public required int RunningRecoveryTailLineLimit { get; init; }
+	public required int RunningRecoveryScanMaxSessions { get; init; }
 
 	// Loads runtime defaults from appsettings and user-level codex config.
 	public static WebRuntimeDefaults Load(IConfiguration configuration)
@@ -363,6 +367,10 @@ internal sealed class WebRuntimeDefaults
 		var webSocketAuthRequired = configuration.GetValue<bool?>("WebSocketAuthRequired") ?? true;
 		var webSocketAuthToken = ResolveWebSocketAuthToken(configuration["WebSocketAuthToken"], webSocketAuthRequired);
 		var publicExposureEnabled = configuration.GetValue<bool?>("PublicExposureEnabled") ?? false;
+		var runningRecoveryRefreshSeconds = configuration.GetValue<int?>("RunningRecoveryRefreshSeconds") ?? 5;
+		var runningRecoveryActiveWindowMinutes = configuration.GetValue<int?>("RunningRecoveryActiveWindowMinutes") ?? 120;
+		var runningRecoveryTailLineLimit = configuration.GetValue<int?>("RunningRecoveryTailLineLimit") ?? 3000;
+		var runningRecoveryScanMaxSessions = configuration.GetValue<int?>("RunningRecoveryScanMaxSessions") ?? 200;
 		var configuredUrls = LoadConfiguredUrls(configuration);
 		var nonLocalBindConfigured = configuredUrls.Any(IsUnsafeBindHost);
 		var unsafeReasons = BuildUnsafeReasons(nonLocalBindConfigured, !webSocketAuthRequired, publicExposureEnabled);
@@ -380,7 +388,11 @@ internal sealed class WebRuntimeDefaults
 			PublicExposureEnabled = publicExposureEnabled,
 			NonLocalBindConfigured = nonLocalBindConfigured,
 			UnsafeConfigurationDetected = unsafeReasons.Length > 0,
-			UnsafeConfigurationReasons = unsafeReasons
+			UnsafeConfigurationReasons = unsafeReasons,
+			RunningRecoveryRefreshSeconds = Math.Clamp(runningRecoveryRefreshSeconds, 1, 3600),
+			RunningRecoveryActiveWindowMinutes = Math.Clamp(runningRecoveryActiveWindowMinutes, 1, 7 * 24 * 60),
+			RunningRecoveryTailLineLimit = Math.Clamp(runningRecoveryTailLineLimit, 100, 10000),
+			RunningRecoveryScanMaxSessions = Math.Clamp(runningRecoveryScanMaxSessions, 1, 1000)
 		};
 	}
 

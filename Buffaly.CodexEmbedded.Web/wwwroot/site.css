@@ -558,11 +558,6 @@ body {
 	to { transform: rotate(360deg); }
 }
 
-.session-badge.live {
-	background: #bbf7d0;
-	color: #166534;
-}
-
 .sidebar-empty {
 	padding: 0.8rem;
 	color: #64748b;

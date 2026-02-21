@@ -37,6 +37,7 @@ let sessionMetaDetailsExpanded = false;
 let contextUsageByThread = new Map(); // threadId -> { usedTokens, contextWindow, percentLeft }
 let permissionLevelByThread = new Map(); // threadId -> { approval, sandbox }
 let preferredModelByThread = new Map(); // threadId -> model string ("" means default)
+let processingByThread = new Map(); // threadId -> boolean
 let timelineHasTruncatedHead = false;
 let runtimeSecurityConfig = null;
 
@@ -1154,7 +1155,7 @@ function buildSidebarProjectGroups() {
       model: entry.model || "",
       attachedSessionId,
       isAttached: !!attachedSessionId,
-      isProcessing: attachedSessionId ? isTurnInFlight(attachedSessionId) : false,
+      isProcessing: (attachedSessionId ? isTurnInFlight(attachedSessionId) : false) || entry.isProcessing === true || isThreadProcessing(entry.threadId),
       isArchived: archivedThreadIds.has(entry.threadId)
     });
     seenThreads.add(entry.threadId);
@@ -1179,7 +1180,7 @@ function buildSidebarProjectGroups() {
       model: state.model || "",
       attachedSessionId: sessionId,
       isAttached: true,
-      isProcessing: isTurnInFlight(sessionId),
+      isProcessing: isTurnInFlight(sessionId) || isThreadProcessing(state.threadId),
       isArchived: archivedThreadIds.has(state.threadId)
     });
   }
@@ -1706,12 +1707,6 @@ function renderProjectSidebar() {
 
       const badges = document.createElement("div");
       badges.className = "session-badges";
-      if (entry.isAttached) {
-        const live = document.createElement("span");
-        live.className = "session-badge live";
-        live.textContent = "Live";
-        badges.appendChild(live);
-      }
       if (entry.isProcessing) {
         const processing = document.createElement("span");
         processing.className = "session-badge processing";
@@ -2020,6 +2015,15 @@ function getQueueForSession(sessionId) {
   }
 
   return promptQueuesBySession.get(sessionId);
+}
+
+function isThreadProcessing(threadId) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId) {
+    return false;
+  }
+
+  return processingByThread.get(normalizedThreadId) === true;
 }
 
 function isTurnInFlight(sessionId) {
@@ -2882,16 +2886,7 @@ function ensureSocket() {
     clearPendingSessionLoad();
     autoAttachAttempted = false;
     persistQueuedPromptState();
-    sessions = new Map();
-    sessionCatalog = [];
     pendingApproval = null;
-    promptQueuesBySession = new Map();
-    turnInFlightBySession = new Map();
-    lastSentPromptBySession = new Map();
-    pendingComposerImages = [];
-    updateSessionSelect(null);
-    updateExistingSessionSelect();
-    renderComposerImages();
     setApprovalVisible(false);
   });
   socket.addEventListener("error", () => {
@@ -3006,6 +3001,7 @@ function handleServerEvent(frame) {
     case "session_list": {
       const list = Array.isArray(payload.sessions) ? payload.sessions : [];
       const next = new Map();
+      const nextProcessingByThread = new Map();
       let matchedPendingThread = false;
       let persistedModelUpdated = false;
       for (const s of list) {
@@ -3041,8 +3037,22 @@ function handleServerEvent(frame) {
         if (pendingSessionLoadThreadId && st.threadId === pendingSessionLoadThreadId) {
           matchedPendingThread = true;
         }
-        setTurnInFlight(s.sessionId, s.isTurnInFlight === true || s.turnInFlight === true);
+        const inFlight = s.isTurnInFlight === true || s.turnInFlight === true;
+        setTurnInFlight(s.sessionId, inFlight);
+        if (inFlight && st.threadId) {
+          nextProcessingByThread.set(st.threadId, true);
+        }
         next.set(s.sessionId, st);
+      }
+      if (payload.processingByThread && typeof payload.processingByThread === "object" && !Array.isArray(payload.processingByThread)) {
+        for (const [threadId, processing] of Object.entries(payload.processingByThread)) {
+          const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+          if (!normalizedThreadId || processing !== true) {
+            continue;
+          }
+
+          nextProcessingByThread.set(normalizedThreadId, true);
+        }
       }
       if (persistedModelUpdated) {
         persistThreadModelState();
@@ -3051,6 +3061,7 @@ function handleServerEvent(frame) {
         clearPendingSessionLoad();
       }
       sessions = next;
+      processingByThread = nextProcessingByThread;
       prunePromptState();
       updateSessionSelect(payload.activeSessionId || null);
       return;
@@ -3058,10 +3069,20 @@ function handleServerEvent(frame) {
 
     case "session_catalog": {
       const list = Array.isArray(payload.sessions) ? payload.sessions : [];
+      const nextProcessingByThread = new Map(processingByThread);
       let persistedModelUpdated = false;
       sessionCatalog = list
         .filter((s) => s && s.threadId)
         .map((s) => {
+          const normalizedThreadId = typeof s.threadId === "string" ? s.threadId.trim() : "";
+          if (normalizedThreadId) {
+            if (s.isProcessing === true) {
+              nextProcessingByThread.set(normalizedThreadId, true);
+            } else if (s.isProcessing === false) {
+              nextProcessingByThread.delete(normalizedThreadId);
+            }
+          }
+
           const preferred = getPreferredModelForThread(s.threadId);
           if (preferred.found) {
             return { ...s, model: preferred.model };
@@ -3074,6 +3095,18 @@ function handleServerEvent(frame) {
           return { ...s, model: normalizedServerModel };
         })
         .sort((a, b) => (b.updatedAtUtc || "").localeCompare(a.updatedAtUtc || ""));
+      if (payload.processingByThread && typeof payload.processingByThread === "object" && !Array.isArray(payload.processingByThread)) {
+        nextProcessingByThread.clear();
+        for (const [threadId, processing] of Object.entries(payload.processingByThread)) {
+          const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+          if (!normalizedThreadId || processing !== true) {
+            continue;
+          }
+
+          nextProcessingByThread.set(normalizedThreadId, true);
+        }
+      }
+      processingByThread = nextProcessingByThread;
       if (persistedModelUpdated) {
         persistThreadModelState();
       }

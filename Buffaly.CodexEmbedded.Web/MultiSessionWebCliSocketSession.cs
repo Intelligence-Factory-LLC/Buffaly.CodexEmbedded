@@ -13,8 +13,11 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	private readonly string _connectionId;
 	private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
 	private readonly SemaphoreSlim _socketSendLock = new(1, 1);
-	private readonly object _sessionsLock = new();
-	private readonly Dictionary<string, ManagedSession> _sessions = new(StringComparer.Ordinal);
+	private static readonly object _sessionsLock = new();
+	private static readonly Dictionary<string, ManagedSession> _sessions = new(StringComparer.Ordinal);
+	private static readonly object _recoveryLock = new();
+	private static DateTimeOffset _recoveryLastRefreshedUtc = DateTimeOffset.MinValue;
+	private static Dictionary<string, RecoveredRunningState> _recoveredRunningByThreadId = new(StringComparer.Ordinal);
 	private string? _activeSessionId;
 	private volatile CodexEventVerbosity _uiLogVerbosity = CodexEventVerbosity.Normal;
 
@@ -370,6 +373,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	private async Task SendSessionCatalogAsync(CancellationToken cancellationToken)
 	{
 		var sessions = CodexSessionCatalog.ListSessions(_defaults.CodexHomePath, limit: 0);
+		var processingByThread = BuildProcessingByThreadMap();
 		var payload = sessions.Select(s => new
 		{
 			threadId = s.ThreadId,
@@ -377,13 +381,15 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			updatedAtUtc = s.UpdatedAtUtc?.ToString("O"),
 			cwd = s.Cwd,
 			model = s.Model,
-			sessionFilePath = s.SessionFilePath
+			sessionFilePath = s.SessionFilePath,
+			isProcessing = processingByThread.TryGetValue(s.ThreadId, out var isProcessing) && isProcessing
 		}).ToArray();
 
 		await SendEventAsync("session_catalog", new
 		{
 			codexHomePath = CodexHomePaths.ResolveCodexHomePath(_defaults.CodexHomePath),
-			sessions = payload
+			sessions = payload,
+			processingByThread
 		}, cancellationToken);
 	}
 
@@ -446,7 +452,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				.ToList();
 		}
 
-		await SendEventAsync("session_list", new { activeSessionId = _activeSessionId, sessions }, cancellationToken);
+		var processingByThread = BuildProcessingByThreadMap();
+		await SendEventAsync("session_list", new { activeSessionId = _activeSessionId, sessions, processingByThread }, cancellationToken);
 	}
 
 	private async Task SendModelsListAsync(string? sessionId, CancellationToken cancellationToken)
@@ -841,17 +848,26 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				log.Write($"[approval_request] session={sessionId} approvalId={key} method={req.Method} cwd={cwd ?? "(n/a)"} reason={reason ?? "(n/a)"}");
 
 				// Surface the approval to the browser and block this server-request until the user decides.
-				await SendEventAsync("approval_request", new
+				try
 				{
-					sessionId,
-					approvalId = key,
-					requestType,
-					summary,
-					reason,
-					cwd,
-					actions,
-					options = new[] { "accept", "acceptForSession", "decline", "cancel" }
-				}, CancellationToken.None);
+					await SendEventAsync("approval_request", new
+					{
+						sessionId,
+						approvalId = key,
+						requestType,
+						summary,
+						reason,
+						cwd,
+						actions,
+						options = new[] { "accept", "acceptForSession", "decline", "cancel" }
+					}, CancellationToken.None);
+				}
+				catch (Exception ex)
+				{
+					approvals.TryRemove(key, out _);
+					log.Write($"[approval_request] session={sessionId} approvalId={key} delivery_failed={ex.Message}");
+					return new { decision = "cancel" };
+				}
 
 				try
 				{
@@ -918,6 +934,110 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		catch
 		{
 		}
+	}
+
+	private Dictionary<string, bool> BuildProcessingByThreadMap()
+	{
+		var processingByThread = new Dictionary<string, bool>(StringComparer.Ordinal);
+		var liveThreadIds = new HashSet<string>(StringComparer.Ordinal);
+
+		lock (_sessionsLock)
+		{
+			foreach (var session in _sessions.Values)
+			{
+				var threadId = session.Session.ThreadId;
+				if (string.IsNullOrWhiteSpace(threadId))
+				{
+					continue;
+				}
+
+				liveThreadIds.Add(threadId);
+				processingByThread[threadId] = session.IsTurnInFlight;
+			}
+		}
+
+		var recovered = GetRecoveredRunningByThreadId();
+		foreach (var kvp in recovered)
+		{
+			if (liveThreadIds.Contains(kvp.Key))
+			{
+				continue;
+			}
+
+			processingByThread[kvp.Key] = kvp.Value.IsProcessing;
+		}
+
+		return processingByThread;
+	}
+
+	private Dictionary<string, RecoveredRunningState> GetRecoveredRunningByThreadId()
+	{
+		var nowUtc = DateTimeOffset.UtcNow;
+		var refreshEvery = TimeSpan.FromSeconds(_defaults.RunningRecoveryRefreshSeconds);
+		lock (_recoveryLock)
+		{
+			if ((nowUtc - _recoveryLastRefreshedUtc) <= refreshEvery)
+			{
+				return new Dictionary<string, RecoveredRunningState>(_recoveredRunningByThreadId, StringComparer.Ordinal);
+			}
+		}
+
+		var rebuilt = RebuildRecoveredRunningByThreadId(nowUtc);
+		lock (_recoveryLock)
+		{
+			_recoveredRunningByThreadId = rebuilt;
+			_recoveryLastRefreshedUtc = nowUtc;
+			return new Dictionary<string, RecoveredRunningState>(_recoveredRunningByThreadId, StringComparer.Ordinal);
+		}
+	}
+
+	private Dictionary<string, RecoveredRunningState> RebuildRecoveredRunningByThreadId(DateTimeOffset nowUtc)
+	{
+		var output = new Dictionary<string, RecoveredRunningState>(StringComparer.Ordinal);
+		var activeWindow = TimeSpan.FromMinutes(_defaults.RunningRecoveryActiveWindowMinutes);
+		var sessions = CodexSessionCatalog.ListSessions(_defaults.CodexHomePath, limit: _defaults.RunningRecoveryScanMaxSessions);
+
+		foreach (var session in sessions)
+		{
+			if (string.IsNullOrWhiteSpace(session.ThreadId) || string.IsNullOrWhiteSpace(session.SessionFilePath))
+			{
+				continue;
+			}
+
+			var path = session.SessionFilePath!;
+			if (!File.Exists(path))
+			{
+				continue;
+			}
+
+			if (session.UpdatedAtUtc.HasValue && (nowUtc - session.UpdatedAtUtc.Value) > activeWindow)
+			{
+				continue;
+			}
+
+			JsonlWatchResult tail;
+			try
+			{
+				tail = JsonlFileTailReader.ReadInitial(path, _defaults.RunningRecoveryTailLineLimit);
+			}
+			catch
+			{
+				continue;
+			}
+
+			var analysis = CodexTaskStateRecovery.AnalyzeJsonLines(tail.Lines);
+			if (!CodexTaskStateRecovery.IsLikelyProcessing(analysis, nowUtc, activeWindow))
+			{
+				continue;
+			}
+
+			output[session.ThreadId] = new RecoveredRunningState(
+				IsProcessing: true,
+				OutstandingTaskCount: analysis.OutstandingTaskCount,
+				LastTaskEventAtUtc: analysis.LastTaskEventAtUtc);
+		}
+
+		return output;
 	}
 
 	private static List<string> GetCommandActionSummaries(JsonElement paramsElement)
@@ -1021,30 +1141,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 	public async ValueTask DisposeAsync()
 	{
-		List<ManagedSession> toDispose;
-		lock (_sessionsLock)
-		{
-			toDispose = _sessions.Values.ToList();
-			_sessions.Clear();
-			_activeSessionId = null;
-		}
-
-		foreach (var session in toDispose)
-		{
-			try
-			{
-				session.CancelLifetimeOperations();
-				await session.Client.DisposeAsync();
-			}
-			catch
-			{
-			}
-			finally
-			{
-				session.DisposeLifetimeCancellation();
-				session.Log.Dispose();
-			}
-		}
+		_activeSessionId = null;
 
 		_socketSendLock.Dispose();
 		_connectionLog.Dispose();
@@ -1172,6 +1269,11 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 		return value[..maxLength] + "...";
 	}
+
+	private sealed record RecoveredRunningState(
+		bool IsProcessing,
+		int OutstandingTaskCount,
+		DateTimeOffset? LastTaskEventAtUtc);
 
 	private sealed record ManagedSession(
 		string SessionId,
