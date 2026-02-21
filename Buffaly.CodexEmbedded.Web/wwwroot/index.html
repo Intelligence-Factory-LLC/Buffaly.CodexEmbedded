@@ -67,18 +67,17 @@
 				<form id="promptForm" class="prompt-form">
 					<textarea id="promptInput" autocomplete="off" rows="4" placeholder="Type a prompt..."></textarea>
 					<div class="prompt-actions">
-						<div class="composer-status-stack">
-							<div id="contextLeftIndicator" class="context-left-indicator" title="Context window usage">--% context left</div>
-						</div>
 						<input id="imageUploadInput" type="file" accept="image/*" multiple class="hidden">
 						<button id="imageUploadBtn" class="prompt-upload-btn" type="button" title="Attach image" aria-label="Attach image">
-							<svg class="prompt-upload-icon" viewBox="0 0 24 24" aria-hidden="true">
-								<path d="M7 13.5l6.2-6.2a3.5 3.5 0 1 1 5 5L10 20.5a6 6 0 1 1-8.5-8.5l8-8" />
-							</svg>
+							<i class="bi bi-plus-lg" aria-hidden="true"></i>
+							<span class="visually-hidden">Attach image</span>
 						</button>
 						<button id="queuePromptBtn" class="prompt-queue-btn hidden" type="button" title="Queue prompt">Queue</button>
 						<button id="cancelTurnBtn" class="prompt-cancel-btn hidden" type="button" title="Cancel running turn">Cancel</button>
-						<button id="sendPromptBtn" class="prompt-send-btn" type="submit">Send</button>
+						<button id="sendPromptBtn" class="prompt-send-btn" type="submit" aria-label="Send prompt">
+							<i class="bi bi-arrow-up" aria-hidden="true"></i>
+							<span class="visually-hidden">Send</span>
+						</button>
 					</div>
 				</form>
 			</section>

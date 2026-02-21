@@ -28,6 +28,7 @@
       this.nextTaskGroupId = 1;
       this.activeTaskStack = [];
       this.collapsedTaskIds = new Set();
+      this.latestContextUsage = null; // { usedTokens, contextWindow, percentLeft }
 
       this.container.addEventListener("scroll", () => {
         this.autoScrollPinned = this.isNearBottom();
@@ -65,6 +66,113 @@
       }
 
       return `${normalized.slice(0, maxLength)}\n... (truncated)`;
+    }
+
+    readNonNegativeNumber(value) {
+      const next = Number(value);
+      return Number.isFinite(next) && next >= 0 ? next : null;
+    }
+
+    readTokenCountInfo(payload) {
+      if (!payload || typeof payload !== "object" || payload.type !== "token_count") {
+        return null;
+      }
+
+      const info = payload.info;
+      if (!info || typeof info !== "object") {
+        return null;
+      }
+
+      const contextWindowRaw = info.model_context_window ?? info.modelContextWindow ?? null;
+      const contextWindowNumber = Number(contextWindowRaw);
+      const contextWindow = Number.isFinite(contextWindowNumber) && contextWindowNumber > 0 ? contextWindowNumber : null;
+
+      const lastUsage = info.last_token_usage ?? info.lastTokenUsage ?? info.last ?? null;
+      const totalUsage = info.total_token_usage ?? info.totalTokenUsage ?? info.total ?? null;
+
+      const readInputSideTokens = (usage) => {
+        if (!usage || typeof usage !== "object") {
+          return null;
+        }
+
+        const input = this.readNonNegativeNumber(usage.input_tokens ?? usage.inputTokens);
+        const cachedInput = this.readNonNegativeNumber(usage.cached_input_tokens ?? usage.cachedInputTokens);
+        if (input === null && cachedInput === null) {
+          return null;
+        }
+
+        return (input || 0) + (cachedInput || 0);
+      };
+
+      const readTotalTokens = (usage) => {
+        if (!usage || typeof usage !== "object") {
+          return null;
+        }
+
+        return this.readNonNegativeNumber(usage.total_tokens ?? usage.totalTokens);
+      };
+
+      const candidates = [];
+      const lastInputSide = readInputSideTokens(lastUsage);
+      const lastTotal = readTotalTokens(lastUsage);
+      const totalInputSide = readInputSideTokens(totalUsage);
+      const cumulativeTotal = readTotalTokens(totalUsage);
+      if (lastInputSide !== null) candidates.push(lastInputSide);
+      if (lastTotal !== null) candidates.push(lastTotal);
+      if (totalInputSide !== null) candidates.push(totalInputSide);
+      if (cumulativeTotal !== null && (contextWindow === null || cumulativeTotal <= contextWindow * 1.05)) {
+        candidates.push(cumulativeTotal);
+      }
+
+      let usedTokens = null;
+      if (contextWindow !== null) {
+        const bounded = candidates.filter((x) => x <= (contextWindow * 1.1));
+        if (bounded.length > 0) {
+          usedTokens = Math.max(...bounded);
+        }
+      }
+      if (usedTokens === null && candidates.length > 0) {
+        usedTokens = candidates[0];
+      }
+
+      if (!Number.isFinite(contextWindow) || contextWindow <= 0 || !Number.isFinite(usedTokens) || usedTokens < 0) {
+        return null;
+      }
+
+      const ratio = Math.min(1, Math.max(0, usedTokens / contextWindow));
+      const percentLeft = Math.max(0, Math.min(100, Math.round((1 - ratio) * 100)));
+      return { contextWindow, usedTokens, percentLeft };
+    }
+
+    updateLatestContextUsageFromPayload(payload) {
+      const parsed = this.readTokenCountInfo(payload);
+      if (parsed) {
+        this.latestContextUsage = parsed;
+        return;
+      }
+
+      const modelContextWindow = Number(payload?.model_context_window ?? payload?.modelContextWindow ?? null);
+      if (!Number.isFinite(modelContextWindow) || modelContextWindow <= 0) {
+        return;
+      }
+
+      const priorUsedTokens = Number.isFinite(this.latestContextUsage?.usedTokens) ? this.latestContextUsage.usedTokens : null;
+      if (priorUsedTokens !== null) {
+        const ratio = Math.min(1, Math.max(0, priorUsedTokens / modelContextWindow));
+        const percentLeft = Math.max(0, Math.min(100, Math.round((1 - ratio) * 100)));
+        this.latestContextUsage = { contextWindow: modelContextWindow, usedTokens: priorUsedTokens, percentLeft };
+      } else {
+        this.latestContextUsage = { contextWindow: modelContextWindow, usedTokens: null, percentLeft: null };
+      }
+    }
+
+    formatLatestContextLeftLabel() {
+      const percent = this.latestContextUsage?.percentLeft;
+      if (!Number.isFinite(percent)) {
+        return "";
+      }
+
+      return `${percent}% context left`;
     }
 
     createEntry(role, title, text, timestamp, rawType, images) {
@@ -108,6 +216,7 @@
       this.nextTaskGroupId = 1;
       this.activeTaskStack = [];
       this.collapsedTaskIds.clear();
+      this.latestContextUsage = null;
       this.autoScrollPinned = true;
     }
 
@@ -753,11 +862,17 @@
       }
 
       const eventType = payload.type || "";
-      if (eventType === "token_count" || eventType === "agent_message" || eventType === "user_message" || eventType === "agent_reasoning") {
+      if (eventType === "token_count") {
+        this.updateLatestContextUsageFromPayload(payload);
+        return null;
+      }
+
+      if (eventType === "agent_message" || eventType === "user_message" || eventType === "agent_reasoning") {
         return null;
       }
 
       if (eventType === "task_started") {
+        this.updateLatestContextUsageFromPayload(payload);
         const summary = payload.title || payload.message || "Task started";
         const entry = this.createEntry("system", "Task Started", this.truncateText(summary, 240), timestamp, eventType);
         entry.compact = true;
@@ -766,7 +881,9 @@
 
       if (eventType === "task_complete") {
         const summary = payload.message || "Task complete";
-        const entry = this.createEntry("system", "Task Complete", this.truncateText(summary, 240), timestamp, eventType);
+        const contextLeftLabel = this.formatLatestContextLeftLabel();
+        const displayText = contextLeftLabel ? `${summary} | ${contextLeftLabel}` : summary;
+        const entry = this.createEntry("system", "Task Complete", this.truncateText(displayText, 240), timestamp, eventType);
         entry.compact = true;
         return this.markTaskEnd(entry);
       }
