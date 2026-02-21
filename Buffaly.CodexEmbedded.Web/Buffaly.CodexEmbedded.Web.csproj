@@ -22,12 +22,6 @@
   </Target>
 
   <ItemGroup>
-    <Reference Include="BasicUtilities">
-      <HintPath>..\lib\BasicUtilities.dll</HintPath>
-    </Reference>
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="..\\Buffaly.CodexEmbedded.Core\\Buffaly.CodexEmbedded.Core.csproj" />
   </ItemGroup>
 
