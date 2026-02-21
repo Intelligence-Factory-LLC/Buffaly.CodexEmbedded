@@ -7,7 +7,7 @@ Web UI for Codex App Server.
 If you installed from a GitHub release package, run:
 
 ```powershell
-buffaly-web
+buffaly-codex-web
 ```
 
 Then open the URL shown in the terminal (usually `http://localhost:5000`).

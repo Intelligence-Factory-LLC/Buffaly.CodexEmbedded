@@ -3,7 +3,8 @@ param(
     [string]$InstallRoot = "",
     [switch]$SkipPathUpdate,
     [switch]$Force,
-    [switch]$NoPrompt
+    [switch]$NoPrompt,
+    [switch]$EnableLegacyBuffalyAliases
 )
 
 Set-StrictMode -Version Latest
@@ -176,17 +177,32 @@ Copy-Item -Force (Join-Path $scriptRoot "update.ps1") (Join-Path $InstallRoot "u
 Copy-Item -Force (Join-Path $scriptRoot "uninstall.ps1") (Join-Path $InstallRoot "uninstall.ps1")
 
 Write-ExecutableWrapper `
-    (Join-Path $binRoot "buffaly.cmd") `
+    (Join-Path $binRoot "buffaly-codex.cmd") `
     "apps\cli\Buffaly.CodexEmbedded.Cli.exe"
 Write-ExecutableWrapper `
-    (Join-Path $binRoot "buffaly-web.cmd") `
+    (Join-Path $binRoot "buffaly-codex-web.cmd") `
     "apps\web\Buffaly.CodexEmbedded.Web.exe"
 Write-ScriptWrapper `
-    (Join-Path $binRoot "buffaly-update.cmd") `
+    (Join-Path $binRoot "buffaly-codex-update.cmd") `
     "update.ps1"
 Write-ScriptWrapper `
-    (Join-Path $binRoot "buffaly-uninstall.cmd") `
+    (Join-Path $binRoot "buffaly-codex-uninstall.cmd") `
     "uninstall.ps1"
+
+if ($EnableLegacyBuffalyAliases) {
+    Write-ExecutableWrapper `
+        (Join-Path $binRoot "buffaly.cmd") `
+        "apps\cli\Buffaly.CodexEmbedded.Cli.exe"
+    Write-ExecutableWrapper `
+        (Join-Path $binRoot "buffaly-web.cmd") `
+        "apps\web\Buffaly.CodexEmbedded.Web.exe"
+    Write-ScriptWrapper `
+        (Join-Path $binRoot "buffaly-update.cmd") `
+        "update.ps1"
+    Write-ScriptWrapper `
+        (Join-Path $binRoot "buffaly-uninstall.cmd") `
+        "uninstall.ps1"
+}
 
 $pathChanged = $false
 if (-not $SkipPathUpdate) {
@@ -198,10 +214,13 @@ Write-Host "Installation complete." -ForegroundColor Green
 Write-Host "  Installed version: $version"
 Write-Host "  Install folder: $InstallRoot"
 Write-Host "  Commands:"
-Write-Host "    buffaly"
-Write-Host "    buffaly-web"
-Write-Host "    buffaly-update"
-Write-Host "    buffaly-uninstall"
+Write-Host "    buffaly-codex"
+Write-Host "    buffaly-codex-web"
+Write-Host "    buffaly-codex-update"
+Write-Host "    buffaly-codex-uninstall"
+if ($EnableLegacyBuffalyAliases) {
+    Write-Host "  Legacy aliases enabled: buffaly, buffaly-web, buffaly-update, buffaly-uninstall"
+}
 
 if ($pathChanged) {
     Write-Host ""

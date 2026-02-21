@@ -61,8 +61,10 @@ internal static class Program
 	private static void PrintUsage()
 	{
 		Console.Error.WriteLine("Usage:");
-		Console.Error.WriteLine("  Buffaly.CodexEmbedded.Cli [options]");
-		Console.Error.WriteLine("  Buffaly.CodexEmbedded.Cli run [--prompt \"your prompt\"] [options]");
+		Console.Error.WriteLine("  buffaly-codex [options]");
+		Console.Error.WriteLine("  buffaly-codex run [--prompt \"your prompt\"] [options]");
+		Console.Error.WriteLine("  Buffaly.CodexEmbedded.Cli [options] (direct executable)");
+		Console.Error.WriteLine("  Buffaly.CodexEmbedded.Cli run [--prompt \"your prompt\"] [options] (direct executable)");
 		Console.Error.WriteLine();
 		Console.Error.WriteLine("Options:");
 		Console.Error.WriteLine("  --prompt <text>           Optional prompt text. If omitted, starts REPL mode.");

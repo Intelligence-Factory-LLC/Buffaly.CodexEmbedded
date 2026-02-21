@@ -14,14 +14,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 After install, open a new terminal and use:
 
 ```powershell
-buffaly run --prompt "Say hello in one sentence"
-buffaly-web
+buffaly-codex run --prompt "Say hello in one sentence"
+buffaly-codex-web
 ```
 
 ## Update
 
 ```powershell
-buffaly-update
+buffaly-codex-update
 ```
 
 ## Configure defaults
@@ -34,5 +34,5 @@ Edit:
 ## Uninstall
 
 ```powershell
-buffaly-uninstall
+buffaly-codex-uninstall
 ```

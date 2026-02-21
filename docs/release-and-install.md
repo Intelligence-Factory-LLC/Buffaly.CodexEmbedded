@@ -44,8 +44,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 4. Open a new terminal and use:
 
 ```powershell
-buffaly run --prompt "Say hello in one sentence"
-buffaly-web
+buffaly-codex run --prompt "Say hello in one sentence"
+buffaly-codex-web
 ```
 
 ## End user: update and uninstall
@@ -53,11 +53,11 @@ buffaly-web
 Update:
 
 ```powershell
-buffaly-update
+buffaly-codex-update
 ```
 
 Uninstall:
 
 ```powershell
-buffaly-uninstall
+buffaly-codex-uninstall
 ```

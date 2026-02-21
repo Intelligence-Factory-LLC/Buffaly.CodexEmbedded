@@ -7,13 +7,13 @@ CLI harness for Codex App Server over JSON-RPC JSONL.
 If you installed from a GitHub release package, use:
 
 ```powershell
-buffaly run --prompt "list top 5 largest files"
+buffaly-codex run --prompt "list top 5 largest files"
 ```
 
 REPL mode:
 
 ```powershell
-buffaly
+buffaly-codex
 ```
 
 ## Source developers

@@ -1,21 +1,77 @@
-# Buffaly.CodexEmbedded
+<div align="center">
+# 🌟 Buffaly Codex Embedded
 
-Simple desktop-friendly harness for `codex app-server` with:
+**Unofficial Windows-first UI for OpenAI Codex**  
+Run the official Codex agent in a beautiful browser UI - on your desktop, from your phone, or alongside the CLI.
 
-Built by Buffaly (Intelligence Factory LLC): https://buffa.ly
+[![Windows](https://img.shields.io/badge/Platform-Windows-blue?style=for-the-badge&logo=windows)](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded)
+[![.NET](https://img.shields.io/badge/.NET-9-512BD4?style=for-the-badge&logo=dotnet)](https://dotnet.microsoft.com)
+[![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
+[![GitHub Release](https://img.shields.io/github/v/release/Intelligence-Factory-LLC/Buffaly.CodexEmbedded?style=for-the-badge)](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/releases)
+</div>
 
-Not affiliated with OpenAI. This is a local UI for Codex app-server. It can execute commands and modify files. Bind to localhost and access over a private network (recommended: Tailscale tailnet-only).
+## 🌟 What is Buffaly Codex Embedded?
 
-- A terminal app: `Buffaly.CodexEmbedded.Cli`
-- A web app: `Buffaly.CodexEmbedded.Web`
-- A reusable .NET library: `Buffaly.CodexEmbedded.Core`
+**The unofficial Windows-first UI that makes OpenAI Codex actually delightful to use.**
 
-This repository is set up so people can either:
+Run the official Codex agent in a clean browser interface on your desktop, from your phone, or right next to the CLI - no waiting for the official Windows app.
 
-1. Install and run it without Visual Studio.
-2. Build and modify the source code.
+You get:
+- Multiple projects open at once (no more restarting terminals)
+- Natural editing, image paste, and full history
+- Seamless switching between desktop, web, and phone
+- Same powerful Codex agent under the hood
 
-## Quick Install (Windows, no Visual Studio)
+Built by the team behind **Buffaly** - the local agent platform for high-trust work.
+
+## ✨ Major Features
+
+Here’s what makes daily work with Codex dramatically better:
+
+<div align="center">
+
+| Feature | Description | Screenshot |
+|---------|-------------|------------|
+| **Multi-Project Sessions** | Open 5-6 projects at the same time with dedicated tabs and timelines | ![Multi-project view](screenshots/multi-project.png) |
+| **Natural Browser Input** | Full edit, undo, copy-paste - no more terminal arrow-key struggles | ![Input field](screenshots/natural-input.png) |
+| **Image Paste Support** | Drag or paste screenshots directly into the chat - Codex sees them instantly | ![Image paste demo](screenshots/image-paste.png) |
+| **Conversation History** | Clean scrollable timeline per session - resume old threads in one click | ![History view](screenshots/history.png) |
+| **CLI + Web Hybrid** | Run quick commands in `buffaly-codex` terminal while deep work happens in the web UI | ![CLI + Web side-by-side](screenshots/cli-web-hybrid.png) |
+| **Phone & Cross-Device** | Start on desktop -> continue on your phone over Tailscale - same session | ![Phone view](screenshots/phone-access.png) |
+| **One-Click Install** | Download, run `install.ps1`, done - no Visual Studio required | ![Install flow](screenshots/quick-install.png) |
+
+</div>
+
+### 📸 See It In Action
+
+<div align="center">
+<img src="screenshots/cli-vs-web-side-by-side.png" width="100%" alt="Codex CLI (right) vs Buffaly Codex Embedded web UI (left) - same agent, dramatically better workflow" />
+<br><sub><b>Raw Codex CLI</b> (single session, terminal-only) vs <b>Buffaly web UI</b> (multi-project, image paste, history, sessions)</sub>
+</div>
+
+**More screenshots coming soon** (multi-session dashboard, image-paste demo, phone view over Tailscale, CLI + web running together). Drop them in the `screenshots/` folder when ready.
+
+## Why We Built This
+
+We believe powerful agents should feel delightful to use every single day.  
+As the team behind **Buffaly** - the ontology-driven agent platform that powers safe, auditable AI in high-trust environments like medicine - we wanted developers to experience how good Codex can really feel on Windows and mobile.
+
+This project is our way of giving the community a polished, multi-project interface while we continue building the future of trustworthy agent infrastructure at [buffa.ly](https://buffa.ly).
+
+## 🌟 Why You’ll Love This (vs raw Codex CLI)
+
+| What’s hard with the raw CLI          | How Buffaly Codex Embedded makes it easy |
+|---------------------------------------|------------------------------------------|
+| One terminal session at a time        | Juggle 5-6 projects with persistent sessions open side-by-side |
+| Clunky arrow-key editing              | Natural browser input - full edit, undo, copy-paste |
+| Images/screenshots are painful        | Paste screenshots directly into the chat - Codex sees them instantly |
+| History lost in scrollback            | Clean per-session timeline - scroll back and resume anytime |
+| Hard to mix quick tasks & deep work   | Run the `buffaly-codex` CLI and web UI **at the same time** - both stay in sync |
+| Switching devices is a hassle         | Start on desktop → continue on phone → same conversation, same files, same agent state |
+
+**Same official Codex agent. Dramatically better developer experience.**
+
+## 🚀 Quick Start (Windows - 2 minutes)
 
 ### 1. Prerequisites
 
@@ -46,18 +102,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 After install, open a new terminal:
 
 ```powershell
-buffaly run --prompt "Say hello in one sentence"
-buffaly-web
+buffaly-codex run --prompt "Say hello in one sentence"
+buffaly-codex-web
 ```
 
 Useful commands:
 
-- `buffaly`: interactive REPL mode.
-- `buffaly run --prompt "<text>"`: one-shot prompt.
-- `buffaly-update`: download and install latest release.
-- `buffaly-uninstall`: remove the local install.
+- `buffaly-codex`: interactive REPL mode.
+- `buffaly-codex run --prompt "<text>"`: one-shot prompt.
+- `buffaly-codex-update`: download and install latest release.
+- `buffaly-codex-uninstall`: remove the local install.
 
-Phone access (tailnet only via Tailscale)
+### Try a real workflow
+
+```powershell
+buffaly-codex-web
+# In another terminal window:
+buffaly-codex run --prompt "Refactor the payment service and add tests" --cwd "C:\Projects\MyApp"
+```
+
+## 📱 Codex in Your Pocket - Seamless Device Switching
+
+Start a refactoring session on your desktop web UI, grab your phone on the train, open the same Tailscale URL, and continue exactly where you left off - same conversation, same files, same agent state.
+
+(Full Tailscale setup instructions below - same private, secure approach we recommend for all high-trust agent work.)
 
 1. Install and sign in to Tailscale on:
 
@@ -86,7 +154,8 @@ More: docs/tailscale.md (slugs, multiple ports, HTTPS upstream, troubleshooting)
 
 ## Security
 
-This tool can run code and modify your filesystem through Codex.
+**Codex can read, write, and execute code on your machine.**  
+Buffaly Codex Embedded makes it dramatically easier and more pleasant to use - so we made security first-class: localhost-only by default, optional auth token, and Tailscale-only publishing recommended.
 
 Do not expose it to the public internet.
 
@@ -111,6 +180,9 @@ Most common settings:
 - log paths (`LogFilePath`, `LogRootPath`)
 
 When you update, installer keeps your existing `appsettings.json` files.
+
+<details>
+<summary>👩‍💻 For Developers & Maintainers</summary>
 
 ## Build From Source (Developer)
 
@@ -169,6 +241,21 @@ Workflow: `.github/workflows/release.yml`
 - `Buffaly.CodexEmbedded.Core`: reusable client library
 - `scripts/release`: maintainer build/publish/package scripts
 - `install/package`: installer/update/uninstall scripts bundled into release zip
+
+</details>
+
+## ❤️ Discover Buffaly
+
+Loved this experience?  
+Buffaly is the production-grade version of the same philosophy: local agents you can actually trust in serious work.
+
+[→ Stop Prompting. Start Programming Your Agents →](https://buffa.ly/?utm_source=codexembedded&utm_medium=readme&utm_campaign=footer)
+
+---
+
+**Part of the Buffaly ecosystem from Intelligence Factory LLC**  
+Built with the same care we put into safe, auditable agents for medicine and other high-trust domains.  
+Learn more at [buffa.ly](https://buffa.ly)
 
 ## Disclaimers
 

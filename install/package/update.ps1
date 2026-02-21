@@ -76,7 +76,7 @@ if ($null -eq $asset) {
     throw "No release asset found for runtime '$runtime'."
 }
 
-$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("buffaly-update-" + [Guid]::NewGuid().ToString("N"))
+$tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("buffaly-codex-update-" + [Guid]::NewGuid().ToString("N"))
 $downloadPath = Join-Path $tempRoot $asset.name
 $extractRoot = Join-Path $tempRoot "extracted"
 
