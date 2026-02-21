@@ -81,6 +81,7 @@ const attachSessionBtn = document.getElementById("attachSessionBtn");
 const existingSessionSelect = document.getElementById("existingSessionSelect");
 const stopSessionBtn = document.getElementById("stopSessionBtn");
 const sessionSelect = document.getElementById("sessionSelect");
+const conversationTitle = document.getElementById("conversationTitle");
 const sessionMeta = document.getElementById("sessionMeta");
 const sessionMetaDetailsBtn = document.getElementById("sessionMetaDetailsBtn");
 const sessionMetaSummaryItem = document.getElementById("sessionMetaSummaryItem");
@@ -1159,40 +1160,20 @@ function setMobileProjectsOpen(isOpen) {
 }
 
 function updateConversationMetaVisibility() {
-  if (!sessionMeta) {
+  if (!sessionMeta || !sessionMetaModelItem) {
     return;
   }
 
-  const state = getActiveSessionState();
-  const hasState = !!state;
-  const mobile = isMobileViewport();
+  const hasState = !!getActiveSessionState();
 
   if (sessionMetaDetailsBtn) {
-    const showToggle = hasState && mobile;
-    sessionMetaDetailsBtn.classList.toggle("hidden", !showToggle);
-    sessionMetaDetailsBtn.textContent = sessionMetaDetailsExpanded ? "Hide details" : "Details";
-    sessionMetaDetailsBtn.setAttribute("aria-expanded", sessionMetaDetailsExpanded ? "true" : "false");
+    sessionMetaDetailsBtn.classList.add("hidden");
+    sessionMetaDetailsBtn.setAttribute("aria-expanded", "false");
   }
 
-  if (sessionMetaSummaryItem) {
-    sessionMetaSummaryItem.classList.toggle("hidden", !(hasState && mobile));
-  }
-
-  const detailItems = [
-    sessionMetaNameItem,
-    sessionMetaThreadItem,
-    sessionMetaModelItem,
-    sessionMetaCwdItem
-  ];
-
-  for (const item of detailItems) {
-    if (!item) {
-      continue;
-    }
-    const available = item.dataset.available !== "0";
-    const show = hasState && available && (!mobile || sessionMetaDetailsExpanded);
-    item.classList.toggle("hidden", !show);
-  }
+  sessionMeta.classList.toggle("hidden", !hasState);
+  sessionMetaModelItem.classList.toggle("hidden", !hasState);
+  permissionLevelIndicator?.classList.toggle("hidden", !hasState);
 }
 
 function applySidebarCollapsed(isCollapsed) {
@@ -2181,34 +2162,18 @@ function syncConversationModelOptions(preferredValue = null) {
 }
 
 function refreshSessionMeta() {
-  if (!sessionMeta) {
+  if (!sessionMeta || !sessionMetaModelItem) {
     return;
   }
 
   const state = getActiveSessionState();
   if (!state) {
+    if (conversationTitle) {
+      conversationTitle.textContent = "Conversation";
+      conversationTitle.title = "";
+    }
     sessionMeta.classList.add("hidden");
-    if (sessionMetaSummaryItem) sessionMetaSummaryItem.classList.add("hidden");
-    if (sessionMetaSummaryValue) sessionMetaSummaryValue.textContent = "";
-    if (sessionMetaNameItem) {
-      sessionMetaNameItem.classList.add("hidden");
-      sessionMetaNameItem.dataset.available = "0";
-    }
-    if (sessionMetaThreadItem) {
-      sessionMetaThreadItem.classList.add("hidden");
-      sessionMetaThreadItem.dataset.available = "0";
-    }
-    if (sessionMetaModelItem) {
-      sessionMetaModelItem.classList.add("hidden");
-      sessionMetaModelItem.dataset.available = "0";
-    }
-    if (sessionMetaCwdItem) {
-      sessionMetaCwdItem.classList.add("hidden");
-      sessionMetaCwdItem.dataset.available = "0";
-    }
-    if (sessionMetaNameValue) sessionMetaNameValue.textContent = "";
-    if (sessionMetaThreadValue) sessionMetaThreadValue.textContent = "";
-    if (sessionMetaCwdValue) sessionMetaCwdValue.textContent = "";
+    sessionMetaModelItem.classList.add("hidden");
     syncConversationModelOptions(modelSelect.value || "");
     sessionMeta.title = "";
     updateContextLeftIndicator();
@@ -2220,48 +2185,17 @@ function refreshSessionMeta() {
   const namedCatalogEntry = getCatalogEntryByThreadId(state.threadId);
   const threadName = namedCatalogEntry?.threadName || state.threadName || "";
   const threadId = state.threadId || "";
-  const cwd = state.cwd || "";
   const selectedModel = state.model || modelValueForCreate() || "";
-  const summary = threadName || (threadId ? threadId.slice(0, 12) : "(none)");
+  const titleValue = threadName || threadId || "Conversation";
+  if (conversationTitle) {
+    conversationTitle.textContent = titleValue;
+    conversationTitle.title = titleValue;
+  }
   sessionMeta.classList.remove("hidden");
 
-  if (sessionMetaSummaryValue) {
-    sessionMetaSummaryValue.textContent = summary;
-    sessionMetaSummaryValue.title = threadName || threadId || "";
-  }
-
-  if (sessionMetaNameItem && sessionMetaNameValue) {
-    if (threadName) {
-      sessionMetaNameItem.dataset.available = "1";
-      sessionMetaNameValue.textContent = threadName;
-      sessionMetaNameValue.title = threadName;
-    } else {
-      sessionMetaNameItem.dataset.available = "0";
-      sessionMetaNameValue.textContent = "";
-      sessionMetaNameValue.title = "";
-    }
-  }
-
-  if (sessionMetaThreadValue) {
-    sessionMetaThreadValue.textContent = threadId || "(none)";
-    sessionMetaThreadValue.title = threadId || "";
-  }
-  if (sessionMetaThreadItem) {
-    sessionMetaThreadItem.dataset.available = "1";
-  }
-
-  if (sessionMetaCwdValue) {
-    sessionMetaCwdValue.textContent = cwd || "(default)";
-    sessionMetaCwdValue.title = cwd || "";
-  }
-  if (sessionMetaCwdItem) {
-    sessionMetaCwdItem.dataset.available = "1";
-  }
-
   syncConversationModelOptions(selectedModel);
-  if (sessionMetaModelItem) {
-    sessionMetaModelItem.dataset.available = "1";
-  }
+  sessionMetaModelItem.dataset.available = "1";
+  sessionMetaModelItem.classList.remove("hidden");
   sessionMeta.title = "";
   updateContextLeftIndicator();
   updatePermissionLevelIndicator();

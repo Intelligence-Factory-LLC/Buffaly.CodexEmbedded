@@ -503,7 +503,17 @@ body {
 
 .conversation-title-row {
 	gap: 0.75rem;
-	align-items: flex-start;
+	align-items: center;
+}
+
+.conversation-title-text {
+	font-weight: 700;
+	font-size: 1.05rem;
+	line-height: 1.2;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .conversation-meta-toggle {
@@ -525,6 +535,7 @@ body {
 	flex-wrap: wrap;
 	gap: 0.35rem 0.45rem;
 	justify-content: flex-end;
+	align-items: center;
 }
 
 .conversation-meta-item {
@@ -565,7 +576,7 @@ body {
 	background: transparent;
 	font: inherit;
 	color: #0f172a;
-	min-width: 170px;
+	min-width: 150px;
 	padding: 0 0.1rem;
 	outline: none;
 	cursor: pointer;
@@ -733,11 +744,11 @@ body {
 
 .prompt-actions {
 	display: grid;
-	grid-template-columns: auto auto auto;
+	grid-template-columns: minmax(0, 1fr) auto auto;
 	grid-template-areas:
-		"context upload upload"
+		". context upload"
 		"queue cancel send";
-	align-items: center;
+	align-items: start;
 	justify-items: end;
 	column-gap: 0.4rem;
 	row-gap: 0.35rem;
@@ -747,30 +758,35 @@ body {
 .composer-status-stack {
 	grid-area: context;
 	display: flex;
-	flex-direction: column;
-	gap: 0.28rem;
+	flex-direction: row;
+	gap: 0;
 	align-items: flex-start;
+	justify-content: flex-end;
+	justify-self: end;
+	align-self: start;
 }
 
 .context-left-indicator {
-	padding: 0.32rem 0.55rem;
+	padding: 0.18rem 0.45rem;
 	border-radius: 999px;
 	border: 1px solid #cbd5e1;
 	background: #ffffff;
 	color: #334155;
-	font-size: 0.76rem;
-	font-weight: 600;
+	font-size: 0.68rem;
+	font-weight: 700;
+	line-height: 1.15;
 	white-space: nowrap;
 }
 
 .permission-level-indicator {
-	padding: 0.28rem 0.5rem;
+	padding: 0.22rem 0.5rem;
 	border-radius: 999px;
 	border: 1px solid #cbd5e1;
 	background: #ffffff;
 	color: #334155;
-	font-size: 0.72rem;
+	font-size: 0.68rem;
 	font-weight: 600;
+	line-height: 1.15;
 	white-space: nowrap;
 }
 
@@ -1312,6 +1328,10 @@ body {
 		flex-wrap: wrap;
 	}
 
+	.conversation-title-text {
+		max-width: 100%;
+	}
+
 	.conversation-meta-toggle {
 		display: inline-flex;
 		align-items: center;
@@ -1414,9 +1434,9 @@ body {
 
 	.prompt-actions {
 		width: 100%;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
+		grid-template-columns: minmax(0, 1fr) auto auto;
 		grid-template-areas:
-			"context context upload"
+			". context upload"
 			"queue cancel send";
 		column-gap: 0.28rem;
 		row-gap: 0.22rem;
@@ -1432,20 +1452,18 @@ body {
 	}
 
 	.composer-status-stack {
-		flex-direction: row;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.25rem;
+		justify-self: end;
+		align-self: start;
 	}
 
 	.context-left-indicator {
-		font-size: 0.66rem;
-		padding: 0.22rem 0.42rem;
+		font-size: 0.6rem;
+		padding: 0.15rem 0.36rem;
 	}
 
 	.permission-level-indicator {
-		font-size: 0.64rem;
-		padding: 0.2rem 0.38rem;
+		font-size: 0.62rem;
+		padding: 0.18rem 0.34rem;
 	}
 
 	.prompt-upload-btn {

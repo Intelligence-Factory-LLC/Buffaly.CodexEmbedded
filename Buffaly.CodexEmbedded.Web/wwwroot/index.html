@@ -39,29 +39,13 @@
 			</aside>
 			<section class="panel chat-panel">
 				<div class="panel-title panel-title-row conversation-title-row">
-					<span>Conversation</span>
-					<button id="sessionMetaDetailsBtn" class="conversation-meta-toggle hidden" type="button" aria-expanded="false">Details</button>
+					<span id="conversationTitle" class="conversation-title-text">Conversation</span>
 					<div id="sessionMeta" class="conversation-meta">
-						<span id="sessionMetaSummaryItem" class="conversation-meta-item conversation-meta-summary hidden">
-							<span class="conversation-meta-label">Session</span>
-							<span id="sessionMetaSummaryValue" class="conversation-meta-value"></span>
-						</span>
-						<span id="sessionMetaNameItem" class="conversation-meta-item conversation-meta-detail hidden">
-							<span class="conversation-meta-label">Name</span>
-							<span id="sessionMetaNameValue" class="conversation-meta-value"></span>
-						</span>
-						<span id="sessionMetaThreadItem" class="conversation-meta-item conversation-meta-detail">
-							<span class="conversation-meta-label">Thread</span>
-							<span id="sessionMetaThreadValue" class="conversation-meta-value"></span>
-						</span>
 						<label id="sessionMetaModelItem" class="conversation-meta-item conversation-meta-model conversation-meta-detail" for="conversationModelSelect">
 							<span class="conversation-meta-label">Model</span>
 							<select id="conversationModelSelect"></select>
 						</label>
-						<span id="sessionMetaCwdItem" class="conversation-meta-item conversation-meta-cwd conversation-meta-detail">
-							<span class="conversation-meta-label">CWD</span>
-							<span id="sessionMetaCwdValue" class="conversation-meta-value"></span>
-						</span>
+						<div id="permissionLevelIndicator" class="conversation-meta-item permission-level-indicator" title="Session permissions">perm: --</div>
 					</div>
 				</div>
 				<div id="chatMessages" class="watcher-timeline"></div>
@@ -85,7 +69,6 @@
 					<div class="prompt-actions">
 						<div class="composer-status-stack">
 							<div id="contextLeftIndicator" class="context-left-indicator" title="Context window usage">--% context left</div>
-							<div id="permissionLevelIndicator" class="permission-level-indicator" title="Session permissions">perm: --</div>
 						</div>
 						<input id="imageUploadInput" type="file" accept="image/*" multiple class="hidden">
 						<button id="imageUploadBtn" class="prompt-upload-btn" type="button" title="Attach image" aria-label="Attach image">
