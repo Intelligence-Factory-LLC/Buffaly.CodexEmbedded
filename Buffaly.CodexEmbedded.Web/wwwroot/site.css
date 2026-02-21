@@ -341,7 +341,7 @@ body {
 }
 
 .project-group + .project-group {
-	border-top: 2px solid #cbd5e1;
+	border-top: 2px solid #b8c5d6;
 }
 
 .project-header {
@@ -457,18 +457,18 @@ body {
 }
 
 .session-row.active {
-	background: #deebff;
+	background: #d9e8ff;
 	box-shadow: inset 4px 0 0 #1d4ed8;
 }
 
 .session-row.active .session-title {
-	color: #1e3a8a;
+	color: #1e40af;
 	font-weight: 700;
 }
 
 .session-row.loading {
 	background: #ecfeff;
-	box-shadow: inset 3px 0 0 #14b8a6;
+	box-shadow: inset 4px 0 0 #14b8a6;
 }
 
 .session-row-head {
@@ -869,14 +869,38 @@ body {
 	gap: 0.55rem;
 }
 
+.about-heading {
+	font-weight: 700;
+	color: #0f172a;
+}
+
 .about-line {
 	font-size: 0.9rem;
 	color: #0f172a;
 	line-height: 1.35;
 }
 
+.about-list {
+	margin: 0;
+	padding-left: 1.1rem;
+	color: #0f172a;
+	font-size: 0.9rem;
+	line-height: 1.35;
+}
+
+.about-list li + li {
+	margin-top: 0.24rem;
+}
+
+.about-link-line {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.25rem;
+}
+
 .about-line a {
 	color: #2563eb;
+	font-weight: 600;
 }
 
 .about-muted {

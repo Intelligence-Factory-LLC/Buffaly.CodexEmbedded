@@ -48,3 +48,7 @@ Primary goals are stable Codex protocol integration, reliable session and thread
 - Per-session model selection persistence.
 - Queue/send/cancel controls.
 - Timeline task start/complete rendering.
+
+## Writing Rule
+- Never use em dash or en dash characters in any repository text.
+- Use the plain ASCII hyphen-minus (`-`) instead.

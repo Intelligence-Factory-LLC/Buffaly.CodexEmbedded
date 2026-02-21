@@ -24,32 +24,90 @@ You get:
 
 Built by the team behind **Buffaly** - the local agent platform for high-trust work.
 
-## ✨ Major Features
-
-Here’s what makes daily work with Codex dramatically better:
-
-<div align="center">
-
-| Feature | Description | Screenshot |
-|---------|-------------|------------|
-| **Multi-Project Sessions** | Open 5-6 projects at the same time with dedicated tabs and timelines | ![Multi-project view](screenshots/multi-project.png) |
-| **Natural Browser Input** | Full edit, undo, copy-paste - no more terminal arrow-key struggles | ![Input field](screenshots/natural-input.png) |
-| **Image Paste Support** | Drag or paste screenshots directly into the chat - Codex sees them instantly | ![Image paste demo](screenshots/image-paste.png) |
-| **Conversation History** | Clean scrollable timeline per session - resume old threads in one click | ![History view](screenshots/history.png) |
-| **CLI + Web Hybrid** | Run quick commands in `buffaly-codex` terminal while deep work happens in the web UI | ![CLI + Web side-by-side](screenshots/cli-web-hybrid.png) |
-| **Phone & Cross-Device** | Start on desktop -> continue on your phone over Tailscale - same session | ![Phone view](screenshots/phone-access.png) |
-| **One-Click Install** | Download, run `install.ps1`, done - no Visual Studio required | ![Install flow](screenshots/quick-install.png) |
-
-</div>
-
 ### 📸 See It In Action
 
+Typical flow:
+
+1. Open a project in the sidebar and continue an existing thread.
+2. Send prompts with text plus screenshot context.
+3. Monitor tool calls and reasoning in the timeline.
+4. Run targeted terminal commands with `buffaly-codex` when needed.
+5. Continue the same session on mobile over your private tailnet.
+
 <div align="center">
-<img src="screenshots/cli-vs-web-side-by-side.png" width="100%" alt="Codex CLI (right) vs Buffaly Codex Embedded web UI (left) - same agent, dramatically better workflow" />
-<br><sub><b>Raw Codex CLI</b> (single session, terminal-only) vs <b>Buffaly web UI</b> (multi-project, image paste, history, sessions)</sub>
+  <img src="screenshots/Animation.gif" width="92%" alt="Animated walkthrough of Buffaly Codex Embedded across web, CLI, and mobile" />
+  <br><sub>Live workflow demo across desktop web, terminal, and mobile continuation.</sub>
 </div>
 
-**More screenshots coming soon** (multi-session dashboard, image-paste demo, phone view over Tailscale, CLI + web running together). Drop them in the `screenshots/` folder when ready.
+<div align="center">
+  <img src="screenshots/cli-web-hybrid.png" width="78%" alt="Combined desktop and terminal view that reflects one shared Codex workflow" />
+  <br><sub>Static reference view of the same hybrid workflow.</sub>
+</div>
+
+## ✨ Major Features
+
+The experience is organized around real coding workflows. Each screenshot below maps to one concrete advantage.
+
+### 1. Multi-project command center
+
+Keep many repos active at once, switch threads instantly, and stay oriented by project.
+
+<div align="center">
+  <img src="screenshots/multi-project.png" width="100%" alt="Multi-project workspace with sidebar and active conversation" />
+  <br><sub>Full workspace view: project sidebar on the left, active session and timeline on the right.</sub>
+</div>
+
+<div align="center">
+  <img src="screenshots/project-list.png" width="48%" alt="Detailed project list with multiple active sessions" />
+  <img src="screenshots/mobile-project-list.png" width="48%" alt="Project list on phone over private tailnet access" />
+  <br><sub>Same project model on desktop and mobile, including active status and quick actions.</sub>
+</div>
+
+### 2. Prompting that feels native
+
+Type naturally, edit freely, and attach images directly in the composer.
+
+<div align="center">
+  <img src="screenshots/natural-input.png" width="48%" alt="Prompt composer with natural text input and controls" />
+  <img src="screenshots/image-paste-1.png" width="48%" alt="Image preview chip in the composer before send" />
+  <br><sub>Compose long prompts, then drop screenshots without leaving the flow.</sub>
+</div>
+
+<div align="center">
+  <img src="screenshots/image-paste-2.png" width="74%" alt="Sent prompt with attached image visible in conversation" />
+  <br><sub>Image context is carried into the message so Codex can use it immediately.</sub>
+</div>
+
+### 3. Persistent timeline and context continuity
+
+Every session keeps a readable timeline so you can resume old work without terminal scrollback hunting.
+
+<div align="center">
+  <img src="screenshots/history.png" width="49%" alt="Conversation timeline with assistant and tool entries" />
+  <img src="screenshots/history-2.png" width="49%" alt="Timeline showing resumed task context and follow-up actions" />
+  <br><sub>State stays visible: what ran, what failed, what changed, and what to do next.</sub>
+</div>
+
+### 4. Hybrid web plus terminal workflow
+
+Use the web UI for context and review, while running focused CLI commands in parallel.
+
+<div align="center">
+  <img src="screenshots/cli-web-hybrid-desktop.png" width="49%" alt="Desktop web interface during an active coding session" />
+  <img src="screenshots/cli-web-hybrid-cli.png" width="49%" alt="Terminal window running commands for the same work session" />
+  <br><sub>Web for visibility, terminal for precision, both on the same underlying Codex workflow.</sub>
+</div>
+
+### 5. True cross-device continuation
+
+Start on desktop, continue on phone, keep the same session state and thread context.
+
+<div align="center">
+  <img src="screenshots/cli-web-hybrid-desktop.png" width="32%" alt="Desktop web UI for an active Codex session" />
+  <img src="screenshots/cli-web-hybrid-cli.png" width="32%" alt="CLI window running focused commands for the same work" />
+  <img src="screenshots/cli-web-hybrid-mobile.png" width="32%" alt="Mobile view continuing the same session over Tailscale" />
+  <br><sub>Desktop, terminal, and phone stay in one shared workflow with no context reset.</sub>
+</div>
 
 ## Why We Built This
 

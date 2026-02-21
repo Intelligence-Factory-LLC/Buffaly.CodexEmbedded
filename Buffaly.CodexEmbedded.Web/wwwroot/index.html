@@ -19,7 +19,7 @@
 		<main class="main codex-main">
 			<aside id="sessionSidebar" class="panel session-sidebar">
 				<div class="sidebar-shell-header">
-					<a class="sidebar-logo-btn" href="./" title="Codex" aria-label="Codex">
+					<a class="sidebar-logo-btn" href="https://buffa.ly/?utm_source=codexembedded&utm_medium=app_logo&utm_campaign=sidebar" target="_blank" rel="noopener" title="Made by the Buffaly team — learn more" aria-label="Made by the Buffaly team — learn more">
 						<img class="sidebar-logo-image" src="images/bf_logo_fav_Large.png" alt="">
 					</a>
 					<button id="sidebarToggleBtn" type="button" class="sidebar-collapse-btn sidebar-shell-toggle-btn" title="Hide projects" aria-label="Hide projects">
@@ -127,18 +127,27 @@
 
 		<div id="aboutModal" class="command-modal hidden" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
 			<div class="command-modal-card about-modal-card">
-				<div id="aboutModalTitle" class="command-modal-title">About</div>
+				<div id="aboutModalTitle" class="command-modal-title">About Buffaly Codex Embedded</div>
 				<div class="command-modal-body about-modal-body">
-					<div id="aboutProjectLine" class="about-line">Buffaly.CodexEmbedded</div>
+					<div id="aboutProjectLine" class="about-line about-heading">Built by Intelligence Factory LLC</div>
+					<div class="about-line">
+						Built by the team at <strong>Intelligence Factory LLC</strong> — the same people who created <strong>Buffaly</strong>, a local, code-native agent platform for high-trust environments.
+					</div>
+					<div class="about-line">
+						While Codex Embedded gives you a delightful way to use OpenAI's Codex today, Buffaly is what we use in production for regulated workflows (medicine, compliance, DevOps, etc.):
+					</div>
+					<ul class="about-list">
+						<li>Structured ontology memory (ProtoScript) instead of prompt soup</li>
+						<li>Typed, executable skills with real contracts</li>
+						<li>Full deterministic execution traces + offline critique loops</li>
+						<li>Designed so agents can actually be trusted in real work</li>
+					</ul>
+					<div class="about-line about-link-line">
+						&rarr;
+						<a href="https://buffa.ly/?utm_source=codexembedded&utm_medium=about_modal&utm_campaign=sidebar" target="_blank" rel="noopener">Learn more about Buffaly</a>
+					</div>
+					<div class="about-line about-muted">Made with the same care we put into medical-grade agents that power FairPath.ai.</div>
 					<div id="aboutVersionLine" class="about-line about-muted">Version: unknown</div>
-					<div class="about-line">
-						Built by Buffaly (Intelligence Factory LLC):
-						<a href="https://buffa.ly" target="_blank" rel="noopener">https://buffa.ly</a>
-					</div>
-					<div class="about-line about-muted">Not affiliated with OpenAI.</div>
-					<div class="about-line">
-						<a href="docs/security.md" target="_blank" rel="noopener">docs/security.md</a>
-					</div>
 				</div>
 				<div class="command-modal-actions">
 					<button id="aboutModalCloseBtn" type="button">Close</button>

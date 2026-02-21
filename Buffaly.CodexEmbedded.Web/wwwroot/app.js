@@ -1866,14 +1866,9 @@ function applySecurityConfig(config) {
     setSecurityWarningHidden();
   }
 
-  if (aboutProjectLine) {
-    const projectName = String(runtimeSecurityConfig.projectName || "Buffaly.CodexEmbedded").trim();
-    aboutProjectLine.textContent = projectName;
-  }
-
   if (aboutVersionLine) {
     const version = String(runtimeSecurityConfig.projectVersion || "unknown").trim() || "unknown";
-    aboutVersionLine.textContent = `Version: ${version}`;
+    aboutVersionLine.textContent = `Codex Embedded version: ${version}`;
   }
 }
 
