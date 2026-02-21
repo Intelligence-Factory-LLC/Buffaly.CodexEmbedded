@@ -1,4 +1,3 @@
-<div align="center">
 # 🌟 Buffaly Codex Embedded
 
 **Unofficial Windows-first UI for OpenAI Codex**  
@@ -8,7 +7,6 @@ Run the official Codex agent in a beautiful browser UI - on your desktop, from y
 [![.NET](https://img.shields.io/badge/.NET-9-512BD4?style=for-the-badge&logo=dotnet)](https://dotnet.microsoft.com)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
 [![GitHub Release](https://img.shields.io/github/v/release/Intelligence-Factory-LLC/Buffaly.CodexEmbedded?style=for-the-badge)](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/releases)
-</div>
 
 ## 🌟 What is Buffaly Codex Embedded?
 
@@ -34,15 +32,13 @@ Typical flow:
 4. Run targeted terminal commands with `buffaly-codex` when needed.
 5. Continue the same session on mobile over your private tailnet.
 
-<div align="center">
-  <img src="screenshots/Animation.gif" width="92%" alt="Animated walkthrough of Buffaly Codex Embedded across web, CLI, and mobile" />
-  <br><sub>Live workflow demo across desktop web, terminal, and mobile continuation.</sub>
-</div>
+Live workflow demo across desktop web, terminal, and mobile continuation.
 
-<div align="center">
-  <img src="screenshots/cli-web-hybrid.png" width="78%" alt="Combined desktop and terminal view that reflects one shared Codex workflow" />
-  <br><sub>Static reference view of the same hybrid workflow.</sub>
-</div>
+![Animated walkthrough of Buffaly Codex Embedded across web, CLI, and mobile](screenshots/Animation.gif)
+
+Static reference view of the same hybrid workflow.
+
+![Combined desktop and terminal view that reflects one shared Codex workflow](screenshots/cli-web-hybrid.png)
 
 ## ✨ Major Features
 
@@ -52,62 +48,83 @@ The experience is organized around real coding workflows. Each screenshot below 
 
 Keep many repos active at once, switch threads instantly, and stay oriented by project.
 
-<div align="center">
-  <img src="screenshots/multi-project.png" width="100%" alt="Multi-project workspace with sidebar and active conversation" />
-  <br><sub>Full workspace view: project sidebar on the left, active session and timeline on the right.</sub>
-</div>
+Full workspace view with the project sidebar on the left and active session timeline on the right.
 
-<div align="center">
-  <img src="screenshots/project-list.png" width="48%" alt="Detailed project list with multiple active sessions" />
-  <img src="screenshots/mobile-project-list.png" width="48%" alt="Project list on phone over private tailnet access" />
-  <br><sub>Same project model on desktop and mobile, including active status and quick actions.</sub>
-</div>
+![Multi-project workspace with sidebar and active conversation](screenshots/multi-project.png)
+
+The same project model works on desktop and mobile, with active status and quick actions.
+
+Desktop project list with multiple active sessions.
+
+![Detailed project list with multiple active sessions](screenshots/project-list.png)
+
+Mobile project list over private tailnet access.
+
+![Project list on phone over private tailnet access](screenshots/mobile-project-list.png)
 
 ### 2. Prompting that feels native
 
 Type naturally, edit freely, and attach images directly in the composer.
 
-<div align="center">
-  <img src="screenshots/natural-input.png" width="48%" alt="Prompt composer with natural text input and controls" />
-  <img src="screenshots/image-paste-1.png" width="48%" alt="Image preview chip in the composer before send" />
-  <br><sub>Compose long prompts, then drop screenshots without leaving the flow.</sub>
-</div>
+Compose long prompts, then drop screenshots without leaving the flow.
 
-<div align="center">
-  <img src="screenshots/image-paste-2.png" width="74%" alt="Sent prompt with attached image visible in conversation" />
-  <br><sub>Image context is carried into the message so Codex can use it immediately.</sub>
-</div>
+Prompt composer with natural text input and controls.
+
+![Prompt composer with natural text input and controls](screenshots/natural-input.png)
+
+Image preview chip in the composer before send.
+
+![Image preview chip in the composer before send](screenshots/image-paste-1.png)
+
+Image context is carried into the message so Codex can use it immediately.
+
+![Sent prompt with attached image visible in conversation](screenshots/image-paste-2.png)
 
 ### 3. Persistent timeline and context continuity
 
 Every session keeps a readable timeline so you can resume old work without terminal scrollback hunting.
 
-<div align="center">
-  <img src="screenshots/history.png" width="49%" alt="Conversation timeline with assistant and tool entries" />
-  <img src="screenshots/history-2.png" width="49%" alt="Timeline showing resumed task context and follow-up actions" />
-  <br><sub>State stays visible: what ran, what failed, what changed, and what to do next.</sub>
-</div>
+State stays visible, including what ran, what failed, what changed, and what to do next.
+
+Conversation timeline with assistant and tool entries.
+
+![Conversation timeline with assistant and tool entries](screenshots/history.png)
+
+Timeline showing resumed task context and follow-up actions.
+
+![Timeline showing resumed task context and follow-up actions](screenshots/history-2.png)
 
 ### 4. Hybrid web plus terminal workflow
 
 Use the web UI for context and review, while running focused CLI commands in parallel.
 
-<div align="center">
-  <img src="screenshots/cli-web-hybrid-desktop.png" width="49%" alt="Desktop web interface during an active coding session" />
-  <img src="screenshots/cli-web-hybrid-cli.png" width="49%" alt="Terminal window running commands for the same work session" />
-  <br><sub>Web for visibility, terminal for precision, both on the same underlying Codex workflow.</sub>
-</div>
+Web gives visibility while the terminal gives precision, both on the same Codex workflow.
+
+Desktop web interface during an active coding session.
+
+![Desktop web interface during an active coding session](screenshots/cli-web-hybrid-desktop.png)
+
+Terminal window running commands for the same work session.
+
+![Terminal window running commands for the same work session](screenshots/cli-web-hybrid-cli.png)
 
 ### 5. True cross-device continuation
 
 Start on desktop, continue on phone, keep the same session state and thread context.
 
-<div align="center">
-  <img src="screenshots/cli-web-hybrid-desktop.png" width="32%" alt="Desktop web UI for an active Codex session" />
-  <img src="screenshots/cli-web-hybrid-cli.png" width="32%" alt="CLI window running focused commands for the same work" />
-  <img src="screenshots/cli-web-hybrid-mobile.png" width="32%" alt="Mobile view continuing the same session over Tailscale" />
-  <br><sub>Desktop, terminal, and phone stay in one shared workflow with no context reset.</sub>
-</div>
+Desktop, terminal, and phone stay in one shared workflow with no context reset.
+
+Desktop web UI for an active Codex session.
+
+![Desktop web UI for an active Codex session](screenshots/cli-web-hybrid-desktop.png)
+
+CLI window running focused commands for the same work.
+
+![CLI window running focused commands for the same work](screenshots/cli-web-hybrid-cli.png)
+
+Mobile view continuing the same session over Tailscale.
+
+![Mobile view continuing the same session over Tailscale](screenshots/cli-web-hybrid-mobile.png)
 
 ## Why We Built This
 
@@ -239,8 +256,7 @@ Most common settings:
 
 When you update, installer keeps your existing `appsettings.json` files.
 
-<details>
-<summary>👩‍💻 For Developers & Maintainers</summary>
+## 👩‍💻 For Developers & Maintainers
 
 ## Build From Source (Developer)
 
@@ -299,8 +315,6 @@ Workflow: `.github/workflows/release.yml`
 - `Buffaly.CodexEmbedded.Core`: reusable client library
 - `scripts/release`: maintainer build/publish/package scripts
 - `install/package`: installer/update/uninstall scripts bundled into release zip
-
-</details>
 
 ## ❤️ Discover Buffaly
 
