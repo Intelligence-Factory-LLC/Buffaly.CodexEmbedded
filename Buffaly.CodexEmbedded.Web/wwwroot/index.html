@@ -16,11 +16,17 @@
 				<a class="toolbar-link nav-link" href="logs">Logs</a>
 				<a class="toolbar-link nav-link" href="watcher">Watcher</a>
 			</div>
+			<div class="toolbar-right">
+				<button id="aboutBtn" class="toolbar-secondary toolbar-about-btn" type="button" title="About this project" aria-label="About this project">
+					About
+				</button>
+			</div>
 			<button id="mobileProjectsBtn" class="toolbar-mobile-projects-btn" type="button" title="Show projects" aria-label="Show projects" aria-expanded="false">
 				<i class="bi bi-kanban" aria-hidden="true"></i>
 				<span>Projects</span>
 			</button>
 		</header>
+		<div id="securityWarningBanner" class="security-warning-banner hidden" role="alert"></div>
 		<main class="main codex-main">
 			<aside id="sessionSidebar" class="panel session-sidebar">
 				<div class="panel-title panel-title-row">
@@ -101,6 +107,27 @@
 				<div class="command-modal-actions">
 					<button id="modelCommandApplyBtn" type="button">Apply</button>
 					<button id="modelCommandCancelBtn" type="button">Cancel</button>
+				</div>
+			</div>
+		</div>
+
+		<div id="aboutModal" class="command-modal hidden" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
+			<div class="command-modal-card about-modal-card">
+				<div id="aboutModalTitle" class="command-modal-title">About</div>
+				<div class="command-modal-body about-modal-body">
+					<div id="aboutProjectLine" class="about-line">Buffaly.CodexEmbedded</div>
+					<div id="aboutVersionLine" class="about-line about-muted">Version: unknown</div>
+					<div class="about-line">
+						Built by Buffaly (Intelligence Factory LLC):
+						<a href="https://buffa.ly" target="_blank" rel="noopener">https://buffa.ly</a>
+					</div>
+					<div class="about-line about-muted">Not affiliated with OpenAI.</div>
+					<div class="about-line">
+						<a href="docs/security.md" target="_blank" rel="noopener">docs/security.md</a>
+					</div>
+				</div>
+				<div class="command-modal-actions">
+					<button id="aboutModalCloseBtn" type="button">Close</button>
 				</div>
 			</div>
 		</div>

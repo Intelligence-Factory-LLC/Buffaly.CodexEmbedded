@@ -37,6 +37,7 @@ let sessionMetaDetailsExpanded = false;
 let contextUsageByThread = new Map(); // threadId -> { usedTokens, contextWindow, percentLeft }
 let permissionLevelByThread = new Map(); // threadId -> { approval, sandbox }
 let preferredModelByThread = new Map(); // threadId -> model string ("" means default)
+let runtimeSecurityConfig = null;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -56,6 +57,7 @@ const MAX_COMPOSER_IMAGES = 4;
 const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
 const SESSION_LIST_SYNC_INTERVAL_MS = 2500;
+const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only.";
 
 const layoutRoot = document.querySelector(".layout");
 const chatPanel = document.querySelector(".chat-panel");
@@ -75,6 +77,12 @@ const cancelTurnBtn = document.getElementById("cancelTurnBtn");
 const sendPromptBtn = document.getElementById("sendPromptBtn");
 const mobileProjectsBtn = document.getElementById("mobileProjectsBtn");
 const sidebarBackdrop = document.getElementById("sidebarBackdrop");
+const securityWarningBanner = document.getElementById("securityWarningBanner");
+const aboutBtn = document.getElementById("aboutBtn");
+const aboutModal = document.getElementById("aboutModal");
+const aboutModalCloseBtn = document.getElementById("aboutModalCloseBtn");
+const aboutProjectLine = document.getElementById("aboutProjectLine");
+const aboutVersionLine = document.getElementById("aboutVersionLine");
 
 const newSessionBtn = document.getElementById("newSessionBtn");
 const newProjectBtn = document.getElementById("newProjectBtn");
@@ -1807,6 +1815,82 @@ function appendLog(text) {
   logOutput.scrollTop = logOutput.scrollHeight;
 }
 
+function setSecurityWarningVisible(message, reasons = []) {
+  if (!securityWarningBanner) {
+    return;
+  }
+
+  const normalizedMessage = String(message || "").trim() || SECURITY_WARNING_TEXT;
+  const normalizedReasons = Array.isArray(reasons)
+    ? reasons.map((x) => String(x || "").trim()).filter((x) => x.length > 0)
+    : [];
+
+  securityWarningBanner.textContent = normalizedMessage;
+  securityWarningBanner.title = normalizedReasons.length > 0 ? normalizedReasons.join(" | ") : normalizedMessage;
+  securityWarningBanner.classList.remove("hidden");
+}
+
+function setSecurityWarningHidden() {
+  if (!securityWarningBanner) {
+    return;
+  }
+
+  securityWarningBanner.textContent = "";
+  securityWarningBanner.title = "";
+  securityWarningBanner.classList.add("hidden");
+}
+
+function applySecurityConfig(config) {
+  runtimeSecurityConfig = config && typeof config === "object" ? config : null;
+  if (!runtimeSecurityConfig) {
+    setSecurityWarningVisible(SECURITY_WARNING_TEXT, ["Security posture could not be loaded from the server."]);
+    return;
+  }
+
+  const reasons = Array.isArray(runtimeSecurityConfig.unsafeReasons) ? runtimeSecurityConfig.unsafeReasons : [];
+  if (runtimeSecurityConfig.unsafeConfigurationDetected === true) {
+    setSecurityWarningVisible(runtimeSecurityConfig.securityWarningMessage || SECURITY_WARNING_TEXT, reasons);
+  } else {
+    setSecurityWarningHidden();
+  }
+
+  if (aboutProjectLine) {
+    const projectName = String(runtimeSecurityConfig.projectName || "Buffaly.CodexEmbedded").trim();
+    aboutProjectLine.textContent = projectName;
+  }
+
+  if (aboutVersionLine) {
+    const version = String(runtimeSecurityConfig.projectVersion || "unknown").trim() || "unknown";
+    aboutVersionLine.textContent = `Version: ${version}`;
+  }
+}
+
+async function loadRuntimeSecurityConfig() {
+  const response = await fetch(new URL("api/security/config", document.baseURI), { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`security config request failed (${response.status})`);
+  }
+
+  const data = await response.json();
+  applySecurityConfig(data);
+}
+
+function openAboutModal() {
+  if (!aboutModal) {
+    return;
+  }
+
+  aboutModal.classList.remove("hidden");
+}
+
+function closeAboutModal() {
+  if (!aboutModal) {
+    return;
+  }
+
+  aboutModal.classList.add("hidden");
+}
+
 function setApprovalVisible(show) {
   approvalPanel.classList.toggle("hidden", !show);
 }
@@ -2062,7 +2146,8 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
   const normalizedText = String(promptText || "").trim();
   const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
   const turnCwd = cwdInput.value.trim();
-  const turnModel = modelValueForCreate();
+  const state = sessions.get(sessionId);
+  const turnModel = normalizeModelValue(state?.model || "");
   if (!sessionId || (!normalizedText && safeImages.length === 0)) {
     return false;
   }
@@ -2073,7 +2158,6 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
     images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" }))
   };
 
-  const state = sessions.get(sessionId);
   if (state && turnModel) {
     state.model = turnModel;
   }
@@ -2091,10 +2175,10 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
 
   if (turnModel) {
     payload.model = turnModel;
-    if (state && sessionId === activeSessionId && !turnCwd) {
-      refreshSessionMeta();
-      renderProjectSidebar();
-    }
+  }
+  if (state && sessionId === activeSessionId && !turnCwd) {
+    refreshSessionMeta();
+    renderProjectSidebar();
   }
 
   if (!send("turn_start", payload)) {
@@ -2260,6 +2344,9 @@ function refreshSessionMeta() {
       conversationTitle.textContent = "Conversation";
       conversationTitle.title = "";
     }
+    if (timeline && typeof timeline.setSessionModel === "function") {
+      timeline.setSessionModel("");
+    }
     sessionMeta.classList.add("hidden");
     sessionMetaModelItem.classList.add("hidden");
     syncConversationModelOptions(modelSelect.value || "");
@@ -2285,6 +2372,9 @@ function refreshSessionMeta() {
   sessionMeta.classList.remove("hidden");
 
   syncConversationModelOptions(selectedModel);
+  if (timeline && typeof timeline.setSessionModel === "function") {
+    timeline.setSessionModel(selectedModel);
+  }
   sessionMetaModelItem.dataset.available = "1";
   sessionMetaModelItem.classList.remove("hidden");
   sessionMeta.title = "";
@@ -3237,6 +3327,26 @@ modelCommandModal.addEventListener("click", (event) => {
   }
 });
 
+if (aboutBtn) {
+  aboutBtn.addEventListener("click", () => {
+    openAboutModal();
+  });
+}
+
+if (aboutModalCloseBtn) {
+  aboutModalCloseBtn.addEventListener("click", () => {
+    closeAboutModal();
+  });
+}
+
+if (aboutModal) {
+  aboutModal.addEventListener("click", (event) => {
+    if (event.target === aboutModal) {
+      closeAboutModal();
+    }
+  });
+}
+
 logVerbositySelect.addEventListener("change", async () => {
   localStorage.setItem(STORAGE_LOG_VERBOSITY_KEY, getCurrentLogVerbosity());
   try {
@@ -3607,6 +3717,12 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
+  if (aboutModal && !aboutModal.classList.contains("hidden")) {
+    event.preventDefault();
+    closeAboutModal();
+    return;
+  }
+
   if (!modelCommandModal.classList.contains("hidden")) {
     event.preventDefault();
     closeModelCommandModal();
@@ -3645,4 +3761,11 @@ updateConversationMetaVisibility();
 
 timelineFlushTimer = setInterval(() => timeline.flush(), TIMELINE_POLL_INTERVAL_MS);
 
-ensureSocket().catch((error) => appendLog(`[ws] connect failed: ${error}`));
+loadRuntimeSecurityConfig()
+  .catch((error) => {
+    appendLog(`[security] config load failed: ${error}`);
+    setSecurityWarningVisible(SECURITY_WARNING_TEXT, ["Security posture could not be loaded from the server."]);
+  })
+  .finally(() => {
+    ensureSocket().catch((error) => appendLog(`[ws] connect failed: ${error}`));
+  });

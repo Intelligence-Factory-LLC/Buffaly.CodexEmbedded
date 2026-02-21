@@ -3,6 +3,8 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net.WebSockets;
+using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -24,6 +26,17 @@ app.UseStaticFiles();
 app.UseWebSockets(new WebSocketOptions
 {
 	KeepAliveInterval = TimeSpan.FromSeconds(20)
+});
+app.Use(async (context, next) =>
+{
+	if (defaults.WebSocketAuthRequired &&
+		!string.IsNullOrWhiteSpace(defaults.WebSocketAuthToken) &&
+		!context.WebSockets.IsWebSocketRequest)
+	{
+		WebSocketAuthGuard.SetAuthCookie(context.Response, defaults.WebSocketAuthToken, context.Request.IsHttps);
+	}
+
+	await next();
 });
 
 app.MapGet("/logs", async context =>
@@ -215,6 +228,26 @@ app.MapGet("/api/logs/realtime/current", (HttpRequest request, WebRuntimeDefault
 	});
 });
 
+app.MapGet("/api/security/config", (WebRuntimeDefaults defaults) =>
+{
+	var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "unknown";
+	return Results.Ok(new
+	{
+		projectName = "Buffaly.CodexEmbedded",
+		projectVersion = version,
+		attribution = "Built by Buffaly (Intelligence Factory LLC)",
+		attributionUrl = "https://buffa.ly",
+		notAffiliated = "Not affiliated with OpenAI",
+		securityDocPath = "docs/security.md",
+		webSocketAuthRequired = defaults.WebSocketAuthRequired,
+		publicExposureEnabled = defaults.PublicExposureEnabled,
+		nonLocalBindConfigured = defaults.NonLocalBindConfigured,
+		unsafeConfigurationDetected = defaults.UnsafeConfigurationDetected,
+		unsafeReasons = defaults.UnsafeConfigurationReasons,
+		securityWarningMessage = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only."
+	});
+});
+
 app.Map("/ws", async context =>
 {
 	var remoteIp = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -222,15 +255,26 @@ app.Map("/ws", async context =>
 	var userAgent = context.Request.Headers["User-Agent"].ToString();
 	var wsVersion = context.Request.Headers["Sec-WebSocket-Version"].ToString();
 	var wsProtocol = context.Request.Headers["Sec-WebSocket-Protocol"].ToString();
+	var queryState = context.Request.QueryString.HasValue ? "present" : "none";
 	Logs.DebugLog.WriteEvent(
 		"WebSocket",
-		$"Incoming request ip={remoteIp} path={context.Request.Path} query={context.Request.QueryString} isWs={context.WebSockets.IsWebSocketRequest} origin={origin} wsVersion={wsVersion} wsProtocol={wsProtocol} ua={userAgent}");
+		$"Incoming request ip={remoteIp} path={context.Request.Path} query={queryState} isWs={context.WebSockets.IsWebSocketRequest} origin={origin} wsVersion={wsVersion} wsProtocol={wsProtocol} ua={userAgent}");
 
 	if (!context.WebSockets.IsWebSocketRequest)
 	{
 		Logs.DebugLog.WriteEvent("WebSocket", $"Rejected non-websocket request for /ws from {remoteIp}");
 		context.Response.StatusCode = StatusCodes.Status400BadRequest;
 		await context.Response.WriteAsync("WebSocket expected.");
+		return;
+	}
+
+	if (defaults.WebSocketAuthRequired &&
+		!string.IsNullOrWhiteSpace(defaults.WebSocketAuthToken) &&
+		!WebSocketAuthGuard.IsAuthorized(context.Request, defaults.WebSocketAuthToken))
+	{
+		Logs.DebugLog.WriteEvent("WebSocket", $"Rejected unauthorized websocket request for /ws from {remoteIp}");
+		context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+		await context.Response.WriteAsync("Unauthorized.");
 		return;
 	}
 
@@ -300,6 +344,12 @@ internal sealed class WebRuntimeDefaults
 	public required string LogRootPath { get; init; }
 	public string? CodexHomePath { get; init; }
 	public string? DefaultModel { get; init; }
+	public required bool WebSocketAuthRequired { get; init; }
+	public string? WebSocketAuthToken { get; init; }
+	public required bool PublicExposureEnabled { get; init; }
+	public required bool NonLocalBindConfigured { get; init; }
+	public required bool UnsafeConfigurationDetected { get; init; }
+	public required string[] UnsafeConfigurationReasons { get; init; }
 
 	// Loads runtime defaults from appsettings and user-level codex config.
 	public static WebRuntimeDefaults Load(IConfiguration configuration)
@@ -310,6 +360,12 @@ internal sealed class WebRuntimeDefaults
 		var codexHomePath = configuration["CodexHomePath"];
 		var timeout = configuration.GetValue<int?>("TurnTimeoutSeconds") ?? 300;
 		var logRoot = configuration["LogRootPath"];
+		var webSocketAuthRequired = configuration.GetValue<bool?>("WebSocketAuthRequired") ?? true;
+		var webSocketAuthToken = ResolveWebSocketAuthToken(configuration["WebSocketAuthToken"], webSocketAuthRequired);
+		var publicExposureEnabled = configuration.GetValue<bool?>("PublicExposureEnabled") ?? false;
+		var configuredUrls = LoadConfiguredUrls(configuration);
+		var nonLocalBindConfigured = configuredUrls.Any(IsUnsafeBindHost);
+		var unsafeReasons = BuildUnsafeReasons(nonLocalBindConfigured, !webSocketAuthRequired, publicExposureEnabled);
 
 		return new WebRuntimeDefaults
 		{
@@ -318,7 +374,13 @@ internal sealed class WebRuntimeDefaults
 			TurnTimeoutSeconds = timeout > 0 ? timeout : 300,
 			LogRootPath = string.IsNullOrWhiteSpace(logRoot) ? Path.Combine(Environment.CurrentDirectory, "logs", "web") : ResolvePath(logRoot),
 			CodexHomePath = string.IsNullOrWhiteSpace(codexHomePath) ? null : ResolvePath(codexHomePath),
-			DefaultModel = defaultModel
+			DefaultModel = defaultModel,
+			WebSocketAuthRequired = webSocketAuthRequired,
+			WebSocketAuthToken = webSocketAuthToken,
+			PublicExposureEnabled = publicExposureEnabled,
+			NonLocalBindConfigured = nonLocalBindConfigured,
+			UnsafeConfigurationDetected = unsafeReasons.Length > 0,
+			UnsafeConfigurationReasons = unsafeReasons
 		};
 	}
 
@@ -330,6 +392,100 @@ internal sealed class WebRuntimeDefaults
 		}
 
 		return Path.Combine(Environment.CurrentDirectory, path);
+	}
+
+	private static string? ResolveWebSocketAuthToken(string? configuredToken, bool required)
+	{
+		if (!required)
+		{
+			return null;
+		}
+
+		if (!string.IsNullOrWhiteSpace(configuredToken))
+		{
+			return configuredToken.Trim();
+		}
+
+		var bytes = RandomNumberGenerator.GetBytes(32);
+		return Convert.ToBase64String(bytes)
+			.TrimEnd('=')
+			.Replace('+', '-')
+			.Replace('/', '_');
+	}
+
+	private static string[] LoadConfiguredUrls(IConfiguration configuration)
+	{
+		var urlsRaw = configuration["urls"];
+		if (string.IsNullOrWhiteSpace(urlsRaw))
+		{
+			urlsRaw = configuration["ASPNETCORE_URLS"];
+		}
+
+		if (string.IsNullOrWhiteSpace(urlsRaw))
+		{
+			return Array.Empty<string>();
+		}
+
+		return urlsRaw
+			.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+			.Where(x => !string.IsNullOrWhiteSpace(x))
+			.ToArray();
+	}
+
+	private static bool IsUnsafeBindHost(string url)
+	{
+		if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+		{
+			return false;
+		}
+
+		var host = uri.Host?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(host))
+		{
+			return false;
+		}
+
+		if (string.Equals(host, "localhost", StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		if (string.Equals(host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(host, "::1", StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		if (string.Equals(host, "0.0.0.0", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(host, "::", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(host, "*", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(host, "+", StringComparison.OrdinalIgnoreCase))
+		{
+			return true;
+		}
+
+		return true;
+	}
+
+	private static string[] BuildUnsafeReasons(bool nonLocalBindConfigured, bool authDisabled, bool publicExposureEnabled)
+	{
+		var reasons = new List<string>(3);
+		if (nonLocalBindConfigured)
+		{
+			reasons.Add("Server bind host is not localhost/127.0.0.1.");
+		}
+
+		if (authDisabled)
+		{
+			reasons.Add("WebSocket auth is disabled.");
+		}
+
+		if (publicExposureEnabled)
+		{
+			reasons.Add("Public exposure flag is enabled.");
+		}
+
+		return reasons.ToArray();
 	}
 
 	// Reads the default model from %USERPROFILE%\.codex\config.toml.
@@ -361,6 +517,77 @@ internal sealed class WebRuntimeDefaults
 		{
 			return null;
 		}
+	}
+}
+
+internal static class WebSocketAuthGuard
+{
+	private const string CookieName = "buffaly_ws_auth";
+	private const string HeaderName = "X-Buffaly-Ws-Token";
+	private const string QueryParameterName = "wsToken";
+
+	public static void SetAuthCookie(HttpResponse response, string token, bool requestIsHttps)
+	{
+		response.Cookies.Append(
+			CookieName,
+			token,
+			new CookieOptions
+			{
+				HttpOnly = true,
+				Secure = requestIsHttps,
+				SameSite = SameSiteMode.Strict,
+				Path = "/"
+			});
+	}
+
+	public static bool IsAuthorized(HttpRequest request, string expectedToken)
+	{
+		if (TryReadPresentedToken(request, out var presentedToken))
+		{
+			return TokensMatch(expectedToken, presentedToken);
+		}
+
+		return false;
+	}
+
+	private static bool TryReadPresentedToken(HttpRequest request, out string token)
+	{
+		token = string.Empty;
+
+		if (request.Cookies.TryGetValue(CookieName, out var cookieToken) &&
+			!string.IsNullOrWhiteSpace(cookieToken))
+		{
+			token = cookieToken.Trim();
+			return true;
+		}
+
+		if (request.Headers.TryGetValue(HeaderName, out var headerValue) &&
+			!string.IsNullOrWhiteSpace(headerValue))
+		{
+			token = headerValue.ToString().Trim();
+			return true;
+		}
+
+		if (request.Query.TryGetValue(QueryParameterName, out var queryValue) &&
+			!string.IsNullOrWhiteSpace(queryValue))
+		{
+			token = queryValue.ToString().Trim();
+			return true;
+		}
+
+		return false;
+	}
+
+	private static bool TokensMatch(string expected, string actual)
+	{
+		var expectedBytes = Encoding.UTF8.GetBytes(expected);
+		var actualBytes = Encoding.UTF8.GetBytes(actual);
+		if (expectedBytes.Length != actualBytes.Length)
+		{
+			return false;
+		}
+
+		return CryptographicOperations.FixedTimeEquals(expectedBytes, actualBytes);
 	}
 }
 
