@@ -17,10 +17,20 @@ public sealed class ProcessJsonlTransport : IJsonlTransport
 		Directory.CreateDirectory(options.WorkingDirectory);
 		var codexPath = ResolveCodexPath(options.CodexPath);
 
+		var startFileName = codexPath;
+		var startArguments = "app-server";
+		if (OperatingSystem.IsWindows() &&
+			(codexPath.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) ||
+			 codexPath.EndsWith(".bat", StringComparison.OrdinalIgnoreCase)))
+		{
+			startFileName = "cmd.exe";
+			startArguments = $"/d /s /c \"\"{codexPath}\" app-server\"";
+		}
+
 		var psi = new ProcessStartInfo
 		{
-			FileName = codexPath,
-			Arguments = "app-server",
+			FileName = startFileName,
+			Arguments = startArguments,
 			WorkingDirectory = options.WorkingDirectory,
 			RedirectStandardInput = true,
 			RedirectStandardOutput = true,
