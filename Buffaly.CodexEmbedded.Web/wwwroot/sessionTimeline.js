@@ -186,7 +186,7 @@
     }
 
     updateTaskToggleState(node, entry) {
-      if (!node || !node.taskToggle || !entry || entry.taskBoundary !== "start" || !entry.taskId) {
+      if (!node || !node.taskToggle || !entry || !entry.taskId || (entry.taskBoundary !== "start" && entry.taskBoundary !== "end")) {
         return;
       }
 
@@ -915,11 +915,11 @@
         row.dataset.entryId = String(entry.id);
 
         let taskToggle = null;
-        if (entry.taskBoundary === "start" && entry.taskId) {
+        if ((entry.taskBoundary === "start" || entry.taskBoundary === "end") && entry.taskId) {
           taskToggle = document.createElement("span");
           taskToggle.className = "watcher-task-toggle";
           taskToggle.setAttribute("aria-hidden", "true");
-          row.classList.add("watcher-task-start-clickable");
+          row.classList.add("watcher-task-boundary-clickable");
           row.tabIndex = 0;
           row.setAttribute("role", "button");
 

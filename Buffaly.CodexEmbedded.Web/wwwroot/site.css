@@ -1051,21 +1051,21 @@ body {
 	border-left-color: #0ea5e9 !important;
 }
 
-.watcher-task-start.watcher-task-start-clickable {
+.watcher-inline-task.watcher-task-boundary-clickable {
 	cursor: pointer;
 }
 
-.watcher-task-start.watcher-task-start-clickable:hover {
+.watcher-inline-task.watcher-task-boundary-clickable:hover {
 	background: #eff6ff;
 }
 
-.watcher-task-start.watcher-task-start-clickable:focus-visible {
+.watcher-inline-task.watcher-task-boundary-clickable:focus-visible {
 	outline: 2px solid #60a5fa;
 	outline-offset: 2px;
 	border-radius: 6px;
 }
 
-.watcher-task-start.watcher-task-collapsed {
+.watcher-inline-task.watcher-task-collapsed {
 	background: #f1f5f9;
 }
 
