@@ -147,6 +147,61 @@ public sealed class CodexClient : IAsyncDisposable
 		return new CodexSession(this, threadId, options.Cwd, options.Model);
 	}
 
+	public async Task<bool> InterruptTurnAsync(string threadId, TimeSpan? waitForTurnStart = null, CancellationToken cancellationToken = default)
+	{
+		await InitializeAsync(cancellationToken);
+
+		var normalizedThreadId = threadId?.Trim();
+		if (string.IsNullOrWhiteSpace(normalizedThreadId))
+		{
+			return false;
+		}
+
+		var wait = waitForTurnStart.GetValueOrDefault();
+		var deadlineUtc = wait > TimeSpan.Zero ? DateTimeOffset.UtcNow.Add(wait) : DateTimeOffset.MinValue;
+
+		TurnTracker? tracker = null;
+		do
+		{
+			tracker = FindInFlightTurnByThreadId(normalizedThreadId);
+			if (tracker is not null)
+			{
+				break;
+			}
+
+			if (wait <= TimeSpan.Zero || DateTimeOffset.UtcNow >= deadlineUtc)
+			{
+				return false;
+			}
+
+			await Task.Delay(75, cancellationToken);
+		} while (true);
+
+		await _rpc.SendRequestAsync(
+			method: "turn/interrupt",
+			@params: new
+			{
+				threadId = normalizedThreadId,
+				turnId = tracker.TurnId
+			},
+			cancellationToken);
+
+		return true;
+	}
+
+	private TurnTracker? FindInFlightTurnByThreadId(string threadId)
+	{
+		foreach (var tracker in _turnsByTurnId.Values)
+		{
+			if (string.Equals(tracker.ThreadId, threadId, StringComparison.Ordinal))
+			{
+				return tracker;
+			}
+		}
+
+		return null;
+	}
+
 	internal async Task<CodexTurnResult> SendMessageAsync(
 		string threadId,
 		string text,

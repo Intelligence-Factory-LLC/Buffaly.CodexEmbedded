@@ -576,15 +576,55 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
-		if (!session.CancelActiveTurn())
+		if (!session.IsTurnInFlight)
 		{
 			await SendEventAsync("status", new { sessionId, message = "No running turn to cancel." }, cancellationToken);
 			return;
 		}
 
-		session.Log.Write("[turn_cancel] requested by user");
-		await SendEventAsync("turn_cancel_requested", new { sessionId }, cancellationToken);
-		await SendEventAsync("status", new { sessionId, message = "Cancel requested." }, cancellationToken);
+		var interruptSent = false;
+		string? fallbackReason = null;
+
+		try
+		{
+			interruptSent = await session.Session.InterruptTurnAsync(waitForTurnStart: TimeSpan.FromSeconds(2), cancellationToken);
+		}
+		catch (Exception ex)
+		{
+			Logs.LogError(ex);
+			fallbackReason = ex.Message;
+		}
+
+		var localCanceled = false;
+		if (!interruptSent)
+		{
+			localCanceled = session.CancelActiveTurn();
+			if (!localCanceled && string.IsNullOrWhiteSpace(fallbackReason))
+			{
+				fallbackReason = "No active turn token.";
+			}
+		}
+
+		if (!interruptSent && !localCanceled)
+		{
+			await SendEventAsync("status", new { sessionId, message = "No running turn to cancel." }, cancellationToken);
+			return;
+		}
+
+		if (interruptSent)
+		{
+			session.Log.Write("[turn_cancel] requested by user; sent turn/interrupt");
+		}
+		else
+		{
+			session.Log.Write($"[turn_cancel] requested by user; interrupt unavailable, canceled local wait ({fallbackReason ?? "no details"})");
+		}
+
+		await SendEventAsync("turn_cancel_requested", new { sessionId, interruptSent }, cancellationToken);
+		await SendEventAsync(
+			"status",
+			new { sessionId, message = interruptSent ? "Cancel requested (interrupt sent)." : "Cancel requested (local fallback)." },
+			cancellationToken);
 		await SendSessionListAsync(cancellationToken);
 	}
 

@@ -162,7 +162,7 @@ function updatePromptActionState() {
   sendPromptBtn.classList.toggle("queue-mode", processingActive);
   sendPromptBtn.classList.toggle("solo-send", !processingActive);
   sendPromptBtn.title = processingActive ? "Send now (Enter)" : "Send (Enter)";
-  queuePromptBtn.title = "Queue prompt (Tab)";
+  queuePromptBtn.title = "Queue this instruction (Tab)";
   cancelTurnBtn.title = "Stop running turn";
 }
 

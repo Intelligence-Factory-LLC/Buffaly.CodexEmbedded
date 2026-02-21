@@ -51,6 +51,11 @@ public sealed class CodexSession
 			_turnLock.Release();
 		}
 	}
+
+	public Task<bool> InterruptTurnAsync(TimeSpan? waitForTurnStart = null, CancellationToken cancellationToken = default)
+	{
+		return _client.InterruptTurnAsync(ThreadId, waitForTurnStart, cancellationToken);
+	}
 }
 
 
