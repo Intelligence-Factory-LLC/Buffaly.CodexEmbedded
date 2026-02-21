@@ -83,7 +83,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					await StopSessionAsync(GetSessionIdOrActive(root), cancellationToken);
 					return;
 				case "prompt":
-					await StartTurnAsync(GetSessionIdOrActive(root), TryGetString(root, "text"), cwd: null, images: null, cancellationToken);
+					await StartTurnAsync(GetSessionIdOrActive(root), TryGetString(root, "text"), cwd: null, model: null, hasModelOverride: false, images: null, cancellationToken);
 					return;
 
 				// Multi-session protocol.
@@ -113,10 +113,13 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					await SetSessionModelAsync(TryGetString(root, "sessionId"), TryGetString(root, "model"), cancellationToken);
 					return;
 				case "turn_start":
+					var hasModelOverride = root.TryGetProperty("model", out _);
 					await StartTurnAsync(
 						TryGetString(root, "sessionId"),
 						TryGetString(root, "text"),
 						TryGetString(root, "cwd"),
+						TryGetString(root, "model"),
+						hasModelOverride,
 						TryGetTurnImageInputs(root),
 						cancellationToken);
 					return;
@@ -494,7 +497,14 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 	}
 
-	private async Task StartTurnAsync(string? sessionId, string? text, string? cwd, IReadOnlyList<CodexUserImageInput>? images, CancellationToken cancellationToken)
+	private async Task StartTurnAsync(
+		string? sessionId,
+		string? text,
+		string? cwd,
+		string? model,
+		bool hasModelOverride,
+		IReadOnlyList<CodexUserImageInput>? images,
+		CancellationToken cancellationToken)
 	{
 		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
 		if (string.IsNullOrWhiteSpace(sessionId))
@@ -505,6 +515,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		var normalizedText = text?.Trim() ?? string.Empty;
 		var normalizedCwd = string.IsNullOrWhiteSpace(cwd) ? null : cwd.Trim();
+		var normalizedModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
 		var imageCount = images?.Count ?? 0;
 		if (string.IsNullOrWhiteSpace(normalizedText) && imageCount <= 0)
 		{
@@ -517,6 +528,11 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		{
 			await SendEventAsync("error", new { message = $"Unknown session: {sessionId}" }, cancellationToken);
 			return;
+		}
+
+		if (hasModelOverride)
+		{
+			session.SetModel(normalizedModel);
 		}
 
 		_ = Task.Run(async () =>
@@ -539,7 +555,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				_ = SendSessionListSafeAsync();
 
 				await SendEventSafeAsync("status", new { sessionId, message = "Turn started." });
-				session.Log.Write($"[prompt] {(string.IsNullOrWhiteSpace(normalizedText) ? "(no text)" : normalizedText)} images={imageCount} cwd={normalizedCwd ?? session.Cwd ?? "(default)"}");
+				var effectiveModel = session.ResolveTurnModel(_defaults.DefaultModel);
+				session.Log.Write($"[prompt] {(string.IsNullOrWhiteSpace(normalizedText) ? "(no text)" : normalizedText)} images={imageCount} cwd={normalizedCwd ?? session.Cwd ?? "(default)"} model={effectiveModel ?? "(default)"}");
 
 				var progress = new Progress<CodexDelta>(d =>
 				{
@@ -549,7 +566,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				var turnOptions = new CodexTurnOptions
 				{
 					Cwd = normalizedCwd,
-					Model = session.ResolveTurnModel(_defaults.DefaultModel)
+					Model = effectiveModel
 				};
 				var result = await session.Session.SendMessageAsync(normalizedText, images: images, options: turnOptions, progress: progress, cancellationToken: turnToken);
 

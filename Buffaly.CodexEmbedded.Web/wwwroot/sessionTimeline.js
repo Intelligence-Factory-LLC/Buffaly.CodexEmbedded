@@ -31,6 +31,7 @@
       this.latestContextUsage = null; // { usedTokens, contextWindow, percentLeft }
       this.latestTurnModel = "";
       this.taskModelById = new Map(); // taskId -> model
+      this.currentSessionModel = "";
 
       this.container.addEventListener("scroll", () => {
         this.autoScrollPinned = this.isNearBottom();
@@ -177,6 +178,10 @@
       return `${percent}% context left`;
     }
 
+    setSessionModel(model) {
+      this.currentSessionModel = this.normalizeModelName(model);
+    }
+
     normalizeModelName(value) {
       const normalized = typeof value === "string" ? value.trim() : "";
       if (!normalized) {
@@ -295,6 +300,7 @@
       this.latestContextUsage = null;
       this.latestTurnModel = "";
       this.taskModelById.clear();
+      this.currentSessionModel = "";
       this.autoScrollPinned = true;
     }
 
@@ -789,6 +795,72 @@
       return entry.text || "";
     }
 
+    parseAgentsInstructionHeader(bodyText) {
+      const normalized = typeof bodyText === "string" ? bodyText : "";
+      if (!normalized) {
+        return null;
+      }
+
+      const lines = normalized.split("\n");
+      if (lines.length === 0) {
+        return null;
+      }
+
+      const header = lines[0].trim();
+      const match = header.match(/^#\s*AGENTS\.md instructions for\s+(.+)$/i);
+      if (!match || !match[1]) {
+        return null;
+      }
+
+      const targetPath = match[1].trim();
+      return {
+        targetPath,
+        hasInstructionBlock: normalized.includes("<INSTRUCTIONS>")
+      };
+    }
+
+    shouldUseAgentsCollapsedBody(entry, bodyText) {
+      if (!entry || entry.role !== "user") {
+        return false;
+      }
+
+      const parsed = this.parseAgentsInstructionHeader(bodyText);
+      return !!parsed && parsed.hasInstructionBlock;
+    }
+
+    parseEnvironmentContext(bodyText) {
+      const normalized = typeof bodyText === "string" ? bodyText.trim() : "";
+      if (!normalized) {
+        return null;
+      }
+
+      if (!/^<environment_context>[\s\S]*<\/environment_context>$/i.test(normalized)) {
+        return null;
+      }
+
+      const readTag = (tagName) => {
+        const match = normalized.match(new RegExp(`<${tagName}>([\\s\\S]*?)<\\/${tagName}>`, "i"));
+        if (!match || typeof match[1] !== "string") {
+          return "";
+        }
+
+        return match[1].trim();
+      };
+
+      return {
+        cwd: readTag("cwd"),
+        shell: readTag("shell")
+      };
+    }
+
+    shouldUseEnvironmentCollapsedBody(entry, bodyText) {
+      if (!entry || entry.role !== "user") {
+        return false;
+      }
+
+      return !!this.parseEnvironmentContext(bodyText);
+    }
+
     isNarrowViewport() {
       return typeof window !== "undefined"
         && typeof window.matchMedia === "function"
@@ -802,6 +874,89 @@
     createBodyNodeForEntry(card, entry, bodyText) {
       if (!bodyText) {
         return { body: null, detailsWrap: null };
+      }
+
+      if (this.shouldUseAgentsCollapsedBody(entry, bodyText)) {
+        const parsed = this.parseAgentsInstructionHeader(bodyText);
+        const details = document.createElement("details");
+        details.className = "watcher-entry-collapsible watcher-agents-collapsible";
+
+        const toggle = document.createElement("summary");
+        const summaryWrap = document.createElement("span");
+        summaryWrap.className = "watcher-agents-summary";
+
+        const icon = document.createElement("i");
+        icon.className = "bi bi-file-earmark-text watcher-agents-icon";
+        icon.setAttribute("aria-hidden", "true");
+        summaryWrap.appendChild(icon);
+
+        const summaryText = document.createElement("span");
+        const baseText = parsed?.targetPath
+          ? `AGENTS.md instructions for ${parsed.targetPath}`
+          : "AGENTS.md instructions detected";
+        summaryText.textContent = `${baseText} (click to expand)`;
+        summaryWrap.appendChild(summaryText);
+
+        toggle.appendChild(summaryWrap);
+        details.appendChild(toggle);
+
+        const body = document.createElement("pre");
+        body.className = "watcher-entry-text";
+        body.textContent = bodyText;
+        details.appendChild(body);
+
+        details.addEventListener("toggle", () => {
+          const stateText = details.open ? " (click to collapse)" : " (click to expand)";
+          summaryText.textContent = `${baseText}${stateText}`;
+        });
+
+        card.appendChild(details);
+        return { body, detailsWrap: details };
+      }
+
+      if (this.shouldUseEnvironmentCollapsedBody(entry, bodyText)) {
+        const parsed = this.parseEnvironmentContext(bodyText);
+        const details = document.createElement("details");
+        details.className = "watcher-entry-collapsible watcher-env-collapsible";
+
+        const toggle = document.createElement("summary");
+        const summaryWrap = document.createElement("span");
+        summaryWrap.className = "watcher-env-summary";
+
+        const icon = document.createElement("i");
+        icon.className = "bi bi-terminal watcher-env-icon";
+        icon.setAttribute("aria-hidden", "true");
+        summaryWrap.appendChild(icon);
+
+        const summaryText = document.createElement("span");
+        const parts = [];
+        if (parsed?.cwd) {
+          parts.push(`cwd: ${parsed.cwd}`);
+        }
+        if (parsed?.shell) {
+          parts.push(`shell: ${parsed.shell}`);
+        }
+
+        const detailSuffix = parts.length > 0 ? ` (${parts.join(" | ")})` : "";
+        const baseText = `Environment context${detailSuffix}`;
+        summaryText.textContent = `${baseText} (click to expand)`;
+        summaryWrap.appendChild(summaryText);
+
+        toggle.appendChild(summaryWrap);
+        details.appendChild(toggle);
+
+        const body = document.createElement("pre");
+        body.className = "watcher-entry-text";
+        body.textContent = bodyText;
+        details.appendChild(body);
+
+        details.addEventListener("toggle", () => {
+          const stateText = details.open ? " (click to collapse)" : " (click to expand)";
+          summaryText.textContent = `${baseText}${stateText}`;
+        });
+
+        card.appendChild(details);
+        return { body, detailsWrap: details };
       }
 
       if (!this.shouldUseCollapsibleBody(entry)) {
@@ -955,8 +1110,11 @@
         const entry = this.createEntry("system", "Task Started", this.truncateText(summary, 240), timestamp, eventType);
         entry.compact = true;
         const started = this.markTaskStart(entry);
-        if (started?.taskId && this.latestTurnModel) {
-          this.taskModelById.set(started.taskId, this.latestTurnModel);
+        if (started?.taskId) {
+          const modelForTask = this.latestTurnModel || this.currentSessionModel || "";
+          if (modelForTask) {
+            this.taskModelById.set(started.taskId, modelForTask);
+          }
         }
         return started;
       }
@@ -973,7 +1131,9 @@
           }
         }
 
-        const taskModel = taskId ? (this.taskModelById.get(taskId) || "") : this.latestTurnModel;
+        const taskModel = taskId
+          ? (this.taskModelById.get(taskId) || this.latestTurnModel || this.currentSessionModel || "")
+          : (this.latestTurnModel || this.currentSessionModel || "");
         const parts = [summary];
         if (contextLeftLabel) {
           parts.push(contextLeftLabel);
