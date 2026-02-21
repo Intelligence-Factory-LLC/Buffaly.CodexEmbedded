@@ -53,6 +53,33 @@ Useful commands:
 - `buffaly-update`: download and install latest release.
 - `buffaly-uninstall`: remove the local install.
 
+Phone access (tailnet only via Tailscale)
+
+1. Install and sign in to Tailscale on:
+
+the machine running this UI
+
+your phone (or other device)
+
+2. Enable MagicDNS and HTTPS certificates in the Tailscale admin console.
+
+3. On the machine running this UI, publish the local port to your tailnet only:
+
+```powershell
+tailscale serve --bg 5173
+tailscale serve status
+```
+
+4. On your phone (on the same tailnet), open the URL shown by tailscale serve status, for example: https://win.<your-tailnet>.ts.net/
+
+If the hostname does not resolve on a client, run this on the client:
+
+```powershell
+tailscale set --accept-dns=true
+```
+
+More: docs/tailscale.md (slugs, multiple ports, HTTPS upstream, troubleshooting)
+
 ## Configure After Install
 
 You can edit defaults in:
