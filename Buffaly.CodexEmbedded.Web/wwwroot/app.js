@@ -1594,9 +1594,6 @@ function renderProjectSidebar() {
 
     const header = document.createElement("div");
     header.className = "project-header";
-    if (group.key === selectedProjectKey) {
-      header.classList.add("active");
-    }
 
     const projectCollapsed = collapsedProjectKeys.has(group.key);
     const toggleBtn = document.createElement("button");

@@ -322,29 +322,35 @@ body {
 .project-list {
 	flex: 1;
 	overflow: auto;
-	padding: 0.3rem;
+	padding: 0;
 	display: flex;
 	flex-direction: column;
-	gap: 0.3rem;
-	background: #f8fafc;
+	gap: 0;
+	background: #ffffff;
 }
 
 .project-group {
-	border: 1px solid #dbe2ea;
-	border-radius: 8px;
+	border: 0;
+	border-top: 1px solid #e2e8f0;
+	border-radius: 0;
 	background: #ffffff;
+}
+
+.project-group:first-child {
+	border-top: 0;
+}
+
+.project-group + .project-group {
+	border-top: 2px solid #cbd5e1;
 }
 
 .project-header {
 	display: flex;
 	align-items: center;
 	gap: 0.45rem;
-	padding: 0.5rem 0.55rem;
-	border-bottom: 1px solid #eef2f7;
-}
-
-.project-header.active {
-	background: #ecfeff;
+	padding: 0.45rem 0.55rem;
+	border-bottom: 1px solid #edf2f7;
+	background: #ffffff;
 }
 
 .project-toggle {
@@ -427,6 +433,7 @@ body {
 	display: flex;
 	flex-direction: column;
 	gap: 0;
+	background: #f8fafc;
 }
 
 .project-group.collapsed .project-sessions {
@@ -437,7 +444,7 @@ body {
 	border: 0;
 	border-radius: 0;
 	background: transparent;
-	padding: 0.34rem 0.5rem;
+	padding: 0.36rem 0.55rem;
 	margin: 0;
 }
 
@@ -445,14 +452,23 @@ body {
 	border-top: 1px solid #e2e8f0;
 }
 
+.session-row:hover {
+	background: #f8fbff;
+}
+
 .session-row.active {
-	background: #eff6ff;
-	box-shadow: inset 2px 0 0 #38bdf8;
+	background: #deebff;
+	box-shadow: inset 4px 0 0 #1d4ed8;
+}
+
+.session-row.active .session-title {
+	color: #1e3a8a;
+	font-weight: 700;
 }
 
 .session-row.loading {
 	background: #ecfeff;
-	box-shadow: inset 2px 0 0 #14b8a6;
+	box-shadow: inset 3px 0 0 #14b8a6;
 }
 
 .session-row-head {
@@ -1109,7 +1125,7 @@ body {
 
 .scroll-to-bottom-btn {
 	position: absolute;
-	right: 1rem;
+	left: 50%;
 	bottom: 6.25rem;
 	width: 2.2rem;
 	height: 2.2rem;
@@ -1123,6 +1139,7 @@ body {
 	box-shadow: 0 8px 18px rgba(15, 118, 110, 0.32);
 	cursor: pointer;
 	z-index: 6;
+	transform: translateX(-50%);
 }
 
 .scroll-to-bottom-btn:hover {
@@ -1674,10 +1691,11 @@ body {
 	}
 
 	.scroll-to-bottom-btn {
-		right: 0.6rem;
+		left: 50%;
 		bottom: 5rem;
 		width: 1.95rem;
 		height: 1.95rem;
+		transform: translateX(-50%);
 	}
 
 	.composer-status-stack {
