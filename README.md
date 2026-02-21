@@ -10,65 +10,49 @@ Run the official Codex agent in a beautiful browser UI - on your desktop, from y
 
 ## 🌟 What is Buffaly Codex Embedded?
 
-**The unofficial Windows-first UI that makes OpenAI Codex actually delightful to use.**
+**The Windows-first UI that makes OpenAI Codex even easier to use.**
 
-Run the official Codex agent in a clean browser interface on your desktop, from your phone, or right next to the CLI - no waiting for the official Windows app.
+Run the official Codex agent in a clean browser interface on your desktop, from your phone, or right next to the CLI.
 
 You get:
-- Multiple projects open at once (no more restarting terminals)
+- Multiple projects open at once (no more switching bewteen terminals)
 - Natural editing, image paste, and full history
 - Seamless switching between desktop, web, and phone
 - Same powerful Codex agent under the hood
 
-Built by the team behind **Buffaly** - the local agent platform for high-trust work.
 
 ### 📸 See It In Action
 
-Typical flow:
-
-1. Open a project in the sidebar and continue an existing thread.
-2. Send prompts with text plus screenshot context.
-3. Monitor tool calls and reasoning in the timeline.
-4. Run targeted terminal commands with `buffaly-codex` when needed.
-5. Continue the same session on mobile over your private tailnet.
-
-Live workflow demo across desktop web, terminal, and mobile continuation.
+Use the UI in your browser to manage all of your codex session, even those started by the CLI. Start a session in the terminal, then watch it appear in the web UI with full context and timeline.
+Or start a session in the web UI and manage it from any browser. Use Tailscale to securely access the same UI from your phone, and keep the same session state and thread context across devices. 
 
 ![Animated walkthrough of Buffaly Codex Embedded across web, CLI, and mobile](screenshots/Animation.gif)
 
-Static reference view of the same hybrid workflow.
-
-![Combined desktop and terminal view that reflects one shared Codex workflow](screenshots/cli-web-hybrid.png)
-
 ## ✨ Major Features
 
-The experience is organized around real coding workflows. Each screenshot below maps to one concrete advantage.
+The application is designed to mirror the Desktop Codex experience while also making the same experience available on mobile. Core features include:
 
-### 1. Multi-project command center
+### 1. Multi-project / mulit-session management
 
-Keep many repos active at once, switch threads instantly, and stay oriented by project.
-
-Full workspace view with the project sidebar on the left and active session timeline on the right.
+The project side bar lets you organize your Codex tasks by working directory and sessions. The same session names you use 
+in the CLI appear in the sidebar, and you can have multiple sessions open at once without losing context.
 
 ![Multi-project workspace with sidebar and active conversation](screenshots/multi-project.png)
-
-The same project model works on desktop and mobile, with active status and quick actions.
 
 Desktop project list with multiple active sessions.
 
 ![Detailed project list with multiple active sessions](screenshots/project-list.png)
 
-Mobile project list over private tailnet access.
+The same project model works on desktop and mobile, with active status and quick actions. Mobile project list over private tailnet access.
 
 ![Project list on phone over private tailnet access](screenshots/mobile-project-list.png)
 
 ### 2. Prompting that feels native
 
-Type naturally, edit freely, and attach images directly in the composer.
+Type naturally, edit freely, use voice to text and attach images directly in the composer. Easily select and copy / paste text, 
+make edits before sending, and let Codex see images without extra steps. No arrow key editing or painful windows CLI based copy paste.
 
-Compose long prompts, then drop screenshots without leaving the flow.
-
-Prompt composer with natural text input and controls.
+Queue, guide, cancel the Codex assistant with key commands and buttons in the UI.
 
 ![Prompt composer with natural text input and controls](screenshots/natural-input.png)
 
@@ -82,7 +66,7 @@ Image context is carried into the message so Codex can use it immediately.
 
 ### 3. Persistent timeline and context continuity
 
-Every session keeps a readable timeline so you can resume old work without terminal scrollback hunting.
+Every session keeps a readable timeline so you can resume old work without terminal scrollback hunting. C
 
 State stays visible, including what ran, what failed, what changed, and what to do next.
 
@@ -128,10 +112,9 @@ Mobile view continuing the same session over Tailscale.
 
 ## Why We Built This
 
-We believe powerful agents should feel delightful to use every single day.  
-As the team behind **Buffaly** - the ontology-driven agent platform that powers safe, auditable AI in high-trust environments like medicine - we wanted developers to experience how good Codex can really feel on Windows and mobile.
+We use Codex internally at IntelligenceFactory.ai to build [buffa.ly](https://buffa.ly/?utm_source=codexembedded&utm_medium=readme).
 
-This project is our way of giving the community a polished, multi-project interface while we continue building the future of trustworthy agent infrastructure at [buffa.ly](https://buffa.ly).
+We built this tool because we use this tool. 
 
 ## 🌟 Why You’ll Love This (vs raw Codex CLI)
 
@@ -144,13 +127,13 @@ This project is our way of giving the community a polished, multi-project interf
 | Hard to mix quick tasks & deep work   | Run the `buffaly-codex` CLI and web UI **at the same time** - both stay in sync |
 | Switching devices is a hassle         | Start on desktop → continue on phone → same conversation, same files, same agent state |
 
-**Same official Codex agent. Dramatically better developer experience.**
+**Same official Codex agent. Easier developer experience.**
 
 ## 🚀 Quick Start (Windows - 2 minutes)
 
 ### 1. Prerequisites
 
-- Windows 10/11
+- Windows Enviroment with .NET 9.x runtime
 - `codex` CLI installed and authenticated
 - Internet access (for updates)
 
