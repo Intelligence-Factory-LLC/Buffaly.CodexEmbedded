@@ -78,4 +78,50 @@ public sealed class CodexCoreUtilitiesTests
 			}
 		}
 	}
+
+	[Fact]
+	public async Task ProcessJsonlTransport_StartAsync_ResolvesWindowsCodexCmdShim()
+	{
+		if (!OperatingSystem.IsWindows())
+		{
+			return;
+		}
+
+		var root = Path.Combine(Path.GetTempPath(), "codex-process-transport-tests", Guid.NewGuid().ToString("N"));
+		Directory.CreateDirectory(root);
+		try
+		{
+			var shimPath = Path.Combine(root, "codex.cmd");
+			File.WriteAllText(
+				shimPath,
+				"@echo off\r\necho arg=%1\r\n",
+				System.Text.Encoding.ASCII);
+
+			var existingPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+			var options = new CodexClientOptions
+			{
+				CodexPath = "codex",
+				WorkingDirectory = root,
+				EnvironmentVariables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+				{
+					["PATH"] = $"{root};{existingPath}"
+				}
+			};
+
+			await using var transport = await ProcessJsonlTransport.StartAsync(options, CancellationToken.None);
+			var stdoutLine = await transport.ReadStdoutLineAsync(CancellationToken.None);
+
+			Assert.Contains("arg=app-server", stdoutLine ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+		}
+		finally
+		{
+			try
+			{
+				Directory.Delete(root, recursive: true);
+			}
+			catch
+			{
+			}
+		}
+	}
 }

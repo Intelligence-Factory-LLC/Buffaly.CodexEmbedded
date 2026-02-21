@@ -22,6 +22,8 @@ let expandedProjectKeys = new Set();
 let customProjects = [];
 let pendingCreateRequests = new Map(); // requestId -> { threadName, cwd }
 let pendingRenameOnAttach = new Map(); // threadId -> threadName
+let pendingSessionLoadThreadId = null;
+let pendingSessionLoadPreviousActiveId = null;
 
 let timelineCursor = null;
 let timelinePollTimer = null;
@@ -54,6 +56,7 @@ const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
 const SESSION_LIST_SYNC_INTERVAL_MS = 2500;
 
 const layoutRoot = document.querySelector(".layout");
+const chatPanel = document.querySelector(".chat-panel");
 const chatMessages = document.getElementById("chatMessages");
 const logOutput = document.getElementById("logOutput");
 const promptForm = document.getElementById("promptForm");
@@ -875,6 +878,82 @@ function getCatalogEntryByThreadId(threadId) {
   return sessionCatalog.find((x) => x && x.threadId === threadId) || null;
 }
 
+function touchSessionActivity(sessionId, tick = Date.now()) {
+  if (!sessionId || !sessions.has(sessionId)) {
+    return;
+  }
+
+  const state = sessions.get(sessionId);
+  if (!state) {
+    return;
+  }
+
+  const normalizedTick = Number.isFinite(tick) ? tick : Date.now();
+  state.lastActivityTick = normalizedTick;
+  if (!state.createdAtTick) {
+    state.createdAtTick = normalizedTick;
+  }
+
+  if (state.threadId) {
+    const entry = getCatalogEntryByThreadId(state.threadId);
+    if (entry) {
+      entry.updatedAtUtc = new Date(normalizedTick).toISOString();
+    }
+  }
+}
+
+function clearPendingSessionLoad(options = {}) {
+  pendingSessionLoadThreadId = null;
+  if (!options.keepPrevious) {
+    pendingSessionLoadPreviousActiveId = null;
+  }
+  if (chatPanel) {
+    chatPanel.classList.remove("session-loading");
+  }
+}
+
+function beginPendingSessionLoad(threadId, displayName = "") {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId) {
+    return;
+  }
+
+  pendingSessionLoadThreadId = normalizedThreadId;
+  pendingSessionLoadPreviousActiveId = activeSessionId || null;
+  if (chatPanel) {
+    chatPanel.classList.add("session-loading");
+  }
+
+  timelinePollGeneration += 1;
+  if (timelinePollTimer) {
+    clearInterval(timelinePollTimer);
+    timelinePollTimer = null;
+  }
+  timelineCursor = null;
+  timeline.clear();
+  const title = displayName && displayName.trim().length > 0
+    ? `Loading ${displayName.trim()}...`
+    : `Loading ${normalizedThreadId}...`;
+  timeline.enqueueSystem(title, "Session");
+  timeline.flush();
+  renderProjectSidebar();
+}
+
+function handlePendingSessionLoadFailure() {
+  if (!pendingSessionLoadThreadId) {
+    return;
+  }
+
+  const prior = pendingSessionLoadPreviousActiveId;
+  clearPendingSessionLoad();
+  if (prior && sessions.has(prior)) {
+    setActiveSession(prior, { restartTimeline: true });
+    return;
+  }
+
+  restartTimelinePolling();
+}
+
 function setLocalThreadName(threadId, threadName) {
   const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
   if (!normalizedThreadId) {
@@ -953,7 +1032,7 @@ function buildSidebarProjectGroups() {
     const attachedState = attachedSessionId ? sessions.get(attachedSessionId) : null;
     const effectiveCwd = normalizeProjectCwd(entry.cwd || attachedState?.cwd || "");
     const project = ensureProject(effectiveCwd);
-    const tick = Math.max(getCatalogSessionUpdatedTick(entry), attachedState?.createdAtTick || 0);
+    const tick = Math.max(getCatalogSessionUpdatedTick(entry), attachedState?.lastActivityTick || attachedState?.createdAtTick || 0);
     if (tick > project.latestTick) {
       project.latestTick = tick;
     }
@@ -961,7 +1040,7 @@ function buildSidebarProjectGroups() {
     project.sessions.push({
       threadId: entry.threadId,
       threadName: entry.threadName || attachedState?.threadName || "",
-      updatedAtUtc: entry.updatedAtUtc || (tick > 0 ? new Date(tick).toISOString() : null),
+      updatedAtUtc: tick > 0 ? new Date(tick).toISOString() : (entry.updatedAtUtc || null),
       sortTick: tick,
       cwd: effectiveCwd,
       model: entry.model || "",
@@ -979,11 +1058,15 @@ function buildSidebarProjectGroups() {
     }
 
     const project = ensureProject(state.cwd || "");
+    const tick = state.lastActivityTick || state.createdAtTick || 0;
+    if (tick > project.latestTick) {
+      project.latestTick = tick;
+    }
     project.sessions.push({
       threadId: state.threadId,
       threadName: state.threadName || "",
-      updatedAtUtc: state.createdAtTick ? new Date(state.createdAtTick).toISOString() : null,
-      sortTick: state.createdAtTick || 0,
+      updatedAtUtc: tick > 0 ? new Date(tick).toISOString() : null,
+      sortTick: tick,
       cwd: normalizeProjectCwd(state.cwd || ""),
       model: state.model || "",
       attachedSessionId: sessionId,
@@ -1228,14 +1311,14 @@ async function createSessionForCwd(cwd, options = {}) {
 
 async function attachSessionByThreadId(threadId, cwd) {
   if (!threadId) {
-    return;
+    return false;
   }
 
   try {
     await ensureSocket();
   } catch (error) {
     appendLog(`[ws] connect failed: ${error}`);
-    return;
+    return false;
   }
 
   const payload = { threadId };
@@ -1251,7 +1334,7 @@ async function attachSessionByThreadId(threadId, cwd) {
     localStorage.setItem(STORAGE_CWD_KEY, normalizedCwd);
   }
 
-  send("session_attach", payload);
+  return send("session_attach", payload);
 }
 
 async function renameSessionFromSidebar(entry) {
@@ -1489,8 +1572,13 @@ function renderProjectSidebar() {
     for (const entry of sessionsToRender) {
       const row = document.createElement("div");
       row.className = "session-row";
-      if (entry.attachedSessionId && entry.attachedSessionId === activeSessionId) {
+      const isPendingLoad = pendingSessionLoadThreadId && entry.threadId === pendingSessionLoadThreadId;
+      const showOnlyPendingAsActive = !!pendingSessionLoadThreadId;
+      if (!showOnlyPendingAsActive && entry.attachedSessionId && entry.attachedSessionId === activeSessionId) {
         row.classList.add("active");
+      }
+      if (isPendingLoad) {
+        row.classList.add("active", "loading");
       }
 
       const head = document.createElement("div");
@@ -1504,12 +1592,17 @@ function renderProjectSidebar() {
         selectProject(group.key, group.cwd);
 
         if (entry.attachedSessionId && sessions.has(entry.attachedSessionId)) {
+          clearPendingSessionLoad();
           setActiveSession(entry.attachedSessionId);
           send("session_select", { sessionId: entry.attachedSessionId });
           return;
         }
 
-        await attachSessionByThreadId(entry.threadId, entry.cwd || group.cwd);
+        beginPendingSessionLoad(entry.threadId, entry.threadName || entry.threadId);
+        const attached = await attachSessionByThreadId(entry.threadId, entry.cwd || group.cwd);
+        if (!attached) {
+          handlePendingSessionLoadFailure();
+        }
       });
 
       const title = document.createElement("div");
@@ -1541,6 +1634,17 @@ function renderProjectSidebar() {
         spinner.setAttribute("aria-hidden", "true");
         processing.appendChild(spinner);
         badges.appendChild(processing);
+      }
+      if (isPendingLoad) {
+        const loading = document.createElement("span");
+        loading.className = "session-badge processing";
+        loading.title = "Loading session";
+        loading.setAttribute("aria-label", "Loading session");
+        const spinner = document.createElement("i");
+        spinner.className = "bi bi-arrow-repeat session-processing-icon";
+        spinner.setAttribute("aria-hidden", "true");
+        loading.appendChild(spinner);
+        badges.appendChild(loading);
       }
       head.appendChild(badges);
 
@@ -1641,7 +1745,8 @@ function setApprovalVisible(show) {
 
 function ensureSessionState(sessionId) {
   if (!sessions.has(sessionId)) {
-    sessions.set(sessionId, { threadId: null, cwd: null, model: null });
+    const now = Date.now();
+    sessions.set(sessionId, { threadId: null, cwd: null, model: null, createdAtTick: now, lastActivityTick: now });
   }
   return sessions.get(sessionId);
 }
@@ -1928,6 +2033,7 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
     return false;
   }
 
+  touchSessionActivity(sessionId);
   setTurnInFlight(sessionId, true);
   if (normalizedText) {
     lastSentPromptBySession.set(sessionId, normalizedText);
@@ -2267,6 +2373,9 @@ function setActiveSession(sessionId, options = {}) {
   }
   stopSessionBtn.disabled = false;
   const state = sessions.get(sessionId);
+  if (state?.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
+    clearPendingSessionLoad();
+  }
   if (state?.threadId) {
     restorePersistedQueueForSession(sessionId, state.threadId);
   }
@@ -2632,6 +2741,7 @@ function ensureSocket() {
     socketReadyPromise = null;
     stopSessionListSync();
     setMobileProjectsOpen(false);
+    clearPendingSessionLoad();
     autoAttachAttempted = false;
     persistQueuedPromptState();
     sessions = new Map();
@@ -2696,6 +2806,9 @@ function handleServerEvent(frame) {
       if (!normalizeProjectCwd(state.cwd || "") && pendingCreate?.cwd) {
         state.cwd = pendingCreate.cwd;
       }
+      if (!state.createdAtTick) {
+        state.createdAtTick = Date.now();
+      }
       if (state.threadId) {
         const permissionInfo = readPermissionInfoFromPayload(payload);
         if (permissionInfo) {
@@ -2707,6 +2820,10 @@ function handleServerEvent(frame) {
         if (entry && !normalizeProjectCwd(entry.cwd || "")) {
           entry.cwd = state.cwd;
         }
+      }
+      touchSessionActivity(sessionId);
+      if (state.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
+        clearPendingSessionLoad();
       }
       setTurnInFlight(sessionId, false);
       const mode = payload.attached || type === "session_attached" ? "attached" : "created";
@@ -2733,20 +2850,29 @@ function handleServerEvent(frame) {
     case "session_list": {
       const list = Array.isArray(payload.sessions) ? payload.sessions : [];
       const next = new Map();
+      let matchedPendingThread = false;
       for (const s of list) {
         const existing = sessions.get(s.sessionId);
-        const st = existing || { threadId: null, cwd: null, model: null };
+        const st = existing || { threadId: null, cwd: null, model: null, createdAtTick: Date.now(), lastActivityTick: 0 };
         st.threadId = s.threadId || st.threadId || null;
         st.cwd = s.cwd || st.cwd || null;
         st.model = s.model || st.model || null;
+        st.createdAtTick = st.createdAtTick || Date.now();
+        st.lastActivityTick = Number.isFinite(st.lastActivityTick) ? st.lastActivityTick : st.createdAtTick;
         if (st.threadId) {
           const permissionInfo = readPermissionInfoFromPayload(s);
           if (permissionInfo) {
             setPermissionLevelForThread(st.threadId, permissionInfo);
           }
         }
+        if (pendingSessionLoadThreadId && st.threadId === pendingSessionLoadThreadId) {
+          matchedPendingThread = true;
+        }
         setTurnInFlight(s.sessionId, s.isTurnInFlight === true || s.turnInFlight === true);
         next.set(s.sessionId, st);
+      }
+      if (matchedPendingThread) {
+        clearPendingSessionLoad();
       }
       sessions = next;
       prunePromptState();
@@ -2790,6 +2916,7 @@ function handleServerEvent(frame) {
     case "turn_complete": {
       const sessionId = payload.sessionId || null;
       if (sessionId) {
+        touchSessionActivity(sessionId);
         setTurnInFlight(sessionId, false);
         pumpQueuedPrompt(sessionId);
       }
@@ -2803,6 +2930,7 @@ function handleServerEvent(frame) {
     case "turn_started": {
       const sessionId = payload.sessionId || null;
       if (sessionId) {
+        touchSessionActivity(sessionId);
         setTurnInFlight(sessionId, true);
       }
       return;
@@ -2811,6 +2939,7 @@ function handleServerEvent(frame) {
     case "turn_cancel_requested": {
       const sessionId = payload.sessionId || null;
       if (sessionId) {
+        touchSessionActivity(sessionId);
         setTurnInFlight(sessionId, true);
       }
       appendLog(`[turn] cancel requested for session=${sessionId || "unknown"}`);
@@ -2867,6 +2996,9 @@ function handleServerEvent(frame) {
     }
 
     case "error":
+      if (pendingSessionLoadThreadId) {
+        handlePendingSessionLoadFailure();
+      }
       appendLog(`[error] ${payload.message || "unknown error"}`);
       return;
 

@@ -15,10 +15,11 @@ public sealed class ProcessJsonlTransport : IJsonlTransport
 	public static Task<ProcessJsonlTransport> StartAsync(CodexClientOptions options, CancellationToken cancellationToken)
 	{
 		Directory.CreateDirectory(options.WorkingDirectory);
+		var codexPath = ResolveCodexPath(options.CodexPath);
 
 		var psi = new ProcessStartInfo
 		{
-			FileName = options.CodexPath,
+			FileName = codexPath,
 			Arguments = "app-server",
 			WorkingDirectory = options.WorkingDirectory,
 			RedirectStandardInput = true,
@@ -47,13 +48,73 @@ public sealed class ProcessJsonlTransport : IJsonlTransport
 			StartInfo = psi
 		};
 
-		if (!process.Start())
+		try
 		{
-			throw new InvalidOperationException("Failed to start codex app-server.");
+			if (!process.Start())
+			{
+				throw new InvalidOperationException("Failed to start codex app-server.");
+			}
+		}
+		catch (Exception ex)
+		{
+			throw new InvalidOperationException(
+				$"Failed to start codex app-server with CodexPath '{options.CodexPath}' (resolved '{codexPath}') and working directory '{options.WorkingDirectory}'.",
+				ex);
 		}
 
 		cancellationToken.ThrowIfCancellationRequested();
 		return Task.FromResult(new ProcessJsonlTransport(process));
+	}
+
+	private static string ResolveCodexPath(string? configuredPath)
+	{
+		var raw = string.IsNullOrWhiteSpace(configuredPath)
+			? "codex"
+			: configuredPath.Trim();
+
+		if (!OperatingSystem.IsWindows())
+		{
+			return raw;
+		}
+
+		if (Path.HasExtension(raw))
+		{
+			return raw;
+		}
+
+		if (!string.Equals(Path.GetFileName(raw), "codex", StringComparison.OrdinalIgnoreCase))
+		{
+			return raw;
+		}
+
+		if (raw.IndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }) >= 0)
+		{
+			var cmdCandidate = raw + ".cmd";
+			if (File.Exists(cmdCandidate))
+			{
+				return cmdCandidate;
+			}
+
+			var exeCandidate = raw + ".exe";
+			if (File.Exists(exeCandidate))
+			{
+				return exeCandidate;
+			}
+
+			return cmdCandidate;
+		}
+
+		var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+		if (!string.IsNullOrWhiteSpace(appData))
+		{
+			var npmShimPath = Path.Combine(appData, "npm", "codex.cmd");
+			if (File.Exists(npmShimPath))
+			{
+				return npmShimPath;
+			}
+		}
+
+		return "codex.cmd";
 	}
 
 	public async Task WriteStdinLineAsync(string line, CancellationToken cancellationToken)

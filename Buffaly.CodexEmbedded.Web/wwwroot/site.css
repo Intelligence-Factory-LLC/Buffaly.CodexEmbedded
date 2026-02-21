@@ -147,6 +147,32 @@ body {
 	position: relative;
 }
 
+.chat-panel.session-loading::before {
+	content: "";
+	position: absolute;
+	inset: 0;
+	background: rgba(248, 250, 252, 0.62);
+	pointer-events: none;
+	z-index: 4;
+}
+
+.chat-panel.session-loading::after {
+	content: "";
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	width: 1.35rem;
+	height: 1.35rem;
+	margin-top: -0.675rem;
+	margin-left: -0.675rem;
+	border-radius: 999px;
+	border: 2px solid #cbd5e1;
+	border-top-color: #0f766e;
+	animation: session-processing-spin 0.9s linear infinite;
+	pointer-events: none;
+	z-index: 5;
+}
+
 .session-sidebar {
 	overflow: hidden;
 }
@@ -316,6 +342,11 @@ body {
 .session-row.active {
 	border-color: #38bdf8;
 	background: #f0f9ff;
+}
+
+.session-row.loading {
+	border-color: #14b8a6;
+	background: #ecfeff;
 }
 
 .session-row-head {
