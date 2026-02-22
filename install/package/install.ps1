@@ -99,6 +99,7 @@ if %ERRORLEVEL%==0 (
   set "PS_EXE=powershell"
 )
 :run_script
+set "BUFFALY_CODEX_WRAPPER_SCRIPT=$ScriptFileName"
 "%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\$ScriptFileName" %*
 exit /b %ERRORLEVEL%
 "@

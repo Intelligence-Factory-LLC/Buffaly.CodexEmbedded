@@ -71,13 +71,20 @@ if (-not $NoPrompt) {
 
 $binRoot = Join-Path $InstallRoot "bin"
 Remove-UserPathEntry $binRoot
+$invokedFromWrapper = [string]::Equals(
+    $env:BUFFALY_CODEX_WRAPPER_SCRIPT,
+    "uninstall.ps1",
+    [StringComparison]::OrdinalIgnoreCase)
 
 $targets = @(
     (Join-Path $InstallRoot "active-version.txt"),
     (Join-Path $InstallRoot "release-manifest.json"),
-    (Join-Path $InstallRoot "update.ps1"),
-    $binRoot
+    (Join-Path $InstallRoot "update.ps1")
 )
+
+if (-not $invokedFromWrapper) {
+    $targets += $binRoot
+}
 
 foreach ($target in $targets) {
     if (Test-Path $target) {
