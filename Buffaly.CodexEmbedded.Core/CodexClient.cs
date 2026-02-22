@@ -250,6 +250,7 @@ public sealed class CodexClient : IAsyncDisposable
 			{
 				threadId,
 				model = options?.Model,
+				effort = options?.ReasoningEffort,
 				cwd = options?.Cwd,
 				input = input.ToArray()
 			},

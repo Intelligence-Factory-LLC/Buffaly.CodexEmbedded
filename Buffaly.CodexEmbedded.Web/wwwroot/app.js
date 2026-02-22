@@ -3,8 +3,8 @@ const TIMELINE_POLL_INTERVAL_MS = 2000;
 let socket = null;
 let socketReadyPromise = null;
 
-let sessions = new Map(); // sessionId -> { threadId, cwd, model }
-let sessionCatalog = []; // [{ threadId, threadName, updatedAtUtc, cwd, model, sessionFilePath }]
+let sessions = new Map(); // sessionId -> { threadId, cwd, model, reasoningEffort }
+let sessionCatalog = []; // [{ threadId, threadName, updatedAtUtc, cwd, model, reasoningEffort, sessionFilePath }]
 let activeSessionId = null;
 let pendingApproval = null; // { sessionId, approvalId }
 let promptQueuesBySession = new Map(); // sessionId -> [{ text, images }]
@@ -37,6 +37,7 @@ let sessionMetaDetailsExpanded = false;
 let contextUsageByThread = new Map(); // threadId -> { usedTokens, contextWindow, percentLeft }
 let permissionLevelByThread = new Map(); // threadId -> { approval, sandbox }
 let preferredModelByThread = new Map(); // threadId -> model string ("" means default)
+let preferredReasoningByThread = new Map(); // threadId -> reasoning effort string ("" means default)
 let processingByThread = new Map(); // threadId -> boolean
 let timelineHasTruncatedHead = false;
 let runtimeSecurityConfig = null;
@@ -47,6 +48,7 @@ const STORAGE_LAST_THREAD_ID_KEY = "codex-web-last-thread-id";
 const STORAGE_QUEUED_PROMPTS_KEY = "codex-web-queued-prompts-v1";
 const STORAGE_PROMPT_DRAFTS_KEY = "codex-web-prompt-drafts-v1";
 const STORAGE_THREAD_MODELS_KEY = "codex-web-thread-models-v1";
+const STORAGE_THREAD_REASONING_KEY = "codex-web-thread-reasoning-v1";
 const STORAGE_PROJECT_META_KEY = "codex-web-project-meta";
 const STORAGE_COLLAPSED_PROJECTS_KEY = "codex-web-collapsed-projects";
 const STORAGE_ARCHIVED_THREADS_KEY = "codex-web-archived-threads";
@@ -60,6 +62,7 @@ const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
 const SESSION_LIST_SYNC_INTERVAL_MS = 2500;
 const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only.";
+const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 
 const layoutRoot = document.querySelector(".layout");
 const chatPanel = document.querySelector(".chat-panel");
@@ -107,6 +110,7 @@ const sessionMetaModelItem = document.getElementById("sessionMetaModelItem");
 const sessionMetaCwdItem = document.getElementById("sessionMetaCwdItem");
 const sessionMetaCwdValue = document.getElementById("sessionMetaCwdValue");
 const conversationModelSelect = document.getElementById("conversationModelSelect");
+const conversationReasoningSelect = document.getElementById("conversationReasoningSelect");
 const sessionSidebar = document.getElementById("sessionSidebar");
 const sidebarToggleBtn = document.getElementById("sidebarToggleBtn");
 const projectList = document.getElementById("projectList");
@@ -489,6 +493,19 @@ function normalizeModelValue(value) {
   return String(value).trim();
 }
 
+function normalizeReasoningEffort(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+
+  return REASONING_EFFORT_LEVELS.includes(normalized) ? normalized : "";
+}
+
 function loadThreadModelState() {
   preferredModelByThread = new Map();
   const raw = safeJsonParse(localStorage.getItem(STORAGE_THREAD_MODELS_KEY), {});
@@ -520,6 +537,37 @@ function persistThreadModelState() {
   localStorage.setItem(STORAGE_THREAD_MODELS_KEY, JSON.stringify(payload));
 }
 
+function loadThreadReasoningState() {
+  preferredReasoningByThread = new Map();
+  const raw = safeJsonParse(localStorage.getItem(STORAGE_THREAD_REASONING_KEY), {});
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return;
+  }
+
+  for (const [threadId, effort] of Object.entries(raw)) {
+    const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+    if (!normalizedThreadId) {
+      continue;
+    }
+
+    preferredReasoningByThread.set(normalizedThreadId, normalizeReasoningEffort(effort));
+  }
+}
+
+function persistThreadReasoningState() {
+  const payload = {};
+  for (const [threadId, effort] of preferredReasoningByThread.entries()) {
+    const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+    if (!normalizedThreadId) {
+      continue;
+    }
+
+    payload[normalizedThreadId] = normalizeReasoningEffort(effort);
+  }
+
+  localStorage.setItem(STORAGE_THREAD_REASONING_KEY, JSON.stringify(payload));
+}
+
 function getPreferredModelForThread(threadId) {
   const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
   if (!normalizedThreadId || !preferredModelByThread.has(normalizedThreadId)) {
@@ -532,6 +580,18 @@ function getPreferredModelForThread(threadId) {
   };
 }
 
+function getPreferredReasoningForThread(threadId) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !preferredReasoningByThread.has(normalizedThreadId)) {
+    return { found: false, effort: "" };
+  }
+
+  return {
+    found: true,
+    effort: normalizeReasoningEffort(preferredReasoningByThread.get(normalizedThreadId))
+  };
+}
+
 function setPreferredModelForThread(threadId, model, options = {}) {
   const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
   if (!normalizedThreadId) {
@@ -541,6 +601,18 @@ function setPreferredModelForThread(threadId, model, options = {}) {
   preferredModelByThread.set(normalizedThreadId, normalizeModelValue(model));
   if (options.persist !== false) {
     persistThreadModelState();
+  }
+}
+
+function setPreferredReasoningForThread(threadId, effort, options = {}) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId) {
+    return;
+  }
+
+  preferredReasoningByThread.set(normalizedThreadId, normalizeReasoningEffort(effort));
+  if (options.persist !== false) {
+    persistThreadReasoningState();
   }
 }
 
@@ -558,6 +630,25 @@ function ensureThreadModelPreference(threadId, model, options = {}) {
   preferredModelByThread.set(normalizedThreadId, normalizedModel);
   if (options.persist !== false) {
     persistThreadModelState();
+  }
+
+  return true;
+}
+
+function ensureThreadReasoningPreference(threadId, effort, options = {}) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId) {
+    return false;
+  }
+
+  const normalizedEffort = normalizeReasoningEffort(effort);
+  if (preferredReasoningByThread.has(normalizedThreadId)) {
+    return false;
+  }
+
+  preferredReasoningByThread.set(normalizedThreadId, normalizedEffort);
+  if (options.persist !== false) {
+    persistThreadReasoningState();
   }
 
   return true;
@@ -1153,6 +1244,7 @@ function buildSidebarProjectGroups() {
       sortTick: tick,
       cwd: effectiveCwd,
       model: entry.model || "",
+      reasoningEffort: normalizeReasoningEffort(entry.reasoningEffort || attachedState?.reasoningEffort || ""),
       attachedSessionId,
       isAttached: !!attachedSessionId,
       isProcessing: (attachedSessionId ? isTurnInFlight(attachedSessionId) : false) || entry.isProcessing === true || isThreadProcessing(entry.threadId),
@@ -1178,6 +1270,7 @@ function buildSidebarProjectGroups() {
       sortTick: tick,
       cwd: normalizeProjectCwd(state.cwd || ""),
       model: state.model || "",
+      reasoningEffort: normalizeReasoningEffort(state.reasoningEffort || ""),
       attachedSessionId: sessionId,
       isAttached: true,
       isProcessing: isTurnInFlight(sessionId) || isThreadProcessing(state.threadId),
@@ -1351,7 +1444,10 @@ function formatSessionSubtitle(entry) {
   }
 
   if (entry.model) {
-    parts.push(entry.model);
+    const effort = normalizeReasoningEffort(entry.reasoningEffort || "");
+    parts.push(effort ? `${entry.model} (${effort})` : entry.model);
+  } else if (entry.reasoningEffort) {
+    parts.push(`reasoning: ${entry.reasoningEffort}`);
   }
 
   return parts.join(" | ");
@@ -1900,7 +1996,7 @@ function setApprovalVisible(show) {
 function ensureSessionState(sessionId) {
   if (!sessions.has(sessionId)) {
     const now = Date.now();
-    sessions.set(sessionId, { threadId: null, cwd: null, model: null, createdAtTick: now, lastActivityTick: now });
+    sessions.set(sessionId, { threadId: null, cwd: null, model: null, reasoningEffort: null, createdAtTick: now, lastActivityTick: now });
   }
   return sessions.get(sessionId);
 }
@@ -2173,6 +2269,11 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
     state.model = turnModel;
   }
 
+  const turnEffort = normalizeReasoningEffort(state?.reasoningEffort || "");
+  if (state && turnEffort) {
+    state.reasoningEffort = turnEffort;
+  }
+
   if (turnCwd) {
     payload.cwd = turnCwd;
     if (state) {
@@ -2186,6 +2287,9 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
 
   if (turnModel) {
     payload.model = turnModel;
+  }
+  if (turnEffort) {
+    payload.effort = turnEffort;
   }
   if (state && sessionId === activeSessionId && !turnCwd) {
     refreshSessionMeta();
@@ -2344,6 +2448,45 @@ function syncConversationModelOptions(preferredValue = null) {
   syncingConversationModelSelect = false;
 }
 
+function populateReasoningEffortSelect() {
+  if (!conversationReasoningSelect) {
+    return;
+  }
+
+  conversationReasoningSelect.textContent = "";
+
+  const defaultOption = document.createElement("option");
+  defaultOption.value = "";
+  defaultOption.textContent = "Reasoning: default";
+  conversationReasoningSelect.appendChild(defaultOption);
+
+  for (const level of REASONING_EFFORT_LEVELS) {
+    const option = document.createElement("option");
+    option.value = level;
+    option.textContent = `Reasoning: ${level}`;
+    conversationReasoningSelect.appendChild(option);
+  }
+}
+
+function syncConversationReasoningOptions(preferredValue = null) {
+  if (!conversationReasoningSelect) {
+    return;
+  }
+
+  const targetValue = preferredValue === null || preferredValue === undefined
+    ? (conversationReasoningSelect.value || "")
+    : normalizeReasoningEffort(preferredValue);
+
+  if (conversationReasoningSelect.options.length === 0) {
+    populateReasoningEffortSelect();
+  }
+
+  syncingConversationModelSelect = true;
+  const hasTarget = Array.from(conversationReasoningSelect.options).some((x) => x.value === targetValue);
+  conversationReasoningSelect.value = hasTarget ? targetValue : "";
+  syncingConversationModelSelect = false;
+}
+
 function refreshSessionMeta() {
   if (!sessionMeta || !sessionMetaModelItem) {
     return;
@@ -2361,6 +2504,7 @@ function refreshSessionMeta() {
     sessionMeta.classList.add("hidden");
     sessionMetaModelItem.classList.add("hidden");
     syncConversationModelOptions(modelSelect.value || "");
+    syncConversationReasoningOptions("");
     sessionMeta.title = "";
     updateContextLeftIndicator();
     updatePermissionLevelIndicator();
@@ -2372,9 +2516,13 @@ function refreshSessionMeta() {
   const threadName = namedCatalogEntry?.threadName || state.threadName || "";
   const threadId = state.threadId || "";
   const preferred = getPreferredModelForThread(state.threadId);
+  const preferredEffort = getPreferredReasoningForThread(state.threadId);
   const selectedModel = preferred.found
     ? preferred.model
     : normalizeModelValue(state.model || "");
+  const selectedEffort = preferredEffort.found
+    ? preferredEffort.effort
+    : normalizeReasoningEffort(state.reasoningEffort || "");
   const titleValue = threadName || threadId || "Conversation";
   if (conversationTitle) {
     conversationTitle.textContent = titleValue;
@@ -2383,6 +2531,7 @@ function refreshSessionMeta() {
   sessionMeta.classList.remove("hidden");
 
   syncConversationModelOptions(selectedModel);
+  syncConversationReasoningOptions(selectedEffort);
   if (timeline && typeof timeline.setSessionModel === "function") {
     timeline.setSessionModel(selectedModel);
   }
@@ -2505,6 +2654,10 @@ function setActiveSession(sessionId, options = {}) {
     const preferred = getPreferredModelForThread(state.threadId);
     if (preferred.found) {
       state.model = preferred.model || null;
+    }
+    const preferredEffort = getPreferredReasoningForThread(state.threadId);
+    if (preferredEffort.found) {
+      state.reasoningEffort = preferredEffort.effort || null;
     }
   }
   if (state?.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
@@ -2705,16 +2858,30 @@ function syncModelCommandOptionsFromToolbar() {
   syncConversationModelOptions();
 }
 
-function applyModelSelectionToActiveSession(selectedModel) {
+function selectedReasoningValue() {
+  if (!conversationReasoningSelect) {
+    return "";
+  }
+
+  return normalizeReasoningEffort(conversationReasoningSelect.value || "");
+}
+
+function applySessionModelSettingsToActiveSession(selectedModel, selectedEffort = null) {
   const state = getActiveSessionState();
   if (!state || !state.threadId || !activeSessionId) {
     return;
   }
 
-  const normalized = normalizeModelValue(selectedModel);
-  state.model = normalized || null;
-  setPreferredModelForThread(state.threadId, normalized);
-  send("session_set_model", { sessionId: activeSessionId, model: normalized });
+  const normalizedModel = normalizeModelValue(selectedModel);
+  const normalizedEffort = selectedEffort === null || selectedEffort === undefined
+    ? normalizeReasoningEffort(state.reasoningEffort || "")
+    : normalizeReasoningEffort(selectedEffort);
+
+  state.model = normalizedModel || null;
+  state.reasoningEffort = normalizedEffort || null;
+  setPreferredModelForThread(state.threadId, normalizedModel);
+  setPreferredReasoningForThread(state.threadId, normalizedEffort);
+  send("session_set_model", { sessionId: activeSessionId, model: normalizedModel, effort: normalizedEffort });
 }
 
 function applyModelSelection(value) {
@@ -2723,7 +2890,7 @@ function applyModelSelection(value) {
     modelSelect.value = "";
     modelCustomInput.classList.add("hidden");
     syncModelCommandOptionsFromToolbar();
-    applyModelSelectionToActiveSession("");
+    applySessionModelSettingsToActiveSession("", selectedReasoningValue());
     refreshSessionMeta();
     renderProjectSidebar();
     return;
@@ -2739,7 +2906,7 @@ function applyModelSelection(value) {
       modelCustomInput.classList.add("hidden");
     }
     syncModelCommandOptionsFromToolbar();
-    applyModelSelectionToActiveSession(modelValueForCreate() || "");
+    applySessionModelSettingsToActiveSession(modelValueForCreate() || "", selectedReasoningValue());
     refreshSessionMeta();
     renderProjectSidebar();
     return;
@@ -2749,7 +2916,7 @@ function applyModelSelection(value) {
   modelCustomInput.classList.remove("hidden");
   modelCustomInput.value = normalized;
   syncModelCommandOptionsFromToolbar();
-  applyModelSelectionToActiveSession(modelValueForCreate() || "");
+  applySessionModelSettingsToActiveSession(modelValueForCreate() || "", selectedReasoningValue());
   refreshSessionMeta();
   renderProjectSidebar();
 }
@@ -2802,6 +2969,7 @@ function applySavedUiSettings() {
   loadPromptDraftState();
   loadQueuedPromptState();
   loadThreadModelState();
+  loadThreadReasoningState();
 
   const savedCwd = localStorage.getItem(STORAGE_CWD_KEY);
   if (savedCwd) {
@@ -2929,17 +3097,36 @@ function handleServerEvent(frame) {
       const state = ensureSessionState(sessionId);
       state.threadId = payload.threadId || state.threadId;
       state.cwd = payload.cwd || state.cwd;
-      state.model = normalizeModelValue(payload.model || state.model || "") || null;
-      let persistedModelUpdated = false;
+      let persistedPreferenceUpdated = false;
       if (state.threadId) {
+        const serverModel = normalizeModelValue(payload.model || "");
+        const serverEffort = normalizeReasoningEffort(payload.reasoningEffort ?? payload.effort ?? "");
         const preferred = getPreferredModelForThread(state.threadId);
+        const preferredEffort = getPreferredReasoningForThread(state.threadId);
+        const targetModel = preferred.found ? preferred.model : serverModel;
+        const targetEffort = preferredEffort.found ? preferredEffort.effort : serverEffort;
+
+        state.model = targetModel || null;
+        state.reasoningEffort = targetEffort || null;
+
+        const modelInPayload = payload.model !== undefined;
+        const effortInPayload = payload.reasoningEffort !== undefined || payload.effort !== undefined;
+        const shouldPushPreferredModel = preferred.found && modelInPayload && targetModel !== serverModel;
+        const shouldPushPreferredEffort = preferredEffort.found && effortInPayload && targetEffort !== serverEffort;
+        if (shouldPushPreferredModel || shouldPushPreferredEffort) {
+          send("session_set_model", { sessionId, model: targetModel, effort: targetEffort });
+        }
+
         if (preferred.found) {
           state.model = preferred.model || null;
-          if (payload.model !== undefined && preferred.model !== normalizeModelValue(payload.model || "")) {
-            send("session_set_model", { sessionId, model: preferred.model });
-          }
-        } else if (payload.model !== undefined) {
-          persistedModelUpdated = ensureThreadModelPreference(state.threadId, payload.model, { persist: false }) || persistedModelUpdated;
+        } else if (modelInPayload) {
+          persistedPreferenceUpdated = ensureThreadModelPreference(state.threadId, serverModel, { persist: false }) || persistedPreferenceUpdated;
+        }
+
+        if (preferredEffort.found) {
+          state.reasoningEffort = preferredEffort.effort || null;
+        } else if (effortInPayload) {
+          persistedPreferenceUpdated = ensureThreadReasoningPreference(state.threadId, serverEffort, { persist: false }) || persistedPreferenceUpdated;
         }
       }
       let pendingCreate = null;
@@ -2969,8 +3156,9 @@ function handleServerEvent(frame) {
           entry.model = state.model;
         }
       }
-      if (persistedModelUpdated) {
+      if (persistedPreferenceUpdated) {
         persistThreadModelState();
+        persistThreadReasoningState();
       }
       touchSessionActivity(sessionId);
       if (state.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
@@ -3003,28 +3191,48 @@ function handleServerEvent(frame) {
       const next = new Map();
       const nextProcessingByThread = new Map();
       let matchedPendingThread = false;
-      let persistedModelUpdated = false;
+      let persistedPreferenceUpdated = false;
       for (const s of list) {
         const existing = sessions.get(s.sessionId);
-        const st = existing || { threadId: null, cwd: null, model: null, createdAtTick: Date.now(), lastActivityTick: 0 };
+        const st = existing || { threadId: null, cwd: null, model: null, reasoningEffort: null, createdAtTick: Date.now(), lastActivityTick: 0 };
         st.threadId = s.threadId || st.threadId || null;
         st.cwd = s.cwd || st.cwd || null;
         const serverModel = normalizeModelValue(s.model);
+        const serverEffort = normalizeReasoningEffort(s.reasoningEffort ?? s.effort ?? "");
         if (st.threadId) {
           const preferred = getPreferredModelForThread(st.threadId);
+          const preferredEffort = getPreferredReasoningForThread(st.threadId);
+          const targetModel = preferred.found ? preferred.model : serverModel;
+          const targetEffort = preferredEffort.found ? preferredEffort.effort : serverEffort;
+
+          st.model = targetModel || st.model || null;
+          st.reasoningEffort = targetEffort || st.reasoningEffort || null;
+
+          const modelInPayload = s.model !== undefined;
+          const effortInPayload = s.reasoningEffort !== undefined || s.effort !== undefined;
+          const shouldPushPreferredModel = preferred.found && modelInPayload && targetModel !== serverModel;
+          const shouldPushPreferredEffort = preferredEffort.found && effortInPayload && targetEffort !== serverEffort;
+          if (shouldPushPreferredModel || shouldPushPreferredEffort) {
+            send("session_set_model", { sessionId: s.sessionId, model: targetModel, effort: targetEffort });
+          }
+
           if (preferred.found) {
             st.model = preferred.model || null;
-            if (s.model !== undefined && preferred.model !== serverModel) {
-              send("session_set_model", { sessionId: s.sessionId, model: preferred.model });
-            }
           } else {
             st.model = serverModel || st.model || null;
             if (s.model !== undefined) {
-              persistedModelUpdated = ensureThreadModelPreference(st.threadId, serverModel, { persist: false }) || persistedModelUpdated;
+              persistedPreferenceUpdated = ensureThreadModelPreference(st.threadId, serverModel, { persist: false }) || persistedPreferenceUpdated;
             }
+          }
+
+          if (preferredEffort.found) {
+            st.reasoningEffort = preferredEffort.effort || null;
+          } else if (s.reasoningEffort !== undefined || s.effort !== undefined) {
+            persistedPreferenceUpdated = ensureThreadReasoningPreference(st.threadId, serverEffort, { persist: false }) || persistedPreferenceUpdated;
           }
         } else {
           st.model = serverModel || st.model || null;
+          st.reasoningEffort = serverEffort || st.reasoningEffort || null;
         }
         st.createdAtTick = st.createdAtTick || Date.now();
         st.lastActivityTick = Number.isFinite(st.lastActivityTick) ? st.lastActivityTick : st.createdAtTick;
@@ -3054,8 +3262,9 @@ function handleServerEvent(frame) {
           nextProcessingByThread.set(normalizedThreadId, true);
         }
       }
-      if (persistedModelUpdated) {
+      if (persistedPreferenceUpdated) {
         persistThreadModelState();
+        persistThreadReasoningState();
       }
       if (matchedPendingThread) {
         clearPendingSessionLoad();
@@ -3070,7 +3279,7 @@ function handleServerEvent(frame) {
     case "session_catalog": {
       const list = Array.isArray(payload.sessions) ? payload.sessions : [];
       const nextProcessingByThread = new Map(processingByThread);
-      let persistedModelUpdated = false;
+      let persistedPreferenceUpdated = false;
       sessionCatalog = list
         .filter((s) => s && s.threadId)
         .map((s) => {
@@ -3084,15 +3293,20 @@ function handleServerEvent(frame) {
           }
 
           const preferred = getPreferredModelForThread(s.threadId);
+          const preferredEffort = getPreferredReasoningForThread(s.threadId);
           if (preferred.found) {
-            return { ...s, model: preferred.model };
+            return { ...s, model: preferred.model, reasoningEffort: preferredEffort.found ? preferredEffort.effort : normalizeReasoningEffort(s.reasoningEffort ?? s.effort ?? "") };
           }
 
           const normalizedServerModel = normalizeModelValue(s.model);
+          const normalizedServerEffort = normalizeReasoningEffort(s.reasoningEffort ?? s.effort ?? "");
           if (ensureThreadModelPreference(s.threadId, normalizedServerModel, { persist: false })) {
-            persistedModelUpdated = true;
+            persistedPreferenceUpdated = true;
           }
-          return { ...s, model: normalizedServerModel };
+          if (ensureThreadReasoningPreference(s.threadId, normalizedServerEffort, { persist: false })) {
+            persistedPreferenceUpdated = true;
+          }
+          return { ...s, model: normalizedServerModel, reasoningEffort: preferredEffort.found ? preferredEffort.effort : normalizedServerEffort };
         })
         .sort((a, b) => (b.updatedAtUtc || "").localeCompare(a.updatedAtUtc || ""));
       if (payload.processingByThread && typeof payload.processingByThread === "object" && !Array.isArray(payload.processingByThread)) {
@@ -3107,8 +3321,9 @@ function handleServerEvent(frame) {
         }
       }
       processingByThread = nextProcessingByThread;
-      if (persistedModelUpdated) {
+      if (persistedPreferenceUpdated) {
         persistThreadModelState();
+        persistThreadReasoningState();
       }
       updateExistingSessionSelect();
       refreshSessionMeta();
@@ -3296,7 +3511,7 @@ modelSelect.addEventListener("change", () => {
     return;
   }
   if (activeSessionId && sessions.has(activeSessionId)) {
-    applyModelSelectionToActiveSession(nextModel || "");
+    applySessionModelSettingsToActiveSession(nextModel || "", selectedReasoningValue());
     refreshSessionMeta();
     renderProjectSidebar();
   }
@@ -3333,6 +3548,21 @@ if (conversationModelSelect) {
     } else {
       appendLog("[model] reverted to default");
     }
+  });
+}
+
+if (conversationReasoningSelect) {
+  conversationReasoningSelect.addEventListener("change", () => {
+    if (syncingConversationModelSelect) {
+      return;
+    }
+
+    const nextEffort = normalizeReasoningEffort(conversationReasoningSelect.value || "");
+    const nextModel = modelValueForCreate() || "";
+    applySessionModelSettingsToActiveSession(nextModel, nextEffort);
+    refreshSessionMeta();
+    renderProjectSidebar();
+    appendLog(nextEffort ? `[reasoning] set to '${nextEffort}'` : "[reasoning] reverted to default");
   });
 }
 

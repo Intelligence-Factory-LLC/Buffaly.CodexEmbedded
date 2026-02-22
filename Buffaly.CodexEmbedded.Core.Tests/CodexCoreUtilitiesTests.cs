@@ -1,34 +1,35 @@
 using Buffaly.CodexEmbedded.Core;
-using Xunit;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Buffaly.CodexEmbedded.Core.Tests;
 
+[TestClass]
 public sealed class CodexCoreUtilitiesTests
 {
-	[Fact]
+	[TestMethod]
 	public void EventLogging_ShouldInclude_ExpectedEventsByVerbosity()
 	{
 		var stdoutEvent = new CodexCoreEvent(DateTimeOffset.UtcNow, "debug", "stdout_jsonl", "{\"jsonrpc\":\"2.0\"}");
 		var warnEvent = new CodexCoreEvent(DateTimeOffset.UtcNow, "warn", "stdout_parse_failed", "bad json");
 
-		Assert.False(CodexEventLogging.ShouldInclude(stdoutEvent, CodexEventVerbosity.Verbose));
-		Assert.True(CodexEventLogging.ShouldInclude(stdoutEvent, CodexEventVerbosity.Trace));
-		Assert.True(CodexEventLogging.ShouldInclude(warnEvent, CodexEventVerbosity.Errors));
+		Assert.IsFalse(CodexEventLogging.ShouldInclude(stdoutEvent, CodexEventVerbosity.Verbose));
+		Assert.IsTrue(CodexEventLogging.ShouldInclude(stdoutEvent, CodexEventVerbosity.Trace));
+		Assert.IsTrue(CodexEventLogging.ShouldInclude(warnEvent, CodexEventVerbosity.Errors));
 	}
 
-	[Theory]
-	[InlineData("errors", CodexEventVerbosity.Errors)]
-	[InlineData("normal", CodexEventVerbosity.Normal)]
-	[InlineData("verbose", CodexEventVerbosity.Verbose)]
-	[InlineData("trace", CodexEventVerbosity.Trace)]
-	[InlineData("all", CodexEventVerbosity.Trace)]
+	[DataTestMethod]
+	[DataRow("errors", CodexEventVerbosity.Errors)]
+	[DataRow("normal", CodexEventVerbosity.Normal)]
+	[DataRow("verbose", CodexEventVerbosity.Verbose)]
+	[DataRow("trace", CodexEventVerbosity.Trace)]
+	[DataRow("all", CodexEventVerbosity.Trace)]
 	public void EventLogging_TryParseVerbosity_SupportsKnownValues(string raw, CodexEventVerbosity expected)
 	{
-		Assert.True(CodexEventLogging.TryParseVerbosity(raw, out var parsed));
-		Assert.Equal(expected, parsed);
+		Assert.IsTrue(CodexEventLogging.TryParseVerbosity(raw, out var parsed));
+		Assert.AreEqual(expected, parsed);
 	}
 
-	[Fact]
+	[TestMethod]
 	public void SessionCatalog_ListSessions_MergesIndexAndSessionFiles()
 	{
 		var root = Path.Combine(Path.GetTempPath(), "codex-session-catalog-tests", Guid.NewGuid().ToString("N"));
@@ -59,13 +60,13 @@ public sealed class CodexCoreUtilitiesTests
 			var thread1 = sessions.SingleOrDefault(x => x.ThreadId == "thread-1");
 			var thread2 = sessions.SingleOrDefault(x => x.ThreadId == "thread-2");
 
-			Assert.NotNull(thread1);
-			Assert.NotNull(thread2);
-			Assert.Equal("Named Thread", thread1!.ThreadName);
-			Assert.Equal("C:\\work1", thread1.Cwd);
-			Assert.Equal("gpt-5", thread1.Model);
-			Assert.Equal("C:\\work2", thread2!.Cwd);
-			Assert.Equal("gpt-5-mini", thread2.Model);
+			Assert.IsNotNull(thread1);
+			Assert.IsNotNull(thread2);
+			Assert.AreEqual("Named Thread", thread1!.ThreadName);
+			Assert.AreEqual("C:\\work1", thread1.Cwd);
+			Assert.AreEqual("gpt-5", thread1.Model);
+			Assert.AreEqual("C:\\work2", thread2!.Cwd);
+			Assert.AreEqual("gpt-5-mini", thread2.Model);
 		}
 		finally
 		{
@@ -79,7 +80,7 @@ public sealed class CodexCoreUtilitiesTests
 		}
 	}
 
-	[Fact]
+	[TestMethod]
 	public async Task ProcessJsonlTransport_StartAsync_ResolvesWindowsCodexCmdShim()
 	{
 		if (!OperatingSystem.IsWindows())
@@ -111,7 +112,7 @@ public sealed class CodexCoreUtilitiesTests
 			await using var transport = await ProcessJsonlTransport.StartAsync(options, CancellationToken.None);
 			var stdoutLine = await transport.ReadStdoutLineAsync(CancellationToken.None);
 
-			Assert.Contains("arg=app-server", stdoutLine ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+			Assert.IsTrue((stdoutLine ?? string.Empty).Contains("arg=app-server", StringComparison.OrdinalIgnoreCase));
 		}
 		finally
 		{

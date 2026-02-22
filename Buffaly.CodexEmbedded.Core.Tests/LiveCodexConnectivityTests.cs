@@ -1,15 +1,21 @@
 using System.Collections.Concurrent;
 using System.Text;
 using Buffaly.CodexEmbedded.Core;
-using Xunit;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Buffaly.CodexEmbedded.Core.Tests;
 
+[TestClass]
 public sealed class LiveCodexConnectivityTests
 {
-	[RequiresLiveCodexFact]
+	[TestMethod]
 	public async Task CreateSession_SendPrompt_StreamsAndCompletes_WithNoCoreErrors()
 	{
+		if (!TestRuntime.IsLiveCodexTestsEnabled())
+		{
+			Assert.Inconclusive("Set Buffaly.CodexEmbedded.Core.Tests/appsettings.json: RunLiveCodexTests = 1 to run live Codex connectivity tests.");
+		}
+
 		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(240));
 		var codexPath = TestRuntime.ResolveCodexPath();
 		var cwd = TestRuntime.ResolveDefaultCwd();
@@ -56,24 +62,29 @@ public sealed class LiveCodexConnectivityTests
 			}
 		}
 
-		Assert.NotNull(result);
-		Assert.NotNull(deltas);
-		Assert.NotNull(snapshot);
-		Assert.Equal("completed", result!.Status);
-		Assert.True(string.IsNullOrWhiteSpace(result.ErrorMessage), $"Unexpected turn error: {result.ErrorMessage}");
-		Assert.Contains("PING_OK", result.Text, StringComparison.OrdinalIgnoreCase);
-		Assert.NotEmpty(deltas!);
-		Assert.False(string.IsNullOrWhiteSpace(string.Concat(deltas!)));
-		Assert.DoesNotContain(snapshot!, e => string.Equals(e.Level, "error", StringComparison.OrdinalIgnoreCase));
+		Assert.IsNotNull(result);
+		Assert.IsNotNull(deltas);
+		Assert.IsNotNull(snapshot);
+		Assert.AreEqual("completed", result!.Status);
+		Assert.IsTrue(string.IsNullOrWhiteSpace(result.ErrorMessage), $"Unexpected turn error: {result.ErrorMessage}");
+		Assert.IsTrue(result.Text.Contains("PING_OK", StringComparison.OrdinalIgnoreCase));
+		Assert.AreNotEqual(0, deltas!.Count);
+		Assert.IsFalse(string.IsNullOrWhiteSpace(string.Concat(deltas!)));
+		Assert.IsFalse(snapshot!.Any(e => string.Equals(e.Level, "error", StringComparison.OrdinalIgnoreCase)));
 
 		// Read logs only after Codex client has fully exited and writer is disposed.
 		var logText = await File.ReadAllTextAsync(logPath, cts.Token);
-		Assert.DoesNotContain("|error|", logText, StringComparison.OrdinalIgnoreCase);
+		Assert.IsFalse(logText.Contains("|error|", StringComparison.OrdinalIgnoreCase));
 	}
 
-	[RequiresLiveCodexFact]
+	[TestMethod]
 	public async Task ResumeThread_WithNewClient_CanContinueConversation_AndStream()
 	{
+		if (!TestRuntime.IsLiveCodexTestsEnabled())
+		{
+			Assert.Inconclusive("Set Buffaly.CodexEmbedded.Core.Tests/appsettings.json: RunLiveCodexTests = 1 to run live Codex connectivity tests.");
+		}
+
 		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(300));
 		var codexPath = TestRuntime.ResolveCodexPath();
 		var cwd = TestRuntime.ResolveDefaultCwd();
@@ -106,8 +117,8 @@ public sealed class LiveCodexConnectivityTests
 					"Reply with exactly FIRST_OK and no other words.",
 					cancellationToken: cts.Token);
 
-				Assert.Equal("completed", first.Status);
-				Assert.Contains("FIRST_OK", first.Text, StringComparison.OrdinalIgnoreCase);
+				Assert.AreEqual("completed", first.Status);
+				Assert.IsTrue(first.Text.Contains("FIRST_OK", StringComparison.OrdinalIgnoreCase));
 				threadId = session1.ThreadId;
 			}
 
@@ -137,23 +148,23 @@ public sealed class LiveCodexConnectivityTests
 					progress: progress,
 					cancellationToken: cts.Token);
 
-				Assert.Equal("completed", second.Status);
-				Assert.True(string.IsNullOrWhiteSpace(second.ErrorMessage), $"Unexpected turn error: {second.ErrorMessage}");
-				Assert.Contains("RESUME_OK", second.Text, StringComparison.OrdinalIgnoreCase);
-				Assert.NotEmpty(deltas);
+				Assert.AreEqual("completed", second.Status);
+				Assert.IsTrue(string.IsNullOrWhiteSpace(second.ErrorMessage), $"Unexpected turn error: {second.ErrorMessage}");
+				Assert.IsTrue(second.Text.Contains("RESUME_OK", StringComparison.OrdinalIgnoreCase));
+				Assert.AreNotEqual(0, deltas.Count);
 			}
 
 			resumedSnapshot = resumedEvents.ToArray();
 		}
 
-		Assert.NotNull(resumedSnapshot);
-		Assert.Contains(resumedSnapshot!, e => e.Type == "rpc_sent" && e.Message.Contains("thread/resume", StringComparison.OrdinalIgnoreCase));
-		Assert.DoesNotContain(resumedSnapshot!, e => string.Equals(e.Level, "error", StringComparison.OrdinalIgnoreCase));
+		Assert.IsNotNull(resumedSnapshot);
+		Assert.IsTrue(resumedSnapshot!.Any(e => e.Type == "rpc_sent" && e.Message.Contains("thread/resume", StringComparison.OrdinalIgnoreCase)));
+		Assert.IsFalse(resumedSnapshot!.Any(e => string.Equals(e.Level, "error", StringComparison.OrdinalIgnoreCase)));
 
 		// Read logs only after both Codex clients have fully exited and writer is disposed.
 		var logText = await File.ReadAllTextAsync(logPath, cts.Token);
-		Assert.Contains("|client2|debug|rpc_sent|thread/resume", logText, StringComparison.OrdinalIgnoreCase);
-		Assert.DoesNotContain("|error|", logText, StringComparison.OrdinalIgnoreCase);
+		Assert.IsTrue(logText.Contains("|client2|debug|rpc_sent|thread/resume", StringComparison.OrdinalIgnoreCase));
+		Assert.IsFalse(logText.Contains("|error|", StringComparison.OrdinalIgnoreCase));
 	}
 }
 

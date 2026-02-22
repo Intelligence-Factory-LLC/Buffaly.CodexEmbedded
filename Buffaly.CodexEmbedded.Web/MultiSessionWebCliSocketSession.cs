@@ -86,7 +86,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					await StopSessionAsync(GetSessionIdOrActive(root), cancellationToken);
 					return;
 				case "prompt":
-					await StartTurnAsync(GetSessionIdOrActive(root), TryGetString(root, "text"), cwd: null, model: null, hasModelOverride: false, images: null, cancellationToken);
+					await StartTurnAsync(GetSessionIdOrActive(root), TryGetString(root, "text"), cwd: null, model: null, effort: null, hasModelOverride: false, hasEffortOverride: false, images: null, cancellationToken);
 					return;
 
 				// Multi-session protocol.
@@ -113,16 +113,25 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					await RenameSessionAsync(TryGetString(root, "sessionId"), TryGetString(root, "threadName"), cancellationToken);
 					return;
 				case "session_set_model":
-					await SetSessionModelAsync(TryGetString(root, "sessionId"), TryGetString(root, "model"), cancellationToken);
+					await SetSessionModelAsync(
+						TryGetString(root, "sessionId"),
+						TryGetString(root, "model"),
+						TryGetString(root, "effort"),
+						root.TryGetProperty("model", out _),
+						root.TryGetProperty("effort", out _),
+						cancellationToken);
 					return;
 				case "turn_start":
 					var hasModelOverride = root.TryGetProperty("model", out _);
+					var hasEffortOverride = root.TryGetProperty("effort", out _);
 					await StartTurnAsync(
 						TryGetString(root, "sessionId"),
 						TryGetString(root, "text"),
 						TryGetString(root, "cwd"),
 						TryGetString(root, "model"),
+						TryGetString(root, "effort"),
 						hasModelOverride,
+						hasEffortOverride,
 						TryGetTurnImageInputs(root),
 						cancellationToken);
 					return;
@@ -178,6 +187,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	{
 		var requestId = TryGetString(request, "requestId");
 		var model = TryGetString(request, "model") ?? _defaults.DefaultModel;
+		var effort = NormalizeReasoningEffort(TryGetString(request, "effort"));
 		var cwd = TryGetString(request, "cwd") ?? _defaults.DefaultCwd;
 		var codexPath = TryGetString(request, "codexPath") ?? _defaults.CodexPath;
 
@@ -185,7 +195,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var sessionLogPath = Path.Combine(_defaults.LogRootPath, $"session-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{sessionId}.log");
 		var sessionLog = new LocalLogWriter(sessionLogPath);
 
-		await WriteConnectionLogAsync($"[session] creating id={sessionId} cwd={cwd} model={model ?? "(default)"}", cancellationToken);
+		await WriteConnectionLogAsync($"[session] creating id={sessionId} cwd={cwd} model={model ?? "(default)"} effort={effort ?? "(default)"}", cancellationToken);
 
 		var pendingApproval = new ConcurrentDictionary<string, TaskCompletionSource<string>>(StringComparer.Ordinal);
 
@@ -225,7 +235,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
-		var managed = new ManagedSession(sessionId, client, session, cwd, model, sessionLog, pendingApproval);
+		var managed = new ManagedSession(sessionId, client, session, cwd, model, effort, sessionLog, pendingApproval);
 		lock (_sessionsLock)
 		{
 			_sessions[sessionId] = managed;
@@ -241,6 +251,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			requestId,
 			threadId = session.ThreadId,
 			model,
+			reasoningEffort = effort,
 			cwd,
 			logPath = sessionLogPath
 		}, cancellationToken);
@@ -250,6 +261,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		{
 			threadId = session.ThreadId,
 			model,
+			reasoningEffort = effort,
 			cwd,
 			logPath = sessionLogPath
 		}, cancellationToken);
@@ -268,6 +280,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 
 		var model = TryGetString(request, "model") ?? _defaults.DefaultModel;
+		var effort = NormalizeReasoningEffort(TryGetString(request, "effort"));
 		var cwd = TryGetString(request, "cwd") ?? _defaults.DefaultCwd;
 		var codexPath = TryGetString(request, "codexPath") ?? _defaults.CodexPath;
 
@@ -297,7 +310,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var sessionLog = new LocalLogWriter(sessionLogPath);
 		var pendingApproval = new ConcurrentDictionary<string, TaskCompletionSource<string>>(StringComparer.Ordinal);
 
-		await WriteConnectionLogAsync($"[session] attaching id={sessionId} threadId={threadId} cwd={cwd} model={model ?? "(default)"}", cancellationToken);
+		await WriteConnectionLogAsync($"[session] attaching id={sessionId} threadId={threadId} cwd={cwd} model={model ?? "(default)"} effort={effort ?? "(default)"}", cancellationToken);
 
 		CodexClient client;
 		CodexSession session;
@@ -336,7 +349,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
-		var managed = new ManagedSession(sessionId, client, session, cwd, model, sessionLog, pendingApproval);
+		var managed = new ManagedSession(sessionId, client, session, cwd, model, effort, sessionLog, pendingApproval);
 		lock (_sessionsLock)
 		{
 			_sessions[sessionId] = managed;
@@ -352,6 +365,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			requestId,
 			threadId = session.ThreadId,
 			model,
+			reasoningEffort = effort,
 			cwd,
 			attached = true,
 			logPath = sessionLogPath
@@ -363,6 +377,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			requestId,
 			threadId = session.ThreadId,
 			model,
+			reasoningEffort = effort,
 			cwd,
 			logPath = sessionLogPath
 		}, cancellationToken);
@@ -393,7 +408,13 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}, cancellationToken);
 	}
 
-	private async Task SetSessionModelAsync(string? sessionId, string? model, CancellationToken cancellationToken)
+	private async Task SetSessionModelAsync(
+		string? sessionId,
+		string? model,
+		string? effort,
+		bool hasModelOverride,
+		bool hasEffortOverride,
+		CancellationToken cancellationToken)
 	{
 		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
 		if (string.IsNullOrWhiteSpace(sessionId))
@@ -409,11 +430,25 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
-		var normalizedModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
-		session.SetModel(normalizedModel);
+		var normalizedModel = hasModelOverride
+			? (string.IsNullOrWhiteSpace(model) ? null : model.Trim())
+			: session.CurrentModel;
+		var normalizedEffort = hasEffortOverride
+			? NormalizeReasoningEffort(effort)
+			: session.CurrentReasoningEffort;
+
+		if (hasModelOverride)
+		{
+			session.SetModel(normalizedModel);
+		}
+
+		if (hasEffortOverride)
+		{
+			session.SetReasoningEffort(normalizedEffort);
+		}
 
 		await WriteConnectionLogAsync(
-			$"[session] model updated session={sessionId} thread={session.Session.ThreadId} model={(normalizedModel ?? "(default)")}",
+			$"[session] model updated session={sessionId} thread={session.Session.ThreadId} model={(normalizedModel ?? "(default)")} effort={(normalizedEffort ?? "(default)")}",
 			cancellationToken);
 		await SendSessionListAsync(cancellationToken);
 	}
@@ -447,6 +482,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					threadId = s.Session.ThreadId,
 					cwd = s.Cwd,
 					model = s.CurrentModel,
+					reasoningEffort = s.CurrentReasoningEffort,
 					isTurnInFlight = s.IsTurnInFlight
 				})
 				.ToList();
@@ -509,7 +545,9 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		string? text,
 		string? cwd,
 		string? model,
+		string? effort,
 		bool hasModelOverride,
+		bool hasEffortOverride,
 		IReadOnlyList<CodexUserImageInput>? images,
 		CancellationToken cancellationToken)
 	{
@@ -523,6 +561,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var normalizedText = text?.Trim() ?? string.Empty;
 		var normalizedCwd = string.IsNullOrWhiteSpace(cwd) ? null : cwd.Trim();
 		var normalizedModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+		var normalizedEffort = NormalizeReasoningEffort(effort);
 		var imageCount = images?.Count ?? 0;
 		if (string.IsNullOrWhiteSpace(normalizedText) && imageCount <= 0)
 		{
@@ -540,6 +579,10 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		if (hasModelOverride)
 		{
 			session.SetModel(normalizedModel);
+		}
+		if (hasEffortOverride)
+		{
+			session.SetReasoningEffort(normalizedEffort);
 		}
 
 		_ = Task.Run(async () =>
@@ -563,7 +606,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 				await SendEventSafeAsync("status", new { sessionId, message = "Turn started." });
 				var effectiveModel = session.ResolveTurnModel(_defaults.DefaultModel);
-				session.Log.Write($"[prompt] {(string.IsNullOrWhiteSpace(normalizedText) ? "(no text)" : normalizedText)} images={imageCount} cwd={normalizedCwd ?? session.Cwd ?? "(default)"} model={effectiveModel ?? "(default)"}");
+				var effectiveEffort = session.CurrentReasoningEffort;
+				session.Log.Write($"[prompt] {(string.IsNullOrWhiteSpace(normalizedText) ? "(no text)" : normalizedText)} images={imageCount} cwd={normalizedCwd ?? session.Cwd ?? "(default)"} model={effectiveModel ?? "(default)"} effort={effectiveEffort ?? "(default)"}");
 
 				var progress = new Progress<CodexDelta>(d =>
 				{
@@ -573,7 +617,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				var turnOptions = new CodexTurnOptions
 				{
 					Cwd = normalizedCwd,
-					Model = effectiveModel
+					Model = effectiveModel,
+					ReasoningEffort = effectiveEffort
 				};
 				var result = await session.Session.SendMessageAsync(normalizedText, images: images, options: turnOptions, progress: progress, cancellationToken: turnToken);
 
@@ -1250,6 +1295,26 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		};
 	}
 
+	private static string? NormalizeReasoningEffort(string? value)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return null;
+		}
+
+		var normalized = value.Trim().ToLowerInvariant();
+		return normalized switch
+		{
+			"none" => "none",
+			"minimal" => "minimal",
+			"low" => "low",
+			"medium" => "medium",
+			"high" => "high",
+			"xhigh" => "xhigh",
+			_ => null
+		};
+	}
+
 	private static string Sanitize(string value)
 	{
 		var invalid = Path.GetInvalidFileNameChars();
@@ -1281,6 +1346,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		CodexSession Session,
 		string? Cwd,
 		string? Model,
+		string? ReasoningEffort,
 		LocalLogWriter Log,
 		ConcurrentDictionary<string, TaskCompletionSource<string>> PendingApprovals)
 	{
@@ -1288,6 +1354,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		private readonly SemaphoreSlim _turnGate = new(1, 1);
 		private readonly object _turnSync = new();
 		private string? _model = string.IsNullOrWhiteSpace(Model) ? null : Model.Trim();
+		private string? _reasoningEffort = NormalizeReasoningEffort(ReasoningEffort);
 		private CancellationTokenSource? _activeTurnCts;
 		private bool _turnInFlight;
 
@@ -1314,6 +1381,17 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			}
 		}
 
+		public string? CurrentReasoningEffort
+		{
+			get
+			{
+				lock (_turnSync)
+				{
+					return _reasoningEffort;
+				}
+			}
+		}
+
 		public string? ResolveTurnModel(string? defaultModel)
 		{
 			var model = CurrentModel;
@@ -1325,6 +1403,14 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			lock (_turnSync)
 			{
 				_model = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+			}
+		}
+
+		public void SetReasoningEffort(string? effort)
+		{
+			lock (_turnSync)
+			{
+				_reasoningEffort = NormalizeReasoningEffort(effort);
 			}
 		}
 

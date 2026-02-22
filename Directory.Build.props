@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <!-- Keep NuGet packages in a repo-local cache so restore works in restricted environments. -->
+    <RestorePackagesPath>$(MSBuildThisFileDirectory).nuget\packages</RestorePackagesPath>
+  </PropertyGroup>
+</Project>

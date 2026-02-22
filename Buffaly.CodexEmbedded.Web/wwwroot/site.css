@@ -700,7 +700,7 @@ body {
 }
 
 .conversation-meta-model {
-	padding-right: 0.32rem;
+	padding-right: 0.24rem;
 }
 
 .conversation-meta-model select {
@@ -708,10 +708,17 @@ body {
 	background: transparent;
 	font: inherit;
 	color: #0f172a;
-	min-width: 150px;
+	min-width: 132px;
 	padding: 0 0.1rem;
 	outline: none;
 	cursor: pointer;
+}
+
+#conversationReasoningSelect {
+	min-width: 108px;
+	margin-left: 0.28rem;
+	padding-left: 0.38rem;
+	border-left: 1px solid #e2e8f0;
 }
 
 .conversation-meta-cwd .conversation-meta-value {
@@ -1621,6 +1628,10 @@ body {
 
 	.conversation-meta-model select {
 		min-width: 120px;
+	}
+
+	#conversationReasoningSelect {
+		min-width: 96px;
 	}
 
 	.watcher-timeline {

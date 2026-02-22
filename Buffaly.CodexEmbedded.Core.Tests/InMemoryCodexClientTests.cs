@@ -1,12 +1,13 @@
 using System.Text.Json;
 using Buffaly.CodexEmbedded.Core;
-using Xunit;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Buffaly.CodexEmbedded.Core.Tests;
 
+[TestClass]
 public sealed class InMemoryCodexClientTests
 {
-	[Fact]
+	[TestMethod]
 	public async Task CreateAttachAndSend_WorksAgainstInMemoryTransport()
 	{
 		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -28,15 +29,15 @@ public sealed class InMemoryCodexClientTests
 
 		var result = await session.SendMessageAsync("hello", progress: progress, cancellationToken: cts.Token);
 
-		Assert.Equal("completed", result.Status);
-		Assert.Equal("Hello from fake server.", result.Text);
-		Assert.Equal(result.Text, string.Join("", deltas));
+		Assert.AreEqual("completed", result.Status);
+		Assert.AreEqual("Hello from fake server.", result.Text);
+		Assert.AreEqual(result.Text, string.Join("", deltas));
 
 		var resumed = await client.AttachToSessionAsync(new CodexSessionAttachOptions { ThreadId = session.ThreadId }, cts.Token);
 		var resumedResult = await resumed.SendMessageAsync("second", cancellationToken: cts.Token);
 
-		Assert.Equal("completed", resumedResult.Status);
-		Assert.Equal("Second turn ok.", resumedResult.Text);
+		Assert.AreEqual("completed", resumedResult.Status);
+		Assert.AreEqual("Second turn ok.", resumedResult.Text);
 
 		cts.Cancel();
 		try

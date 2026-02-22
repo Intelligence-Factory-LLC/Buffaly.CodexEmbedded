@@ -32,6 +32,7 @@ public sealed record CodexTurnOptions
 {
 	public string? Model { get; init; }
 	public string? Cwd { get; init; }
+	public string? ReasoningEffort { get; init; }
 }
 
 public sealed record CodexDelta(string ThreadId, string TurnId, string Text);

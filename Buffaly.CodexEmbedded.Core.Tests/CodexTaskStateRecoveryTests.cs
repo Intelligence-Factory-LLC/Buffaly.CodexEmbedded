@@ -1,11 +1,12 @@
 using Buffaly.CodexEmbedded.Core;
-using Xunit;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Buffaly.CodexEmbedded.Core.Tests;
 
+[TestClass]
 public sealed class CodexTaskStateRecoveryTests
 {
-	[Fact]
+	[TestMethod]
 	public void AnalyzeJsonLines_ComputesOutstandingTaskCount()
 	{
 		var lines = new[]
@@ -17,13 +18,13 @@ public sealed class CodexTaskStateRecoveryTests
 
 		var analysis = CodexTaskStateRecovery.AnalyzeJsonLines(lines);
 
-		Assert.Equal(1, analysis.OutstandingTaskCount);
-		Assert.Equal(DateTimeOffset.Parse("2026-02-21T22:00:10Z"), analysis.LastTaskStartedAtUtc);
-		Assert.Equal(DateTimeOffset.Parse("2026-02-21T22:00:20Z"), analysis.LastTaskCompletedAtUtc);
-		Assert.Equal(DateTimeOffset.Parse("2026-02-21T22:00:20Z"), analysis.LastTaskEventAtUtc);
+		Assert.AreEqual(1, analysis.OutstandingTaskCount);
+		Assert.AreEqual(DateTimeOffset.Parse("2026-02-21T22:00:10Z"), analysis.LastTaskStartedAtUtc);
+		Assert.AreEqual(DateTimeOffset.Parse("2026-02-21T22:00:20Z"), analysis.LastTaskCompletedAtUtc);
+		Assert.AreEqual(DateTimeOffset.Parse("2026-02-21T22:00:20Z"), analysis.LastTaskEventAtUtc);
 	}
 
-	[Fact]
+	[TestMethod]
 	public void AnalyzeJsonLines_DoesNotAllowNegativeOutstandingTaskCount()
 	{
 		var lines = new[]
@@ -34,11 +35,11 @@ public sealed class CodexTaskStateRecoveryTests
 
 		var analysis = CodexTaskStateRecovery.AnalyzeJsonLines(lines);
 
-		Assert.Equal(0, analysis.OutstandingTaskCount);
-		Assert.True(analysis.LastTaskCompletedAtUtc.HasValue);
+		Assert.AreEqual(0, analysis.OutstandingTaskCount);
+		Assert.IsTrue(analysis.LastTaskCompletedAtUtc.HasValue);
 	}
 
-	[Fact]
+	[TestMethod]
 	public void AnalyzeJsonLines_IgnoresNonTaskEvents()
 	{
 		var lines = new[]
@@ -50,11 +51,11 @@ public sealed class CodexTaskStateRecoveryTests
 
 		var analysis = CodexTaskStateRecovery.AnalyzeJsonLines(lines);
 
-		Assert.Equal(0, analysis.OutstandingTaskCount);
-		Assert.Null(analysis.LastTaskEventAtUtc);
+		Assert.AreEqual(0, analysis.OutstandingTaskCount);
+		Assert.IsNull(analysis.LastTaskEventAtUtc);
 	}
 
-	[Fact]
+	[TestMethod]
 	public void IsLikelyProcessing_ReturnsTrueWhenOutstandingAndRecent()
 	{
 		var analysis = new CodexTaskRecoveryAnalysis(
@@ -68,10 +69,10 @@ public sealed class CodexTaskStateRecoveryTests
 			nowUtc: DateTimeOffset.Parse("2026-02-21T22:01:30Z"),
 			staleAfter: TimeSpan.FromMinutes(5));
 
-		Assert.True(isProcessing);
+		Assert.IsTrue(isProcessing);
 	}
 
-	[Fact]
+	[TestMethod]
 	public void IsLikelyProcessing_ReturnsFalseWhenOutstandingButStale()
 	{
 		var analysis = new CodexTaskRecoveryAnalysis(
@@ -85,7 +86,7 @@ public sealed class CodexTaskStateRecoveryTests
 			nowUtc: DateTimeOffset.Parse("2026-02-21T22:20:00Z"),
 			staleAfter: TimeSpan.FromMinutes(5));
 
-		Assert.False(isProcessing);
+		Assert.IsFalse(isProcessing);
 	}
 
 	private static string TaskEvent(string timestamp, string eventType)
