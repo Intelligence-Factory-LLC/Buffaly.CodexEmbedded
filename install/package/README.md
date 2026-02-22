@@ -8,7 +8,17 @@ This folder is a portable release package.
 2. Run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+.\install.cmd
+```
+
+If `install.cmd` is not present (older package), use one of these:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+```powershell
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 Installer runs non-blocking Codex preflight checks and prints warnings if Codex is missing or auth artifacts are not detected.

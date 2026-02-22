@@ -38,7 +38,17 @@ git push origin v1.0.0
 3. Run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+.\install.cmd
+```
+
+If `install.cmd` is not present (older package), use one of these:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+```powershell
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 4. Open a new terminal and use:
