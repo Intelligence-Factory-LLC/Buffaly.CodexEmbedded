@@ -11,9 +11,12 @@ msbuild.binlog
 logs/
 lib/
 working/
+.codex-runtime/
 codex-runtime/
 artifacts/
 .nuget/
 release-downloads/
+_stale_renamed/
+*_diag.txt
 *.vsix
 *.db
