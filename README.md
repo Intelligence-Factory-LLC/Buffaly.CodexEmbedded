@@ -28,77 +28,30 @@ Or start a session in the web UI and manage it from any browser. Use Tailscale t
 
 ![Animated walkthrough of Buffaly Codex Embedded across web, CLI, and mobile](screenshots/Animation.gif)
 
-## ⚡ Quick Start (Web UI in 60 seconds)
+## ⚡ Quick Start
 
 Download:
 - Preferred (when a tagged release exists): [Download latest release](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/releases/latest)
 - If GitHub shows no releases: open [Actions release workflow](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/actions/workflows/release.yml), open the latest successful run, then download artifact `release-win-x64-<version>`.
 
-### 1. Run packaged web app (recommended, no install)
-
 1. Extract the downloaded zip.
-2. Open `apps\web`.
-3. Run `Buffaly.CodexEmbedded.Web.exe`.
-4. Open the URL shown after `Now listening on:`.
-
-Notes:
-- This is the simplest path and avoids shell and PATH setup.
-- You still need `codex` CLI installed and authenticated to start sessions.
-
-### 2. Run from source (developer quick path)
-
-1. Install .NET SDK 9.x.
-2. Confirm Codex is ready:
-
-```powershell
-codex --version
-```
-
-3. From repo root:
-
-```powershell
-dotnet restore
-dotnet build
-dotnet run --project Buffaly.CodexEmbedded.Web
-```
-
-4. Open the URL shown after `Now listening on:`.
-
-### 3. Optional: install wrapper commands (`buffaly-codex-web`, update, uninstall)
-
-Use this only if you want stable global commands.
-Run installer only from the extracted package root folder that contains:
-
-- `release-manifest.json`
-- `apps\`
-- `install.ps1`
-
-1. Open PowerShell 7 in that extracted package root folder.
-2. Run:
+2. Open PowerShell 7 in the extracted package root folder (the folder with `release-manifest.json` and `install.ps1`).
+3. Run:
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-This installs wrapper commands on your PATH, including `buffaly-codex-web`.
-
-If you prefer the launcher script, use:
-
-```powershell
-.\install.cmd
-```
-
-If PowerShell 7 is not available, use:
-
-```powershell
-C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-3. Open a new terminal and run:
+4. Open a new terminal and run:
 
 ```powershell
 buffaly-codex-web
 ```
+
+5. Open the URL shown after `Now listening on:`.
+
+To run manually or from source, see [Detailed Install and Run Options](#-detailed-install-and-run-options).
+For install issues, see [Troubleshooting](#troubleshooting).
 
 ## ✨ Major Features
 
@@ -201,7 +154,7 @@ We built this tool because we use this tool.
 
 **Same official Codex agent. Easier developer experience.**
 
-## 🚀 Optional Wrapper Install (CLI + Web Commands, Windows)
+## 🚀 Detailed Install and Run Options
 
 ### 1. Prerequisites
 
@@ -215,7 +168,7 @@ Confirm Codex is ready:
 codex --version
 ```
 
-### 2. Download and install
+### 2. Install wrapper commands (recommended)
 
 1. Open **Actions** in this repo.
 2. Open the latest successful `release` workflow run.
@@ -245,31 +198,59 @@ C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionP
 Installer preflight checks Codex availability and local auth artifacts.
 If checks fail, install still completes and prints clear warnings with next steps.
 
-### 3. Start using it
+### 3. Launch browser UI after install
 
 After install, open a new terminal:
 
 ```powershell
-buffaly-codex run --prompt "Say hello in one sentence"
 buffaly-codex-web
 ```
 
 `buffaly-codex-web` prints `Now listening on:` in the terminal. Open that URL in your browser.
 
-Useful commands:
+### 4. Run manually from the package (no install)
 
+1. Extract the downloaded zip.
+2. Open `apps\web`.
+3. Run `Buffaly.CodexEmbedded.Web.exe`.
+4. Open the URL shown after `Now listening on:`.
+
+### 5. Run from source (developer)
+
+From repo root:
+
+```powershell
+dotnet restore
+dotnet build
+dotnet run --project Buffaly.CodexEmbedded.Web
+```
+
+### 6. Other commands after install
+
+- `buffaly-codex-web`: launch the web UI.
 - `buffaly-codex`: interactive REPL mode.
 - `buffaly-codex run --prompt "<text>"`: one-shot prompt.
 - `buffaly-codex-update`: download and install latest workflow artifact or tagged release.
 - `buffaly-codex-uninstall`: remove the local install.
 
-### Try a real workflow
+### 7. Try a real workflow
 
 ```powershell
 buffaly-codex-web
 # In another terminal window:
 buffaly-codex run --prompt "Refactor the payment service and add tests" --cwd "C:\Projects\MyApp"
 ```
+
+## Troubleshooting
+
+- `install.ps1` fails with "release-manifest.json was not found":
+  Run installer from the extracted package root folder that contains `release-manifest.json`, `apps\`, and `install.ps1`.
+- `powershell` command is not recognized:
+  Use `pwsh -ExecutionPolicy Bypass -File .\install.ps1` (PowerShell 7) or use the full Windows PowerShell path shown above.
+- Web UI starts but sessions fail:
+  Confirm `codex --version` works, then run `codex login`.
+- `buffaly-codex-web` is not found after install:
+  Open a new terminal so updated PATH is loaded.
 
 ## 📱 Codex in Your Pocket - Seamless Device Switching
 
