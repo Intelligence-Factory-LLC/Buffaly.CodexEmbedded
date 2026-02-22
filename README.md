@@ -28,17 +28,53 @@ Or start a session in the web UI and manage it from any browser. Use Tailscale t
 
 ![Animated walkthrough of Buffaly Codex Embedded across web, CLI, and mobile](screenshots/Animation.gif)
 
-## ⚡ Quick Start (Download Web and Run)
+## ⚡ Quick Start (Web UI in 60 seconds)
 
 Download:
 - Preferred (when a tagged release exists): [Download latest release](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/releases/latest)
 - If GitHub shows no releases: open [Actions release workflow](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/actions/workflows/release.yml), open the latest successful run, then download artifact `release-win-x64-<version>`.
 
-### 2. Install, then launch web by command (recommended)
+### 1. Run packaged web app (recommended, no install)
 
 1. Extract the downloaded zip.
-2. Open PowerShell in the extracted folder.
-3. Run:
+2. Open `apps\web`.
+3. Run `Buffaly.CodexEmbedded.Web.exe`.
+4. Open the URL shown after `Now listening on:`.
+
+Notes:
+- This is the simplest path and avoids shell and PATH setup.
+- You still need `codex` CLI installed and authenticated to start sessions.
+
+### 2. Run from source (developer quick path)
+
+1. Install .NET SDK 9.x.
+2. Confirm Codex is ready:
+
+```powershell
+codex --version
+```
+
+3. From repo root:
+
+```powershell
+dotnet restore
+dotnet build
+dotnet run --project Buffaly.CodexEmbedded.Web
+```
+
+4. Open the URL shown after `Now listening on:`.
+
+### 3. Optional: install wrapper commands (`buffaly-codex-web`, update, uninstall)
+
+Use this only if you want stable global commands.
+Run installer only from the extracted package root folder that contains:
+
+- `release-manifest.json`
+- `apps\`
+- `install.ps1`
+
+1. Open PowerShell in that extracted package root folder.
+2. Run:
 
 ```powershell
 .\install.cmd
@@ -54,24 +90,11 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-4. Open a new terminal and run:
+3. Open a new terminal and run:
 
 ```powershell
 buffaly-codex-web
 ```
-
-5. Open the URL shown after `Now listening on:`.
-
-### 1. Run web exe directly (no install)
-
-1. Extract the downloaded zip.
-2. Open `apps\web`.
-3. Run `Buffaly.CodexEmbedded.Web.exe`.
-4. Open the URL shown after `Now listening on:`.
-
-Notes:
-- You still need `codex` CLI installed and authenticated for session start.
-- Option 2 creates `buffaly-codex-web` and other helper commands.
 
 ## ✨ Major Features
 
@@ -174,7 +197,7 @@ We built this tool because we use this tool.
 
 **Same official Codex agent. Easier developer experience.**
 
-## 🚀 Full Install (CLI + Web, Windows)
+## 🚀 Optional Wrapper Install (CLI + Web Commands, Windows)
 
 ### 1. Prerequisites
 
