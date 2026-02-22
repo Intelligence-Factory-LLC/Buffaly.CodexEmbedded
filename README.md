@@ -155,6 +155,9 @@ codex --version
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
+Installer preflight checks Codex availability and local auth artifacts.
+If checks fail, install still completes and prints clear warnings with next steps.
+
 ### 3. Start using it
 
 After install, open a new terminal:
@@ -163,6 +166,8 @@ After install, open a new terminal:
 buffaly-codex run --prompt "Say hello in one sentence"
 buffaly-codex-web
 ```
+
+`buffaly-codex-web` prints `Now listening on:` in the terminal. Open that URL in your browser.
 
 Useful commands:
 

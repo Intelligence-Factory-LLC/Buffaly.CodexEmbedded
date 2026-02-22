@@ -547,6 +547,15 @@ body {
 	justify-content: center;
 }
 
+.session-badge.completed-unread {
+	width: 0.62rem;
+	height: 0.62rem;
+	padding: 0;
+	border-radius: 999px;
+	background: #16a34a;
+	box-shadow: 0 0 0 1px #dcfce7;
+}
+
 .session-processing-icon {
 	font-size: 0.74rem;
 	line-height: 1;

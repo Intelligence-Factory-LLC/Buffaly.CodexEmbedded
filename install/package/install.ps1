@@ -9,6 +9,16 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$script:InstallWarnings = [System.Collections.Generic.List[string]]::new()
+
+function Add-InstallWarning([string]$Message) {
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        return
+    }
+
+    $script:InstallWarnings.Add($Message)
+    Write-Warning $Message
+}
 
 function Get-DefaultInstallRoot {
     if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
@@ -59,7 +69,12 @@ function Copy-ConfigIfPresent([string]$SourcePath, [string]$TargetPath) {
     }
 }
 
-function Write-ExecutableWrapper([string]$WrapperPath, [string]$ExecutableRelativePath) {
+function Write-ExecutableWrapper([string]$WrapperPath, [string]$ExecutableRelativePath, [string]$StartupHint = "") {
+    $hintLines = ""
+    if (-not [string]::IsNullOrWhiteSpace($StartupHint)) {
+        $hintLines = "echo $StartupHint`r`n"
+    }
+
     $content = @"
 @echo off
 setlocal
@@ -76,7 +91,7 @@ if not exist "%TARGET%" (
 )
 for %%I in ("%TARGET%") do set "APPDIR=%%~dpI"
 pushd "%APPDIR%" >nul
-"%TARGET%" %*
+$hintLines"%TARGET%" %*
 set "EXITCODE=%ERRORLEVEL%"
 popd >nul
 exit /b %EXITCODE%
@@ -107,6 +122,130 @@ exit /b %ERRORLEVEL%
     Set-Content -Path $WrapperPath -Value $content -Encoding ascii
 }
 
+function Get-ConfiguredCodexPath([string]$CliConfigPath) {
+    if (-not (Test-Path $CliConfigPath)) {
+        return "codex"
+    }
+
+    try {
+        $json = Get-Content -Raw -Path $CliConfigPath | ConvertFrom-Json
+        $configured = [string]$json.CodexPath
+        if (-not [string]::IsNullOrWhiteSpace($configured)) {
+            return $configured.Trim()
+        }
+    }
+    catch {
+    }
+
+    return "codex"
+}
+
+function Resolve-CodexExecutablePath([string]$ConfiguredCodexPath) {
+    if ([string]::IsNullOrWhiteSpace($ConfiguredCodexPath)) {
+        return $null
+    }
+
+    $raw = $ConfiguredCodexPath.Trim()
+    $hasPathSeparator = $raw.IndexOfAny(@([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)) -ge 0
+    $isRooted = [System.IO.Path]::IsPathRooted($raw)
+
+    if ($isRooted -or $hasPathSeparator) {
+        if (Test-Path $raw) {
+            return (Resolve-Path $raw).Path
+        }
+
+        if (-not [System.IO.Path]::HasExtension($raw)) {
+            foreach ($candidate in @("$raw.cmd", "$raw.exe")) {
+                if (Test-Path $candidate) {
+                    return (Resolve-Path $candidate).Path
+                }
+            }
+        }
+
+        return $null
+    }
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $candidates.Add($raw)
+    if (-not [System.IO.Path]::HasExtension($raw)) {
+        $candidates.Add("$raw.cmd")
+        $candidates.Add("$raw.exe")
+    }
+
+    foreach ($candidate in $candidates) {
+        try {
+            $command = Get-Command $candidate -ErrorAction Stop | Select-Object -First 1
+            if ($null -ne $command -and -not [string]::IsNullOrWhiteSpace($command.Source)) {
+                return $command.Source
+            }
+        }
+        catch {
+        }
+    }
+
+    return $null
+}
+
+function Get-CodexHomePathForAuthCheck {
+    $fromEnv = $env:CODEX_HOME
+    if (-not [string]::IsNullOrWhiteSpace($fromEnv)) {
+        return $fromEnv
+    }
+
+    $userProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    if ([string]::IsNullOrWhiteSpace($userProfile)) {
+        return $null
+    }
+
+    return Join-Path $userProfile ".codex"
+}
+
+function Run-CodexPreflightChecks([string]$ConfiguredCodexPath) {
+    $resolvedCodexPath = Resolve-CodexExecutablePath $ConfiguredCodexPath
+    if ([string]::IsNullOrWhiteSpace($resolvedCodexPath)) {
+        Add-InstallWarning "Codex executable was not found for configured CodexPath '$ConfiguredCodexPath'. Install Codex and confirm 'codex --version' works."
+        Add-InstallWarning "The app still installs, but creating sessions will fail until Codex is installed."
+        return
+    }
+
+    try {
+        $versionOutput = & $resolvedCodexPath --version 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Add-InstallWarning "Codex executable '$resolvedCodexPath' was found, but '--version' returned exit code $LASTEXITCODE."
+        }
+        elseif ([string]::IsNullOrWhiteSpace(($versionOutput | Out-String).Trim())) {
+            Add-InstallWarning "Codex executable '$resolvedCodexPath' was found, but version output was empty."
+        }
+    }
+    catch {
+        Add-InstallWarning "Codex executable '$resolvedCodexPath' was found, but '--version' failed: $($_.Exception.Message)"
+    }
+
+    $codexHomePath = Get-CodexHomePathForAuthCheck
+    if ([string]::IsNullOrWhiteSpace($codexHomePath)) {
+        Add-InstallWarning "Could not determine Codex home directory for auth smoke check. If sessions fail, run 'codex login'."
+        return
+    }
+
+    $authCandidates = @(
+        (Join-Path $codexHomePath "auth.json"),
+        (Join-Path $codexHomePath "credentials.json"),
+        (Join-Path $codexHomePath "token.json")
+    )
+
+    $hasAuthArtifacts = $false
+    foreach ($candidate in $authCandidates) {
+        if (Test-Path $candidate) {
+            $hasAuthArtifacts = $true
+            break
+        }
+    }
+
+    if (-not $hasAuthArtifacts) {
+        Add-InstallWarning "No local Codex auth files were found under '$codexHomePath'. Run 'codex login' if session start fails."
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
     $InstallRoot = Get-DefaultInstallRoot
 }
@@ -128,6 +267,9 @@ if (-not (Test-Path $cliSourceRoot)) {
 if (-not (Test-Path $webSourceRoot)) {
     throw "apps\web folder was not found in this package."
 }
+
+$configuredCodexPath = Get-ConfiguredCodexPath (Join-Path $cliSourceRoot "appsettings.json")
+Run-CodexPreflightChecks $configuredCodexPath
 
 $manifest = Get-Content -Raw -Path $manifestPath | ConvertFrom-Json
 $version = [string]$manifest.version
@@ -197,7 +339,8 @@ Write-ExecutableWrapper `
     "apps\cli\Buffaly.CodexEmbedded.Cli.exe"
 Write-ExecutableWrapper `
     (Join-Path $binRoot "buffaly-codex-web.cmd") `
-    "apps\web\Buffaly.CodexEmbedded.Web.exe"
+    "apps\web\Buffaly.CodexEmbedded.Web.exe" `
+    "Starting Buffaly Codex Embedded Web UI. Open the URL shown below as 'Now listening on:' in your browser."
 Write-ScriptWrapper `
     (Join-Path $binRoot "buffaly-codex-update.cmd") `
     "update.ps1"
@@ -246,4 +389,12 @@ elseif ($SkipPathUpdate) {
     Write-Host ""
     Write-Host "PATH update was skipped. Add this folder to PATH manually:"
     Write-Host "  $binRoot"
+}
+
+if ($script:InstallWarnings.Count -gt 0) {
+    Write-Host ""
+    Write-Host "Post-install warnings:" -ForegroundColor Yellow
+    foreach ($warning in $script:InstallWarnings) {
+        Write-Host "  - $warning"
+    }
 }

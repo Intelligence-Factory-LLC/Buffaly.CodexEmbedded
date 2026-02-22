@@ -56,6 +56,8 @@ Notes:
 3. Spinner is shown when either:
 - Attached session has `isTurnInFlight == true`, or
 - Catalog thread has server-reported processing state.
+4. When a thread transitions from processing to `turn_complete` with status `completed` while not selected, the sidebar shows a green dot.
+5. The green dot clears when that thread is selected.
 
 ## Acceptance Criteria
 
@@ -63,3 +65,4 @@ Notes:
 2. Start a turn, disconnect websocket, reconnect, spinner remains accurate.
 3. Restart web host during an active Codex thread, catalog shows recovered processing spinner within recovery refresh interval.
 4. Spinner clears after `task_complete` or freshness timeout.
+5. Completed-unread green dot appears for non-selected completed threads and clears after selection.

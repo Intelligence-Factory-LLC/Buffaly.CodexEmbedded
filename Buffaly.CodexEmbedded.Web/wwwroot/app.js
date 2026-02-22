@@ -39,7 +39,9 @@ let permissionLevelByThread = new Map(); // threadId -> { approval, sandbox }
 let preferredModelByThread = new Map(); // threadId -> model string ("" means default)
 let preferredReasoningByThread = new Map(); // threadId -> reasoning effort string ("" means default)
 let processingByThread = new Map(); // threadId -> boolean
+let completedUnreadThreadIds = new Set(); // threadId -> completion happened while not selected
 let timelineHasTruncatedHead = false;
+let timelineConnectionIssueShown = false;
 let runtimeSecurityConfig = null;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
@@ -269,15 +271,50 @@ function updatePermissionLevelIndicator() {
   const approval = info?.approval || "";
   const sandbox = info?.sandbox || "";
   if (!approval && !sandbox) {
-    permissionLevelIndicator.textContent = "perm: --";
+    permissionLevelIndicator.textContent = "Permissions: unavailable";
     permissionLevelIndicator.title = "Permission level unavailable";
     return;
   }
 
-  const approvalLabel = approval || "?";
-  const sandboxLabel = sandbox || "?";
-  permissionLevelIndicator.textContent = `perm: ${approvalLabel} / ${sandboxLabel}`;
-  permissionLevelIndicator.title = `Approval: ${approvalLabel} | Sandbox: ${sandboxLabel}`;
+  const approvalLabel = formatApprovalPolicyLabel(approval);
+  const sandboxLabel = formatSandboxPolicyLabel(sandbox);
+  permissionLevelIndicator.textContent = `${approvalLabel} | ${sandboxLabel}`;
+  permissionLevelIndicator.title = `Approval policy: ${approval || "unknown"} | Sandbox policy: ${sandbox || "unknown"}`;
+}
+
+function formatApprovalPolicyLabel(approval) {
+  const normalized = normalizePermissionPolicy(approval).toLowerCase();
+  switch (normalized) {
+    case "never":
+      return "No approvals needed";
+    case "on-request":
+      return "Approvals on request";
+    case "on-failure":
+      return "Approve on failure";
+    case "always":
+      return "Always ask approval";
+    case "untrusted":
+      return "Strict approval";
+    default:
+      return normalized ? `Approval: ${normalized}` : "Approval: unknown";
+  }
+}
+
+function formatSandboxPolicyLabel(sandbox) {
+  const normalized = normalizePermissionPolicy(sandbox).toLowerCase();
+  switch (normalized) {
+    case "workspace-write":
+      return "Can edit workspace";
+    case "read-only":
+      return "Read-only workspace";
+    case "danger-full-access":
+      return "Full system access";
+    case "no-sandbox":
+    case "none":
+      return "No sandbox";
+    default:
+      return normalized ? `Sandbox: ${normalized}` : "Sandbox: unknown";
+  }
 }
 
 function readPermissionInfoFromPayload(payload) {
@@ -1247,8 +1284,9 @@ function buildSidebarProjectGroups() {
       reasoningEffort: normalizeReasoningEffort(entry.reasoningEffort || attachedState?.reasoningEffort || ""),
       attachedSessionId,
       isAttached: !!attachedSessionId,
-      isProcessing: (attachedSessionId ? isTurnInFlight(attachedSessionId) : false) || entry.isProcessing === true || isThreadProcessing(entry.threadId),
-      isArchived: archivedThreadIds.has(entry.threadId)
+      isProcessing: (attachedSessionId ? isTurnInFlight(attachedSessionId) : false) || isThreadProcessing(entry.threadId),
+      isArchived: archivedThreadIds.has(entry.threadId),
+      hasUnreadCompletion: hasThreadCompletionUnread(entry.threadId)
     });
     seenThreads.add(entry.threadId);
   }
@@ -1274,7 +1312,8 @@ function buildSidebarProjectGroups() {
       attachedSessionId: sessionId,
       isAttached: true,
       isProcessing: isTurnInFlight(sessionId) || isThreadProcessing(state.threadId),
-      isArchived: archivedThreadIds.has(state.threadId)
+      isArchived: archivedThreadIds.has(state.threadId),
+      hasUnreadCompletion: hasThreadCompletionUnread(state.threadId)
     });
   }
 
@@ -1825,6 +1864,13 @@ function renderProjectSidebar() {
         loading.appendChild(spinner);
         badges.appendChild(loading);
       }
+      if (!entry.isProcessing && entry.hasUnreadCompletion) {
+        const completed = document.createElement("span");
+        completed.className = "session-badge completed-unread";
+        completed.title = "New completed output";
+        completed.setAttribute("aria-label", "New completed output");
+        badges.appendChild(completed);
+      }
       head.appendChild(badges);
 
       const actions = document.createElement("div");
@@ -2009,6 +2055,96 @@ function getActiveSessionState() {
   return sessions.get(activeSessionId) || null;
 }
 
+function normalizeThreadId(threadId) {
+  return typeof threadId === "string" ? threadId.trim() : "";
+}
+
+function getActiveThreadId() {
+  return normalizeThreadId(getActiveSessionState()?.threadId || "");
+}
+
+function hasAttachedSessionForThread(threadId) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  if (!normalizedThreadId) {
+    return false;
+  }
+
+  for (const state of sessions.values()) {
+    if (normalizeThreadId(state?.threadId || "") === normalizedThreadId) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasThreadCompletionUnread(threadId) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  if (!normalizedThreadId) {
+    return false;
+  }
+
+  return completedUnreadThreadIds.has(normalizedThreadId);
+}
+
+function markThreadCompletionUnread(threadId, options = {}) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  if (!normalizedThreadId) {
+    return false;
+  }
+
+  if (options.requireAttached === true && !hasAttachedSessionForThread(normalizedThreadId)) {
+    return false;
+  }
+
+  if (normalizedThreadId === getActiveThreadId()) {
+    return false;
+  }
+
+  const hadEntry = completedUnreadThreadIds.has(normalizedThreadId);
+  completedUnreadThreadIds.add(normalizedThreadId);
+  return !hadEntry;
+}
+
+function markThreadCompletionSeen(threadId) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  if (!normalizedThreadId) {
+    return false;
+  }
+
+  return completedUnreadThreadIds.delete(normalizedThreadId);
+}
+
+function applyProcessingByThread(nextProcessingMap) {
+  const prior = processingByThread;
+  const next = new Map();
+
+  if (nextProcessingMap && typeof nextProcessingMap[Symbol.iterator] === "function") {
+    for (const [threadId, processing] of nextProcessingMap) {
+      const normalizedThreadId = normalizeThreadId(threadId);
+      if (!normalizedThreadId || processing !== true) {
+        continue;
+      }
+
+      next.set(normalizedThreadId, true);
+    }
+  }
+
+  for (const [threadId, wasProcessing] of prior.entries()) {
+    if (wasProcessing !== true) {
+      continue;
+    }
+
+    if (next.get(threadId) === true) {
+      continue;
+    }
+
+    markThreadCompletionUnread(threadId, { requireAttached: true });
+  }
+
+  processingByThread = next;
+}
+
 function clearComposerImages() {
   pendingComposerImages = [];
   renderComposerImages();
@@ -2114,7 +2250,7 @@ function getQueueForSession(sessionId) {
 }
 
 function isThreadProcessing(threadId) {
-  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  const normalizedThreadId = normalizeThreadId(threadId);
   if (!normalizedThreadId) {
     return false;
   }
@@ -2457,13 +2593,13 @@ function populateReasoningEffortSelect() {
 
   const defaultOption = document.createElement("option");
   defaultOption.value = "";
-  defaultOption.textContent = "Reasoning: default";
+  defaultOption.textContent = "default";
   conversationReasoningSelect.appendChild(defaultOption);
 
   for (const level of REASONING_EFFORT_LEVELS) {
     const option = document.createElement("option");
     option.value = level;
-    option.textContent = `Reasoning: ${level}`;
+    option.textContent = level;
     conversationReasoningSelect.appendChild(option);
   }
 }
@@ -2558,14 +2694,28 @@ function restartTimelinePolling() {
   }
 
   pollTimelineOnce(true, generation).catch((error) => {
-    timeline.enqueueSystem(`[error] ${error}`);
+    handleTimelinePollError(error);
   });
 
   timelinePollTimer = setInterval(() => {
     pollTimelineOnce(false, generation).catch((error) => {
-      timeline.enqueueSystem(`[error] ${error}`);
+      handleTimelinePollError(error);
     });
   }, TIMELINE_POLL_INTERVAL_MS);
+}
+
+function handleTimelinePollError(error) {
+  const message = String(error || "");
+  const isConnectionError = message.includes("Failed to fetch") || message.includes("NetworkError");
+  if (isConnectionError) {
+    if (!timelineConnectionIssueShown) {
+      timeline.enqueueSystem("There is a problem connecting to the server. The application may have stopped.");
+      timelineConnectionIssueShown = true;
+    }
+    return;
+  }
+
+  timeline.enqueueSystem(`[error] ${message}`);
 }
 
 async function pollTimelineOnce(initial, generation) {
@@ -2605,6 +2755,7 @@ async function pollTimelineOnce(initial, generation) {
     }
 
     const data = await response.json();
+    timelineConnectionIssueShown = false;
     if (generation !== timelinePollGeneration) {
       return;
     }
@@ -2650,6 +2801,7 @@ function setActiveSession(sessionId, options = {}) {
   }
   stopSessionBtn.disabled = false;
   const state = sessions.get(sessionId);
+  markThreadCompletionSeen(state?.threadId || "");
   if (state?.threadId) {
     const preferred = getPreferredModelForThread(state.threadId);
     if (preferred.found) {
@@ -3270,7 +3422,7 @@ function handleServerEvent(frame) {
         clearPendingSessionLoad();
       }
       sessions = next;
-      processingByThread = nextProcessingByThread;
+      applyProcessingByThread(nextProcessingByThread);
       prunePromptState();
       updateSessionSelect(payload.activeSessionId || null);
       return;
@@ -3320,7 +3472,7 @@ function handleServerEvent(frame) {
           nextProcessingByThread.set(normalizedThreadId, true);
         }
       }
-      processingByThread = nextProcessingByThread;
+      applyProcessingByThread(nextProcessingByThread);
       if (persistedPreferenceUpdated) {
         persistThreadModelState();
         persistThreadReasoningState();
@@ -3355,23 +3507,52 @@ function handleServerEvent(frame) {
 
     case "turn_complete": {
       const sessionId = payload.sessionId || null;
+      const status = payload.status || "unknown";
+      let sidebarStateChanged = false;
       if (sessionId) {
         touchSessionActivity(sessionId);
+        const state = sessions.get(sessionId) || null;
+        const threadId = normalizeThreadId(state?.threadId || "");
+        if (threadId) {
+          const wasProcessing = processingByThread.get(threadId) === true;
+          processingByThread.delete(threadId);
+          if (wasProcessing) {
+            sidebarStateChanged = true;
+          }
+          if (status === "completed") {
+            sidebarStateChanged = markThreadCompletionUnread(threadId, { requireAttached: true }) || sidebarStateChanged;
+          }
+        }
         setTurnInFlight(sessionId, false);
         pumpQueuedPrompt(sessionId);
       }
-      const status = payload.status || "unknown";
       const errorMessage = payload.errorMessage || null;
       appendLog(`[turn] session=${payload.sessionId || "unknown"} status=${status}${errorMessage ? " error=" + errorMessage : ""}`);
+      if (sidebarStateChanged) {
+        renderProjectSidebar();
+      }
       renderPromptQueue();
       return;
     }
 
     case "turn_started": {
       const sessionId = payload.sessionId || null;
+      let sidebarStateChanged = false;
       if (sessionId) {
         touchSessionActivity(sessionId);
+        const state = sessions.get(sessionId) || null;
+        const threadId = normalizeThreadId(state?.threadId || "");
+        if (threadId) {
+          if (processingByThread.get(threadId) !== true) {
+            sidebarStateChanged = true;
+          }
+          processingByThread.set(threadId, true);
+          sidebarStateChanged = completedUnreadThreadIds.delete(threadId) || sidebarStateChanged;
+        }
         setTurnInFlight(sessionId, true);
+      }
+      if (sidebarStateChanged) {
+        renderProjectSidebar();
       }
       return;
     }
