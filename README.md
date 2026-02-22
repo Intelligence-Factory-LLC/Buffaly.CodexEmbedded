@@ -30,19 +30,38 @@ Or start a session in the web UI and manage it from any browser. Use Tailscale t
 
 ## ⚡ Quick Start (Download Web and Run)
 
-If you are using GitHub workflow artifacts (and not GitHub Releases), use this path:
+Download:
+- Preferred (when a tagged release exists): [Download latest release](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/releases/latest)
+- If GitHub shows no releases: open [Actions release workflow](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/actions/workflows/release.yml), open the latest successful run, then download artifact `release-win-x64-<version>`.
 
-1. Open **Actions** in this repo.
-2. Open the latest successful `release` workflow run.
-3. In **Artifacts**, download `release-win-x64-<version>`.
-4. Extract the downloaded zip.
-5. Open `apps\web` in the extracted folder.
-6. Run `Buffaly.CodexEmbedded.Web.exe`.
-7. Open the URL shown in the terminal after `Now listening on:`.
+### 2. Install, then launch web by command (recommended)
+
+1. Extract the downloaded zip.
+2. Open PowerShell in the extracted folder.
+3. Run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+4. Open a new terminal and run:
+
+```powershell
+buffaly-codex-web
+```
+
+5. Open the URL shown after `Now listening on:`.
+
+### 1. Run web exe directly (no install)
+
+1. Extract the downloaded zip.
+2. Open `apps\web`.
+3. Run `Buffaly.CodexEmbedded.Web.exe`.
+4. Open the URL shown after `Now listening on:`.
 
 Notes:
 - You still need `codex` CLI installed and authenticated for session start.
-- This quick start launches web directly without running installer wrappers.
+- Option 2 creates `buffaly-codex-web` and other helper commands.
 
 ## ✨ Major Features
 
