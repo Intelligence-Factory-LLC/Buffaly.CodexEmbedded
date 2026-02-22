@@ -6,7 +6,7 @@ Run the official Codex agent in a beautiful browser UI - on your desktop, from y
 [![Windows](https://img.shields.io/badge/Platform-Windows-blue?style=for-the-badge&logo=windows)](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded)
 [![.NET](https://img.shields.io/badge/.NET-9-512BD4?style=for-the-badge&logo=dotnet)](https://dotnet.microsoft.com)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
-[![GitHub Release](https://img.shields.io/github/v/release/Intelligence-Factory-LLC/Buffaly.CodexEmbedded?style=for-the-badge)](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/releases)
+[![Release Workflow](https://img.shields.io/github/actions/workflow/status/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/release.yml?style=for-the-badge&label=Release%20Workflow)](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/actions/workflows/release.yml)
 
 ## 🌟 What is Buffaly Codex Embedded?
 
@@ -27,6 +27,22 @@ Use the UI in your browser to manage all of your codex session, even those start
 Or start a session in the web UI and manage it from any browser. Use Tailscale to securely access the same UI from your phone, and keep the same session state and thread context across devices. 
 
 ![Animated walkthrough of Buffaly Codex Embedded across web, CLI, and mobile](screenshots/Animation.gif)
+
+## ⚡ Quick Start (Download Web and Run)
+
+If you are using GitHub workflow artifacts (and not GitHub Releases), use this path:
+
+1. Open **Actions** in this repo.
+2. Open the latest successful `release` workflow run.
+3. In **Artifacts**, download `release-win-x64-<version>`.
+4. Extract the downloaded zip.
+5. Open `apps\web` in the extracted folder.
+6. Run `Buffaly.CodexEmbedded.Web.exe`.
+7. Open the URL shown in the terminal after `Now listening on:`.
+
+Notes:
+- You still need `codex` CLI installed and authenticated for session start.
+- This quick start launches web directly without running installer wrappers.
 
 ## ✨ Major Features
 
@@ -129,7 +145,7 @@ We built this tool because we use this tool.
 
 **Same official Codex agent. Easier developer experience.**
 
-## 🚀 Quick Start (Windows - 2 minutes)
+## 🚀 Full Install (CLI + Web, Windows)
 
 ### 1. Prerequisites
 
@@ -145,11 +161,12 @@ codex --version
 
 ### 2. Download and install
 
-1. Open the project **Releases** page.
-2. Download the latest `Buffaly.CodexEmbedded-win-x64-<version>.zip`.
-3. Extract the zip.
-4. Open PowerShell in the extracted folder.
-5. Run:
+1. Open **Actions** in this repo.
+2. Open the latest successful `release` workflow run.
+3. Download the artifact `release-win-x64-<version>`.
+4. Extract the zip.
+5. Open PowerShell in the extracted folder.
+6. Run:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
@@ -173,7 +190,7 @@ Useful commands:
 
 - `buffaly-codex`: interactive REPL mode.
 - `buffaly-codex run --prompt "<text>"`: one-shot prompt.
-- `buffaly-codex-update`: download and install latest release.
+- `buffaly-codex-update`: download and install latest workflow artifact or tagged release.
 - `buffaly-codex-uninstall`: remove the local install.
 
 ### Try a real workflow
