@@ -116,36 +116,62 @@
         return this.readNonNegativeNumber(usage.total_tokens ?? usage.totalTokens);
       };
 
-      const candidates = [];
       const lastInputSide = readInputSideTokens(lastUsage);
       const lastTotal = readTotalTokens(lastUsage);
       const totalInputSide = readInputSideTokens(totalUsage);
       const cumulativeTotal = readTotalTokens(totalUsage);
-      if (lastInputSide !== null) candidates.push(lastInputSide);
-      if (lastTotal !== null) candidates.push(lastTotal);
-      if (totalInputSide !== null) candidates.push(totalInputSide);
-      if (cumulativeTotal !== null && (contextWindow === null || cumulativeTotal <= contextWindow * 1.05)) {
-        candidates.push(cumulativeTotal);
-      }
-
       let usedTokens = null;
-      if (contextWindow !== null) {
-        const bounded = candidates.filter((x) => x <= (contextWindow * 1.1));
-        if (bounded.length > 0) {
-          usedTokens = Math.max(...bounded);
-        }
-      }
-      if (usedTokens === null && candidates.length > 0) {
-        usedTokens = candidates[0];
+      if (lastInputSide !== null) {
+        usedTokens = lastInputSide;
+      } else if (lastTotal !== null) {
+        usedTokens = lastTotal;
+      } else if (totalInputSide !== null) {
+        usedTokens = totalInputSide;
+      } else if (cumulativeTotal !== null) {
+        usedTokens = cumulativeTotal;
       }
 
       if (!Number.isFinite(contextWindow) || contextWindow <= 0 || !Number.isFinite(usedTokens) || usedTokens < 0) {
         return null;
       }
 
-      const ratio = Math.min(1, Math.max(0, usedTokens / contextWindow));
+      const boundedUsedTokens = Math.min(usedTokens, contextWindow);
+      const ratio = Math.min(1, Math.max(0, boundedUsedTokens / contextWindow));
       const percentLeft = Math.max(0, Math.min(100, Math.round((1 - ratio) * 100)));
-      return { contextWindow, usedTokens, percentLeft };
+      return {
+        contextWindow,
+        usedTokens: boundedUsedTokens,
+        percentLeft
+      };
+    }
+
+    detectContextCompressionLabelFromPayload(payload) {
+      const parsed = this.readTokenCountInfo(payload);
+      if (!parsed) {
+        return "";
+      }
+
+      const prior = this.latestContextUsage;
+      if (!prior || !Number.isFinite(prior.usedTokens) || !Number.isFinite(prior.contextWindow) || prior.contextWindow <= 0) {
+        return "";
+      }
+
+      if (!Number.isFinite(parsed.usedTokens) || !Number.isFinite(parsed.contextWindow) || parsed.contextWindow <= 0) {
+        return "";
+      }
+
+      const windowRatio = parsed.contextWindow > 0 ? Math.abs(parsed.contextWindow - prior.contextWindow) / parsed.contextWindow : 0;
+      if (windowRatio > 0.1) {
+        return "";
+      }
+
+      const drop = prior.usedTokens - parsed.usedTokens;
+      const dropPercentOfWindow = drop / parsed.contextWindow;
+      if (drop < 2000 || dropPercentOfWindow < 0.08) {
+        return "";
+      }
+
+      return `Context compressed (${drop.toLocaleString()} tokens reclaimed, ${parsed.percentLeft}% context left)`;
     }
 
     updateLatestContextUsageFromPayload(payload) {
@@ -1306,8 +1332,15 @@
 
       const eventType = payload.type || "";
       if (eventType === "token_count") {
+        const compressionLabel = this.detectContextCompressionLabelFromPayload(payload);
         this.updateLatestContextUsageFromPayload(payload);
-        return null;
+        if (!compressionLabel) {
+          return null;
+        }
+
+        const entry = this.createEntry("system", "Context Compression", compressionLabel, timestamp, eventType);
+        entry.compact = true;
+        return entry;
       }
 
       if (eventType === "agent_message" || eventType === "user_message" || eventType === "agent_reasoning") {

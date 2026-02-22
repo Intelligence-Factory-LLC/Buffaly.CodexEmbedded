@@ -387,34 +387,35 @@ function readTokenCountInfo(payload) {
     return readNumber(usage.total_tokens ?? usage.totalTokens);
   }
 
-  const candidates = [];
   const lastInputSide = readInputSideTokens(lastUsage);
   const lastTotal = readTotalTokens(lastUsage);
   const totalInputSide = readInputSideTokens(totalUsage);
   const cumulativeTotal = readTotalTokens(totalUsage);
-  if (lastInputSide !== null) candidates.push(lastInputSide);
-  if (lastTotal !== null) candidates.push(lastTotal);
-  if (totalInputSide !== null) candidates.push(totalInputSide);
-  if (cumulativeTotal !== null && (contextWindow === null || cumulativeTotal <= contextWindow * 1.05)) {
-    candidates.push(cumulativeTotal);
-  }
-
+  // Prefer latest request-side token usage for context occupancy.
   let usedTokens = null;
-  if (contextWindow !== null) {
-    const bounded = candidates.filter((x) => x <= (contextWindow * 1.1));
-    if (bounded.length > 0) {
-      usedTokens = Math.max(...bounded);
-    }
-  }
-  if (usedTokens === null && candidates.length > 0) {
-    usedTokens = candidates[0];
+  if (lastInputSide !== null) {
+    usedTokens = lastInputSide;
+  } else if (lastTotal !== null) {
+    usedTokens = lastTotal;
+  } else if (totalInputSide !== null) {
+    usedTokens = totalInputSide;
+  } else if (cumulativeTotal !== null) {
+    usedTokens = cumulativeTotal;
   }
 
   if (contextWindow === null && usedTokens === null) {
     return null;
   }
 
-  return { contextWindow, usedTokens };
+  return {
+    contextWindow,
+    usedTokens,
+    source: lastInputSide !== null
+      ? "last_input_side"
+      : (lastTotal !== null
+        ? "last_total"
+        : (totalInputSide !== null ? "total_input_side" : "total_total"))
+  };
 }
 
 function updateContextUsageFromLogLines(threadId, lines) {
@@ -426,6 +427,7 @@ function updateContextUsageFromLogLines(threadId, lines) {
   const prior = contextUsageByThread.get(normalizedThreadId) || null;
   let contextWindow = Number.isFinite(prior?.contextWindow) ? prior.contextWindow : null;
   let usedTokens = Number.isFinite(prior?.usedTokens) ? prior.usedTokens : null;
+  let updatedFromSource = "";
 
   for (const line of lines) {
     if (typeof line !== "string" || !line.trim()) {
@@ -453,15 +455,22 @@ function updateContextUsageFromLogLines(threadId, lines) {
         }
         if (eventPieces.usedTokens !== null) {
           usedTokens = eventPieces.usedTokens;
+          updatedFromSource = eventPieces.source || "";
         }
       }
     }
   }
 
   if (Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(usedTokens) && usedTokens >= 0) {
-    const ratio = Math.min(1, Math.max(0, usedTokens / contextWindow));
+    // If usage came from cumulative totals and exceeds the model window, hide instead of pinning to 0%.
+    if (usedTokens > (contextWindow * 1.1) && updatedFromSource === "total_total") {
+      return;
+    }
+
+    const boundedUsedTokens = Math.min(usedTokens, contextWindow);
+    const ratio = Math.min(1, Math.max(0, boundedUsedTokens / contextWindow));
     const percentLeft = Math.max(0, Math.min(100, Math.round((1 - ratio) * 100)));
-    contextUsageByThread.set(normalizedThreadId, { usedTokens, contextWindow, percentLeft });
+    contextUsageByThread.set(normalizedThreadId, { usedTokens: boundedUsedTokens, contextWindow, percentLeft });
     const activeThreadId = typeof getActiveSessionState()?.threadId === "string" ? getActiveSessionState().threadId.trim() : "";
     if (activeThreadId === normalizedThreadId) {
       updateContextLeftIndicator();
@@ -2042,7 +2051,15 @@ function setApprovalVisible(show) {
 function ensureSessionState(sessionId) {
   if (!sessions.has(sessionId)) {
     const now = Date.now();
-    sessions.set(sessionId, { threadId: null, cwd: null, model: null, reasoningEffort: null, createdAtTick: now, lastActivityTick: now });
+    sessions.set(sessionId, {
+      threadId: null,
+      cwd: null,
+      model: null,
+      reasoningEffort: null,
+      pendingApproval: null,
+      createdAtTick: now,
+      lastActivityTick: now,
+    });
   }
   return sessions.get(sessionId);
 }
@@ -3346,7 +3363,8 @@ function handleServerEvent(frame) {
       let persistedPreferenceUpdated = false;
       for (const s of list) {
         const existing = sessions.get(s.sessionId);
-        const st = existing || { threadId: null, cwd: null, model: null, reasoningEffort: null, createdAtTick: Date.now(), lastActivityTick: 0 };
+        const st =
+          existing || { threadId: null, cwd: null, model: null, reasoningEffort: null, pendingApproval: null, createdAtTick: Date.now(), lastActivityTick: 0 };
         st.threadId = s.threadId || st.threadId || null;
         st.cwd = s.cwd || st.cwd || null;
         const serverModel = normalizeModelValue(s.model);
@@ -3397,6 +3415,11 @@ function handleServerEvent(frame) {
         if (pendingSessionLoadThreadId && st.threadId === pendingSessionLoadThreadId) {
           matchedPendingThread = true;
         }
+
+        const pending =
+          s.pendingApproval && typeof s.pendingApproval === "object" && !Array.isArray(s.pendingApproval) ? s.pendingApproval : null;
+        st.pendingApproval = pending && typeof pending.approvalId === "string" && pending.approvalId.trim() ? pending : null;
+
         const inFlight = s.isTurnInFlight === true || s.turnInFlight === true;
         setTurnInFlight(s.sessionId, inFlight);
         if (inFlight && st.threadId) {
@@ -3425,6 +3448,35 @@ function handleServerEvent(frame) {
       applyProcessingByThread(nextProcessingByThread);
       prunePromptState();
       updateSessionSelect(payload.activeSessionId || null);
+
+      const activeState = getActiveSessionState();
+      const activePending = activeState && activeState.pendingApproval ? activeState.pendingApproval : null;
+      if (activeSessionId && activePending && typeof activePending.approvalId === "string" && activePending.approvalId.trim()) {
+        const approvalId = activePending.approvalId.trim();
+        if (!pendingApproval || pendingApproval.sessionId !== activeSessionId || pendingApproval.approvalId !== approvalId) {
+          pendingApproval = { sessionId: activeSessionId, approvalId };
+          approvalSummary.textContent = activePending.summary || "Approval requested";
+          const lines = [];
+          if (activePending.reason) lines.push(`Reason: ${activePending.reason}`);
+          if (activePending.cwd) lines.push(`CWD: ${activePending.cwd}`);
+          if (Array.isArray(activePending.actions) && activePending.actions.length > 0) lines.push(`Actions: ${activePending.actions.join("; ")}`);
+          approvalDetails.textContent = lines.join("\n");
+          setApprovalVisible(true);
+          appendLog(`[approval] pending session=${activeSessionId} approvalId=${approvalId}`);
+        }
+      } else if (pendingApproval) {
+        const priorState = pendingApproval.sessionId ? sessions.get(pendingApproval.sessionId) : null;
+        const stillPending =
+          priorState &&
+          priorState.pendingApproval &&
+          typeof priorState.pendingApproval.approvalId === "string" &&
+          priorState.pendingApproval.approvalId === pendingApproval.approvalId;
+        if (!stillPending) {
+          pendingApproval = null;
+          setApprovalVisible(false);
+        }
+      }
+
       return;
     }
 

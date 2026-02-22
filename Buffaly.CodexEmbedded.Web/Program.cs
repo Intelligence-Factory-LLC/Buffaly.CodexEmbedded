@@ -19,6 +19,7 @@ builder.Logging.AddDebug();
 
 var defaults = WebRuntimeDefaults.Load(builder.Configuration);
 builder.Services.AddSingleton(defaults);
+builder.Services.AddSingleton<SessionOrchestrator>();
 
 var app = builder.Build();
 app.UseDefaultFiles();
@@ -280,11 +281,12 @@ app.Map("/ws", async context =>
 
 	try
 	{
+		var orchestrator = context.RequestServices.GetRequiredService<SessionOrchestrator>();
 		using var socket = await context.WebSockets.AcceptWebSocketAsync();
 		Logs.DebugLog.WriteEvent(
 			"WebSocket",
 			$"Accepted websocket connection id={context.Connection.Id} subProtocol={socket.SubProtocol ?? "(none)"}");
-		await using var session = new MultiSessionWebCliSocketSession(socket, defaults, context.Connection.Id);
+		await using var session = new MultiSessionWebCliSocketSession(socket, defaults, orchestrator, context.Connection.Id);
 		await session.RunAsync(context.RequestAborted);
 		Logs.DebugLog.WriteEvent(
 			"WebSocket",
@@ -341,6 +343,8 @@ internal sealed class WebRuntimeDefaults
 	public required string CodexPath { get; init; }
 	public required string DefaultCwd { get; init; }
 	public required int TurnTimeoutSeconds { get; init; }
+	public required int TurnSlotWaitTimeoutSeconds { get; init; }
+	public required int TurnSlotWaitPollSeconds { get; init; }
 	public required string LogRootPath { get; init; }
 	public string? CodexHomePath { get; init; }
 	public string? DefaultModel { get; init; }
@@ -363,6 +367,8 @@ internal sealed class WebRuntimeDefaults
 		var defaultCwd = configuration["DefaultCwd"];
 		var codexHomePath = configuration["CodexHomePath"];
 		var timeout = configuration.GetValue<int?>("TurnTimeoutSeconds") ?? 300;
+		var turnSlotWaitTimeoutSeconds = configuration.GetValue<int?>("TurnSlotWaitTimeoutSeconds") ?? timeout;
+		var turnSlotWaitPollSeconds = configuration.GetValue<int?>("TurnSlotWaitPollSeconds") ?? 2;
 		var logRoot = configuration["LogRootPath"];
 		var webSocketAuthRequired = configuration.GetValue<bool?>("WebSocketAuthRequired") ?? true;
 		var webSocketAuthToken = ResolveWebSocketAuthToken(configuration["WebSocketAuthToken"], webSocketAuthRequired);
@@ -380,6 +386,8 @@ internal sealed class WebRuntimeDefaults
 			CodexPath = string.IsNullOrWhiteSpace(codexPath) ? "codex" : codexPath,
 			DefaultCwd = string.IsNullOrWhiteSpace(defaultCwd) ? Environment.CurrentDirectory : defaultCwd,
 			TurnTimeoutSeconds = timeout > 0 ? timeout : 300,
+			TurnSlotWaitTimeoutSeconds = Math.Clamp(turnSlotWaitTimeoutSeconds, 5, 3600),
+			TurnSlotWaitPollSeconds = Math.Clamp(turnSlotWaitPollSeconds, 1, 30),
 			LogRootPath = string.IsNullOrWhiteSpace(logRoot) ? Path.Combine(Environment.CurrentDirectory, "logs", "web") : ResolvePath(logRoot),
 			CodexHomePath = string.IsNullOrWhiteSpace(codexHomePath) ? null : ResolvePath(codexHomePath),
 			DefaultModel = defaultModel,

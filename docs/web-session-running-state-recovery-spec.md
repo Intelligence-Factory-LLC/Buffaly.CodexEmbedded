@@ -36,12 +36,22 @@ Configuration keys in `Buffaly.CodexEmbedded.Web/appsettings.json`:
 2. `RunningRecoveryActiveWindowMinutes` (default `120`)
 3. `RunningRecoveryTailLineLimit` (default `3000`)
 4. `RunningRecoveryScanMaxSessions` (default `200`)
+5. `TurnSlotWaitTimeoutSeconds` (default `300`)
+6. `TurnSlotWaitPollSeconds` (default `2`)
 
 Notes:
 
 1. Recovery is bounded to recent catalog sessions and tail lines for performance.
 2. If logs are extremely long and a matching `task_started` is outside the tail window, recovered state can be under-reported.
 3. Freshness window prevents stale spinners after abrupt Codex or host termination.
+
+## Turn Gate Safeguards
+
+1. Turn startup no longer awaits websocket status delivery while holding the per-session turn gate.
+2. Waiting for a session turn slot is bounded by `TurnSlotWaitTimeoutSeconds`.
+3. Slot waits poll every `TurnSlotWaitPollSeconds` to enable earlier idle-gate recovery.
+3. On slot-wait timeout, the server performs one recovery attempt when gate state appears idle but stuck.
+4. If slot wait still times out, the turn emits `turn_complete` with status `queueTimedOut` and does not block future requests indefinitely.
 
 ## Websocket Reconnect Behavior
 
