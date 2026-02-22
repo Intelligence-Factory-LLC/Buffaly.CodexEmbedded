@@ -31,11 +31,12 @@ Or start a session in the web UI and manage it from any browser. Use Tailscale t
 ## ⚡ Quick Start
 
 Download:
-- Preferred (when a tagged release exists): [Download latest release](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/releases/latest)
-- If GitHub shows no releases: open [Actions release workflow](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/actions/workflows/release.yml), open the latest successful run, then download artifact `release-win-x64-<version>`.
+- [Download latest release](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/releases/latest)
+
+PRE: Make sure you have the Codex CLI installed and authenticated, and that `codex --version` works in your terminal.
 
 1. Extract the downloaded zip.
-2. Open PowerShell 7 in the extracted package root folder (the folder with `release-manifest.json` and `install.ps1`).
+2. Open PowerShell 7 in the extracted package root folder
 3. Run:
 
 ```powershell
@@ -48,7 +49,9 @@ pwsh -ExecutionPolicy Bypass -File .\install.ps1
 buffaly-codex-web
 ```
 
-5. Open the URL shown after `Now listening on:`.
+5. Open the URL shown after `Now listening on: XXXX`.
+
+That's it. The server will start listening for sessions started by the CLI or the web UI, and you can manage them from either interface.
 
 To run manually or from source, see [Detailed Install and Run Options](#-detailed-install-and-run-options).
 For install issues, see [Troubleshooting](#troubleshooting).
