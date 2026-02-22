@@ -317,6 +317,66 @@ When you update, installer keeps your existing `appsettings.json` files.
 
 ## 👩‍💻 For Developers & Maintainers
 
+## Contributing
+
+Ideas, bug reports, and patches are welcome.
+
+Good first contributions:
+- Improve docs and screenshots.
+- Add small UX improvements in the web UI.
+- Make install and update flows more robust.
+- Add tests around protocol edge cases and session recovery.
+
+How to contribute:
+1. Fork the repo and clone your fork.
+2. Create a branch.
+3. Run the web host from source (see `Build From Source (Developer)` below).
+4. Open a PR with a clear description and screenshots when applicable.
+
+If you are not sure where to start, open an issue describing your workflow and what you wish Codex UI did better.
+
+## Embed Codex in Your .NET App
+
+This repo includes a reusable library, `Buffaly.CodexEmbedded.Core`, that starts `codex app-server` and speaks JSON-RPC over JSONL.
+Use it to embed Codex sessions into your own .NET app (console, service, web app, etc.).
+
+Prereqs:
+- Install the `codex` CLI and run `codex login`.
+- Ensure `codex --version` works in the environment your app runs in.
+
+Add a reference:
+- Same solution: add a project reference to `Buffaly.CodexEmbedded.Core/Buffaly.CodexEmbedded.Core.csproj`.
+- Different solution: build this repo and reference `Deploy/Buffaly.CodexEmbedded.Core.dll`.
+
+Minimal example:
+
+```csharp
+using Buffaly.CodexEmbedded.Core;
+
+await using var client = await CodexClient.StartAsync(new CodexClientOptions
+{
+    CodexPath = "codex",
+    WorkingDirectory = @"C:\dev\your-workdir",
+    // Optional: isolate sessions/auth/skills for your integration
+    // CodexHomePath = @"C:\dev\your-app\.codex"
+});
+
+var session = await client.CreateSessionAsync(new CodexSessionCreateOptions
+{
+    Cwd = @"C:\dev\your-workdir",
+    Model = null
+});
+
+var deltas = new Progress<CodexDelta>(d => Console.Write(d.Text));
+var result = await session.SendMessageAsync("Write a short changelog for my last commit.", progress: deltas);
+Console.WriteLine();
+Console.WriteLine(result.Text);
+```
+
+More:
+- `Buffaly.CodexEmbedded.Core/README.md`
+- `docs/external-core-api-guide.md`
+
 ## Build From Source (Developer)
 
 ### Prerequisites
