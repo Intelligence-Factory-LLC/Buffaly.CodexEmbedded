@@ -73,18 +73,22 @@ Run installer only from the extracted package root folder that contains:
 - `apps\`
 - `install.ps1`
 
-1. Open PowerShell in that extracted package root folder.
+1. Open PowerShell 7 in that extracted package root folder.
 2. Run:
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+This installs wrapper commands on your PATH, including `buffaly-codex-web`.
+
+If you prefer the launcher script, use:
 
 ```powershell
 .\install.cmd
 ```
 
-If `install.cmd` is not present (older package), use one of these:
-
-```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
+If PowerShell 7 is not available, use:
 
 ```powershell
 C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
@@ -221,14 +225,18 @@ codex --version
 6. Run:
 
 ```powershell
+pwsh -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+This installs wrapper commands on your PATH, including `buffaly-codex-web`.
+
+If you prefer the launcher script, use:
+
+```powershell
 .\install.cmd
 ```
 
-If `install.cmd` is not present (older package), use one of these:
-
-```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
+If PowerShell 7 is not available, use:
 
 ```powershell
 C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1

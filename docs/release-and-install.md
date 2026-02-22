@@ -38,14 +38,18 @@ git push origin v1.0.0
 3. Run:
 
 ```powershell
+pwsh -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+This installs wrapper commands on your PATH, including `buffaly-codex-web`.
+
+If you prefer the launcher script, use:
+
+```powershell
 .\install.cmd
 ```
 
-If `install.cmd` is not present (older package), use one of these:
-
-```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
+If PowerShell 7 is not available, use one of these:
 
 ```powershell
 C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
