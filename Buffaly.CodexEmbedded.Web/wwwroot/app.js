@@ -3639,6 +3639,18 @@ function handleServerEvent(frame) {
       return;
     }
 
+    case "approval_resolved": {
+      const sessionId = payload.sessionId || null;
+      const approvalId = payload.approvalId || null;
+      const decision = payload.decision || "unknown";
+      if (pendingApproval && pendingApproval.sessionId === sessionId && pendingApproval.approvalId === approvalId) {
+        pendingApproval = null;
+        setApprovalVisible(false);
+      }
+      appendLog(`[approval] resolved session=${sessionId || "unknown"} approvalId=${approvalId || "unknown"} decision=${decision}`);
+      return;
+    }
+
     case "models_list": {
       if (payload.error) {
         appendLog(`[models] error: ${payload.error}`);

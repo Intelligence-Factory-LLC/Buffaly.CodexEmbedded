@@ -621,20 +621,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 	}
 
-	private async Task<bool> TrySendEventWithTimeoutAsync(string type, object payload)
-	{
-		try
-		{
-			using var timeoutCts = new CancellationTokenSource(SafeSocketSendTimeout);
-			await SendEventAsync(type, payload, timeoutCts.Token);
-			return true;
-		}
-		catch
-		{
-			return false;
-		}
-	}
-
 	private async Task SendSessionListSafeAsync()
 	{
 		try
@@ -736,46 +722,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		return output;
 	}
 
-	private static List<string> GetCommandActionSummaries(JsonElement paramsElement)
-	{
-		var output = new List<string>();
-		if (paramsElement.ValueKind != JsonValueKind.Object)
-		{
-			return output;
-		}
-
-		if (!paramsElement.TryGetProperty("commandActions", out var actionsElement) || actionsElement.ValueKind != JsonValueKind.Array)
-		{
-			return output;
-		}
-
-		foreach (var action in actionsElement.EnumerateArray())
-		{
-			var type = TryGetPathString(action, "type") ?? "unknown";
-			var path = TryGetPathString(action, "path");
-			var name = TryGetPathString(action, "name");
-			var query = TryGetPathString(action, "query");
-
-			switch (type)
-			{
-				case "read":
-					output.Add($"read {(name ?? path ?? "(path unknown)")}");
-					break;
-				case "listFiles":
-					output.Add($"listFiles {(path ?? "(path unknown)")}");
-					break;
-				case "search":
-					output.Add($"search {(query ?? "(query unknown)")} in {(path ?? "(path unknown)")}");
-					break;
-				default:
-					output.Add(type);
-					break;
-			}
-		}
-
-		return output;
-	}
-
 	private async Task SendEventAsync(string type, object payload, CancellationToken cancellationToken)
 	{
 		var frame = new { type, payload };
@@ -837,6 +783,10 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 	public async ValueTask DisposeAsync()
 	{
+		_orchestrator.Broadcast -= HandleOrchestratorBroadcast;
+		_orchestrator.CoreEvent -= HandleOrchestratorCoreEvent;
+		_orchestrator.SessionsChanged -= HandleOrchestratorSessionsChanged;
+
 		_activeSessionId = null;
 
 		_socketSendLock.Dispose();
@@ -923,49 +873,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		return output;
 	}
 
-	private static string? TryGetPathString(JsonElement root, params string[] path)
-	{
-		var current = root;
-		foreach (var segment in path)
-		{
-			if (current.ValueKind != JsonValueKind.Object)
-			{
-				return null;
-			}
-			if (!current.TryGetProperty(segment, out current))
-			{
-				return null;
-			}
-		}
-
-		return current.ValueKind switch
-		{
-			JsonValueKind.String => current.GetString(),
-			JsonValueKind.Null => null,
-			_ => current.ToString()
-		};
-	}
-
-	private static string? NormalizeReasoningEffort(string? value)
-	{
-		if (string.IsNullOrWhiteSpace(value))
-		{
-			return null;
-		}
-
-		var normalized = value.Trim().ToLowerInvariant();
-		return normalized switch
-		{
-			"none" => "none",
-			"minimal" => "minimal",
-			"low" => "low",
-			"medium" => "medium",
-			"high" => "high",
-			"xhigh" => "xhigh",
-			_ => null
-		};
-	}
-
 	private static string Sanitize(string value)
 	{
 		var invalid = Path.GetInvalidFileNameChars();
@@ -986,234 +893,10 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		return value[..maxLength] + "...";
 	}
 
-	private sealed record PendingApprovalSnapshot(
-		string ApprovalId,
-		string RequestType,
-		string Summary,
-		string? Reason,
-		string? Cwd,
-		IReadOnlyList<string> Actions,
-		DateTimeOffset CreatedAtUtc);
-
 	private sealed record RecoveredRunningState(
 		bool IsProcessing,
 		int OutstandingTaskCount,
 		DateTimeOffset? LastTaskEventAtUtc);
 
-	private sealed record ManagedSession(
-		string SessionId,
-		CodexClient Client,
-		CodexSession Session,
-		string? Cwd,
-		string? Model,
-		string? ReasoningEffort,
-		LocalLogWriter Log,
-		ConcurrentDictionary<string, TaskCompletionSource<string>> PendingApprovals)
-	{
-		private readonly CancellationTokenSource _lifetimeCts = new();
-		private readonly SemaphoreSlim _turnGate = new(1, 1);
-		private readonly object _approvalSync = new();
-		private readonly object _turnSync = new();
-		private string? _model = string.IsNullOrWhiteSpace(Model) ? null : Model.Trim();
-		private string? _reasoningEffort = NormalizeReasoningEffort(ReasoningEffort);
-		private CancellationTokenSource? _activeTurnCts;
-		private bool _turnInFlight;
-		private PendingApprovalSnapshot? _pendingApproval;
-
-		public string? PendingApprovalId => PendingApprovals.Keys.FirstOrDefault();
-		public CancellationToken LifetimeToken => _lifetimeCts.Token;
-		public string? CurrentModel
-		{
-			get
-			{
-				lock (_turnSync)
-				{
-					return _model;
-				}
-			}
-		}
-		public bool IsTurnInFlight
-		{
-			get
-			{
-				lock (_turnSync)
-				{
-					return _turnInFlight;
-				}
-			}
-		}
-
-		public string? CurrentReasoningEffort
-		{
-			get
-			{
-				lock (_turnSync)
-				{
-					return _reasoningEffort;
-				}
-			}
-		}
-
-		public string? ResolveTurnModel(string? defaultModel)
-		{
-			var model = CurrentModel;
-			return string.IsNullOrWhiteSpace(model) ? defaultModel : model;
-		}
-
-		public void SetModel(string? model)
-		{
-			lock (_turnSync)
-			{
-				_model = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
-			}
-		}
-
-		public void SetReasoningEffort(string? effort)
-		{
-			lock (_turnSync)
-			{
-				_reasoningEffort = NormalizeReasoningEffort(effort);
-			}
-		}
-
-		public async Task WaitForTurnSlotAsync(CancellationToken cancellationToken)
-		{
-			await _turnGate.WaitAsync(cancellationToken);
-		}
-
-		public async Task<bool> TryWaitForTurnSlotAsync(TimeSpan timeout, CancellationToken cancellationToken)
-		{
-			if (timeout <= TimeSpan.Zero)
-			{
-				return await _turnGate.WaitAsync(0, cancellationToken);
-			}
-
-			return await _turnGate.WaitAsync(timeout, cancellationToken);
-		}
-
-		public void ReleaseTurnSlot()
-		{
-			_turnGate.Release();
-		}
-
-		public PendingApprovalSnapshot? GetPendingApproval()
-		{
-			lock (_approvalSync)
-			{
-				return _pendingApproval;
-			}
-		}
-
-		public void SetPendingApproval(PendingApprovalSnapshot snapshot)
-		{
-			lock (_approvalSync)
-			{
-				_pendingApproval = snapshot;
-			}
-		}
-
-		public void ClearPendingApproval(string approvalId)
-		{
-			lock (_approvalSync)
-			{
-				if (_pendingApproval is null)
-				{
-					return;
-				}
-
-				if (string.Equals(_pendingApproval.ApprovalId, approvalId, StringComparison.Ordinal))
-				{
-					_pendingApproval = null;
-				}
-			}
-		}
-
-		public bool TryRecoverTurnSlotIfIdle()
-		{
-			lock (_turnSync)
-			{
-				if (_turnInFlight)
-				{
-					return false;
-				}
-
-				if (_turnGate.CurrentCount > 0)
-				{
-					return false;
-				}
-			}
-
-			try
-			{
-				_turnGate.Release();
-				return true;
-			}
-			catch
-			{
-				return false;
-			}
-		}
-
-		public void MarkTurnStarted(CancellationTokenSource turnCts)
-		{
-			lock (_turnSync)
-			{
-				_activeTurnCts = turnCts;
-				_turnInFlight = true;
-			}
-		}
-
-		public void MarkTurnCompleted()
-		{
-			lock (_turnSync)
-			{
-				_activeTurnCts = null;
-				_turnInFlight = false;
-			}
-		}
-
-		public bool CancelActiveTurn()
-		{
-			CancellationTokenSource? active;
-			lock (_turnSync)
-			{
-				active = _activeTurnCts;
-			}
-
-			if (active is null)
-			{
-				return false;
-			}
-
-			try
-			{
-				active.Cancel();
-				return true;
-			}
-			catch
-			{
-				return false;
-			}
-		}
-
-		public void CancelLifetimeOperations()
-		{
-			try
-			{
-				_lifetimeCts.Cancel();
-			}
-			catch
-			{
-			}
-
-			CancelActiveTurn();
-		}
-
-		public void DisposeLifetimeCancellation()
-		{
-			_turnGate.Dispose();
-			_lifetimeCts.Dispose();
-		}
-	}
 }
 
