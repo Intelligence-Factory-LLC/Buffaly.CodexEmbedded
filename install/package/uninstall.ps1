@@ -40,7 +40,12 @@ function Remove-UserPathEntry([string]$PathEntry) {
         }
     }
 
-    [Environment]::SetEnvironmentVariable("Path", ($remaining -join ';'), "User")
+    try {
+        [Environment]::SetEnvironmentVariable("Path", ($remaining -join ';'), "User")
+    }
+    catch {
+        Write-Warning "Could not update user PATH automatically. You may need to remove this entry manually: $PathEntry"
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
@@ -71,7 +76,6 @@ $targets = @(
     (Join-Path $InstallRoot "active-version.txt"),
     (Join-Path $InstallRoot "release-manifest.json"),
     (Join-Path $InstallRoot "update.ps1"),
-    (Join-Path $InstallRoot "uninstall.ps1"),
     $binRoot
 )
 

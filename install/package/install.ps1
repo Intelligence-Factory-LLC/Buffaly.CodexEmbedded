@@ -42,9 +42,15 @@ function Ensure-UserPathContains([string]$PathEntry) {
     }
 
     $newUserPath = if ($entries.Count -eq 0) { $PathEntry } else { ($entries + $PathEntry) -join ';' }
-    [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
-    $env:Path = "$PathEntry;$env:Path"
-    return $true
+    try {
+        [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+        $env:Path = "$PathEntry;$env:Path"
+        return $true
+    }
+    catch {
+        Write-Warning "Could not update user PATH automatically. Add this folder manually: $PathEntry"
+        return $false
+    }
 }
 
 function Copy-ConfigIfPresent([string]$SourcePath, [string]$TargetPath) {
@@ -84,7 +90,16 @@ function Write-ScriptWrapper([string]$WrapperPath, [string]$ScriptFileName) {
 @echo off
 setlocal
 set "ROOT=%~dp0.."
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\$ScriptFileName" %*
+set "PS_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if exist "%PS_EXE%" goto run_script
+where pwsh >nul 2>nul
+if %ERRORLEVEL%==0 (
+  set "PS_EXE=pwsh"
+) else (
+  set "PS_EXE=powershell"
+)
+:run_script
+"%PS_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\$ScriptFileName" %*
 exit /b %ERRORLEVEL%
 "@
 
