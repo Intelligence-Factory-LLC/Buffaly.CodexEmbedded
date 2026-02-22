@@ -482,11 +482,16 @@ public sealed class CodexClient : IAsyncDisposable
 
 	private sealed class TurnTracker
 	{
+		private static readonly TimeSpan DeferredCompletionDelay = TimeSpan.FromMilliseconds(50);
 		private readonly StringBuilder _text = new();
 		private readonly object _lock = new();
 		private readonly List<TurnNotification> _queuedNotifications = new();
 		private string? _lastError;
 		private bool _isPrimed;
+		private bool _hasDeferredCompletion;
+		private string _deferredCompletionStatus = "unknown";
+		private string? _deferredCompletionErrorMessage;
+		private bool _deferredCompletionScheduled;
 
 		public string ThreadId { get; }
 		public string TurnId { get; }
@@ -565,18 +570,81 @@ public sealed class CodexClient : IAsyncDisposable
 
 					_text.Append(notification.Delta);
 					Progress?.Report(new CodexDelta(notification.ThreadId ?? ThreadId, TurnId, notification.Delta));
+
+					// Guard against out-of-order notification timing where completion is observed before
+					// the first delta for a turn. Finalize once delta text is available.
+					if (_hasDeferredCompletion)
+					{
+						CompleteTurnLocked(_deferredCompletionStatus, _deferredCompletionErrorMessage);
+					}
 					return;
 				}
 				case TurnNotificationKind.Completed:
 				{
-					var aggregated = _text.ToString();
 					var finalError = notification.ErrorMessage ?? _lastError;
-					Completion.TrySetResult(new CodexTurnResult(ThreadId, TurnId, notification.Status, finalError, aggregated));
+					if (_text.Length == 0 &&
+						string.IsNullOrWhiteSpace(finalError) &&
+						string.Equals(notification.Status, "completed", StringComparison.OrdinalIgnoreCase))
+					{
+						_hasDeferredCompletion = true;
+						_deferredCompletionStatus = notification.Status;
+						_deferredCompletionErrorMessage = finalError;
+						ScheduleDeferredCompletion();
+						return;
+					}
+
+					CompleteTurnLocked(notification.Status, finalError);
 					return;
 				}
 				default:
 					return;
 			}
+		}
+
+		private void CompleteTurnLocked(string status, string? errorMessage)
+		{
+			if (Completion.Task.IsCompleted)
+			{
+				return;
+			}
+
+			_hasDeferredCompletion = false;
+			var aggregated = _text.ToString();
+			Completion.TrySetResult(new CodexTurnResult(ThreadId, TurnId, status, errorMessage, aggregated));
+		}
+
+		private void ScheduleDeferredCompletion()
+		{
+			if (_deferredCompletionScheduled)
+			{
+				return;
+			}
+
+			_deferredCompletionScheduled = true;
+			_ = Task.Run(async () =>
+			{
+				try
+				{
+					await Task.Delay(DeferredCompletionDelay);
+					lock (_lock)
+					{
+						if (_hasDeferredCompletion)
+						{
+							CompleteTurnLocked(_deferredCompletionStatus, _deferredCompletionErrorMessage);
+						}
+					}
+				}
+				catch
+				{
+				}
+				finally
+				{
+					lock (_lock)
+					{
+						_deferredCompletionScheduled = false;
+					}
+				}
+			});
 		}
 	}
 }
