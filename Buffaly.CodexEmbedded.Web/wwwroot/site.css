@@ -161,6 +161,7 @@ body {
 	border-radius: 8px;
 	display: flex;
 	flex-direction: column;
+	min-width: 0;
 	min-height: 0;
 }
 
@@ -1131,9 +1132,19 @@ body {
 
 .log-output {
 	flex: 1;
+	display: block;
 	margin: 0;
 	padding: 0.75rem;
-	overflow: auto;
+	overflow-x: auto;
+	overflow-y: auto;
+	width: 100%;
+	max-width: 100%;
+	min-width: 0;
+	min-height: 0;
+	white-space: pre;
+	word-break: normal;
+	overflow-wrap: normal;
+	-webkit-overflow-scrolling: touch;
 	background: #111827;
 	color: #d1fae5;
 	font-size: 0.86rem;
@@ -1145,6 +1156,14 @@ body {
 	border-bottom: 1px solid #e5e7eb;
 	color: #4b5563;
 	font-size: 0.9rem;
+}
+
+.logs-help-text {
+	padding: 0.55rem 0.8rem;
+	border-bottom: 1px solid #e5e7eb;
+	background: #f8fafc;
+	color: #334155;
+	font-size: 0.86rem;
 }
 
 .watcher-timeline {

@@ -1,8 +1,19 @@
 const POLL_INTERVAL_MS = 2000;
+const FLUSH_INTERVAL_MS = 350;
+const SESSION_LIST_REFRESH_MS = 15000;
 
-const watcherDirectorySelect = document.getElementById("watcherDirectorySelect");
-const watcherSessionSelect = document.getElementById("watcherSessionSelect");
-const watcherRefreshBtn = document.getElementById("watcherRefreshBtn");
+const STORAGE_SELECTED_THREAD_KEY = "codex.watcher.selectedThread.v1";
+const STORAGE_SELECTED_PROJECT_KEY = "codex.watcher.selectedProject.v1";
+const STORAGE_COLLAPSED_PROJECTS_KEY = "codex.watcher.collapsedProjects.v1";
+const STORAGE_SIDEBAR_COLLAPSED_KEY = "codex.watcher.sidebarCollapsed.v1";
+
+const layoutRoot = document.querySelector(".layout");
+const sessionSidebar = document.getElementById("sessionSidebar");
+const sidebarToggleBtn = document.getElementById("sidebarToggleBtn");
+const mobileProjectsBtn = document.getElementById("mobileProjectsBtn");
+const sidebarBackdrop = document.getElementById("sidebarBackdrop");
+const projectList = document.getElementById("projectList");
+
 const watcherStatus = document.getElementById("watcherStatus");
 const watcherTimeline = document.getElementById("watcherTimeline");
 
@@ -13,18 +24,25 @@ const timeline = new window.CodexSessionTimeline({
 });
 
 let sessions = [];
-let directoryGroups = []; // [{ key, label, sessions, latestTick }]
-let sessionsByDirectory = new Map(); // directoryKey -> sessions[]
-let activeDirectoryKey = null;
-let activeThreadId = null;
-let cursor = null;
+let projectGroups = [];
+let sessionsByProjectKey = new Map();
 
+let activeProjectKey = null;
+let activeThreadId = null;
+let collapsedProjectKeys = new Set();
+
+let cursor = null;
 let flushTimer = null;
 let pollTimer = null;
+let sessionRefreshTimer = null;
 let pollGeneration = 0;
 let pollInFlight = false;
 
 function setStatus(text) {
+  if (!watcherStatus) {
+    return;
+  }
+
   watcherStatus.textContent = text;
 }
 
@@ -36,6 +54,33 @@ function normalizePath(path) {
   return path.replace(/\\/g, "/");
 }
 
+function normalizeProjectCwd(cwd) {
+  return normalizePath(cwd || "").replace(/\/+$/g, "");
+}
+
+function getProjectKeyFromCwd(cwd) {
+  const normalized = normalizeProjectCwd(cwd);
+  return normalized ? normalized.toLowerCase() : "(unknown)";
+}
+
+function pathLeaf(path) {
+  const normalized = normalizeProjectCwd(path);
+  if (!normalized) {
+    return "";
+  }
+
+  const parts = normalized.split("/");
+  return parts.length > 0 ? parts[parts.length - 1] : normalized;
+}
+
+function getProjectDisplayName(project) {
+  if (!project) {
+    return "(unknown project)";
+  }
+
+  return pathLeaf(project.cwd) || "(unknown project)";
+}
+
 function getSessionUpdatedTick(session) {
   if (!session || !session.updatedAtUtc) {
     return 0;
@@ -45,55 +90,69 @@ function getSessionUpdatedTick(session) {
   return Number.isFinite(tick) ? tick : 0;
 }
 
-function getDirectoryInfo(session) {
-  const normalizedCwd = normalizePath(session?.cwd || "").replace(/\/+$/g, "");
-  if (!normalizedCwd) {
-    return { key: "(unknown)", label: "(unknown)" };
+function formatSessionSubtitle(session) {
+  const parts = [];
+  const tick = getSessionUpdatedTick(session);
+  if (tick > 0) {
+    parts.push(new Date(tick).toLocaleString());
   }
 
-  return {
-    key: normalizedCwd.toLowerCase(),
-    label: normalizedCwd
-  };
+  if (session.model) {
+    parts.push(session.model);
+  }
+
+  return parts.join(" | ");
 }
 
-function findDirectoryKeyByThreadId(threadId) {
-  if (!threadId) {
-    return null;
-  }
+function buildActionIcon(kind) {
+  const icon = document.createElement("i");
+  icon.setAttribute("aria-hidden", "true");
 
-  for (const group of directoryGroups) {
-    if (group.sessions.some((s) => s.threadId === threadId)) {
-      return group.key;
-    }
-  }
-
-  return null;
+  const iconClass = kind === "chevronRight" ? "bi-chevron-right" : "bi-chevron-down";
+  icon.className = `bi ${iconClass}`;
+  return icon;
 }
 
-function getDirectoryLabel(directoryKey) {
-  if (!directoryKey) {
-    return "";
-  }
-
-  const group = directoryGroups.find((x) => x.key === directoryKey);
-  return group ? group.label : directoryKey;
+function persistCollapsedProjectKeys() {
+  localStorage.setItem(STORAGE_COLLAPSED_PROJECTS_KEY, JSON.stringify(Array.from(collapsedProjectKeys)));
 }
 
-function rebuildDirectoryGroups() {
+function loadUiState() {
+  const selectedThread = localStorage.getItem(STORAGE_SELECTED_THREAD_KEY);
+  activeThreadId = selectedThread && selectedThread.trim() ? selectedThread.trim() : null;
+
+  const selectedProject = localStorage.getItem(STORAGE_SELECTED_PROJECT_KEY);
+  activeProjectKey = selectedProject && selectedProject.trim() ? selectedProject.trim() : null;
+
+  let collapsed = [];
+  try {
+    collapsed = JSON.parse(localStorage.getItem(STORAGE_COLLAPSED_PROJECTS_KEY) || "[]");
+  } catch {
+    collapsed = [];
+  }
+
+  collapsedProjectKeys = new Set(Array.isArray(collapsed) ? collapsed.filter((x) => typeof x === "string") : []);
+}
+
+function rebuildProjectGroups() {
   const map = new Map();
   for (const session of sessions) {
-    const info = getDirectoryInfo(session);
-    if (!map.has(info.key)) {
-      map.set(info.key, {
-        key: info.key,
-        label: info.label,
+    if (!session || !session.threadId) {
+      continue;
+    }
+
+    const cwd = normalizeProjectCwd(session.cwd || "");
+    const key = getProjectKeyFromCwd(cwd);
+    if (!map.has(key)) {
+      map.set(key, {
+        key,
+        cwd,
         sessions: [],
         latestTick: 0
       });
     }
 
-    const group = map.get(info.key);
+    const group = map.get(key);
     group.sessions.push(session);
     const tick = getSessionUpdatedTick(session);
     if (tick > group.latestTick) {
@@ -113,100 +172,276 @@ function rebuildDirectoryGroups() {
   groups.sort((a, b) => {
     const tickCompare = b.latestTick - a.latestTick;
     if (tickCompare !== 0) return tickCompare;
-    return a.label.localeCompare(b.label);
+    return getProjectDisplayName(a).localeCompare(getProjectDisplayName(b));
   });
 
-  directoryGroups = groups;
-  sessionsByDirectory = new Map(groups.map((group) => [group.key, group.sessions]));
+  projectGroups = groups;
+  sessionsByProjectKey = new Map(groups.map((group) => [group.key, group.sessions]));
 }
 
-function getSessionByThreadId(threadId) {
-  return sessions.find((s) => s.threadId === threadId) || null;
+function findProjectKeyByThreadId(threadId) {
+  if (!threadId) {
+    return null;
+  }
+
+  for (const group of projectGroups) {
+    if (group.sessions.some((x) => x.threadId === threadId)) {
+      return group.key;
+    }
+  }
+
+  return null;
 }
 
-function updateSessionSelectForActiveDirectory(preferredThreadId = null) {
-  const previous = watcherSessionSelect.value;
-  watcherSessionSelect.textContent = "";
-
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "(select session)";
-  watcherSessionSelect.appendChild(placeholder);
-
-  const scopedSessions = activeDirectoryKey && sessionsByDirectory.has(activeDirectoryKey)
-    ? sessionsByDirectory.get(activeDirectoryKey)
-    : [];
-
-  for (const session of scopedSessions) {
-    const option = document.createElement("option");
-    option.value = session.threadId || "";
-    const threadLabel = session.threadName || (session.threadId || "unknown").slice(0, 12);
-    const updated = session.updatedAtUtc ? ` | ${new Date(session.updatedAtUtc).toLocaleString()}` : "";
-    option.textContent = `${threadLabel}${updated}`;
-    option.title = `thread=${session.threadId || "unknown"} cwd=${session.cwd || "(unknown)"}`;
-    watcherSessionSelect.appendChild(option);
+function updateSelectionAfterSessionRefresh() {
+  if (projectGroups.length === 0) {
+    activeProjectKey = null;
+    activeThreadId = null;
+    return;
   }
 
-  let nextThreadId = null;
-  if (preferredThreadId && scopedSessions.some((s) => s.threadId === preferredThreadId)) {
-    nextThreadId = preferredThreadId;
-  } else if (previous && scopedSessions.some((s) => s.threadId === previous)) {
-    nextThreadId = previous;
-  } else if (scopedSessions.length > 0) {
-    nextThreadId = scopedSessions[0].threadId || null;
+  if (activeThreadId) {
+    const projectForThread = findProjectKeyByThreadId(activeThreadId);
+    if (projectForThread) {
+      activeProjectKey = projectForThread;
+      return;
+    }
   }
 
-  activeThreadId = nextThreadId;
-  watcherSessionSelect.value = nextThreadId || "";
+  if (activeProjectKey && sessionsByProjectKey.has(activeProjectKey)) {
+    const projectSessions = sessionsByProjectKey.get(activeProjectKey) || [];
+    activeThreadId = projectSessions.length > 0 ? projectSessions[0].threadId || null : null;
+    return;
+  }
+
+  const firstProject = projectGroups[0];
+  activeProjectKey = firstProject.key;
+  activeThreadId = firstProject.sessions.length > 0 ? firstProject.sessions[0].threadId || null : null;
 }
 
-function updateDirectoryAndSessionSelects(preferredDirectoryKey = null, preferredThreadId = null) {
-  const previousDirectory = watcherDirectorySelect.value;
-  watcherDirectorySelect.textContent = "";
-
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "(select directory)";
-  watcherDirectorySelect.appendChild(placeholder);
-
-  for (const group of directoryGroups) {
-    const option = document.createElement("option");
-    option.value = group.key;
-    option.textContent = `${group.label} (${group.sessions.length})`;
-    watcherDirectorySelect.appendChild(option);
+function renderProjectSidebar() {
+  if (!projectList) {
+    return;
   }
 
-  let nextDirectory = null;
-  if (preferredDirectoryKey && sessionsByDirectory.has(preferredDirectoryKey)) {
-    nextDirectory = preferredDirectoryKey;
-  } else if (preferredThreadId) {
-    nextDirectory = findDirectoryKeyByThreadId(preferredThreadId);
-  } else if (previousDirectory && sessionsByDirectory.has(previousDirectory)) {
-    nextDirectory = previousDirectory;
-  } else if (directoryGroups.length > 0) {
-    nextDirectory = directoryGroups[0].key;
+  projectList.textContent = "";
+  if (projectGroups.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sidebar-empty";
+    empty.textContent = "No session logs found.";
+    projectList.appendChild(empty);
+    return;
   }
 
-  activeDirectoryKey = nextDirectory;
-  watcherDirectorySelect.value = nextDirectory || "";
-  updateSessionSelectForActiveDirectory(preferredThreadId);
+  for (const group of projectGroups) {
+    const groupEl = document.createElement("div");
+    groupEl.className = "project-group";
+    if (collapsedProjectKeys.has(group.key)) {
+      groupEl.classList.add("collapsed");
+    }
+
+    const header = document.createElement("div");
+    header.className = "project-header";
+
+    const isCollapsed = collapsedProjectKeys.has(group.key);
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.className = "project-toggle";
+    toggleBtn.title = isCollapsed ? "Expand project" : "Collapse project";
+    toggleBtn.setAttribute("aria-label", toggleBtn.title);
+    toggleBtn.appendChild(buildActionIcon(isCollapsed ? "chevronRight" : "chevronDown"));
+    toggleBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (collapsedProjectKeys.has(group.key)) {
+        collapsedProjectKeys.delete(group.key);
+      } else {
+        collapsedProjectKeys.add(group.key);
+      }
+      persistCollapsedProjectKeys();
+      renderProjectSidebar();
+    });
+    header.appendChild(toggleBtn);
+
+    const nameWrap = document.createElement("div");
+    nameWrap.className = "project-name-wrap";
+    nameWrap.addEventListener("click", () => {
+      activeProjectKey = group.key;
+      localStorage.setItem(STORAGE_SELECTED_PROJECT_KEY, activeProjectKey);
+      renderProjectSidebar();
+    });
+
+    const name = document.createElement("div");
+    name.className = "project-name";
+    name.textContent = `${getProjectDisplayName(group)} (${group.sessions.length})`;
+    nameWrap.appendChild(name);
+
+    const path = document.createElement("div");
+    path.className = "project-path";
+    path.textContent = group.cwd || "(unknown cwd)";
+    nameWrap.appendChild(path);
+    header.appendChild(nameWrap);
+
+    groupEl.appendChild(header);
+
+    const sessionsWrap = document.createElement("div");
+    sessionsWrap.className = "project-sessions";
+    for (const session of group.sessions) {
+      const row = document.createElement("div");
+      row.className = "session-row";
+      if (session.threadId === activeThreadId) {
+        row.classList.add("active");
+      }
+
+      const head = document.createElement("div");
+      head.className = "session-row-head";
+
+      const openBtn = document.createElement("button");
+      openBtn.type = "button";
+      openBtn.className = "session-open-btn";
+      openBtn.title = session.threadId || "session";
+      openBtn.addEventListener("click", () => {
+        if (!session.threadId) {
+          return;
+        }
+
+        const changed = activeThreadId !== session.threadId;
+        activeThreadId = session.threadId;
+        activeProjectKey = group.key;
+        localStorage.setItem(STORAGE_SELECTED_THREAD_KEY, activeThreadId);
+        localStorage.setItem(STORAGE_SELECTED_PROJECT_KEY, activeProjectKey);
+        renderProjectSidebar();
+        if (changed) {
+          cursor = null;
+          timeline.clear();
+          restartPolling();
+        }
+
+        if (isMobileViewport()) {
+          setMobileProjectsOpen(false);
+        }
+      });
+
+      const title = document.createElement("div");
+      title.className = "session-title";
+      title.textContent = session.threadName || session.threadId || "(unknown thread)";
+      openBtn.appendChild(title);
+
+      const subtitle = document.createElement("div");
+      subtitle.className = "session-subtitle";
+      subtitle.textContent = formatSessionSubtitle(session);
+      openBtn.appendChild(subtitle);
+      head.appendChild(openBtn);
+
+      row.appendChild(head);
+      sessionsWrap.appendChild(row);
+    }
+
+    if (group.sessions.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "sidebar-empty";
+      empty.textContent = "No sessions in this project.";
+      sessionsWrap.appendChild(empty);
+    }
+
+    groupEl.appendChild(sessionsWrap);
+    projectList.appendChild(groupEl);
+  }
 }
 
-async function refreshSessionList() {
-  const previousThreadId = activeThreadId;
-  const previousDirectoryKey = activeDirectoryKey;
+function isMobileViewport() {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia("(max-width: 900px)").matches
+    : false;
+}
 
-  const sessionsUrl = new URL("api/logs/sessions", document.baseURI);
-  sessionsUrl.searchParams.set("limit", "20");
-  const response = await fetch(sessionsUrl, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error(`failed loading sessions (${response.status})`);
+function isMobileProjectsOpen() {
+  return !!layoutRoot && layoutRoot.classList.contains("mobile-projects-open");
+}
+
+function isSidebarCollapsed() {
+  return !!layoutRoot && layoutRoot.classList.contains("sidebar-collapsed");
+}
+
+function updateMobileProjectsButton() {
+  const mobile = isMobileViewport();
+  const open = mobile && isMobileProjectsOpen();
+
+  if (mobileProjectsBtn) {
+    mobileProjectsBtn.setAttribute("aria-expanded", open ? "true" : "false");
+    mobileProjectsBtn.title = open ? "Hide projects" : "Show projects";
+    mobileProjectsBtn.setAttribute("aria-label", mobileProjectsBtn.title);
   }
 
-  const data = await response.json();
-  sessions = Array.isArray(data.sessions) ? data.sessions : [];
-  rebuildDirectoryGroups();
-  updateDirectoryAndSessionSelects(previousDirectoryKey, previousThreadId);
+  if (sidebarToggleBtn) {
+    const icon = sidebarToggleBtn.querySelector("i");
+    if (mobile) {
+      sidebarToggleBtn.title = "Close projects";
+      sidebarToggleBtn.setAttribute("aria-label", "Close projects");
+      sidebarToggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
+      if (icon) {
+        icon.className = "bi bi-x-lg";
+      }
+      return;
+    }
+
+    const collapsed = isSidebarCollapsed();
+    const label = collapsed ? "Show projects" : "Hide projects";
+    sidebarToggleBtn.title = label;
+    sidebarToggleBtn.setAttribute("aria-label", label);
+    sidebarToggleBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    if (icon) {
+      icon.className = collapsed ? "bi bi-layout-sidebar-inset" : "bi bi-layout-sidebar-inset-reverse";
+    }
+  }
+}
+
+function setMobileProjectsOpen(isOpen) {
+  if (!layoutRoot) {
+    return;
+  }
+
+  const mobile = isMobileViewport();
+  const open = mobile ? !!isOpen : false;
+  layoutRoot.classList.toggle("mobile-projects-open", open);
+  if (sidebarBackdrop) {
+    sidebarBackdrop.classList.toggle("hidden", !open);
+  }
+
+  updateMobileProjectsButton();
+}
+
+function applySidebarCollapsed(isCollapsed) {
+  if (!layoutRoot) {
+    return;
+  }
+
+  if (isMobileViewport()) {
+    layoutRoot.classList.remove("sidebar-collapsed");
+    updateMobileProjectsButton();
+    return;
+  }
+
+  layoutRoot.classList.toggle("sidebar-collapsed", isCollapsed);
+  localStorage.setItem(STORAGE_SIDEBAR_COLLAPSED_KEY, isCollapsed ? "1" : "0");
+  updateMobileProjectsButton();
+}
+
+function pollContextLabel() {
+  if (!activeThreadId) {
+    return "";
+  }
+
+  for (const group of projectGroups) {
+    for (const session of group.sessions) {
+      if (session.threadId === activeThreadId) {
+        const projectName = getProjectDisplayName(group);
+        const sessionName = session.threadName || session.threadId;
+        return `${projectName} / ${sessionName}`;
+      }
+    }
+  }
+
+  return activeThreadId;
 }
 
 async function pollOnce(initial, generation) {
@@ -217,12 +452,7 @@ async function pollOnce(initial, generation) {
   pollInFlight = true;
   try {
     if (!activeThreadId) {
-      const directoryLabel = getDirectoryLabel(activeDirectoryKey);
-      if (directoryLabel) {
-        setStatus(`Watcher: no session selected in ${directoryLabel}.`);
-      } else {
-        setStatus("Watcher: no session selected.");
-      }
+      setStatus("Watcher (Disk): select a session to monitor its on-disk logs.");
       return;
     }
 
@@ -259,14 +489,13 @@ async function pollOnce(initial, generation) {
 
     cursor = typeof data.nextCursor === "number" ? data.nextCursor : cursor;
     timeline.enqueueParsedLines(Array.isArray(data.lines) ? data.lines : []);
+
     if (data.truncated === true) {
-      timeline.enqueueSystem("tail update truncated to latest lines");
+      timeline.enqueueInlineNotice("older lines are omitted, showing latest lines");
     }
 
-    const session = getSessionByThreadId(activeThreadId);
-    const directoryLabel = getDirectoryLabel(activeDirectoryKey);
-    const label = session?.threadName || activeThreadId;
-    setStatus(`Watcher: ${directoryLabel ? `${directoryLabel} / ` : ""}${label} | reconstructed updates every 2 seconds`);
+    const label = pollContextLabel();
+    setStatus(`Watcher (Disk): ${label || "(unknown)"} | update every 2 seconds`);
   } finally {
     pollInFlight = false;
   }
@@ -294,40 +523,106 @@ function restartPolling() {
   }, POLL_INTERVAL_MS);
 }
 
-watcherRefreshBtn.addEventListener("click", async () => {
-  try {
-    await refreshSessionList();
-    cursor = null;
-    timeline.clear();
-    restartPolling();
-  } catch (error) {
-    timeline.enqueueSystem(`[error] ${error}`);
-    setStatus("Unable to refresh sessions.");
+async function refreshSessionList() {
+  const priorThread = activeThreadId;
+  const priorProject = activeProjectKey;
+
+  const url = new URL("api/logs/sessions", document.baseURI);
+  url.searchParams.set("limit", "200");
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`failed loading sessions (${response.status})`);
   }
-});
 
-watcherDirectorySelect.addEventListener("change", () => {
-  activeDirectoryKey = watcherDirectorySelect.value || null;
-  updateSessionSelectForActiveDirectory(null);
-  cursor = null;
-  timeline.clear();
-  restartPolling();
-});
+  const data = await response.json();
+  sessions = Array.isArray(data.sessions) ? data.sessions : [];
+  rebuildProjectGroups();
 
-watcherSessionSelect.addEventListener("change", () => {
-  activeThreadId = watcherSessionSelect.value || null;
-  cursor = null;
-  timeline.clear();
-  restartPolling();
-});
+  activeThreadId = priorThread;
+  activeProjectKey = priorProject;
+  updateSelectionAfterSessionRefresh();
+  renderProjectSidebar();
 
-flushTimer = setInterval(() => timeline.flush(), POLL_INTERVAL_MS);
+  if (activeThreadId) {
+    localStorage.setItem(STORAGE_SELECTED_THREAD_KEY, activeThreadId);
+  } else {
+    localStorage.removeItem(STORAGE_SELECTED_THREAD_KEY);
+  }
+
+  if (activeProjectKey) {
+    localStorage.setItem(STORAGE_SELECTED_PROJECT_KEY, activeProjectKey);
+  } else {
+    localStorage.removeItem(STORAGE_SELECTED_PROJECT_KEY);
+  }
+}
+
+function wireUiEvents() {
+  if (mobileProjectsBtn) {
+    mobileProjectsBtn.addEventListener("click", () => {
+      setMobileProjectsOpen(!isMobileProjectsOpen());
+    });
+  }
+
+  if (sidebarBackdrop) {
+    sidebarBackdrop.addEventListener("click", () => {
+      setMobileProjectsOpen(false);
+    });
+  }
+
+  if (sidebarToggleBtn) {
+    sidebarToggleBtn.addEventListener("click", () => {
+      if (isMobileViewport()) {
+        setMobileProjectsOpen(false);
+        return;
+      }
+
+      applySidebarCollapsed(!isSidebarCollapsed());
+    });
+  }
+
+  window.addEventListener("resize", () => {
+    if (isMobileViewport()) {
+      layoutRoot?.classList.remove("sidebar-collapsed");
+    } else {
+      setMobileProjectsOpen(false);
+      const saved = localStorage.getItem(STORAGE_SIDEBAR_COLLAPSED_KEY) === "1";
+      applySidebarCollapsed(saved);
+    }
+    updateMobileProjectsButton();
+  });
+}
+
+function startBackgroundRefresh() {
+  if (sessionRefreshTimer) {
+    clearInterval(sessionRefreshTimer);
+    sessionRefreshTimer = null;
+  }
+
+  sessionRefreshTimer = setInterval(() => {
+    refreshSessionList().catch((error) => {
+      timeline.enqueueSystem(`[error] ${error}`);
+    });
+  }, SESSION_LIST_REFRESH_MS);
+}
+
+function initializeSidebarState() {
+  const savedCollapsed = localStorage.getItem(STORAGE_SIDEBAR_COLLAPSED_KEY) === "1";
+  applySidebarCollapsed(savedCollapsed);
+  setMobileProjectsOpen(false);
+  updateMobileProjectsButton();
+}
+
+flushTimer = setInterval(() => timeline.flush(), FLUSH_INTERVAL_MS);
+loadUiState();
+wireUiEvents();
+initializeSidebarState();
 
 (async () => {
   setStatus("Loading recent sessions...");
   try {
     await refreshSessionList();
     restartPolling();
+    startBackgroundRefresh();
   } catch (error) {
     timeline.enqueueSystem(`[error] ${error}`);
     setStatus("Watcher initialization failed.");

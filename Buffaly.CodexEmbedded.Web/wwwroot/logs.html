@@ -4,26 +4,54 @@
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>Codex Logs</title>
-	<link rel="stylesheet" href="site.css">
+	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
+	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+	<link rel="stylesheet" href="site.css?v=20260222-logsselector2">
 </head>
 <body>
 	<div class="layout">
-		<header class="toolbar">
-			<div class="toolbar-left">
-				<a class="toolbar-link" href="./">Codex</a>
-				<a class="toolbar-link active" href="logs">Logs</a>
-				<a class="toolbar-link" href="watcher">Watcher</a>
-			</div>
-			<div class="toolbar-right"></div>
-		</header>
-		<main class="main logs-main">
-			<section class="panel">
-				<div class="panel-title">Realtime Logs</div>
-				<div id="logsStatus" class="logs-status">Watching current session log every 2 seconds.</div>
+		<button id="mobileProjectsBtn" class="toolbar-mobile-projects-btn" type="button" title="Show projects" aria-label="Show projects" aria-expanded="false">
+			<i class="bi bi-layout-sidebar-inset-reverse" aria-hidden="true"></i>
+			<span>Projects</span>
+		</button>
+		<main class="main codex-main">
+			<aside id="sessionSidebar" class="panel session-sidebar">
+				<div class="sidebar-shell-header">
+					<a class="sidebar-logo-btn" href="https://buffa.ly/?utm_source=codexembedded&utm_medium=logs_logo&utm_campaign=sidebar" target="_blank" rel="noopener" title="Made by the Buffaly team - learn more" aria-label="Made by the Buffaly team - learn more">
+						<img class="sidebar-logo-image" src="images/bf_logo_fav_Large.png" alt="">
+					</a>
+					<button id="sidebarToggleBtn" type="button" class="sidebar-collapse-btn sidebar-shell-toggle-btn" title="Hide projects" aria-label="Hide projects">
+						<i class="bi bi-layout-sidebar-inset-reverse" aria-hidden="true"></i>
+					</button>
+				</div>
+				<nav class="sidebar-nav" aria-label="Main navigation">
+					<a class="sidebar-nav-link" href="./">
+						<i class="bi bi-chat-square-text" aria-hidden="true"></i>
+						<span>Codex</span>
+					</a>
+					<a class="sidebar-nav-link active" href="logs" aria-current="page">
+						<i class="bi bi-journal-text" aria-hidden="true"></i>
+						<span>Logs</span>
+					</a>
+					<a class="sidebar-nav-link" href="watcher">
+						<i class="bi bi-eye" aria-hidden="true"></i>
+						<span>Watcher</span>
+					</a>
+				</nav>
+				<div class="sidebar-divider" aria-hidden="true"></div>
+				<div id="projectList" class="project-list"></div>
+			</aside>
+			<section class="panel chat-panel">
+				<div class="panel-title">Session Logs</div>
+				<div class="logs-help-text">
+					Select a project and session on the left to inspect that session log file from disk.
+				</div>
+				<div id="logsStatus" class="logs-status">Loading sessions...</div>
 				<pre id="logsOutput" class="log-output"></pre>
 			</section>
 		</main>
+		<button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close projects"></button>
 	</div>
-	<script src="logs.js"></script>
+	<script src="logs.js?v=20260222-logsselector2"></script>
 </body>
 </html>
