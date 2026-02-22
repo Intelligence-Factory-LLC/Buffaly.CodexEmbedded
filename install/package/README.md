@@ -30,11 +30,26 @@ Installer runs non-blocking Codex preflight checks and prints warnings if Codex 
 After install, open a new terminal and use:
 
 ```powershell
-buffaly-codex run --prompt "Say hello in one sentence"
 buffaly-codex-web
 ```
 
 When web starts, open the URL shown after `Now listening on:`.
+
+## Troubleshooting quick checks
+
+If web does not start correctly, run these checks in a new terminal:
+
+1. Test that Codex is installed:
+
+```powershell
+codex --version
+```
+
+2. Try the non-web command to confirm the CLI wrapper works:
+
+```powershell
+buffaly-codex run --prompt "Say hello in one sentence"
+```
 
 ## Update
 

@@ -32,6 +32,7 @@
       this.latestTurnModel = "";
       this.taskModelById = new Map(); // taskId -> model
       this.currentSessionModel = "";
+      this.visibleActionEntryId = null;
 
       this.container.addEventListener("scroll", () => {
         this.autoScrollPinned = this.isNearBottom();
@@ -302,6 +303,7 @@
       this.taskModelById.clear();
       this.currentSessionModel = "";
       this.autoScrollPinned = true;
+      this.visibleActionEntryId = null;
     }
 
     isNearBottom() {
@@ -461,14 +463,26 @@
 
       if (this.pendingEntries.length > 0) {
         for (const entry of this.pendingEntries) {
-          this.appendEntryNode(entry);
+          try {
+            this.appendEntryNode(entry);
+          } catch (error) {
+            if (typeof console !== "undefined" && typeof console.error === "function") {
+              console.error("timeline append failed", error, entry);
+            }
+          }
         }
         this.pendingEntries = [];
       }
 
       if (this.pendingUpdatedEntries.size > 0) {
         for (const entry of this.pendingUpdatedEntries.values()) {
-          this.updateEntryNode(entry);
+          try {
+            this.updateEntryNode(entry);
+          } catch (error) {
+            if (typeof console !== "undefined" && typeof console.error === "function") {
+              console.error("timeline update failed", error, entry);
+            }
+          }
         }
         this.pendingUpdatedEntries.clear();
       }
@@ -478,7 +492,13 @@
         this.autoScrollPinned = true;
       }
 
-      this.container.dispatchEvent(new CustomEvent("codex:timeline-updated"));
+      try {
+        this.container.dispatchEvent(new CustomEvent("codex:timeline-updated"));
+      } catch (error) {
+        if (typeof console !== "undefined" && typeof console.error === "function") {
+          console.error("timeline update event failed", error);
+        }
+      }
     }
 
     tryParseJson(text) {
@@ -880,6 +900,187 @@
       return this.isNarrowViewport() && entry && entry.role === "tool";
     }
 
+    hasActiveTextSelection() {
+      if (typeof window === "undefined" || typeof window.getSelection !== "function") {
+        return false;
+      }
+
+      return String(window.getSelection() || "").trim().length > 0;
+    }
+
+    setEntryActionsVisible(entryId, visible) {
+      const node = this.entryNodeById.get(entryId);
+      if (!node || node.compact || !node.card) {
+        return;
+      }
+
+      node.card.classList.toggle("watcher-entry-actions-visible", visible);
+      if (visible) {
+        this.visibleActionEntryId = entryId;
+      } else if (this.visibleActionEntryId === entryId) {
+        this.visibleActionEntryId = null;
+      }
+    }
+
+    hideEntryActions(exceptEntryId = null) {
+      for (const [entryId, node] of this.entryNodeById.entries()) {
+        if (!node || node.compact || !node.card) {
+          continue;
+        }
+
+        if (exceptEntryId !== null && entryId === exceptEntryId) {
+          continue;
+        }
+
+        node.card.classList.remove("watcher-entry-actions-visible");
+      }
+
+      if (exceptEntryId === null) {
+        this.visibleActionEntryId = null;
+      }
+    }
+
+    toggleEntryActions(entryId) {
+      const node = this.entryNodeById.get(entryId);
+      if (!node || node.compact || !node.card) {
+        return;
+      }
+
+      const currentlyVisible = node.card.classList.contains("watcher-entry-actions-visible");
+      this.hideEntryActions(currentlyVisible ? null : entryId);
+      this.setEntryActionsVisible(entryId, !currentlyVisible);
+    }
+
+    getCopyTextForEntry(entry) {
+      if (!entry) {
+        return "";
+      }
+
+      const bodyText = this.getEntryBodyText(entry);
+      if (bodyText && bodyText.trim().length > 0) {
+        return bodyText;
+      }
+
+      const imageUrls = Array.isArray(entry.images)
+        ? entry.images.filter((x) => typeof x === "string" && x.trim().length > 0)
+        : [];
+      return imageUrls.join("\n");
+    }
+
+    async copyTextToClipboard(text) {
+      if (!text) {
+        return false;
+      }
+
+      if (typeof navigator !== "undefined"
+        && navigator.clipboard
+        && typeof navigator.clipboard.writeText === "function") {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch (error) {
+          // Fall through to a legacy path when clipboard permissions are unavailable.
+        }
+      }
+
+      if (typeof document === "undefined" || typeof document.execCommand !== "function") {
+        return false;
+      }
+
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.setAttribute("readonly", "readonly");
+      textArea.style.position = "fixed";
+      textArea.style.top = "-9999px";
+      textArea.style.left = "-9999px";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+
+      let copied = false;
+      try {
+        copied = document.execCommand("copy");
+      } catch (error) {
+        copied = false;
+      }
+
+      textArea.remove();
+      return copied;
+    }
+
+    createEntryActionButton(entryId) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "watcher-entry-copy-btn";
+      button.setAttribute("aria-label", "Copy message");
+      button.title = "Copy message";
+
+      const icon = document.createElement("i");
+      icon.className = "bi bi-copy watcher-entry-copy-icon";
+      icon.setAttribute("aria-hidden", "true");
+      button.appendChild(icon);
+
+      button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const node = this.entryNodeById.get(entryId);
+        const textToCopy = this.getCopyTextForEntry(node?.entry || null);
+        if (!textToCopy) {
+          return;
+        }
+
+        const copied = await this.copyTextToClipboard(textToCopy);
+        if (!copied) {
+          return;
+        }
+
+        button.classList.add("is-copied");
+        button.setAttribute("aria-label", "Copied");
+        button.title = "Copied";
+        setTimeout(() => {
+          if (!button.isConnected) {
+            return;
+          }
+
+          button.classList.remove("is-copied");
+          button.setAttribute("aria-label", "Copy message");
+          button.title = "Copy message";
+        }, 1200);
+      });
+
+      return button;
+    }
+
+    createEntryActions(card, entry) {
+      const actions = document.createElement("div");
+      actions.className = "watcher-entry-actions";
+      const copyActionButton = this.createEntryActionButton(entry.id);
+      actions.appendChild(copyActionButton);
+      card.appendChild(actions);
+
+      card.addEventListener("click", (event) => {
+        const target = event?.target;
+        if (target && typeof target.closest === "function") {
+          if (target.closest(".watcher-entry-copy-btn")) {
+            return;
+          }
+
+          if (target.closest("summary")) {
+            return;
+          }
+        }
+
+        if (this.hasActiveTextSelection()) {
+          return;
+        }
+
+        this.toggleEntryActions(entry.id);
+      });
+
+      return copyActionButton;
+    }
+
     createBodyNodeForEntry(card, entry, bodyText) {
       if (!bodyText) {
         return { body: null, detailsWrap: null };
@@ -1228,6 +1429,9 @@
         if (Number.isFinite(oldestId)) {
           this.entryNodeById.delete(oldestId);
           this.removeToolMappingsForEntryId(oldestId);
+          if (this.visibleActionEntryId === oldestId) {
+            this.visibleActionEntryId = null;
+          }
         }
       }
     }
@@ -1286,6 +1490,7 @@
     }
 
     appendEntryNode(entry) {
+      try {
       if (entry.compact) {
         const row = document.createElement("div");
         row.className = "watcher-inline-entry";
@@ -1372,11 +1577,26 @@
         const bodyNode = this.createBodyNodeForEntry(wrap, entry, bodyText);
         const body = bodyNode.body;
         const imagesWrap = this.renderEntryImages(wrap, entry.images || []);
+        let copyActionButton = null;
+        try {
+          copyActionButton = this.createEntryActions(wrap, entry);
+        } catch (error) {
+          copyActionButton = null;
+        }
 
         this.container.appendChild(wrap);
         entry.rendered = true;
         this.renderCount += 1;
-        const node = { card: wrap, body, time: null, compact: false, imagesWrap, detailsWrap: bodyNode.detailsWrap, entry };
+        const node = {
+          card: wrap,
+          body,
+          time: null,
+          compact: false,
+          imagesWrap,
+          detailsWrap: bodyNode.detailsWrap,
+          copyActionButton,
+          entry
+        };
         this.entryNodeById.set(entry.id, node);
         this.applyTaskVisibility(node, entry);
         this.trimIfNeeded();
@@ -1415,14 +1635,52 @@
       const body = bodyNode.body;
 
       const imagesWrap = this.renderEntryImages(card, entry.images || []);
+      let copyActionButton = null;
+      try {
+        copyActionButton = this.createEntryActions(card, entry);
+      } catch (error) {
+        copyActionButton = null;
+      }
 
       this.container.appendChild(card);
       entry.rendered = true;
       this.renderCount += 1;
-      const node = { card, body, time, compact: false, imagesWrap, detailsWrap: bodyNode.detailsWrap, entry };
+      const node = {
+        card,
+        body,
+        time,
+        compact: false,
+        imagesWrap,
+        detailsWrap: bodyNode.detailsWrap,
+        copyActionButton,
+        entry
+      };
       this.entryNodeById.set(entry.id, node);
       this.applyTaskVisibility(node, entry);
       this.trimIfNeeded();
+      } catch (error) {
+        if (typeof console !== "undefined" && typeof console.error === "function") {
+          console.error("timeline appendEntryNode failed", error, entry);
+        }
+
+        const fallback = document.createElement("div");
+        fallback.className = "watcher-inline-entry watcher-inline-note";
+        fallback.dataset.entryId = String(entry?.id || "");
+        fallback.textContent = `[render warning] ${entry?.title || entry?.role || "entry"} could not be displayed`;
+        this.container.appendChild(fallback);
+
+        if (entry && typeof entry === "object") {
+          entry.rendered = true;
+          this.renderCount += 1;
+          const node = { card: fallback, body: fallback, time: null, compact: true, taskToggle: null, entry };
+          this.entryNodeById.set(entry.id, node);
+          this.applyTaskVisibility(node, entry);
+        } else {
+          this.renderCount += 1;
+        }
+
+        this.trimIfNeeded();
+      }
     }
 
     updateEntryNode(entry) {

@@ -1187,6 +1187,8 @@ body {
 	border-left-width: 4px;
 	border-radius: 8px;
 	padding: 0.55rem 0.7rem;
+	padding-right: 2.5rem;
+	position: relative;
 }
 
 .watcher-entry.user {
@@ -1307,6 +1309,67 @@ body {
 	gap: 0.45rem;
 }
 
+.watcher-entry-actions {
+	position: absolute;
+	top: 0.35rem;
+	right: 0.35rem;
+	display: inline-flex;
+	align-items: center;
+	opacity: 0;
+	pointer-events: none;
+	transform: translateY(-2px);
+	transition: opacity 0.14s ease, transform 0.14s ease;
+	z-index: 1;
+}
+
+.watcher-entry-copy-btn {
+	width: 1.48rem;
+	height: 1.48rem;
+	border: 1px solid #d1d5db;
+	border-radius: 999px;
+	background: #ffffff;
+	color: #334155;
+	padding: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
+.watcher-entry-copy-btn:hover {
+	border-color: #94a3b8;
+	background: #ffffff;
+	color: #0f172a;
+}
+
+.watcher-entry-copy-btn:focus-visible {
+	outline: 2px solid #60a5fa;
+	outline-offset: 1px;
+}
+
+.watcher-entry-copy-btn.is-copied {
+	border-color: #10b981;
+	background: #ecfdf5;
+	color: #047857;
+}
+
+.watcher-entry-copy-icon {
+	font-size: 0.76rem;
+	line-height: 1;
+}
+
+.watcher-entry-copy-label {
+	display: none;
+}
+
+.watcher-entry.watcher-entry-actions-visible .watcher-entry-actions,
+.watcher-embedded-entry.watcher-entry-actions-visible .watcher-entry-actions {
+	opacity: 1;
+	pointer-events: auto;
+	transform: translateY(0);
+}
+
 .watcher-entry-image {
 	width: 120px;
 	height: 90px;
@@ -1325,6 +1388,8 @@ body {
 
 .watcher-embedded-entry {
 	margin: 0.3rem 0;
+	padding-right: 2rem;
+	position: relative;
 }
 
 .watcher-embedded-entry .watcher-entry-collapsible {
@@ -1650,6 +1715,7 @@ body {
 
 	.watcher-entry {
 		padding: 0.38rem 0.45rem;
+		padding-right: 2.05rem;
 		border-left-width: 3px;
 		border-radius: 6px;
 	}
@@ -1670,6 +1736,24 @@ body {
 	.watcher-entry-text {
 		font-size: 0.77rem;
 		line-height: 1.3;
+	}
+
+	.watcher-entry-copy-btn {
+		width: 1.36rem;
+		height: 1.36rem;
+		padding: 0;
+	}
+
+	.watcher-entry-copy-icon {
+		font-size: 0.72rem;
+	}
+
+	.watcher-entry-copy-label {
+		display: none;
+	}
+
+	.watcher-embedded-entry {
+		padding-right: 1.85rem;
 	}
 
 	.watcher-inline-entry {
