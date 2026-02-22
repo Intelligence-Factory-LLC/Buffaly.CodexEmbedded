@@ -98,19 +98,27 @@ public sealed class CodexCoreUtilitiesTests
 				"@echo off\r\necho arg=%1\r\n",
 				System.Text.Encoding.ASCII);
 
-			var existingPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
 			var options = new CodexClientOptions
 			{
-				CodexPath = "codex",
-				WorkingDirectory = root,
-				EnvironmentVariables = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-				{
-					["PATH"] = $"{root};{existingPath}"
-				}
+				// Use the explicit shim path so this test never launches a real codex install.
+				CodexPath = shimPath,
+				WorkingDirectory = root
 			};
 
 			await using var transport = await ProcessJsonlTransport.StartAsync(options, CancellationToken.None);
-			var stdoutLine = await transport.ReadStdoutLineAsync(CancellationToken.None);
+			string? stdoutLine;
+			using (var readCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+			{
+				try
+				{
+					stdoutLine = await transport.ReadStdoutLineAsync(readCts.Token);
+				}
+				catch (OperationCanceledException)
+				{
+					Assert.Fail("Timed out waiting for cmd shim stdout.");
+					return;
+				}
+			}
 
 			Assert.IsTrue((stdoutLine ?? string.Empty).Contains("arg=app-server", StringComparison.OrdinalIgnoreCase));
 		}

@@ -49,6 +49,39 @@ public sealed class InMemoryCodexClientTests
 		}
 	}
 
+	[TestMethod]
+	public async Task CreateSession_SendManyQuickTurns_DoesNotDropDeltaText()
+	{
+		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+		await using var transport = new InMemoryJsonlTransport();
+		var server = new FakeAppServer(transport);
+		var serverTask = server.RunAsync(cts.Token);
+
+		await using var client = await CodexClient.ConnectAsync(transport, cts.Token);
+		var session = await client.CreateSessionAsync(new CodexSessionCreateOptions
+		{
+			Cwd = "C:\\tmp",
+			Model = "fake-model"
+		}, cts.Token);
+
+		for (var i = 0; i < 25; i++)
+		{
+			var result = await session.SendMessageAsync($"msg-{i}", cancellationToken: cts.Token);
+			Assert.AreEqual("completed", result.Status);
+			Assert.AreEqual(i == 0 ? "Hello from fake server." : "Second turn ok.", result.Text);
+		}
+
+		cts.Cancel();
+		try
+		{
+			await serverTask;
+		}
+		catch
+		{
+		}
+	}
+
 	private sealed class FakeAppServer
 	{
 		private readonly InMemoryJsonlTransport _transport;

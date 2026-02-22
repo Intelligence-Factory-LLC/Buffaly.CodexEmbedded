@@ -11,6 +11,8 @@ public sealed class CodexClient : IAsyncDisposable
 	private readonly JsonRpcJsonlClient _rpc;
 	private readonly SemaphoreSlim _initializeLock = new(1, 1);
 	private readonly ConcurrentDictionary<string, TurnTracker> _turnsByTurnId = new(StringComparer.Ordinal);
+	private readonly object _bufferedTurnNotificationsLock = new();
+	private readonly Dictionary<string, List<TurnNotification>> _bufferedTurnNotificationsByTurnId = new(StringComparer.Ordinal);
 	private readonly Func<CodexServerRequest, CancellationToken, Task<object?>>? _serverRequestHandler;
 	private bool _initialized;
 
@@ -202,6 +204,60 @@ public sealed class CodexClient : IAsyncDisposable
 		return null;
 	}
 
+	private void RouteTurnNotification(string turnId, TurnNotification notification)
+	{
+		if (_turnsByTurnId.TryGetValue(turnId, out var tracker))
+		{
+			tracker.EnqueueNotification(notification);
+			return;
+		}
+
+		BufferTurnNotification(turnId, notification);
+
+		// Close the small race where a tracker is added after the first lookup.
+		if (_turnsByTurnId.TryGetValue(turnId, out tracker))
+		{
+			var buffered = TakeBufferedTurnNotifications(turnId);
+			if (buffered.Count == 0)
+			{
+				return;
+			}
+
+			foreach (var bufferedNotification in buffered)
+			{
+				tracker.EnqueueNotification(bufferedNotification);
+			}
+		}
+	}
+
+	private void BufferTurnNotification(string turnId, TurnNotification notification)
+	{
+		lock (_bufferedTurnNotificationsLock)
+		{
+			if (!_bufferedTurnNotificationsByTurnId.TryGetValue(turnId, out var notifications))
+			{
+				notifications = new List<TurnNotification>();
+				_bufferedTurnNotificationsByTurnId[turnId] = notifications;
+			}
+
+			notifications.Add(notification);
+		}
+	}
+
+	private IReadOnlyList<TurnNotification> TakeBufferedTurnNotifications(string turnId)
+	{
+		lock (_bufferedTurnNotificationsLock)
+		{
+			if (!_bufferedTurnNotificationsByTurnId.TryGetValue(turnId, out var notifications))
+			{
+				return Array.Empty<TurnNotification>();
+			}
+
+			_bufferedTurnNotificationsByTurnId.Remove(turnId);
+			return notifications;
+		}
+	}
+
 	internal async Task<CodexTurnResult> SendMessageAsync(
 		string threadId,
 		string text,
@@ -262,6 +318,7 @@ public sealed class CodexClient : IAsyncDisposable
 		{
 			throw new InvalidOperationException($"Duplicate turn id '{turnId}'.");
 		}
+		tracker.Prime(TakeBufferedTurnNotifications(turnId));
 
 		try
 		{
@@ -290,9 +347,9 @@ public sealed class CodexClient : IAsyncDisposable
 					var turnId = JsonPath.TryGetString(paramsElement, "turnId");
 					var threadId = JsonPath.TryGetString(paramsElement, "threadId");
 
-					if (!string.IsNullOrEmpty(delta) && !string.IsNullOrEmpty(turnId) && _turnsByTurnId.TryGetValue(turnId, out var tracker))
+					if (!string.IsNullOrEmpty(delta) && !string.IsNullOrEmpty(turnId))
 					{
-						tracker.OnDelta(delta, threadId);
+						RouteTurnNotification(turnId, TurnNotification.ForDelta(threadId, delta));
 					}
 					return;
 				}
@@ -311,11 +368,9 @@ public sealed class CodexClient : IAsyncDisposable
 
 					var status = JsonPath.TryGetString(paramsElement, "turn", "status") ?? "unknown";
 					var errorMessage = JsonPath.TryGetString(paramsElement, "turn", "error", "message");
+					var threadId = JsonPath.TryGetString(paramsElement, "threadId");
 
-					if (_turnsByTurnId.TryGetValue(turnId, out var tracker))
-					{
-						tracker.OnCompleted(status, errorMessage);
-					}
+					RouteTurnNotification(turnId, TurnNotification.ForCompleted(threadId, status, errorMessage));
 
 					return;
 				}
@@ -391,11 +446,47 @@ public sealed class CodexClient : IAsyncDisposable
 		await _rpc.DisposeAsync();
 	}
 
+	private enum TurnNotificationKind
+	{
+		Delta,
+		Completed
+	}
+
+	private readonly struct TurnNotification
+	{
+		public TurnNotificationKind Kind { get; }
+		public string? ThreadId { get; }
+		public string? Delta { get; }
+		public string Status { get; }
+		public string? ErrorMessage { get; }
+
+		private TurnNotification(TurnNotificationKind kind, string? threadId, string? delta, string status, string? errorMessage)
+		{
+			Kind = kind;
+			ThreadId = threadId;
+			Delta = delta;
+			Status = status;
+			ErrorMessage = errorMessage;
+		}
+
+		public static TurnNotification ForDelta(string? threadId, string delta)
+		{
+			return new TurnNotification(TurnNotificationKind.Delta, threadId, delta, "unknown", errorMessage: null);
+		}
+
+		public static TurnNotification ForCompleted(string? threadId, string status, string? errorMessage)
+		{
+			return new TurnNotification(TurnNotificationKind.Completed, threadId, delta: null, status, errorMessage);
+		}
+	}
+
 	private sealed class TurnTracker
 	{
 		private readonly StringBuilder _text = new();
 		private readonly object _lock = new();
+		private readonly List<TurnNotification> _queuedNotifications = new();
 		private string? _lastError;
+		private bool _isPrimed;
 
 		public string ThreadId { get; }
 		public string TurnId { get; }
@@ -409,14 +500,48 @@ public sealed class CodexClient : IAsyncDisposable
 			Progress = progress;
 		}
 
-		public void OnDelta(string delta, string? threadId)
+		public void Prime(IReadOnlyList<TurnNotification> bufferedNotifications)
 		{
 			lock (_lock)
 			{
-				_text.Append(delta);
-			}
+				if (_isPrimed)
+				{
+					return;
+				}
 
-			Progress?.Report(new CodexDelta(threadId ?? ThreadId, TurnId, delta));
+				if (bufferedNotifications.Count > 0)
+				{
+					if (_queuedNotifications.Count == 0)
+					{
+						_queuedNotifications.AddRange(bufferedNotifications);
+					}
+					else
+					{
+						_queuedNotifications.InsertRange(0, bufferedNotifications);
+					}
+				}
+
+				_isPrimed = true;
+				foreach (var notification in _queuedNotifications)
+				{
+					ApplyNotificationLocked(notification);
+				}
+				_queuedNotifications.Clear();
+			}
+		}
+
+		public void EnqueueNotification(TurnNotification notification)
+		{
+			lock (_lock)
+			{
+				if (!_isPrimed)
+				{
+					_queuedNotifications.Add(notification);
+					return;
+				}
+
+				ApplyNotificationLocked(notification);
+			}
 		}
 
 		public void OnError(string message)
@@ -427,18 +552,31 @@ public sealed class CodexClient : IAsyncDisposable
 			}
 		}
 
-		public void OnCompleted(string status, string? errorMessage)
+		private void ApplyNotificationLocked(TurnNotification notification)
 		{
-			string aggregated;
-			string? lastError;
-			lock (_lock)
+			switch (notification.Kind)
 			{
-				aggregated = _text.ToString();
-				lastError = _lastError;
-			}
+				case TurnNotificationKind.Delta:
+				{
+					if (string.IsNullOrEmpty(notification.Delta))
+					{
+						return;
+					}
 
-			var finalError = errorMessage ?? lastError;
-			Completion.TrySetResult(new CodexTurnResult(ThreadId, TurnId, status, finalError, aggregated));
+					_text.Append(notification.Delta);
+					Progress?.Report(new CodexDelta(notification.ThreadId ?? ThreadId, TurnId, notification.Delta));
+					return;
+				}
+				case TurnNotificationKind.Completed:
+				{
+					var aggregated = _text.ToString();
+					var finalError = notification.ErrorMessage ?? _lastError;
+					Completion.TrySetResult(new CodexTurnResult(ThreadId, TurnId, notification.Status, finalError, aggregated));
+					return;
+				}
+				default:
+					return;
+			}
 		}
 	}
 }
