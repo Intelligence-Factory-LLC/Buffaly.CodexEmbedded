@@ -1265,6 +1265,18 @@ body {
 	border-radius: 999px !important;
 	font-size: 0.74rem;
 	font-weight: 600;
+	color: #ffffff !important;
+	background: #1d4ed8 !important;
+	border-color: #1e40af !important;
+}
+
+.server-refresh-btn:hover {
+	background: #1e40af !important;
+}
+
+.server-refresh-btn:focus-visible {
+	outline: 2px solid #93c5fd;
+	outline-offset: 1px;
 }
 
 .server-meta {
