@@ -146,35 +146,6 @@
       };
     }
 
-    detectContextCompressionLabelFromPayload(payload) {
-      const parsed = this.readTokenCountInfo(payload);
-      if (!parsed) {
-        return "";
-      }
-
-      const prior = this.latestContextUsage;
-      if (!prior || !Number.isFinite(prior.usedTokens) || !Number.isFinite(prior.contextWindow) || prior.contextWindow <= 0) {
-        return "";
-      }
-
-      if (!Number.isFinite(parsed.usedTokens) || !Number.isFinite(parsed.contextWindow) || parsed.contextWindow <= 0) {
-        return "";
-      }
-
-      const windowRatio = parsed.contextWindow > 0 ? Math.abs(parsed.contextWindow - prior.contextWindow) / parsed.contextWindow : 0;
-      if (windowRatio > 0.1) {
-        return "";
-      }
-
-      const drop = prior.usedTokens - parsed.usedTokens;
-      const dropPercentOfWindow = drop / parsed.contextWindow;
-      if (drop < 2000 || dropPercentOfWindow < 0.08) {
-        return "";
-      }
-
-      return `Context compressed (${drop.toLocaleString()} tokens reclaimed, ${parsed.percentLeft}% context left)`;
-    }
-
     updateLatestContextUsageFromPayload(payload) {
       const parsed = this.readTokenCountInfo(payload);
       if (parsed) {
@@ -1458,13 +1429,36 @@
 
       const eventType = payload.type || "";
       if (eventType === "token_count") {
-        const compressionLabel = this.detectContextCompressionLabelFromPayload(payload);
         this.updateLatestContextUsageFromPayload(payload);
-        if (!compressionLabel) {
-          return null;
-        }
+        return null;
+      }
 
-        const entry = this.createEntry("system", "Context Compression", compressionLabel, timestamp, eventType);
+      if (eventType === "thread_compacted" || eventType === "thread/compacted") {
+        this.updateLatestContextUsageFromPayload(payload);
+        const reclaimedRaw = Number(
+          payload.reclaimedTokens
+          ?? payload.reclaimed_tokens
+          ?? payload.tokensReclaimed
+          ?? payload.tokens_reclaimed
+          ?? NaN
+        );
+        const reclaimed = Number.isFinite(reclaimedRaw) && reclaimedRaw >= 0
+          ? Math.round(reclaimedRaw)
+          : null;
+        const contextLeftLabel = this.formatLatestContextLeftLabel();
+        const parts = [];
+        if (typeof payload.summary === "string" && payload.summary.trim()) {
+          parts.push(payload.summary.trim());
+        } else {
+          parts.push("Context compressed");
+        }
+        if (reclaimed !== null && reclaimed > 0) {
+          parts.push(`${reclaimed.toLocaleString()} tokens reclaimed`);
+        }
+        if (contextLeftLabel) {
+          parts.push(contextLeftLabel);
+        }
+        const entry = this.createEntry("system", "Context Compression", this.truncateText(parts.join(" | "), 240), timestamp, eventType);
         entry.compact = true;
         return entry;
       }

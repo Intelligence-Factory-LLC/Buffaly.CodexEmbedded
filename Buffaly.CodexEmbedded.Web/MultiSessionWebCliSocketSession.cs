@@ -470,6 +470,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				cwd = s.Cwd,
 				model = s.Model,
 				reasoningEffort = s.ReasoningEffort,
+				approvalPolicy = s.ApprovalPolicy,
+				sandboxPolicy = s.SandboxPolicy,
 				isTurnInFlight = s.IsTurnInFlight,
 				pendingApproval = s.PendingApproval is { } approval
 					? new

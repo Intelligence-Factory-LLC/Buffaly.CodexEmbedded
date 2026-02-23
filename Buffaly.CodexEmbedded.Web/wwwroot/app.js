@@ -52,6 +52,7 @@ let lastConfirmedSessionModelSyncBySession = new Map(); // sessionId -> "model||
 let timelineHasTruncatedHead = false;
 let timelineConnectionIssueShown = false;
 let runtimeSecurityConfig = null;
+let rateLimitBySession = new Map(); // sessionId -> latest rate limit summary payload
 let renderedClientLogLines = [];
 let pendingClientLogLines = [];
 let turnActivityTickTimer = null;
@@ -613,6 +614,142 @@ function readTokenCountInfo(payload) {
   };
 }
 
+function readNonNegativeNumber(value) {
+  const next = Number(value);
+  return Number.isFinite(next) && next >= 0 ? next : null;
+}
+
+function readThreadCompactedInfo(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const eventType = typeof payload.type === "string" ? payload.type.trim().toLowerCase() : "";
+  const isCompactionType = eventType === "thread_compacted" || eventType === "thread/compacted";
+  const hasCompactionFields = payload.reclaimedTokens !== undefined
+    || payload.reclaimed_tokens !== undefined
+    || payload.usedTokensAfter !== undefined
+    || payload.used_tokens_after !== undefined
+    || payload.percentLeft !== undefined
+    || payload.percent_left !== undefined;
+  if (!isCompactionType && !hasCompactionFields) {
+    return null;
+  }
+
+  const contextWindow = readNonNegativeNumber(
+    payload.contextWindow
+      ?? payload.context_window
+      ?? payload.modelContextWindow
+      ?? payload.model_context_window
+  );
+  const usedTokensBefore = readNonNegativeNumber(
+    payload.usedTokensBefore
+      ?? payload.used_tokens_before
+      ?? payload.tokensBefore
+      ?? payload.tokens_before
+  );
+  const usedTokensAfter = readNonNegativeNumber(
+    payload.usedTokensAfter
+      ?? payload.used_tokens_after
+      ?? payload.tokensAfter
+      ?? payload.tokens_after
+      ?? payload.usedTokens
+      ?? payload.used_tokens
+  );
+  let reclaimedTokens = readNonNegativeNumber(
+    payload.reclaimedTokens
+      ?? payload.reclaimed_tokens
+      ?? payload.tokensReclaimed
+      ?? payload.tokens_reclaimed
+  );
+  if (reclaimedTokens === null && usedTokensBefore !== null && usedTokensAfter !== null) {
+    reclaimedTokens = Math.max(0, usedTokensBefore - usedTokensAfter);
+  }
+
+  let percentLeft = readNonNegativeNumber(
+    payload.percentLeft
+      ?? payload.percent_left
+      ?? payload.contextPercentLeft
+      ?? payload.context_percent_left
+  );
+  if (percentLeft !== null) {
+    percentLeft = Math.max(0, Math.min(100, percentLeft));
+  }
+  if (percentLeft === null && contextWindow !== null && contextWindow > 0 && usedTokensAfter !== null) {
+    const ratio = Math.min(1, Math.max(0, usedTokensAfter / contextWindow));
+    percentLeft = Math.max(0, Math.min(100, Math.round((1 - ratio) * 100)));
+  }
+
+  if (contextWindow === null && usedTokensAfter === null && percentLeft === null && reclaimedTokens === null) {
+    return null;
+  }
+
+  return {
+    contextWindow,
+    usedTokensBefore,
+    usedTokensAfter,
+    reclaimedTokens,
+    percentLeft,
+    summary: typeof payload.summary === "string"
+      ? payload.summary.trim()
+      : typeof payload.message === "string"
+        ? payload.message.trim()
+        : ""
+  };
+}
+
+function applyContextUsageForThread(threadId, pieces, sourceTag = "") {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !pieces || typeof pieces !== "object") {
+    return false;
+  }
+
+  const prior = contextUsageByThread.get(normalizedThreadId) || null;
+  let contextWindow = Number.isFinite(pieces.contextWindow) && pieces.contextWindow > 0
+    ? pieces.contextWindow
+    : (Number.isFinite(prior?.contextWindow) ? prior.contextWindow : null);
+  let usedTokens = Number.isFinite(pieces.usedTokens) && pieces.usedTokens >= 0
+    ? pieces.usedTokens
+    : (Number.isFinite(pieces.usedTokensAfter) && pieces.usedTokensAfter >= 0
+      ? pieces.usedTokensAfter
+      : (Number.isFinite(prior?.usedTokens) ? prior.usedTokens : null));
+  let percentLeft = Number.isFinite(pieces.percentLeft) ? pieces.percentLeft : null;
+  if (percentLeft !== null) {
+    percentLeft = Math.max(0, Math.min(100, Math.round(percentLeft)));
+  }
+
+  if (Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(usedTokens) && usedTokens >= 0) {
+    if (usedTokens > (contextWindow * 1.1) && sourceTag === "total_total") {
+      return false;
+    }
+
+    const boundedUsedTokens = Math.min(usedTokens, contextWindow);
+    const ratio = Math.min(1, Math.max(0, boundedUsedTokens / contextWindow));
+    const derivedPercentLeft = Math.max(0, Math.min(100, Math.round((1 - ratio) * 100)));
+    contextUsageByThread.set(normalizedThreadId, {
+      usedTokens: boundedUsedTokens,
+      contextWindow,
+      percentLeft: percentLeft === null ? derivedPercentLeft : percentLeft
+    });
+  } else if (Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(percentLeft)) {
+    const normalizedPercentLeft = Math.max(0, Math.min(100, Math.round(percentLeft)));
+    const derivedUsedTokens = Math.max(0, Math.round(contextWindow * (1 - (normalizedPercentLeft / 100))));
+    contextUsageByThread.set(normalizedThreadId, {
+      usedTokens: derivedUsedTokens,
+      contextWindow,
+      percentLeft: normalizedPercentLeft
+    });
+  } else {
+    return false;
+  }
+
+  const activeThreadId = typeof getActiveSessionState()?.threadId === "string" ? getActiveSessionState().threadId.trim() : "";
+  if (activeThreadId === normalizedThreadId) {
+    updateContextLeftIndicator();
+  }
+  return true;
+}
+
 function updateContextUsageFromLogLines(threadId, lines) {
   const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
   if (!normalizedThreadId || !Array.isArray(lines) || lines.length === 0) {
@@ -643,6 +780,17 @@ function updateContextUsageFromLogLines(threadId, lines) {
         }
       }
 
+      const compactionPieces = readThreadCompactedInfo(payload);
+      if (compactionPieces) {
+        if (compactionPieces.contextWindow !== null) {
+          contextWindow = compactionPieces.contextWindow;
+        }
+        if (compactionPieces.usedTokensAfter !== null) {
+          usedTokens = compactionPieces.usedTokensAfter;
+          updatedFromSource = "thread_compacted";
+        }
+      }
+
       const eventPieces = readTokenCountInfo(payload);
       if (eventPieces) {
         if (eventPieces.contextWindow !== null) {
@@ -656,21 +804,14 @@ function updateContextUsageFromLogLines(threadId, lines) {
     }
   }
 
-  if (Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(usedTokens) && usedTokens >= 0) {
-    // If usage came from cumulative totals and exceeds the model window, hide instead of pinning to 0%.
-    if (usedTokens > (contextWindow * 1.1) && updatedFromSource === "total_total") {
-      return;
-    }
-
-    const boundedUsedTokens = Math.min(usedTokens, contextWindow);
-    const ratio = Math.min(1, Math.max(0, boundedUsedTokens / contextWindow));
-    const percentLeft = Math.max(0, Math.min(100, Math.round((1 - ratio) * 100)));
-    contextUsageByThread.set(normalizedThreadId, { usedTokens: boundedUsedTokens, contextWindow, percentLeft });
-    const activeThreadId = typeof getActiveSessionState()?.threadId === "string" ? getActiveSessionState().threadId.trim() : "";
-    if (activeThreadId === normalizedThreadId) {
-      updateContextLeftIndicator();
-    }
-  }
+  applyContextUsageForThread(
+    normalizedThreadId,
+    {
+      contextWindow,
+      usedTokens
+    },
+    updatedFromSource
+  );
 }
 
 function updatePermissionInfoFromLogLines(threadId, lines) {
@@ -3562,6 +3703,15 @@ function pruneTurnActivityState(validSessionIds) {
   }
 }
 
+function pruneRateLimitState(validSessionIds) {
+  const valid = new Set(Array.isArray(validSessionIds) ? validSessionIds.filter((x) => typeof x === "string" && x.trim()) : []);
+  for (const sessionId of Array.from(rateLimitBySession.keys())) {
+    if (!valid.has(sessionId)) {
+      rateLimitBySession.delete(sessionId);
+    }
+  }
+}
+
 function handleServerEvent(frame) {
   const type = frame.type;
   const payload = frame.payload || {};
@@ -3752,6 +3902,7 @@ function handleServerEvent(frame) {
       sessions = next;
       prunePendingSessionModelSync(Array.from(next.keys()));
       pruneTurnActivityState(Array.from(next.keys()));
+      pruneRateLimitState(Array.from(next.keys()));
       applyProcessingByThread(nextProcessingByThread);
       prunePromptState();
       updateSessionSelect(payload.activeSessionId || null);
@@ -3855,6 +4006,7 @@ function handleServerEvent(frame) {
         turnInFlightBySession.delete(sessionId);
         turnStartedAtBySession.delete(sessionId);
         lastSentPromptBySession.delete(sessionId);
+        rateLimitBySession.delete(sessionId);
       }
       appendLog(`[session] stopped id=${sessionId || "unknown"}`);
       if (shouldRenderTimelineForSession(sessionId || null)) {
@@ -3982,6 +4134,166 @@ function handleServerEvent(frame) {
         timeline.flush();
       }
       appendLog(`[turn] cancel requested for session=${sessionId || "unknown"}`);
+      return;
+    }
+
+    case "rate_limits_updated": {
+      const sessionId = payload.sessionId || null;
+      if (sessionId) {
+        rateLimitBySession.set(sessionId, payload);
+      }
+
+      const summary = typeof payload.summary === "string" && payload.summary.trim()
+        ? payload.summary.trim()
+        : "Rate limits updated";
+      appendLog(`[rate_limit] session=${sessionId || "unknown"} ${summary}`);
+      if (shouldRenderTimelineForSession(sessionId)) {
+        timeline.enqueueSystem(summary, "Rate Limit", { compact: true });
+        timeline.flush();
+      }
+      return;
+    }
+
+    case "session_configured": {
+      const sessionId = payload.sessionId || null;
+      let sidebarStateChanged = false;
+      if (sessionId && sessions.has(sessionId)) {
+        const state = sessions.get(sessionId);
+        if (state) {
+          if (typeof payload.threadId === "string" && payload.threadId.trim()) {
+            state.threadId = payload.threadId.trim();
+          }
+          if (typeof payload.cwd === "string" && payload.cwd.trim()) {
+            state.cwd = payload.cwd.trim();
+          }
+
+          const configuredModel = normalizeModelValue(payload.model);
+          const configuredEffort = normalizeReasoningEffort(payload.reasoningEffort ?? payload.effort ?? "");
+          if (payload.model !== undefined) {
+            if ((state.model || "") !== configuredModel) {
+              sidebarStateChanged = true;
+            }
+            state.model = configuredModel || null;
+          }
+          if (payload.reasoningEffort !== undefined || payload.effort !== undefined) {
+            if ((state.reasoningEffort || "") !== configuredEffort) {
+              sidebarStateChanged = true;
+            }
+            state.reasoningEffort = configuredEffort || null;
+          }
+
+          if (payload.model !== undefined || payload.reasoningEffort !== undefined || payload.effort !== undefined) {
+            acknowledgeSessionModelSync(sessionId, state.model || "", state.reasoningEffort || "");
+          }
+
+          if (state.threadId) {
+            const permissionInfo = readPermissionInfoFromPayload(payload);
+            if (permissionInfo) {
+              setPermissionLevelForThread(state.threadId, permissionInfo);
+            }
+          }
+        }
+      }
+
+      if (sessionId) {
+        touchSessionActivity(sessionId);
+      }
+
+      const summaryParts = [];
+      if (payload.model) summaryParts.push(`model=${payload.model}`);
+      if (payload.reasoningEffort || payload.effort) summaryParts.push(`effort=${payload.reasoningEffort || payload.effort}`);
+      if (payload.approvalPolicy || payload.approval_policy) summaryParts.push(`approval=${payload.approvalPolicy || payload.approval_policy}`);
+      if (payload.sandboxPolicy || payload.sandbox_policy) summaryParts.push(`sandbox=${payload.sandboxPolicy || payload.sandbox_policy}`);
+      const summary = summaryParts.length > 0 ? summaryParts.join(" | ") : "Session configured";
+
+      appendLog(`[session_configured] session=${sessionId || "unknown"} ${summary}`);
+      if (sessionId && activeSessionId === sessionId) {
+        refreshSessionMeta();
+      }
+      if (sidebarStateChanged) {
+        renderProjectSidebar();
+      }
+      if (shouldRenderTimelineForSession(sessionId)) {
+        timeline.enqueueSystem(summary, "Session Configured", { compact: true });
+        timeline.flush();
+      }
+      return;
+    }
+
+    case "thread_compacted": {
+      const sessionId = payload.sessionId || null;
+      let threadId = typeof payload.threadId === "string" ? payload.threadId.trim() : "";
+      if (!threadId && sessionId && sessions.has(sessionId)) {
+        const state = sessions.get(sessionId);
+        threadId = normalizeThreadId(state?.threadId || "");
+      }
+
+      const compactionPieces = readThreadCompactedInfo({ ...payload, type: "thread_compacted" });
+      if (threadId && compactionPieces) {
+        applyContextUsageForThread(
+          threadId,
+          {
+            contextWindow: compactionPieces.contextWindow,
+            usedTokensAfter: compactionPieces.usedTokensAfter,
+            percentLeft: compactionPieces.percentLeft
+          },
+          "thread_compacted"
+        );
+      }
+
+      const summary = compactionPieces?.summary
+        || (typeof payload.summary === "string" && payload.summary.trim() ? payload.summary.trim() : "Context compressed");
+      appendLog(`[thread_compacted] thread=${threadId || "unknown"} ${summary}`);
+      if (shouldRenderTimelineForSession(sessionId)) {
+        timeline.enqueueSystem(summary, "Context Compression", { compact: true });
+        timeline.flush();
+      }
+      return;
+    }
+
+    case "thread_name_updated": {
+      const sessionId = payload.sessionId || null;
+      const threadId = normalizeThreadId(payload.threadId || "");
+      const threadName = String(payload.threadName || "").trim();
+      if (!threadId || !threadName) {
+        return;
+      }
+
+      let priorName = "";
+      for (const state of sessions.values()) {
+        if (state && normalizeThreadId(state.threadId || "") === threadId && typeof state.threadName === "string" && state.threadName.trim()) {
+          priorName = state.threadName.trim();
+          break;
+        }
+      }
+      if (!priorName) {
+        const entry = getCatalogEntryByThreadId(threadId);
+        if (entry && typeof entry.threadName === "string" && entry.threadName.trim()) {
+          priorName = entry.threadName.trim();
+        }
+      }
+      if (priorName && priorName === threadName) {
+        return;
+      }
+
+      setLocalThreadName(threadId, threadName);
+      const activeThreadId = normalizeThreadId(getActiveSessionState()?.threadId || "");
+      if (activeThreadId === threadId) {
+        refreshSessionMeta();
+      }
+      updateSessionSelect(activeSessionId || null);
+      renderProjectSidebar();
+
+      if (sessionId) {
+        touchSessionActivity(sessionId);
+      }
+
+      appendLog(`[thread_name_updated] thread=${threadId} name=${threadName}`);
+      const shouldRender = shouldRenderTimelineForSession(sessionId) || (!!activeThreadId && activeThreadId === threadId);
+      if (shouldRender) {
+        timeline.enqueueSystem(`Renamed to ${threadName}`, "Thread Name", { compact: true });
+        timeline.flush();
+      }
       return;
     }
 
