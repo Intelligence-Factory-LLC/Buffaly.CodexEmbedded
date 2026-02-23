@@ -33,6 +33,7 @@
       this.taskModelById = new Map(); // taskId -> model
       this.currentSessionModel = "";
       this.visibleActionEntryId = null;
+      this.liveAssistantEntriesByStreamKey = new Map(); // streamKey -> entry
 
       this.container.addEventListener("scroll", () => {
         this.autoScrollPinned = this.isNearBottom();
@@ -330,6 +331,7 @@
       this.currentSessionModel = "";
       this.autoScrollPinned = true;
       this.visibleActionEntryId = null;
+      this.liveAssistantEntriesByStreamKey.clear();
     }
 
     isNearBottom() {
@@ -469,6 +471,68 @@
       }
 
       this.pendingEntries.push(this.createEntry("user", "User", normalizedText, new Date().toISOString(), "optimistic_user", safeImages));
+    }
+
+    beginEventTask(summary, timestamp = null) {
+      const entry = this.createEntry(
+        "system",
+        "Task Started",
+        this.truncateText(summary || "Task started", 240),
+        timestamp || new Date().toISOString(),
+        "task_started"
+      );
+      entry.compact = true;
+      this.pendingEntries.push(this.markTaskStart(entry));
+    }
+
+    completeEventTask(summary, timestamp = null) {
+      const entry = this.createEntry(
+        "system",
+        "Task Complete",
+        this.truncateText(summary || "Task complete", 240),
+        timestamp || new Date().toISOString(),
+        "task_complete"
+      );
+      entry.compact = true;
+      this.pendingEntries.push(this.markTaskEnd(entry));
+    }
+
+    appendAssistantDelta(text, options = {}) {
+      const chunk = String(text || "");
+      if (!chunk) {
+        return;
+      }
+
+      const streamKey = typeof options.streamKey === "string" && options.streamKey.trim().length > 0
+        ? options.streamKey.trim()
+        : "default";
+      const timestamp = options.timestamp || new Date().toISOString();
+      const existing = this.liveAssistantEntriesByStreamKey.get(streamKey) || null;
+      if (!existing) {
+        const created = this.createEntry("assistant", "Assistant", chunk, timestamp, "assistant_delta");
+        this.liveAssistantEntriesByStreamKey.set(streamKey, created);
+        this.pendingEntries.push(created);
+        return;
+      }
+
+      existing.text = `${existing.text || ""}${chunk}`;
+      existing.timestamp = timestamp || existing.timestamp;
+      this.queueEntryUpdate(existing);
+    }
+
+    completeAssistantDelta(options = {}) {
+      const streamKey = typeof options.streamKey === "string" && options.streamKey.trim().length > 0
+        ? options.streamKey.trim()
+        : "default";
+      const existing = this.liveAssistantEntriesByStreamKey.get(streamKey) || null;
+      if (!existing) {
+        return;
+      }
+
+      existing.timestamp = options.timestamp || existing.timestamp;
+      existing.rawType = "assistant_done";
+      this.queueEntryUpdate(existing);
+      this.liveAssistantEntriesByStreamKey.delete(streamKey);
     }
 
     enqueueParsedLines(lines) {

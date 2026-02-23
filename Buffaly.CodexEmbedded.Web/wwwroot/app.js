@@ -1,4 +1,5 @@
 const TIMELINE_POLL_INTERVAL_MS = 2000;
+const INDEX_TIMELINE_SOURCE = "logs"; // keep index timeline log-primary; websocket remains for runtime state
 
 let socket = null;
 let socketReadyPromise = null;
@@ -40,6 +41,7 @@ let preferredModelByThread = new Map(); // threadId -> model string ("" means de
 let preferredReasoningByThread = new Map(); // threadId -> reasoning effort string ("" means default)
 let processingByThread = new Map(); // threadId -> boolean
 let completedUnreadThreadIds = new Set(); // threadId -> completion happened while not selected
+let pendingSessionModelSyncBySession = new Map(); // sessionId -> "model||effort" pending sync request key
 let timelineHasTruncatedHead = false;
 let timelineConnectionIssueShown = false;
 let runtimeSecurityConfig = null;
@@ -137,6 +139,28 @@ const timeline = new window.CodexSessionTimeline({
   maxRenderedEntries: 1500,
   systemTitle: "Session"
 });
+
+function timelineUsesEventFeed() {
+  return INDEX_TIMELINE_SOURCE === "events";
+}
+
+function timelineStreamKeyForSession(sessionId) {
+  const normalized = typeof sessionId === "string" ? sessionId.trim() : "";
+  return normalized ? `session:${normalized}` : "session:active";
+}
+
+function shouldRenderTimelineForSession(sessionId) {
+  if (!timelineUsesEventFeed()) {
+    return false;
+  }
+
+  const normalized = typeof sessionId === "string" ? sessionId.trim() : "";
+  if (!normalized) {
+    return true;
+  }
+
+  return !!activeSessionId && normalized === activeSessionId;
+}
 
 function getMessageListRemainingScroll() {
   if (!chatMessages) {
@@ -2705,6 +2729,16 @@ function restartTimelinePolling() {
     timelinePollTimer = null;
   }
 
+  if (timelineUsesEventFeed()) {
+    timelineCursor = null;
+    timelineHasTruncatedHead = false;
+    updateTimelineTruncationNotice();
+    pollTimelineOnce(true, generation).catch((error) => {
+      handleTimelinePollError(error);
+    });
+    return;
+  }
+
   const state = getActiveSessionState();
   if (!state || !state.threadId) {
     return;
@@ -3050,7 +3084,7 @@ function applySessionModelSettingsToActiveSession(selectedModel, selectedEffort 
   state.reasoningEffort = normalizedEffort || null;
   setPreferredModelForThread(state.threadId, normalizedModel);
   setPreferredReasoningForThread(state.threadId, normalizedEffort);
-  send("session_set_model", { sessionId: activeSessionId, model: normalizedModel, effort: normalizedEffort });
+  trySendSessionModelSync(activeSessionId, normalizedModel, normalizedEffort);
 }
 
 function applyModelSelection(value) {
@@ -3250,6 +3284,59 @@ function send(type, payload = {}) {
   return true;
 }
 
+function buildSessionModelSyncKey(model, effort) {
+  const normalizedModel = normalizeModelValue(model);
+  const normalizedEffort = normalizeReasoningEffort(effort);
+  return `${normalizedModel}||${normalizedEffort}`;
+}
+
+function trySendSessionModelSync(sessionId, model, effort) {
+  const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+  if (!normalizedSessionId) {
+    return false;
+  }
+
+  const key = buildSessionModelSyncKey(model, effort);
+  if (pendingSessionModelSyncBySession.get(normalizedSessionId) === key) {
+    return false;
+  }
+
+  const normalizedModel = normalizeModelValue(model);
+  const normalizedEffort = normalizeReasoningEffort(effort);
+  if (!send("session_set_model", { sessionId: normalizedSessionId, model: normalizedModel, effort: normalizedEffort })) {
+    return false;
+  }
+
+  pendingSessionModelSyncBySession.set(normalizedSessionId, key);
+  return true;
+}
+
+function acknowledgeSessionModelSync(sessionId, model, effort) {
+  const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+  if (!normalizedSessionId) {
+    return;
+  }
+
+  const pending = pendingSessionModelSyncBySession.get(normalizedSessionId);
+  if (!pending) {
+    return;
+  }
+
+  const serverKey = buildSessionModelSyncKey(model, effort);
+  if (pending === serverKey) {
+    pendingSessionModelSyncBySession.delete(normalizedSessionId);
+  }
+}
+
+function prunePendingSessionModelSync(validSessionIds) {
+  const valid = new Set(Array.isArray(validSessionIds) ? validSessionIds.filter((x) => typeof x === "string" && x.trim()) : []);
+  for (const sessionId of Array.from(pendingSessionModelSyncBySession.keys())) {
+    if (!valid.has(sessionId)) {
+      pendingSessionModelSyncBySession.delete(sessionId);
+    }
+  }
+}
+
 function handleServerEvent(frame) {
   const type = frame.type;
   const payload = frame.payload || {};
@@ -3257,6 +3344,10 @@ function handleServerEvent(frame) {
   switch (type) {
     case "status":
       appendLog(`[status] ${payload.message || ""}`);
+      if (shouldRenderTimelineForSession(payload.sessionId || null) && payload.message) {
+        timeline.enqueueSystem(String(payload.message), "Status", { compact: true });
+        timeline.flush();
+      }
       return;
 
     case "session_created":
@@ -3274,27 +3365,20 @@ function handleServerEvent(frame) {
         const preferredEffort = getPreferredReasoningForThread(state.threadId);
         const targetModel = preferred.found ? preferred.model : serverModel;
         const targetEffort = preferredEffort.found ? preferredEffort.effort : serverEffort;
+        acknowledgeSessionModelSync(sessionId, serverModel, serverEffort);
 
         state.model = targetModel || null;
         state.reasoningEffort = targetEffort || null;
 
-        const modelInPayload = payload.model !== undefined;
-        const effortInPayload = payload.reasoningEffort !== undefined || payload.effort !== undefined;
-        const shouldPushPreferredModel = preferred.found && modelInPayload && targetModel !== serverModel;
-        const shouldPushPreferredEffort = preferredEffort.found && effortInPayload && targetEffort !== serverEffort;
-        if (shouldPushPreferredModel || shouldPushPreferredEffort) {
-          send("session_set_model", { sessionId, model: targetModel, effort: targetEffort });
-        }
-
         if (preferred.found) {
           state.model = preferred.model || null;
-        } else if (modelInPayload) {
+        } else if (payload.model !== undefined) {
           persistedPreferenceUpdated = ensureThreadModelPreference(state.threadId, serverModel, { persist: false }) || persistedPreferenceUpdated;
         }
 
         if (preferredEffort.found) {
           state.reasoningEffort = preferredEffort.effort || null;
-        } else if (effortInPayload) {
+        } else if (payload.reasoningEffort !== undefined || payload.effort !== undefined) {
           persistedPreferenceUpdated = ensureThreadReasoningPreference(state.threadId, serverEffort, { persist: false }) || persistedPreferenceUpdated;
         }
       }
@@ -3374,17 +3458,10 @@ function handleServerEvent(frame) {
           const preferredEffort = getPreferredReasoningForThread(st.threadId);
           const targetModel = preferred.found ? preferred.model : serverModel;
           const targetEffort = preferredEffort.found ? preferredEffort.effort : serverEffort;
+          acknowledgeSessionModelSync(s.sessionId, serverModel, serverEffort);
 
           st.model = targetModel || st.model || null;
           st.reasoningEffort = targetEffort || st.reasoningEffort || null;
-
-          const modelInPayload = s.model !== undefined;
-          const effortInPayload = s.reasoningEffort !== undefined || s.effort !== undefined;
-          const shouldPushPreferredModel = preferred.found && modelInPayload && targetModel !== serverModel;
-          const shouldPushPreferredEffort = preferredEffort.found && effortInPayload && targetEffort !== serverEffort;
-          if (shouldPushPreferredModel || shouldPushPreferredEffort) {
-            send("session_set_model", { sessionId: s.sessionId, model: targetModel, effort: targetEffort });
-          }
 
           if (preferred.found) {
             st.model = preferred.model || null;
@@ -3445,6 +3522,7 @@ function handleServerEvent(frame) {
         clearPendingSessionLoad();
       }
       sessions = next;
+      prunePendingSessionModelSync(Array.from(next.keys()));
       applyProcessingByThread(nextProcessingByThread);
       prunePromptState();
       updateSessionSelect(payload.activeSessionId || null);
@@ -3540,6 +3618,7 @@ function handleServerEvent(frame) {
       const sessionId = payload.sessionId;
       if (sessionId && sessions.has(sessionId)) {
         sessions.delete(sessionId);
+        pendingSessionModelSyncBySession.delete(sessionId);
       }
       if (sessionId) {
         promptQueuesBySession.delete(sessionId);
@@ -3547,15 +3626,52 @@ function handleServerEvent(frame) {
         lastSentPromptBySession.delete(sessionId);
       }
       appendLog(`[session] stopped id=${sessionId || "unknown"}`);
+      if (shouldRenderTimelineForSession(sessionId || null)) {
+        timeline.enqueueInlineNotice("Session stopped");
+        timeline.flush();
+      }
       updateSessionSelect(payload.activeSessionId || null);
       return;
     }
 
-    case "assistant_delta":
+    case "assistant_delta": {
+      const sessionId = payload.sessionId || null;
+      if (shouldRenderTimelineForSession(sessionId)) {
+        timeline.appendAssistantDelta(payload.text || "", {
+          streamKey: timelineStreamKeyForSession(sessionId || activeSessionId),
+          timestamp: new Date().toISOString()
+        });
+        timeline.flush();
+      }
       return;
+    }
 
-    case "assistant_done":
+    case "assistant_response_started": {
+      const sessionId = payload.sessionId || null;
+      if (shouldRenderTimelineForSession(sessionId)) {
+        timeline.enqueueInlineNotice("Assistant response started");
+        timeline.flush();
+      }
       return;
+    }
+
+    case "assistant_done": {
+      const sessionId = payload.sessionId || null;
+      if (shouldRenderTimelineForSession(sessionId)) {
+        if (payload.text) {
+          timeline.appendAssistantDelta(payload.text, {
+            streamKey: timelineStreamKeyForSession(sessionId || activeSessionId),
+            timestamp: new Date().toISOString()
+          });
+        }
+        timeline.completeAssistantDelta({
+          streamKey: timelineStreamKeyForSession(sessionId || activeSessionId),
+          timestamp: new Date().toISOString()
+        });
+        timeline.flush();
+      }
+      return;
+    }
 
     case "turn_complete": {
       const sessionId = payload.sessionId || null;
@@ -3579,6 +3695,17 @@ function handleServerEvent(frame) {
         pumpQueuedPrompt(sessionId);
       }
       const errorMessage = payload.errorMessage || null;
+      if (shouldRenderTimelineForSession(sessionId)) {
+        timeline.completeAssistantDelta({
+          streamKey: timelineStreamKeyForSession(sessionId || activeSessionId),
+          timestamp: new Date().toISOString()
+        });
+        const summary = errorMessage
+          ? `status=${status} | error=${errorMessage}`
+          : `status=${status}`;
+        timeline.completeEventTask(summary, new Date().toISOString());
+        timeline.flush();
+      }
       appendLog(`[turn] session=${payload.sessionId || "unknown"} status=${status}${errorMessage ? " error=" + errorMessage : ""}`);
       if (sidebarStateChanged) {
         renderProjectSidebar();
@@ -3603,6 +3730,10 @@ function handleServerEvent(frame) {
         }
         setTurnInFlight(sessionId, true);
       }
+      if (shouldRenderTimelineForSession(sessionId)) {
+        timeline.beginEventTask("Turn started", new Date().toISOString());
+        timeline.flush();
+      }
       if (sidebarStateChanged) {
         renderProjectSidebar();
       }
@@ -3614,6 +3745,10 @@ function handleServerEvent(frame) {
       if (sessionId) {
         touchSessionActivity(sessionId);
         setTurnInFlight(sessionId, true);
+      }
+      if (shouldRenderTimelineForSession(sessionId)) {
+        timeline.enqueueInlineNotice("Cancel requested");
+        timeline.flush();
       }
       appendLog(`[turn] cancel requested for session=${sessionId || "unknown"}`);
       return;
@@ -3635,6 +3770,11 @@ function handleServerEvent(frame) {
       if (Array.isArray(payload.actions) && payload.actions.length > 0) lines.push(`Actions: ${payload.actions.join("; ")}`);
       approvalDetails.textContent = lines.join("\n");
       setApprovalVisible(true);
+      if (shouldRenderTimelineForSession(sessionId || null)) {
+        const summary = payload.summary || "Approval requested";
+        timeline.enqueueSystem(summary, "Approval", { compact: true });
+        timeline.flush();
+      }
       appendLog(`[approval] requested session=${sessionId || "unknown"} approvalId=${approvalId || "unknown"}`);
       return;
     }
@@ -3685,6 +3825,10 @@ function handleServerEvent(frame) {
         handlePendingSessionLoadFailure();
       }
       appendLog(`[error] ${payload.message || "unknown error"}`);
+      if (shouldRenderTimelineForSession(payload.sessionId || null) && payload.message) {
+        timeline.enqueueSystem(`[error] ${payload.message}`, "Error");
+        timeline.flush();
+      }
       return;
 
     case "session_started":

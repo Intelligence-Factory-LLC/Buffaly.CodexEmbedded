@@ -432,11 +432,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				var effectiveEffort = session.CurrentReasoningEffort;
 				var imageCount = images?.Count ?? 0;
 				session.Log.Write($"[prompt] {(string.IsNullOrWhiteSpace(normalizedText) ? "(no text)" : normalizedText)} images={imageCount} cwd={normalizedCwd ?? session.Cwd ?? "(default)"} model={effectiveModel ?? "(default)"} effort={effectiveEffort ?? "(default)"}");
-
-				var progress = new Progress<CodexDelta>(d =>
-				{
-					Broadcast?.Invoke("assistant_delta", new { sessionId, text = d.Text });
-				});
+				Broadcast?.Invoke("assistant_response_started", new { sessionId });
 
 				var turnOptions = new CodexTurnOptions
 				{
@@ -444,9 +440,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					Model = effectiveModel,
 					ReasoningEffort = effectiveEffort
 				};
-				var result = await session.Session.SendMessageAsync(normalizedText, images: images, options: turnOptions, progress: progress, cancellationToken: turnToken);
+				var result = await session.Session.SendMessageAsync(
+					normalizedText,
+					images: images,
+					options: turnOptions,
+					progress: null,
+					cancellationToken: turnToken);
 
-				Broadcast?.Invoke("assistant_done", new { sessionId });
+				Broadcast?.Invoke("assistant_done", new { sessionId, text = result.Text });
 				Broadcast?.Invoke("turn_complete", new { sessionId, status = result.Status, errorMessage = result.ErrorMessage });
 			}
 			catch (OperationCanceledException)
