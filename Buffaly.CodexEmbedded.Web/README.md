@@ -38,4 +38,12 @@ dotnet run --project Buffaly.CodexEmbedded.Web
 - `CodexHomePath` (optional)
 - `TurnTimeoutSeconds`
 - `LogRootPath`
+- `WebSocketAuthRequired` (keep `true`)
+- `WebSocketAuthToken` (required when `WebSocketAuthRequired=true`; startup fails if missing/blank)
+
+Websocket auth token handling:
+
+- `/ws` accepts the same token via cookie `buffaly_ws_auth`, header `X-Buffaly-Ws-Token`, or query `wsToken`.
+- Use one shared static token across components.
+- Buffaly.Development OpsAgent must set the same value in `OpsAgent.CodexServerWebSocketAuthToken`.
 

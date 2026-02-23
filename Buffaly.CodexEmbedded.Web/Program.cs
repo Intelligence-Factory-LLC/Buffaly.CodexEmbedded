@@ -604,11 +604,9 @@ internal sealed class WebRuntimeDefaults
 			return configuredToken.Trim();
 		}
 
-		var bytes = RandomNumberGenerator.GetBytes(32);
-		return Convert.ToBase64String(bytes)
-			.TrimEnd('=')
-			.Replace('+', '-')
-			.Replace('/', '_');
+		throw new InvalidOperationException(
+			"WebSocketAuthRequired is true but WebSocketAuthToken is missing or blank. " +
+			"Set WebSocketAuthToken in configuration before starting Buffaly.CodexEmbedded.Web.");
 	}
 
 	private static string[] LoadConfiguredUrls(IConfiguration configuration)

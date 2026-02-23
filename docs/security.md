@@ -36,6 +36,8 @@ Recommended pattern:
 
 - Default: websocket auth token required.
 - Token required for `/ws`; disable only for local dev.
+- Token is explicit configuration only. No startup-random websocket token is generated when auth is enabled.
+- If `WebSocketAuthRequired=true`, `WebSocketAuthToken` must be configured or server startup fails fast.
 - Optional hardening: combine token auth with Tailscale device/user controls and ACL policy.
 
 ## Unsafe Configurations
