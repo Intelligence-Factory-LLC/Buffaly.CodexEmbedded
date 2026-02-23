@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using Buffaly.CodexEmbedded.Core;
 using BasicUtilities;
 
@@ -658,7 +659,82 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private void HandleCoreEvent(string sessionId, LocalLogWriter sessionLog, CodexCoreEvent ev)
 	{
 		sessionLog.Write(CodexEventLogging.Format(ev, includeTimestamp: false));
+
+		if (IsCoreTurnCompletionSignal(ev))
+		{
+			var managed = TryGetSession(sessionId);
+			if (managed is not null && managed.TryMarkTurnCompletedFromCoreSignal())
+			{
+				sessionLog.Write("[turn_recovery] marked complete from core task completion signal");
+				SessionsChanged?.Invoke();
+			}
+		}
+
 		CoreEvent?.Invoke(sessionId, ev);
+	}
+
+	private static bool IsCoreTurnCompletionSignal(CodexCoreEvent ev)
+	{
+		if (ev is null || string.IsNullOrWhiteSpace(ev.Type) || !string.Equals(ev.Type, "stdout_jsonl", StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		var line = ev.Message;
+		if (string.IsNullOrWhiteSpace(line))
+		{
+			return false;
+		}
+
+		if (line.IndexOf("turn/completed", StringComparison.Ordinal) < 0 &&
+			line.IndexOf("task_complete", StringComparison.Ordinal) < 0 &&
+			line.IndexOf("\"turn_complete\"", StringComparison.Ordinal) < 0)
+		{
+			return false;
+		}
+
+		try
+		{
+			using var doc = JsonDocument.Parse(line);
+			var root = doc.RootElement;
+
+			if (root.ValueKind != JsonValueKind.Object)
+			{
+				return false;
+			}
+
+			if (root.TryGetProperty("method", out var methodElement) &&
+				methodElement.ValueKind == JsonValueKind.String &&
+				string.Equals(methodElement.GetString(), "turn/completed", StringComparison.Ordinal))
+			{
+				return true;
+			}
+
+			if (!root.TryGetProperty("type", out var typeElement) ||
+				typeElement.ValueKind != JsonValueKind.String ||
+				!string.Equals(typeElement.GetString(), "event_msg", StringComparison.Ordinal))
+			{
+				return false;
+			}
+
+			if (!root.TryGetProperty("payload", out var payloadElement) || payloadElement.ValueKind != JsonValueKind.Object)
+			{
+				return false;
+			}
+
+			if (!payloadElement.TryGetProperty("type", out var payloadTypeElement) || payloadTypeElement.ValueKind != JsonValueKind.String)
+			{
+				return false;
+			}
+
+			var payloadType = payloadTypeElement.GetString();
+			return string.Equals(payloadType, "task_complete", StringComparison.Ordinal) ||
+				string.Equals(payloadType, "turn_complete", StringComparison.Ordinal);
+		}
+		catch
+		{
+			return false;
+		}
 	}
 
 	public event Action<string, CodexCoreEvent>? CoreEvent;
@@ -777,6 +853,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		private string? _reasoningEffort = WebCodexUtils.NormalizeReasoningEffort(ReasoningEffort);
 		private CancellationTokenSource? _activeTurnCts;
 		private bool _turnInFlight;
+		private bool _turnSlotHeld;
 		private PendingApprovalSnapshot? _pendingApproval;
 
 		public string? PendingApprovalId => PendingApprovals.Keys.FirstOrDefault();
@@ -861,7 +938,28 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		public void ReleaseTurnSlot()
 		{
-			_turnGate.Release();
+			var shouldRelease = false;
+			lock (_turnSync)
+			{
+				if (_turnSlotHeld)
+				{
+					_turnSlotHeld = false;
+					shouldRelease = true;
+				}
+			}
+
+			if (!shouldRelease)
+			{
+				return;
+			}
+
+			try
+			{
+				_turnGate.Release();
+			}
+			catch
+			{
+			}
 		}
 
 		public bool TryRecoverTurnSlotIfIdle()
@@ -896,6 +994,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				_activeTurnCts = turnCts;
 				_turnInFlight = true;
+				_turnSlotHeld = true;
 			}
 		}
 
@@ -906,6 +1005,39 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				_activeTurnCts = null;
 				_turnInFlight = false;
 			}
+		}
+
+		public bool TryMarkTurnCompletedFromCoreSignal()
+		{
+			var shouldRelease = false;
+			lock (_turnSync)
+			{
+				if (!_turnInFlight)
+				{
+					return false;
+				}
+
+				_activeTurnCts = null;
+				_turnInFlight = false;
+				if (_turnSlotHeld)
+				{
+					_turnSlotHeld = false;
+					shouldRelease = true;
+				}
+			}
+
+			if (shouldRelease)
+			{
+				try
+				{
+					_turnGate.Release();
+				}
+				catch
+				{
+				}
+			}
+
+			return true;
 		}
 
 		public bool CancelActiveTurn()
