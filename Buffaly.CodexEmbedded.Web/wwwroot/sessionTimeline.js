@@ -36,6 +36,7 @@
       this.liveAssistantEntriesByStreamKey = new Map(); // streamKey -> entry
       this.viewMode = "default";
       this.condensedExpandedEntryId = null;
+      this.condensedExpandedTaskId = null;
 
       this.container.addEventListener("scroll", () => {
         this.autoScrollPinned = this.isNearBottom();
@@ -98,7 +99,27 @@
 
       this.viewMode = normalized;
       this.condensedExpandedEntryId = null;
+      this.condensedExpandedTaskId = null;
       this.refreshViewMode();
+    }
+
+    getEntryPrimaryTaskId(entry) {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+
+      if (typeof entry.taskId === "string" && entry.taskId.trim().length > 0) {
+        return entry.taskId;
+      }
+
+      if (Array.isArray(entry.taskPath) && entry.taskPath.length > 0) {
+        const candidate = entry.taskPath[entry.taskPath.length - 1];
+        if (typeof candidate === "string" && candidate.trim().length > 0) {
+          return candidate;
+        }
+      }
+
+      return null;
     }
 
     setCondensedExpandedEntry(entryId) {
@@ -107,16 +128,56 @@
       }
 
       const normalizedEntryId = this.parseEntryId(entryId);
-      if (normalizedEntryId === null || this.condensedExpandedEntryId === normalizedEntryId) {
+      if (normalizedEntryId === null) {
+        return;
+      }
+
+      const node = this.entryNodeById.get(normalizedEntryId) || null;
+      const entry = node?.entry || null;
+      if (!entry || entry.role !== "user") {
+        return;
+      }
+
+      const taskId = this.getEntryPrimaryTaskId(entry);
+      const isSameSelection = this.condensedExpandedEntryId === normalizedEntryId
+        && ((taskId && this.condensedExpandedTaskId === taskId) || (!taskId && !this.condensedExpandedTaskId));
+      if (isSameSelection) {
+        this.condensedExpandedEntryId = null;
+        this.condensedExpandedTaskId = null;
+        this.refreshViewMode();
         return;
       }
 
       this.condensedExpandedEntryId = normalizedEntryId;
+      this.condensedExpandedTaskId = taskId || null;
       this.refreshViewMode();
+    }
+
+    isEntryInExpandedCondensedSection(entry) {
+      if (!this.isCondensedUserMode() || !entry) {
+        return false;
+      }
+
+      if (this.condensedExpandedTaskId) {
+        if (entry.taskId === this.condensedExpandedTaskId) {
+          return true;
+        }
+
+        if (Array.isArray(entry.taskPath) && entry.taskPath.includes(this.condensedExpandedTaskId)) {
+          return true;
+        }
+      }
+
+      const entryId = this.parseEntryId(entry.id);
+      return entryId !== null && this.condensedExpandedEntryId === entryId;
     }
 
     shouldHideEntryForViewMode(entry) {
       if (!this.isCondensedUserMode()) {
+        return false;
+      }
+
+      if (this.isEntryInExpandedCondensedSection(entry)) {
         return false;
       }
 
@@ -128,8 +189,7 @@
         return false;
       }
 
-      const entryId = this.parseEntryId(entry.id);
-      return entryId !== null && this.condensedExpandedEntryId === entryId;
+      return this.isEntryInExpandedCondensedSection(entry);
     }
 
     wireCondensedEntryInteraction(node, entry) {
@@ -487,6 +547,7 @@
       this.visibleActionEntryId = null;
       this.liveAssistantEntriesByStreamKey.clear();
       this.condensedExpandedEntryId = null;
+      this.condensedExpandedTaskId = null;
       this.refreshViewMode();
       this.dispatchTimelineEvent("timeline-cleared");
     }
@@ -562,7 +623,8 @@
         return;
       }
 
-      node.card.classList.toggle("watcher-task-collapsed-hidden", this.isEntryHiddenForCollapsedTask(entry));
+      const shouldHideForTask = this.isCondensedUserMode() ? false : this.isEntryHiddenForCollapsedTask(entry);
+      node.card.classList.toggle("watcher-task-collapsed-hidden", shouldHideForTask);
     }
 
     updateTaskToggleState(node, entry) {
@@ -1778,6 +1840,7 @@
         if (removedEntry) {
           if (this.parseEntryId(removedEntry.id) === this.condensedExpandedEntryId) {
             this.condensedExpandedEntryId = null;
+            this.condensedExpandedTaskId = null;
           }
           this.dispatchTimelineEvent("timeline-entry-removed", {
             entry: this.toEntrySnapshot(removedEntry),
