@@ -20,6 +20,7 @@ builder.Logging.AddDebug();
 var defaults = WebRuntimeDefaults.Load(builder.Configuration);
 builder.Services.AddSingleton(defaults);
 builder.Services.AddSingleton<SessionOrchestrator>();
+builder.Services.AddSingleton<ServerRuntimeStateTracker>();
 
 var app = builder.Build();
 app.UseDefaultFiles();
@@ -78,6 +79,26 @@ app.MapGet("/watcher", async context =>
 
 	context.Response.ContentType = "text/html; charset=utf-8";
 	await context.Response.SendFileAsync(watcherPagePath);
+});
+
+app.MapGet("/server", async context =>
+{
+	var webRoot = app.Environment.WebRootPath;
+	if (string.IsNullOrWhiteSpace(webRoot))
+	{
+		context.Response.StatusCode = StatusCodes.Status404NotFound;
+		return;
+	}
+
+	var serverPagePath = Path.Combine(webRoot, "server.html");
+	if (!File.Exists(serverPagePath))
+	{
+		context.Response.StatusCode = StatusCodes.Status404NotFound;
+		return;
+	}
+
+	context.Response.ContentType = "text/html; charset=utf-8";
+	await context.Response.SendFileAsync(serverPagePath);
 });
 
 app.MapGet("/api/logs/sessions", (HttpRequest request, WebRuntimeDefaults defaults) =>
@@ -249,6 +270,127 @@ app.MapGet("/api/security/config", (WebRuntimeDefaults defaults) =>
 	});
 });
 
+app.MapGet("/api/server/state/current", (
+	SessionOrchestrator orchestrator,
+	WebRuntimeDefaults defaults,
+	ServerRuntimeStateTracker runtimeTracker) =>
+{
+	var capturedAtUtc = DateTimeOffset.UtcNow;
+	var snapshots = orchestrator.GetSessionSnapshots()
+		.Select(snapshot =>
+		{
+			var normalizedCwd = ServerStateSnapshotBuilder.NormalizeProjectCwd(snapshot.Cwd);
+			var pendingApproval = snapshot.PendingApproval;
+			var sessionState = snapshot.IsTurnInFlight
+				? "in_response"
+				: pendingApproval is not null
+					? "awaiting_approval"
+					: "idle";
+
+			return new ServerStateSnapshotBuilder.ServerSessionRow(
+				SessionId: snapshot.SessionId,
+				ThreadId: snapshot.ThreadId,
+				Cwd: snapshot.Cwd,
+				NormalizedCwd: normalizedCwd,
+				Model: snapshot.Model,
+				ReasoningEffort: snapshot.ReasoningEffort,
+				IsTurnInFlight: snapshot.IsTurnInFlight,
+				State: sessionState,
+				PendingApproval: pendingApproval is null
+					? null
+					: new ServerStateSnapshotBuilder.ServerPendingApprovalRow(
+						ApprovalId: pendingApproval.ApprovalId,
+						RequestType: pendingApproval.RequestType,
+						Summary: pendingApproval.Summary,
+						Reason: pendingApproval.Reason,
+						Cwd: pendingApproval.Cwd,
+						Actions: pendingApproval.Actions,
+						CreatedAtUtc: pendingApproval.CreatedAtUtc.ToString("O")));
+		})
+		.OrderBy(row => row.NormalizedCwd, StringComparer.Ordinal)
+		.ThenBy(row => row.ThreadId, StringComparer.Ordinal)
+		.ThenBy(row => row.SessionId, StringComparer.Ordinal)
+		.ToList();
+
+	var projects = snapshots
+		.GroupBy(row => row.NormalizedCwd, StringComparer.Ordinal)
+		.Select(group =>
+		{
+			var orderedSessions = group
+				.OrderBy(item => item.ThreadId, StringComparer.Ordinal)
+				.ThenBy(item => item.SessionId, StringComparer.Ordinal)
+				.ToArray();
+
+			return new
+			{
+				projectKey = group.Key,
+				cwd = orderedSessions.Length > 0 ? orderedSessions[0].Cwd : null,
+				normalizedCwd = group.Key,
+				sessionCount = orderedSessions.Length,
+				turnsInFlight = orderedSessions.Count(item => item.IsTurnInFlight),
+				pendingApprovals = orderedSessions.Count(item => item.PendingApproval is not null),
+				sessions = orderedSessions.Select(item => new
+				{
+					sessionId = item.SessionId,
+					threadId = item.ThreadId,
+					model = item.Model,
+					reasoningEffort = item.ReasoningEffort,
+					isTurnInFlight = item.IsTurnInFlight,
+					state = item.State,
+					pendingApprovalId = item.PendingApproval?.ApprovalId
+				}).ToArray()
+			};
+		})
+		.OrderByDescending(project => project.sessionCount)
+		.ThenBy(project => project.normalizedCwd, StringComparer.Ordinal)
+		.ToArray();
+
+	var runtime = runtimeTracker.GetSnapshot(capturedAtUtc);
+	var codexHomePath = CodexHomePaths.ResolveCodexHomePath(defaults.CodexHomePath);
+	var turnsInFlight = snapshots.Count(row => row.IsTurnInFlight);
+	var pendingApprovals = snapshots.Count(row => row.PendingApproval is not null);
+
+	return Results.Ok(new
+	{
+		capturedAtUtc = capturedAtUtc.ToString("O"),
+		server = new
+		{
+			startedAtUtc = runtime.StartedAtUtc.ToString("O"),
+			uptimeSeconds = runtime.UptimeSeconds,
+			activeWebSocketConnections = runtime.ActiveWebSocketConnections,
+			totalWebSocketConnectionsAccepted = runtime.TotalWebSocketConnectionsAccepted,
+			lastWebSocketAcceptedUtc = runtime.LastWebSocketAcceptedUtc?.ToString("O"),
+			codexPath = defaults.CodexPath,
+			codexHomePath,
+			defaultCwd = defaults.DefaultCwd,
+			defaultModel = defaults.DefaultModel,
+			turnTimeoutSeconds = defaults.TurnTimeoutSeconds,
+			turnSlotWaitTimeoutSeconds = defaults.TurnSlotWaitTimeoutSeconds,
+			turnSlotWaitPollSeconds = defaults.TurnSlotWaitPollSeconds
+		},
+		totals = new
+		{
+			activeProjects = projects.Length,
+			activeSessions = snapshots.Count,
+			turnsInFlight,
+			pendingApprovals
+		},
+		projects,
+		sessions = snapshots.Select(row => new
+		{
+			sessionId = row.SessionId,
+			threadId = row.ThreadId,
+			cwd = row.Cwd,
+			normalizedCwd = row.NormalizedCwd,
+			model = row.Model,
+			reasoningEffort = row.ReasoningEffort,
+			isTurnInFlight = row.IsTurnInFlight,
+			state = row.State,
+			pendingApproval = row.PendingApproval
+		}).ToArray()
+	});
+});
+
 app.Map("/ws", async context =>
 {
 	var remoteIp = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
@@ -282,15 +424,24 @@ app.Map("/ws", async context =>
 	try
 	{
 		var orchestrator = context.RequestServices.GetRequiredService<SessionOrchestrator>();
+		var runtimeTracker = context.RequestServices.GetRequiredService<ServerRuntimeStateTracker>();
 		using var socket = await context.WebSockets.AcceptWebSocketAsync();
+		runtimeTracker.OnWebSocketAccepted();
 		Logs.DebugLog.WriteEvent(
 			"WebSocket",
 			$"Accepted websocket connection id={context.Connection.Id} subProtocol={socket.SubProtocol ?? "(none)"}");
-		await using var session = new MultiSessionWebCliSocketSession(socket, defaults, orchestrator, context.Connection.Id);
-		await session.RunAsync(context.RequestAborted);
-		Logs.DebugLog.WriteEvent(
-			"WebSocket",
-			$"Closed websocket connection id={context.Connection.Id} state={socket.State} closeStatus={socket.CloseStatus} closeDescription={socket.CloseStatusDescription}");
+		try
+		{
+			await using var session = new MultiSessionWebCliSocketSession(socket, defaults, orchestrator, context.Connection.Id);
+			await session.RunAsync(context.RequestAborted);
+			Logs.DebugLog.WriteEvent(
+				"WebSocket",
+				$"Closed websocket connection id={context.Connection.Id} state={socket.State} closeStatus={socket.CloseStatus} closeDescription={socket.CloseStatusDescription}");
+		}
+		finally
+		{
+			runtimeTracker.OnWebSocketClosed();
+		}
 	}
 	catch (Exception ex)
 	{
@@ -1831,4 +1982,86 @@ internal static class RuntimeSessionLogFinder
 		return fileName.StartsWith("session-", StringComparison.OrdinalIgnoreCase) &&
 			fileName.EndsWith(".log", StringComparison.OrdinalIgnoreCase);
 	}
+}
+
+internal static class ServerStateSnapshotBuilder
+{
+	public static string NormalizeProjectCwd(string? cwd)
+	{
+		if (string.IsNullOrWhiteSpace(cwd))
+		{
+			return "(unknown)";
+		}
+
+		var normalized = cwd.Trim().Replace('\\', '/');
+		normalized = normalized.TrimEnd('/');
+		return string.IsNullOrWhiteSpace(normalized) ? "(unknown)" : normalized;
+	}
+
+	internal sealed record ServerSessionRow(
+		string SessionId,
+		string ThreadId,
+		string? Cwd,
+		string NormalizedCwd,
+		string? Model,
+		string? ReasoningEffort,
+		bool IsTurnInFlight,
+		string State,
+		ServerPendingApprovalRow? PendingApproval);
+
+	internal sealed record ServerPendingApprovalRow(
+		string ApprovalId,
+		string RequestType,
+		string Summary,
+		string? Reason,
+		string? Cwd,
+		IReadOnlyList<string> Actions,
+		string CreatedAtUtc);
+}
+
+internal sealed class ServerRuntimeStateTracker
+{
+	private long _activeWebSocketConnections;
+	private long _totalWebSocketConnectionsAccepted;
+	private long _startedAtUnixSeconds = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+	private long _lastWebSocketAcceptedUnixSeconds;
+
+	public void OnWebSocketAccepted()
+	{
+		Interlocked.Increment(ref _activeWebSocketConnections);
+		Interlocked.Increment(ref _totalWebSocketConnectionsAccepted);
+		Interlocked.Exchange(ref _lastWebSocketAcceptedUnixSeconds, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+	}
+
+	public void OnWebSocketClosed()
+	{
+		var active = Interlocked.Decrement(ref _activeWebSocketConnections);
+		if (active < 0)
+		{
+			Interlocked.Exchange(ref _activeWebSocketConnections, 0);
+		}
+	}
+
+	public ServerRuntimeSnapshot GetSnapshot(DateTimeOffset capturedAtUtc)
+	{
+		var startedAtUnix = Interlocked.Read(ref _startedAtUnixSeconds);
+		var startedAtUtc = DateTimeOffset.FromUnixTimeSeconds(startedAtUnix);
+		var lastAcceptedUnix = Interlocked.Read(ref _lastWebSocketAcceptedUnixSeconds);
+		var lastAcceptedUtc = lastAcceptedUnix > 0 ? DateTimeOffset.FromUnixTimeSeconds(lastAcceptedUnix) : (DateTimeOffset?)null;
+		var uptimeSeconds = Math.Max(0, (long)(capturedAtUtc - startedAtUtc).TotalSeconds);
+
+		return new ServerRuntimeSnapshot(
+			StartedAtUtc: startedAtUtc,
+			UptimeSeconds: uptimeSeconds,
+			ActiveWebSocketConnections: Math.Max(0, (int)Interlocked.Read(ref _activeWebSocketConnections)),
+			TotalWebSocketConnectionsAccepted: Math.Max(0, (int)Interlocked.Read(ref _totalWebSocketConnectionsAccepted)),
+			LastWebSocketAcceptedUtc: lastAcceptedUtc);
+	}
+
+	internal sealed record ServerRuntimeSnapshot(
+		DateTimeOffset StartedAtUtc,
+		long UptimeSeconds,
+		int ActiveWebSocketConnections,
+		int TotalWebSocketConnectionsAccepted,
+		DateTimeOffset? LastWebSocketAcceptedUtc);
 }

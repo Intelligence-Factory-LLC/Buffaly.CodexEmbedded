@@ -3,10 +3,10 @@
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>Codex Logs</title>
+	<title>Codex Server State</title>
 	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-	<link rel="stylesheet" href="site.css?v=20260222-logsselector2">
+	<link rel="stylesheet" href="site.css?v=20260223-serverstate1">
 </head>
 <body>
 	<div class="layout">
@@ -17,7 +17,7 @@
 		<main class="main codex-main">
 			<aside id="sessionSidebar" class="panel session-sidebar">
 				<div class="sidebar-shell-header">
-					<a class="sidebar-logo-btn" href="https://buffa.ly/?utm_source=codexembedded&utm_medium=logs_logo&utm_campaign=sidebar" target="_blank" rel="noopener" title="Made by the Buffaly team - learn more" aria-label="Made by the Buffaly team - learn more">
+					<a class="sidebar-logo-btn" href="https://buffa.ly/?utm_source=codexembedded&utm_medium=server_logo&utm_campaign=sidebar" target="_blank" rel="noopener" title="Made by the Buffaly team - learn more" aria-label="Made by the Buffaly team - learn more">
 						<img class="sidebar-logo-image" src="images/bf_logo_fav_Large.png" alt="">
 					</a>
 					<button id="sidebarToggleBtn" type="button" class="sidebar-collapse-btn sidebar-shell-toggle-btn" title="Hide projects" aria-label="Hide projects">
@@ -29,7 +29,7 @@
 						<i class="bi bi-chat-square-text" aria-hidden="true"></i>
 						<span>Codex</span>
 					</a>
-					<a class="sidebar-nav-link active" href="logs" aria-current="page">
+					<a class="sidebar-nav-link" href="logs">
 						<i class="bi bi-journal-text" aria-hidden="true"></i>
 						<span>Logs</span>
 					</a>
@@ -37,7 +37,7 @@
 						<i class="bi bi-eye" aria-hidden="true"></i>
 						<span>Watcher</span>
 					</a>
-					<a class="sidebar-nav-link" href="server">
+					<a class="sidebar-nav-link active" href="server" aria-current="page">
 						<i class="bi bi-cpu" aria-hidden="true"></i>
 						<span>Server</span>
 					</a>
@@ -46,16 +46,46 @@
 				<div id="projectList" class="project-list"></div>
 			</aside>
 			<section class="panel chat-panel">
-				<div class="panel-title">Session Logs</div>
-				<div class="logs-help-text">
-					Select a project and session on the left to inspect that session log file from disk.
+				<div class="panel-title panel-title-row">
+					<span>Server State</span>
+					<button id="serverRefreshBtn" type="button" class="toolbar-secondary server-refresh-btn">
+						<i class="bi bi-arrow-clockwise" aria-hidden="true"></i>
+						<span>Refresh</span>
+					</button>
 				</div>
-				<div id="logsStatus" class="logs-status">Loading sessions...</div>
-				<pre id="logsOutput" class="log-output"></pre>
+				<div class="logs-help-text">
+					Live server runtime snapshot only. This page does not render conversation logs or assistant output.
+				</div>
+				<div id="serverStatus" class="logs-status">Loading server state...</div>
+				<div id="serverMeta" class="server-meta"></div>
+				<div class="server-section">
+					<div class="server-section-title">Active Sessions</div>
+					<div class="server-table-wrap">
+						<table class="server-table" id="serverSessionsTable">
+							<thead>
+								<tr>
+									<th>State</th>
+									<th>Session</th>
+									<th>Thread</th>
+									<th>Project</th>
+									<th>Model</th>
+									<th>Reasoning</th>
+									<th>Turn In Flight</th>
+									<th>Pending Approval</th>
+								</tr>
+							</thead>
+							<tbody id="serverSessionsBody"></tbody>
+						</table>
+					</div>
+				</div>
+				<div class="server-section">
+					<div class="server-section-title">Raw Snapshot</div>
+					<pre id="serverRawSnapshot" class="log-output server-raw-output"></pre>
+				</div>
 			</section>
 		</main>
 		<button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close projects"></button>
 	</div>
-	<script src="logs.js?v=20260222-logsselector2"></script>
+	<script src="server.js?v=20260223-serverstate1"></script>
 </body>
 </html>
