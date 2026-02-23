@@ -839,6 +839,7 @@ body {
 	display: flex;
 	align-items: center;
 	gap: 0.45rem;
+	min-width: 0;
 	font-size: 0.79rem;
 	font-weight: 700;
 }
@@ -848,13 +849,9 @@ body {
 	white-space: nowrap;
 }
 
-.turn-activity-help {
-	color: #334155;
-	font-weight: 600;
-}
-
 .turn-activity-cancel-link {
 	margin-left: auto;
+	flex: 0 0 auto;
 	padding: 0;
 	border: 0;
 	background: transparent;
@@ -872,12 +869,14 @@ body {
 .turn-activity-reasoning {
 	position: relative;
 	z-index: 1;
-	margin-top: 0.28rem;
+	flex: 1 1 auto;
+	min-width: 0;
 	font-size: 0.8rem;
 	font-family: Consolas, "Courier New", monospace;
 	color: #0f172a;
-	white-space: normal;
-	word-break: break-word;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 @keyframes turn-activity-shimmer {
@@ -2066,7 +2065,6 @@ body {
 	}
 
 	.turn-activity-reasoning {
-		margin-top: 0.2rem;
 		font-size: 0.73rem;
 	}
 
