@@ -24,6 +24,9 @@ let collapsedProjectKeys = new Set();
 let archivedThreadIds = new Set();
 let expandedProjectKeys = new Set();
 let customProjects = [];
+let projectOrderIndexByKey = new Map(); // projectKey -> stable display order index for current page lifetime
+let nextProjectOrderIndex = 0;
+let projectOrderInitialized = false;
 let pendingCreateRequests = new Map(); // requestId -> { threadName, cwd }
 let pendingRenameOnAttach = new Map(); // threadId -> threadName
 let pendingSessionLoadThreadId = null;
@@ -37,6 +40,7 @@ let timelinePollInFlight = false;
 let sessionListPollTimer = null;
 let logFlushTimer = null;
 let autoAttachAttempted = false;
+let sessionCatalogLoadedOnce = false;
 let syncingConversationModelSelect = false;
 let sessionMetaDetailsExpanded = false;
 let contextUsageByThread = new Map(); // threadId -> { usedTokens, contextWindow, percentLeft }
@@ -1375,13 +1379,6 @@ function touchSessionActivity(sessionId, tick = Date.now()) {
   if (!state.createdAtTick) {
     state.createdAtTick = normalizedTick;
   }
-
-  if (state.threadId) {
-    const entry = getCatalogEntryByThreadId(state.threadId);
-    if (entry) {
-      entry.updatedAtUtc = new Date(normalizedTick).toISOString();
-    }
-  }
 }
 
 function clearPendingSessionLoad(options = {}) {
@@ -1576,14 +1573,43 @@ function buildSidebarProjectGroups() {
     });
   }
 
-  groups.sort((a, b) => {
-    const tickCompare = b.latestTick - a.latestTick;
-    if (tickCompare !== 0) {
-      return tickCompare;
+  const hasSessions = groups.some((group) => Array.isArray(group.sessions) && group.sessions.length > 0);
+  if (!projectOrderInitialized && hasSessions && sessionCatalogLoadedOnce) {
+    const initial = [...groups].sort((a, b) => {
+      const tickCompare = (b.latestTick || 0) - (a.latestTick || 0);
+      if (tickCompare !== 0) {
+        return tickCompare;
+      }
+
+      return getProjectDisplayName(a).localeCompare(getProjectDisplayName(b));
+    });
+    projectOrderIndexByKey = new Map();
+    nextProjectOrderIndex = 0;
+    for (const group of initial) {
+      projectOrderIndexByKey.set(group.key, nextProjectOrderIndex++);
+    }
+    projectOrderInitialized = true;
+  }
+
+  if (projectOrderInitialized) {
+    for (const group of groups) {
+      if (!projectOrderIndexByKey.has(group.key)) {
+        projectOrderIndexByKey.set(group.key, nextProjectOrderIndex++);
+      }
     }
 
-    return getProjectDisplayName(a).localeCompare(getProjectDisplayName(b));
-  });
+    groups.sort((a, b) => {
+      const rankA = projectOrderIndexByKey.get(a.key);
+      const rankB = projectOrderIndexByKey.get(b.key);
+      if (rankA !== rankB) {
+        return rankA - rankB;
+      }
+
+      return getProjectDisplayName(a).localeCompare(getProjectDisplayName(b));
+    });
+  } else {
+    groups.sort((a, b) => getProjectDisplayName(a).localeCompare(getProjectDisplayName(b)));
+  }
 
   return groups;
 }
@@ -3864,6 +3890,7 @@ function handleServerEvent(frame) {
     }
 
     case "session_catalog": {
+      sessionCatalogLoadedOnce = true;
       const list = Array.isArray(payload.sessions) ? payload.sessions : [];
       const nextProcessingByThread = new Map(processingByThread);
       let persistedPreferenceUpdated = false;
@@ -4101,14 +4128,25 @@ function handleServerEvent(frame) {
     case "session_configured": {
       const sessionId = payload.sessionId || null;
       let sidebarStateChanged = false;
+      let sessionConfigChanged = false;
       if (sessionId && sessions.has(sessionId)) {
         const state = sessions.get(sessionId);
         if (state) {
           if (typeof payload.threadId === "string" && payload.threadId.trim()) {
-            state.threadId = payload.threadId.trim();
+            const nextThreadId = payload.threadId.trim();
+            if ((state.threadId || "") !== nextThreadId) {
+              state.threadId = nextThreadId;
+              sidebarStateChanged = true;
+              sessionConfigChanged = true;
+            }
           }
           if (typeof payload.cwd === "string" && payload.cwd.trim()) {
-            state.cwd = payload.cwd.trim();
+            const nextCwd = payload.cwd.trim();
+            if ((state.cwd || "") !== nextCwd) {
+              state.cwd = nextCwd;
+              sidebarStateChanged = true;
+              sessionConfigChanged = true;
+            }
           }
 
           const configuredModel = normalizeModelValue(payload.model);
@@ -4116,12 +4154,14 @@ function handleServerEvent(frame) {
           if (payload.model !== undefined) {
             if ((state.model || "") !== configuredModel) {
               sidebarStateChanged = true;
+              sessionConfigChanged = true;
             }
             state.model = configuredModel || null;
           }
           if (payload.reasoningEffort !== undefined || payload.effort !== undefined) {
             if ((state.reasoningEffort || "") !== configuredEffort) {
               sidebarStateChanged = true;
+              sessionConfigChanged = true;
             }
             state.reasoningEffort = configuredEffort || null;
           }
@@ -4139,7 +4179,7 @@ function handleServerEvent(frame) {
         }
       }
 
-      if (sessionId) {
+      if (sessionId && sessionConfigChanged) {
         touchSessionActivity(sessionId);
       }
 
@@ -4726,6 +4766,11 @@ async function queueCurrentComposerPrompt() {
     return true;
   }
 
+  if (!isTurnInFlight(activeSessionId)) {
+    appendLog(`[queue] no running turn for session=${activeSessionId}; send directly instead`);
+    return true;
+  }
+
   try {
     await ensureSocket();
   } catch (error) {
@@ -4805,6 +4850,10 @@ promptForm.addEventListener("submit", async (event) => {
 promptInput.addEventListener("keydown", (event) => {
   if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
     if (!promptInput.value.trim() && pendingComposerImages.length === 0) {
+      return;
+    }
+
+    if (!activeSessionId || !isTurnInFlight(activeSessionId)) {
       return;
     }
 
