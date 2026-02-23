@@ -56,6 +56,20 @@ public sealed class CodexSession
 	{
 		return _client.InterruptTurnAsync(ThreadId, waitForTurnStart, cancellationToken);
 	}
+
+	public bool TryGetActiveTurnId(out string? turnId)
+	{
+		return _client.TryGetActiveTurnId(ThreadId, out turnId);
+	}
+
+	public Task SteerTurnAsync(
+		string expectedTurnId,
+		string text,
+		IReadOnlyList<CodexUserImageInput>? images = null,
+		CancellationToken cancellationToken = default)
+	{
+		return _client.SendSteerAsync(ThreadId, expectedTurnId, text, images, cancellationToken);
+	}
 }
 
 

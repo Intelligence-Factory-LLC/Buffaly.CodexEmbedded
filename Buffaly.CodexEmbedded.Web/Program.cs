@@ -301,7 +301,9 @@ app.MapGet("/api/server/state/current", (
 				? "in_response"
 				: pendingApproval is not null
 					? "awaiting_approval"
-					: "idle";
+					: snapshot.QueuedTurnCount > 0
+						? "queued"
+						: "idle";
 
 			return new ServerStateSnapshotBuilder.ServerSessionRow(
 				SessionId: snapshot.SessionId,
@@ -313,6 +315,7 @@ app.MapGet("/api/server/state/current", (
 				ReasoningEffort: snapshot.ReasoningEffort,
 				IsTurnInFlight: snapshot.IsTurnInFlight,
 				State: sessionState,
+				QueuedTurnCount: snapshot.QueuedTurnCount,
 				PendingApproval: pendingApproval is null
 					? null
 					: new ServerStateSnapshotBuilder.ServerPendingApprovalRow(
@@ -346,6 +349,7 @@ app.MapGet("/api/server/state/current", (
 				sessionCount = orderedSessions.Length,
 				turnsInFlight = orderedSessions.Count(item => item.IsTurnInFlight),
 				pendingApprovals = orderedSessions.Count(item => item.PendingApproval is not null),
+				queuedMessages = orderedSessions.Sum(item => item.QueuedTurnCount),
 				sessions = orderedSessions.Select(item => new
 				{
 					sessionId = item.SessionId,
@@ -355,6 +359,7 @@ app.MapGet("/api/server/state/current", (
 					reasoningEffort = item.ReasoningEffort,
 					isTurnInFlight = item.IsTurnInFlight,
 					state = item.State,
+					queuedTurnCount = item.QueuedTurnCount,
 					pendingApprovalId = item.PendingApproval?.ApprovalId
 				}).ToArray()
 			};
@@ -367,6 +372,7 @@ app.MapGet("/api/server/state/current", (
 	var codexHomePath = CodexHomePaths.ResolveCodexHomePath(defaults.CodexHomePath);
 	var turnsInFlight = snapshots.Count(row => row.IsTurnInFlight);
 	var pendingApprovals = snapshots.Count(row => row.PendingApproval is not null);
+	var queuedMessages = snapshots.Sum(row => row.QueuedTurnCount);
 
 	return Results.Ok(new
 	{
@@ -391,7 +397,8 @@ app.MapGet("/api/server/state/current", (
 			activeProjects = projects.Length,
 			activeSessions = snapshots.Count,
 			turnsInFlight,
-			pendingApprovals
+			pendingApprovals,
+			queuedMessages
 		},
 		projects,
 		sessions = snapshots.Select(row => new
@@ -405,6 +412,7 @@ app.MapGet("/api/server/state/current", (
 			reasoningEffort = row.ReasoningEffort,
 			isTurnInFlight = row.IsTurnInFlight,
 			state = row.State,
+			queuedTurnCount = row.QueuedTurnCount,
 			pendingApproval = row.PendingApproval
 		}).ToArray()
 	});
@@ -2027,6 +2035,7 @@ internal static class ServerStateSnapshotBuilder
 		string? ReasoningEffort,
 		bool IsTurnInFlight,
 		string State,
+		int QueuedTurnCount,
 		ServerPendingApprovalRow? PendingApproval);
 
 	internal sealed record ServerPendingApprovalRow(

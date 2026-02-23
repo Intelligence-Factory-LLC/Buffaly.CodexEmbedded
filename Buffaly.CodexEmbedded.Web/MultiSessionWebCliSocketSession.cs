@@ -194,6 +194,34 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						TryGetTurnImageInputs(root),
 						cancellationToken);
 					return;
+				case "turn_queue_add":
+				{
+					var hasQueuedModelOverride = root.TryGetProperty("model", out _);
+					var hasQueuedEffortOverride = root.TryGetProperty("effort", out _);
+					await QueueTurnAsync(
+						TryGetString(root, "sessionId"),
+						TryGetString(root, "text"),
+						TryGetString(root, "cwd"),
+						TryGetString(root, "model"),
+						TryGetString(root, "effort"),
+						hasQueuedModelOverride,
+						hasQueuedEffortOverride,
+						TryGetTurnImageInputs(root),
+						cancellationToken);
+					return;
+				}
+				case "turn_queue_pop":
+					await PopQueuedTurnForEditingAsync(
+						TryGetString(root, "sessionId"),
+						TryGetString(root, "queueItemId"),
+						cancellationToken);
+					return;
+				case "turn_queue_remove":
+					await RemoveQueuedTurnAsync(
+						TryGetString(root, "sessionId"),
+						TryGetString(root, "queueItemId"),
+						cancellationToken);
+					return;
 				case "turn_cancel":
 					await CancelTurnAsync(TryGetString(root, "sessionId"), cancellationToken);
 					return;
@@ -484,7 +512,15 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						actions = approval.Actions,
 						createdAtUtc = approval.CreatedAtUtc.ToString("O")
 					}
-					: null
+					: null,
+				queuedTurnCount = s.QueuedTurnCount,
+				queuedTurns = s.QueuedTurns.Select(queued => new
+				{
+					queueItemId = queued.QueueItemId,
+					previewText = queued.PreviewText,
+					imageCount = queued.ImageCount,
+					createdAtUtc = queued.CreatedAtUtc.ToString("O")
+				}).ToArray()
 			})
 			.ToList();
 
@@ -552,7 +588,17 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
-		_orchestrator.QueueTurn(
+		if (_orchestrator.TryGetTurnState(sessionId, out var isTurnInFlight) && isTurnInFlight)
+		{
+			var steer = await _orchestrator.SteerTurnAsync(sessionId, normalizedText, images, cancellationToken);
+			if (!steer.Success)
+			{
+				await SendEventAsync("error", new { message = steer.ErrorMessage ?? "Failed to steer active turn." }, cancellationToken);
+			}
+			return;
+		}
+
+		_orchestrator.StartTurn(
 			sessionId,
 			normalizedText,
 			normalizedCwd,
@@ -561,6 +607,96 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			hasModelOverride,
 			hasEffortOverride,
 			images);
+	}
+
+	private async Task QueueTurnAsync(
+		string? sessionId,
+		string? text,
+		string? cwd,
+		string? model,
+		string? effort,
+		bool hasModelOverride,
+		bool hasEffortOverride,
+		IReadOnlyList<CodexUserImageInput>? images,
+		CancellationToken cancellationToken)
+	{
+		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			await SendEventAsync("error", new { message = "No active session. Create/select a session first." }, cancellationToken);
+			return;
+		}
+
+		var normalizedText = text?.Trim() ?? string.Empty;
+		var normalizedCwd = string.IsNullOrWhiteSpace(cwd) ? null : cwd.Trim();
+		var normalizedModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+		var normalizedEffort = WebCodexUtils.NormalizeReasoningEffort(effort);
+		if (!_orchestrator.HasSession(sessionId))
+		{
+			await SendEventAsync("error", new { message = $"Unknown session: {sessionId}" }, cancellationToken);
+			return;
+		}
+
+		if (!_orchestrator.TryEnqueueTurn(
+			sessionId,
+			normalizedText,
+			normalizedCwd,
+			normalizedModel,
+			normalizedEffort,
+			hasModelOverride,
+			hasEffortOverride,
+			images,
+			out var queueItemId,
+			out var error))
+		{
+			await SendEventAsync("error", new { message = error ?? "Failed to queue prompt." }, cancellationToken);
+			return;
+		}
+
+		await SendEventAsync("status", new { sessionId, message = $"Prompt queued ({queueItemId})." }, cancellationToken);
+	}
+
+	private async Task PopQueuedTurnForEditingAsync(string? sessionId, string? queueItemId, CancellationToken cancellationToken)
+	{
+		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			await SendEventAsync("error", new { message = "No active session. Create/select a session first." }, cancellationToken);
+			return;
+		}
+
+		if (!_orchestrator.TryPopQueuedTurnForEditing(sessionId, queueItemId ?? string.Empty, out var payload, out var errorMessage))
+		{
+			await SendEventAsync("error", new { message = errorMessage ?? "Failed to edit queued prompt." }, cancellationToken);
+			return;
+		}
+
+		await SendEventAsync(
+			"turn_queue_edit_item",
+			new
+			{
+				sessionId,
+				queueItemId = payload!.QueueItemId,
+				text = payload.Text,
+				images = payload.Images.Select(x => new { url = x.Url, name = "image" }).ToArray()
+			},
+			cancellationToken);
+	}
+
+	private async Task RemoveQueuedTurnAsync(string? sessionId, string? queueItemId, CancellationToken cancellationToken)
+	{
+		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			await SendEventAsync("error", new { message = "No active session. Create/select a session first." }, cancellationToken);
+			return;
+		}
+
+		if (!_orchestrator.TryRemoveQueuedTurn(sessionId, queueItemId ?? string.Empty, out var errorMessage))
+		{
+			await SendEventAsync("error", new { message = errorMessage ?? "Failed to remove queued prompt." }, cancellationToken);
+			return;
+		}
 	}
 
 	private async Task CancelTurnAsync(string? sessionId, CancellationToken cancellationToken)

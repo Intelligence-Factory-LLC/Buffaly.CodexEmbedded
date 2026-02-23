@@ -387,7 +387,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		SessionsChanged?.Invoke();
 	}
 
-	public void QueueTurn(
+	public void StartTurn(
 		string sessionId,
 		string normalizedText,
 		string? normalizedCwd,
@@ -413,138 +413,392 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			session.SetReasoningEffort(normalizedEffort);
 		}
 
+		var request = new TurnExecutionRequest(
+			Text: normalizedText,
+			Cwd: normalizedCwd,
+			Images: images is null ? Array.Empty<CodexUserImageInput>() : images.ToArray(),
+			QueueItemId: null);
+		LaunchTurnExecution(sessionId, session, request, fromQueue: false);
+	}
+
+	public void QueueTurn(
+		string sessionId,
+		string normalizedText,
+		string? normalizedCwd,
+		string? normalizedModel,
+		string? normalizedEffort,
+		bool hasModelOverride,
+		bool hasEffortOverride,
+		IReadOnlyList<CodexUserImageInput>? images)
+	{
+		StartTurn(
+			sessionId,
+			normalizedText,
+			normalizedCwd,
+			normalizedModel,
+			normalizedEffort,
+			hasModelOverride,
+			hasEffortOverride,
+			images);
+	}
+
+	public bool TryEnqueueTurn(
+		string sessionId,
+		string normalizedText,
+		string? normalizedCwd,
+		string? normalizedModel,
+		string? normalizedEffort,
+		bool hasModelOverride,
+		bool hasEffortOverride,
+		IReadOnlyList<CodexUserImageInput>? images,
+		out string? queueItemId,
+		out string? errorMessage)
+	{
+		queueItemId = null;
+		errorMessage = null;
+		var session = TryGetSession(sessionId);
+		if (session is null)
+		{
+			errorMessage = $"Unknown session: {sessionId}";
+			return false;
+		}
+
+		var safeImages = images?.ToList() ?? new List<CodexUserImageInput>();
+		if (string.IsNullOrWhiteSpace(normalizedText) && safeImages.Count == 0)
+		{
+			errorMessage = "Prompt text or at least one image is required.";
+			return false;
+		}
+
+		if (hasModelOverride)
+		{
+			session.SetModel(normalizedModel);
+		}
+		if (hasEffortOverride)
+		{
+			session.SetReasoningEffort(normalizedEffort);
+		}
+
+		var nextQueueItemId = Guid.NewGuid().ToString("N");
+		session.EnqueueQueuedTurn(new QueuedTurn(
+			QueueItemId: nextQueueItemId,
+			Text: normalizedText,
+			Cwd: normalizedCwd,
+			Images: safeImages,
+			CreatedAtUtc: DateTimeOffset.UtcNow));
+		queueItemId = nextQueueItemId;
+
+		var preview = BuildQueuedTurnPreview(normalizedText, safeImages.Count);
+		session.Log.Write($"[queue] enqueued item={nextQueueItemId} text={preview}");
+		Broadcast?.Invoke("status", new { sessionId, message = "Prompt queued." });
+		SessionsChanged?.Invoke();
+		EnsureQueueDispatcher(sessionId, session);
+		return true;
+	}
+
+	public bool TryRemoveQueuedTurn(string sessionId, string queueItemId, out string? errorMessage)
+	{
+		errorMessage = null;
+		var session = TryGetSession(sessionId);
+		if (session is null)
+		{
+			errorMessage = $"Unknown session: {sessionId}";
+			return false;
+		}
+
+		var normalizedQueueItemId = queueItemId?.Trim();
+		if (string.IsNullOrWhiteSpace(normalizedQueueItemId))
+		{
+			errorMessage = "queueItemId is required.";
+			return false;
+		}
+
+		if (!session.TryRemoveQueuedTurn(normalizedQueueItemId, out _))
+		{
+			errorMessage = $"Queued prompt not found: {normalizedQueueItemId}";
+			return false;
+		}
+
+		session.Log.Write($"[queue] removed item={normalizedQueueItemId}");
+		SessionsChanged?.Invoke();
+		return true;
+	}
+
+	public bool TryPopQueuedTurnForEditing(
+		string sessionId,
+		string queueItemId,
+		out QueuedTurnEditPayload? payload,
+		out string? errorMessage)
+	{
+		payload = null;
+		errorMessage = null;
+		var session = TryGetSession(sessionId);
+		if (session is null)
+		{
+			errorMessage = $"Unknown session: {sessionId}";
+			return false;
+		}
+
+		var normalizedQueueItemId = queueItemId?.Trim();
+		if (string.IsNullOrWhiteSpace(normalizedQueueItemId))
+		{
+			errorMessage = "queueItemId is required.";
+			return false;
+		}
+
+		if (!session.TryPopQueuedTurn(normalizedQueueItemId, out var queuedTurn) || queuedTurn is null)
+		{
+			errorMessage = $"Queued prompt not found: {normalizedQueueItemId}";
+			return false;
+		}
+
+		payload = new QueuedTurnEditPayload(
+			QueueItemId: queuedTurn.QueueItemId,
+			Text: queuedTurn.Text,
+			Images: queuedTurn.Images
+				.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Url))
+				.Select(x => new QueuedTurnImagePayload(x.Url))
+				.ToArray());
+
+		session.Log.Write($"[queue] popped item={normalizedQueueItemId} for edit");
+		SessionsChanged?.Invoke();
+		return true;
+	}
+
+	public async Task<SteerTurnResult> SteerTurnAsync(
+		string sessionId,
+		string normalizedText,
+		IReadOnlyList<CodexUserImageInput>? images,
+		CancellationToken cancellationToken)
+	{
+		var session = TryGetSession(sessionId);
+		if (session is null)
+		{
+			return new SteerTurnResult(false, $"Unknown session: {sessionId}");
+		}
+
+		var safeImages = images?.ToList() ?? new List<CodexUserImageInput>();
+		if (string.IsNullOrWhiteSpace(normalizedText) && safeImages.Count == 0)
+		{
+			return new SteerTurnResult(false, "Prompt text or at least one image is required.");
+		}
+
+		if (!session.IsTurnInFlight)
+		{
+			return new SteerTurnResult(false, "No running turn is available to steer. Resend as a new message.");
+		}
+
+		var expectedTurnId = session.ResolveActiveTurnId();
+		if (string.IsNullOrWhiteSpace(expectedTurnId))
+		{
+			return new SteerTurnResult(false, "Unable to steer because the active turn id is unavailable. Edit and resend.");
+		}
+
+		try
+		{
+			await session.Session.SteerTurnAsync(expectedTurnId, normalizedText, safeImages, cancellationToken);
+			session.Log.Write($"[turn_steer] expectedTurnId={expectedTurnId} text={BuildQueuedTurnPreview(normalizedText, safeImages.Count)}");
+			Broadcast?.Invoke("status", new { sessionId, message = "Steer message sent to active turn." });
+			return new SteerTurnResult(true, null);
+		}
+		catch (Exception ex)
+		{
+			if (IsSteerPreconditionMismatch(ex, out var detailed))
+			{
+				var message = string.IsNullOrWhiteSpace(detailed)
+					? "Steer was rejected because the active turn changed. Edit and resend your message."
+					: $"Steer was rejected because the active turn changed ({detailed}). Edit and resend your message.";
+				session.Log.Write($"[turn_steer] precondition mismatch expectedTurnId={expectedTurnId} detail={detailed ?? "(none)"}");
+				return new SteerTurnResult(false, message);
+			}
+
+			var simplified = SimplifyRpcErrorMessage(ex.Message) ?? ex.Message;
+			session.Log.Write($"[turn_steer] failed expectedTurnId={expectedTurnId} error={simplified}");
+			return new SteerTurnResult(false, $"Failed to steer active turn: {simplified}");
+		}
+	}
+
+	private void LaunchTurnExecution(
+		string sessionId,
+		ManagedSession session,
+		TurnExecutionRequest request,
+		bool fromQueue)
+	{
 		_ = Task.Run(async () =>
 		{
-			var lockTaken = false;
-			var completionPublished = false;
-			CancellationTokenSource? timeoutCts = null;
-			CancellationTokenSource? turnCts = null;
-
 			try
 			{
-				var lockAcquired = await WaitForTurnSlotWithTimeoutAsync(sessionId, session);
-				if (!lockAcquired)
-				{
-					var waitSeconds = _defaults.TurnSlotWaitTimeoutSeconds;
-					session.Log.Write($"[turn_gate] wait timed out after {waitSeconds}s");
-					Broadcast?.Invoke(
-						"turn_complete",
-						new
-						{
-							sessionId,
-							status = "queueTimedOut",
-							errorMessage = $"Timed out waiting {waitSeconds}s for previous turn to release."
-						});
-					Broadcast?.Invoke(
-						"status",
-						new
-						{
-							sessionId,
-							message = $"Turn did not start because queue wait timed out ({waitSeconds}s)."
-						});
-					return;
-				}
-
-				lockTaken = true;
-
-				timeoutCts = new CancellationTokenSource();
-				timeoutCts.CancelAfter(TimeSpan.FromSeconds(_defaults.TurnTimeoutSeconds));
-				turnCts = CancellationTokenSource.CreateLinkedTokenSource(session.LifetimeToken, timeoutCts.Token);
-				var turnToken = turnCts.Token;
-				if (session.TryMarkTurnStarted(turnCts))
-				{
-					Broadcast?.Invoke("turn_started", new { sessionId });
-					SessionsChanged?.Invoke();
-				}
-				else
-				{
-					session.Log.Write("[turn_state] suppressed duplicate turn_started emit");
-				}
-
-				Broadcast?.Invoke("status", new { sessionId, message = "Turn started." });
-				var effectiveModel = session.ResolveTurnModel(_defaults.DefaultModel);
-				var effectiveEffort = session.CurrentReasoningEffort;
-				var imageCount = images?.Count ?? 0;
-				session.Log.Write($"[prompt] {(string.IsNullOrWhiteSpace(normalizedText) ? "(no text)" : normalizedText)} images={imageCount} cwd={normalizedCwd ?? session.Cwd ?? "(default)"} model={effectiveModel ?? "(default)"} effort={effectiveEffort ?? "(default)"}");
-				Broadcast?.Invoke("assistant_response_started", new { sessionId });
-
-				var turnOptions = new CodexTurnOptions
-				{
-					Cwd = normalizedCwd,
-					Model = effectiveModel,
-					ReasoningEffort = effectiveEffort
-				};
-				var result = await session.Session.SendMessageAsync(
-					normalizedText,
-					images: images,
-					options: turnOptions,
-					progress: null,
-					cancellationToken: turnToken);
-
-				Broadcast?.Invoke("assistant_done", new { sessionId, text = result.Text });
-				completionPublished = TryPublishTurnComplete(
-					sessionId,
-					session,
-					result.Status,
-					result.ErrorMessage);
+				await RunTurnExecutionAsync(sessionId, session, request, fromQueue);
 			}
-			catch (OperationCanceledException)
+			catch
 			{
-				if (session.LifetimeToken.IsCancellationRequested && !lockTaken)
-				{
-					return;
-				}
-
-				if (timeoutCts?.IsCancellationRequested == true)
-				{
-					completionPublished = TryPublishTurnComplete(
-						sessionId,
-						session,
-						status: "timedOut",
-						errorMessage: "Timed out.");
-				}
-				else
-				{
-					completionPublished = TryPublishTurnComplete(
-						sessionId,
-						session,
-						status: "interrupted",
-						errorMessage: "Turn canceled.");
-				}
-			}
-			catch (Exception ex)
-			{
-				Logs.LogError(ex);
-				session.Log.Write($"[turn_error] {ex.Message}");
-				completionPublished = TryPublishTurnComplete(
-					sessionId,
-					session,
-					status: "failed",
-					errorMessage: ex.Message);
-			}
-			finally
-			{
-				if (lockTaken)
-				{
-					if (!completionPublished)
-					{
-						completionPublished = TryPublishTurnComplete(
-							sessionId,
-							session,
-							status: "unknown",
-							errorMessage: "Turn finished without an explicit completion signal.");
-					}
-
-					if (!completionPublished)
-					{
-						session.ReleaseTurnSlot();
-					}
-				}
-
-				turnCts?.Dispose();
-				timeoutCts?.Dispose();
 			}
 		}, CancellationToken.None);
+	}
+
+	private async Task<TurnExecutionOutcome> RunTurnExecutionAsync(
+		string sessionId,
+		ManagedSession session,
+		TurnExecutionRequest request,
+		bool fromQueue)
+	{
+		var lockTaken = false;
+		var completionPublished = false;
+		CancellationTokenSource? timeoutCts = null;
+		CancellationTokenSource? turnCts = null;
+
+		try
+		{
+			var lockAcquired = await WaitForTurnSlotWithTimeoutAsync(sessionId, session);
+			if (!lockAcquired)
+			{
+				var waitSeconds = _defaults.TurnSlotWaitTimeoutSeconds;
+				session.Log.Write($"[turn_gate] wait timed out after {waitSeconds}s");
+				Broadcast?.Invoke(
+					"turn_complete",
+					new
+					{
+						sessionId,
+						status = "queueTimedOut",
+						errorMessage = $"Timed out waiting {waitSeconds}s for previous turn to release."
+					});
+				Broadcast?.Invoke(
+					"status",
+					new
+					{
+						sessionId,
+						message = $"Turn did not start because queue wait timed out ({waitSeconds}s)."
+					});
+				return TurnExecutionOutcome.QueueTimedOut;
+			}
+
+			lockTaken = true;
+
+			timeoutCts = new CancellationTokenSource();
+			timeoutCts.CancelAfter(TimeSpan.FromSeconds(_defaults.TurnTimeoutSeconds));
+			turnCts = CancellationTokenSource.CreateLinkedTokenSource(session.LifetimeToken, timeoutCts.Token);
+			var turnToken = turnCts.Token;
+			if (session.TryMarkTurnStarted(turnCts))
+			{
+				Broadcast?.Invoke("turn_started", new { sessionId });
+				SessionsChanged?.Invoke();
+			}
+			else
+			{
+				session.Log.Write("[turn_state] suppressed duplicate turn_started emit");
+			}
+
+			if (fromQueue && !string.IsNullOrWhiteSpace(request.QueueItemId))
+			{
+				session.Log.Write($"[queue] dequeued item={request.QueueItemId}");
+			}
+
+			Broadcast?.Invoke("status", new { sessionId, message = "Turn started." });
+			var effectiveModel = session.ResolveTurnModel(_defaults.DefaultModel);
+			var effectiveEffort = session.CurrentReasoningEffort;
+			var imageCount = request.Images?.Count ?? 0;
+			session.Log.Write($"[prompt] {(string.IsNullOrWhiteSpace(request.Text) ? "(no text)" : request.Text)} images={imageCount} cwd={request.Cwd ?? session.Cwd ?? "(default)"} model={effectiveModel ?? "(default)"} effort={effectiveEffort ?? "(default)"}");
+			Broadcast?.Invoke("assistant_response_started", new { sessionId });
+
+			var turnOptions = new CodexTurnOptions
+			{
+				Cwd = request.Cwd,
+				Model = effectiveModel,
+				ReasoningEffort = effectiveEffort
+			};
+			var result = await session.Session.SendMessageAsync(
+				request.Text,
+				images: request.Images,
+				options: turnOptions,
+				progress: null,
+				cancellationToken: turnToken);
+
+			Broadcast?.Invoke("assistant_done", new { sessionId, text = result.Text });
+			completionPublished = TryPublishTurnComplete(
+				sessionId,
+				session,
+				result.Status,
+				result.ErrorMessage);
+		}
+		catch (OperationCanceledException)
+		{
+			if (session.LifetimeToken.IsCancellationRequested && !lockTaken)
+			{
+				return TurnExecutionOutcome.CanceledByLifetime;
+			}
+
+			if (timeoutCts?.IsCancellationRequested == true)
+			{
+				completionPublished = TryPublishTurnComplete(
+					sessionId,
+					session,
+					status: "timedOut",
+					errorMessage: "Timed out.");
+			}
+			else
+			{
+				completionPublished = TryPublishTurnComplete(
+					sessionId,
+					session,
+					status: "interrupted",
+					errorMessage: "Turn canceled.");
+			}
+		}
+		catch (Exception ex)
+		{
+			Logs.LogError(ex);
+			session.Log.Write($"[turn_error] {ex.Message}");
+			completionPublished = TryPublishTurnComplete(
+				sessionId,
+				session,
+				status: "failed",
+				errorMessage: ex.Message);
+		}
+		finally
+		{
+			if (lockTaken)
+			{
+				if (!completionPublished)
+				{
+					completionPublished = TryPublishTurnComplete(
+						sessionId,
+						session,
+						status: "unknown",
+						errorMessage: "Turn finished without an explicit completion signal.");
+				}
+
+				if (!completionPublished)
+				{
+					session.ReleaseTurnSlot();
+				}
+			}
+
+			turnCts?.Dispose();
+			timeoutCts?.Dispose();
+
+			if (fromQueue)
+			{
+				EnsureQueueDispatcher(sessionId, session);
+			}
+		}
+
+		return TurnExecutionOutcome.Finished;
+	}
+
+	private static string BuildQueuedTurnPreview(string text, int imageCount)
+	{
+		var normalized = (text ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+		if (normalized.Length > 90)
+		{
+			normalized = normalized[..90] + "...";
+		}
+
+		if (string.IsNullOrWhiteSpace(normalized))
+		{
+			normalized = imageCount > 0 ? "(image only)" : "(empty)";
+		}
+
+		return normalized;
 	}
 
 	public async Task<(bool InterruptSent, bool LocalCanceled, string? Error)> CancelTurnAsync(string sessionId, CancellationToken cancellationToken)
@@ -632,6 +886,111 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		SessionsChanged?.Invoke();
 		Broadcast?.Invoke("session_stopped", new { sessionId, message = "Session stopped." });
+	}
+
+	private void EnsureQueueDispatcher(string sessionId, ManagedSession session)
+	{
+		if (!session.TryMarkQueueDispatchStarted())
+		{
+			return;
+		}
+
+		_ = Task.Run(async () =>
+		{
+			try
+			{
+				await RunQueueDispatcherAsync(sessionId, session);
+			}
+			catch
+			{
+			}
+			finally
+			{
+				session.MarkQueueDispatchStopped();
+				if (!session.LifetimeToken.IsCancellationRequested && session.HasQueuedTurns())
+				{
+					EnsureQueueDispatcher(sessionId, session);
+				}
+			}
+		}, CancellationToken.None);
+	}
+
+	private async Task RunQueueDispatcherAsync(string sessionId, ManagedSession session)
+	{
+		while (!session.LifetimeToken.IsCancellationRequested)
+		{
+			if (session.IsTurnInFlight)
+			{
+				await Task.Delay(200, session.LifetimeToken);
+				continue;
+			}
+
+			if (!session.TryPopNextQueuedTurn(out var queuedTurn) || queuedTurn is null)
+			{
+				return;
+			}
+
+			SessionsChanged?.Invoke();
+
+			var request = new TurnExecutionRequest(
+				Text: queuedTurn.Text,
+				Cwd: queuedTurn.Cwd,
+				Images: queuedTurn.Images,
+				QueueItemId: queuedTurn.QueueItemId);
+
+			var outcome = await RunTurnExecutionAsync(sessionId, session, request, fromQueue: true);
+			if (outcome == TurnExecutionOutcome.QueueTimedOut)
+			{
+				session.RequeueQueuedTurnFront(queuedTurn);
+				SessionsChanged?.Invoke();
+				return;
+			}
+		}
+	}
+
+	private static bool IsSteerPreconditionMismatch(Exception ex, out string? detail)
+	{
+		detail = SimplifyRpcErrorMessage(ex.Message);
+		var inspect = (detail ?? ex.Message ?? string.Empty).ToLowerInvariant();
+		if (string.IsNullOrWhiteSpace(inspect))
+		{
+			return false;
+		}
+
+		return inspect.Contains("expectedturnid", StringComparison.Ordinal) ||
+			inspect.Contains("precondition", StringComparison.Ordinal) ||
+			(inspect.Contains("active turn", StringComparison.Ordinal) &&
+				inspect.Contains("match", StringComparison.Ordinal));
+	}
+
+	private static string? SimplifyRpcErrorMessage(string? message)
+	{
+		if (string.IsNullOrWhiteSpace(message))
+		{
+			return null;
+		}
+
+		var trimmed = message.Trim();
+		if (!trimmed.StartsWith("{", StringComparison.Ordinal))
+		{
+			return trimmed;
+		}
+
+		try
+		{
+			using var doc = JsonDocument.Parse(trimmed);
+			var root = doc.RootElement;
+			var errorMessage =
+				WebCodexUtils.TryGetPathString(root, "message")
+				?? WebCodexUtils.TryGetPathString(root, "error", "message")
+				?? WebCodexUtils.TryGetPathString(root, "data", "message")
+				?? WebCodexUtils.TryGetPathString(root, "error", "data", "message");
+			return string.IsNullOrWhiteSpace(errorMessage) ? trimmed : errorMessage.Trim();
+		}
+		catch
+		{
+			return trimmed;
+		}
 	}
 
 	private async Task<object?> HandleServerRequestAsync(
@@ -726,7 +1085,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				if (signal.Kind == CoreTurnSignalKind.Started)
 				{
-					if (managed.TryMarkTurnStartedFromCoreSignal())
+					if (managed.TryMarkTurnStartedFromCoreSignal(signal.TurnId))
 					{
 						sessionLog.Write($"[turn_recovery] marked started from core signal ({signal.Source})");
 						Broadcast?.Invoke("turn_started", new { sessionId });
@@ -788,6 +1147,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var normalizedStatus = string.IsNullOrWhiteSpace(status) ? "unknown" : status!;
 		Broadcast?.Invoke("turn_complete", new { sessionId, status = normalizedStatus, errorMessage });
 		SessionsChanged?.Invoke();
+		EnsureQueueDispatcher(sessionId, session);
 		return true;
 	}
 
@@ -1493,6 +1853,19 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		};
 	}
 
+	private static string? TryExtractCoreTurnId(JsonElement root, JsonElement paramsElement)
+	{
+		return TryGetAnyPathString(paramsElement,
+			new[] { "turn", "id" },
+			new[] { "turnId" },
+			new[] { "id" },
+			new[] { "msg", "turn_id" },
+			new[] { "msg", "turnId" })
+			?? TryGetAnyPathString(root,
+				new[] { "turnId" },
+				new[] { "id" });
+	}
+
 	private static bool TryParseCoreTurnSignal(CodexCoreEvent ev, out CoreTurnSignal signal)
 	{
 		signal = default;
@@ -1535,8 +1908,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					string.Equals(method, "codex/event/task_started", StringComparison.Ordinal) ||
 					string.Equals(method, "codex/event/turn_started", StringComparison.Ordinal))
 				{
+					var paramsElement = root.TryGetProperty("params", out var startedParamsElement) ? startedParamsElement : default;
 					signal = new CoreTurnSignal(
 						Kind: CoreTurnSignalKind.Started,
+						TurnId: TryExtractCoreTurnId(root, paramsElement),
 						Status: null,
 						ErrorMessage: null,
 						Source: method ?? "unknown_method");
@@ -1545,6 +1920,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 				if (string.Equals(method, "turn/completed", StringComparison.Ordinal))
 				{
+					var paramsElement = root.TryGetProperty("params", out var completedParamsElement) ? completedParamsElement : default;
 					var status = WebCodexUtils.TryGetPathString(root, "params", "turn", "status")
 						?? WebCodexUtils.TryGetPathString(root, "params", "status")
 						?? "unknown";
@@ -1553,6 +1929,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 						?? WebCodexUtils.TryGetPathString(root, "params", "errorMessage");
 					signal = new CoreTurnSignal(
 						Kind: CoreTurnSignalKind.Completed,
+						TurnId: TryExtractCoreTurnId(root, paramsElement),
 						Status: status,
 						ErrorMessage: errorMessage,
 						Source: method ?? "unknown_method");
@@ -1562,6 +1939,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				if (string.Equals(method, "codex/event/task_complete", StringComparison.Ordinal) ||
 					string.Equals(method, "codex/event/turn_complete", StringComparison.Ordinal))
 				{
+					var paramsElement = root.TryGetProperty("params", out var eventParamsElement) ? eventParamsElement : default;
 					var status = WebCodexUtils.TryGetPathString(root, "params", "msg", "status")
 						?? WebCodexUtils.TryGetPathString(root, "params", "status");
 					if (string.IsNullOrWhiteSpace(status))
@@ -1577,6 +1955,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 						?? WebCodexUtils.TryGetPathString(root, "params", "errorMessage");
 					signal = new CoreTurnSignal(
 						Kind: CoreTurnSignalKind.Completed,
+						TurnId: TryExtractCoreTurnId(root, paramsElement),
 						Status: status,
 						ErrorMessage: errorMessage,
 						Source: method ?? "unknown_method");
@@ -1609,6 +1988,11 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				signal = new CoreTurnSignal(
 					Kind: CoreTurnSignalKind.Started,
+					TurnId: TryGetAnyPathString(payloadElement,
+						new[] { "turn", "id" },
+						new[] { "turnId" },
+						new[] { "turn_id" },
+						new[] { "id" }),
 					Status: null,
 					ErrorMessage: null,
 					Source: $"event_msg:{payloadType}");
@@ -1630,6 +2014,11 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					?? WebCodexUtils.TryGetPathString(payloadElement, "errorMessage");
 				signal = new CoreTurnSignal(
 					Kind: CoreTurnSignalKind.Completed,
+					TurnId: TryGetAnyPathString(payloadElement,
+						new[] { "turn", "id" },
+						new[] { "turnId" },
+						new[] { "turn_id" },
+						new[] { "id" }),
 					Status: status,
 					ErrorMessage: errorMessage,
 					Source: $"event_msg:{payloadType}");
@@ -1652,6 +2041,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	private readonly record struct CoreTurnSignal(
 		CoreTurnSignalKind Kind,
+		string? TurnId,
 		string? Status,
 		string? ErrorMessage,
 		string Source);
@@ -1802,7 +2192,46 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string? ApprovalPolicy,
 		string? SandboxPolicy,
 		bool IsTurnInFlight,
-		PendingApprovalSnapshot? PendingApproval);
+		PendingApprovalSnapshot? PendingApproval,
+		int QueuedTurnCount,
+		IReadOnlyList<QueuedTurnSummarySnapshot> QueuedTurns);
+
+	internal sealed record QueuedTurnSummarySnapshot(
+		string QueueItemId,
+		string PreviewText,
+		int ImageCount,
+		DateTimeOffset CreatedAtUtc);
+
+	internal sealed record QueuedTurnImagePayload(string Url);
+
+	internal sealed record QueuedTurnEditPayload(
+		string QueueItemId,
+		string Text,
+		IReadOnlyList<QueuedTurnImagePayload> Images);
+
+	internal sealed record SteerTurnResult(
+		bool Success,
+		string? ErrorMessage);
+
+	private sealed record TurnExecutionRequest(
+		string Text,
+		string? Cwd,
+		IReadOnlyList<CodexUserImageInput> Images,
+		string? QueueItemId);
+
+	internal sealed record QueuedTurn(
+		string QueueItemId,
+		string Text,
+		string? Cwd,
+		IReadOnlyList<CodexUserImageInput> Images,
+		DateTimeOffset CreatedAtUtc);
+
+	private enum TurnExecutionOutcome
+	{
+		Finished,
+		QueueTimedOut,
+		CanceledByLifetime
+	}
 
 	internal sealed record PendingApprovalSnapshot(
 		string ApprovalId,
@@ -1829,13 +2258,17 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		private readonly SemaphoreSlim _turnGate = new(1, 1);
 		private readonly object _approvalSync = new();
 		private readonly object _turnSync = new();
+		private readonly object _queueSync = new();
+		private readonly List<QueuedTurn> _queuedTurns = new();
 		private string? _model = string.IsNullOrWhiteSpace(Model) ? null : Model.Trim();
 		private string? _reasoningEffort = WebCodexUtils.NormalizeReasoningEffort(ReasoningEffort);
 		private string? _approvalPolicy = string.IsNullOrWhiteSpace(ApprovalPolicy) ? null : ApprovalPolicy.Trim();
 		private string? _sandboxPolicy = string.IsNullOrWhiteSpace(SandboxPolicy) ? null : SandboxPolicy.Trim();
 		private CancellationTokenSource? _activeTurnCts;
+		private string? _activeTurnId;
 		private bool _turnInFlight;
 		private bool _turnSlotHeld;
+		private bool _queueDispatchRunning;
 		private PendingApprovalSnapshot? _pendingApproval;
 
 		public string? PendingApprovalId => PendingApprovals.Keys.FirstOrDefault();
@@ -1898,6 +2331,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		public SessionSnapshot ToSnapshot()
 		{
+			var queuedTurns = GetQueuedTurnSummaries();
 			return new SessionSnapshot(
 				SessionId,
 				ThreadId: Session.ThreadId,
@@ -1907,7 +2341,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				ApprovalPolicy: CurrentApprovalPolicy,
 				SandboxPolicy: CurrentSandboxPolicy,
 				IsTurnInFlight: IsTurnInFlight,
-				PendingApproval: GetPendingApproval());
+				PendingApproval: GetPendingApproval(),
+				QueuedTurnCount: queuedTurns.Count,
+				QueuedTurns: queuedTurns);
 		}
 
 		public void SetModel(string? model)
@@ -1923,6 +2359,104 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			lock (_turnSync)
 			{
 				_reasoningEffort = WebCodexUtils.NormalizeReasoningEffort(effort);
+			}
+		}
+
+		private IReadOnlyList<QueuedTurnSummarySnapshot> GetQueuedTurnSummaries()
+		{
+			lock (_queueSync)
+			{
+				return _queuedTurns
+					.Select(item => new QueuedTurnSummarySnapshot(
+						QueueItemId: item.QueueItemId,
+						PreviewText: BuildQueuedTurnPreview(item.Text, item.Images.Count),
+						ImageCount: item.Images.Count,
+						CreatedAtUtc: item.CreatedAtUtc))
+					.ToArray();
+			}
+		}
+
+		internal void EnqueueQueuedTurn(QueuedTurn queuedTurn)
+		{
+			lock (_queueSync)
+			{
+				_queuedTurns.Add(queuedTurn);
+			}
+		}
+
+		internal bool TryRemoveQueuedTurn(string queueItemId, out QueuedTurn? removed)
+		{
+			removed = null;
+			lock (_queueSync)
+			{
+				var index = _queuedTurns.FindIndex(x => string.Equals(x.QueueItemId, queueItemId, StringComparison.Ordinal));
+				if (index < 0)
+				{
+					return false;
+				}
+
+				removed = _queuedTurns[index];
+				_queuedTurns.RemoveAt(index);
+				return true;
+			}
+		}
+
+		internal bool TryPopQueuedTurn(string queueItemId, out QueuedTurn? queuedTurn)
+		{
+			return TryRemoveQueuedTurn(queueItemId, out queuedTurn);
+		}
+
+		internal bool TryPopNextQueuedTurn(out QueuedTurn? queuedTurn)
+		{
+			queuedTurn = null;
+			lock (_queueSync)
+			{
+				if (_queuedTurns.Count == 0)
+				{
+					return false;
+				}
+
+				queuedTurn = _queuedTurns[0];
+				_queuedTurns.RemoveAt(0);
+				return true;
+			}
+		}
+
+		internal void RequeueQueuedTurnFront(QueuedTurn queuedTurn)
+		{
+			lock (_queueSync)
+			{
+				_queuedTurns.Insert(0, queuedTurn);
+			}
+		}
+
+		internal bool HasQueuedTurns()
+		{
+			lock (_queueSync)
+			{
+				return _queuedTurns.Count > 0;
+			}
+		}
+
+		internal bool TryMarkQueueDispatchStarted()
+		{
+			lock (_queueSync)
+			{
+				if (_queueDispatchRunning)
+				{
+					return false;
+				}
+
+				_queueDispatchRunning = true;
+				return true;
+			}
+		}
+
+		internal void MarkQueueDispatchStopped()
+		{
+			lock (_queueSync)
+			{
+				_queueDispatchRunning = false;
 			}
 		}
 
@@ -1984,6 +2518,23 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		{
 			var model = CurrentModel;
 			return string.IsNullOrWhiteSpace(model) ? defaultModel : model;
+		}
+
+		public string? ResolveActiveTurnId()
+		{
+			if (Session.TryGetActiveTurnId(out var activeFromClient) && !string.IsNullOrWhiteSpace(activeFromClient))
+			{
+				lock (_turnSync)
+				{
+					_activeTurnId = activeFromClient;
+				}
+				return activeFromClient;
+			}
+
+			lock (_turnSync)
+			{
+				return _activeTurnId;
+			}
 		}
 
 		public async Task<bool> TryWaitForTurnSlotAsync(TimeSpan timeout, CancellationToken cancellationToken)
@@ -2074,6 +2625,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			lock (_turnSync)
 			{
 				_activeTurnCts = turnCts;
+				_activeTurnId = Session.TryGetActiveTurnId(out var activeFromClient) ? activeFromClient : _activeTurnId;
 				_turnSlotHeld = true;
 				if (_turnInFlight)
 				{
@@ -2085,16 +2637,24 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
-		public bool TryMarkTurnStartedFromCoreSignal()
+		public bool TryMarkTurnStartedFromCoreSignal(string? turnId)
 		{
 			lock (_turnSync)
 			{
 				if (_turnInFlight)
 				{
+					if (!string.IsNullOrWhiteSpace(turnId) && string.IsNullOrWhiteSpace(_activeTurnId))
+					{
+						_activeTurnId = turnId;
+					}
 					return false;
 				}
 
 				_turnInFlight = true;
+				if (!string.IsNullOrWhiteSpace(turnId))
+				{
+					_activeTurnId = turnId;
+				}
 				return true;
 			}
 		}
@@ -2110,6 +2670,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				}
 
 				_activeTurnCts = null;
+				_activeTurnId = null;
 				_turnInFlight = false;
 				if (_turnSlotHeld)
 				{

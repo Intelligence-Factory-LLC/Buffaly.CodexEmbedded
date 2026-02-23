@@ -808,8 +808,14 @@ body {
 	gap: 0.25rem;
 }
 
+.prompt-queue-row {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+}
+
 .prompt-queue-item {
-	width: 100%;
+	flex: 1 1 auto;
 	text-align: left;
 	padding: 0.35rem 0.45rem;
 	border: 1px solid #d1d5db;
@@ -823,6 +829,26 @@ body {
 .prompt-queue-item:hover {
 	background: #eef2ff;
 	border-color: #a5b4fc;
+}
+
+.prompt-queue-remove {
+	flex: 0 0 auto;
+	width: 1.55rem;
+	height: 1.55rem;
+	padding: 0;
+	border: 1px solid #fecaca;
+	border-radius: 999px;
+	background: #fff1f2;
+	color: #be123c;
+	font-size: 0.76rem;
+	font-weight: 700;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.prompt-queue-remove:hover {
+	background: #ffe4e6;
+	border-color: #fda4af;
 }
 
 .turn-activity {

@@ -13,8 +13,6 @@ let sessions = new Map(); // sessionId -> { threadId, cwd, model, reasoningEffor
 let sessionCatalog = []; // [{ threadId, threadName, updatedAtUtc, cwd, model, reasoningEffort, sessionFilePath }]
 let activeSessionId = null;
 let pendingApproval = null; // { sessionId, approvalId }
-let promptQueuesBySession = new Map(); // sessionId -> [{ text, images }]
-let persistedPromptQueuesByThread = new Map(); // threadId -> [{ text, images }]
 let turnInFlightBySession = new Map(); // sessionId -> boolean
 let lastSentPromptBySession = new Map(); // sessionId -> string
 let promptDraftByKey = new Map(); // "thread:<threadId>" | "__global__" -> text
@@ -62,7 +60,6 @@ let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
 const STORAGE_LAST_THREAD_ID_KEY = "codex-web-last-thread-id";
-const STORAGE_QUEUED_PROMPTS_KEY = "codex-web-queued-prompts-v1";
 const STORAGE_PROMPT_DRAFTS_KEY = "codex-web-prompt-drafts-v1";
 const STORAGE_THREAD_MODELS_KEY = "codex-web-thread-models-v1";
 const STORAGE_THREAD_REASONING_KEY = "codex-web-thread-reasoning-v1";
@@ -1141,128 +1138,33 @@ function restorePromptDraftForActiveSession(options = {}) {
   }
 }
 
-function normalizeQueuedPromptItem(item) {
-  if (!item || typeof item !== "object") {
-    return null;
-  }
-
-  const text = typeof item.text === "string" ? item.text : String(item.text || "");
-  const images = Array.isArray(item.images)
-    ? item.images
-      .filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0)
-      .slice(0, MAX_COMPOSER_IMAGES)
-      .map((x) => ({
-        url: x.url,
-        name: typeof x.name === "string" ? x.name : "image",
-        mimeType: typeof x.mimeType === "string" ? x.mimeType : "image/*",
-        size: typeof x.size === "number" ? x.size : 0
-      }))
-    : [];
-
-  if (!text.trim() && images.length === 0) {
-    return null;
-  }
-
-  return { text, images };
-}
-
-function normalizeQueuedPromptList(list) {
+function normalizeQueuedTurnSummaryList(list) {
   if (!Array.isArray(list)) {
     return [];
   }
 
   const normalized = [];
   for (const item of list) {
-    const next = normalizeQueuedPromptItem(item);
-    if (next) {
-      normalized.push(next);
+    if (!item || typeof item !== "object") {
+      continue;
     }
+
+    const queueItemId = typeof item.queueItemId === "string" ? item.queueItemId.trim() : "";
+    if (!queueItemId) {
+      continue;
+    }
+
+    const previewText = typeof item.previewText === "string" ? item.previewText : "";
+    const imageCount = Number.isFinite(item.imageCount) ? Math.max(0, Math.floor(item.imageCount)) : 0;
+    normalized.push({
+      queueItemId,
+      previewText,
+      imageCount,
+      createdAtUtc: typeof item.createdAtUtc === "string" ? item.createdAtUtc : null
+    });
   }
 
   return normalized;
-}
-
-function loadQueuedPromptState() {
-  persistedPromptQueuesByThread = new Map();
-  const raw = safeJsonParse(localStorage.getItem(STORAGE_QUEUED_PROMPTS_KEY), {});
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return;
-  }
-
-  for (const [threadId, list] of Object.entries(raw)) {
-    const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
-    if (!normalizedThreadId) {
-      continue;
-    }
-
-    const normalizedList = normalizeQueuedPromptList(list);
-    if (normalizedList.length > 0) {
-      persistedPromptQueuesByThread.set(normalizedThreadId, normalizedList);
-    }
-  }
-}
-
-function restorePersistedQueueForSession(sessionId, threadId) {
-  const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
-  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
-  if (!normalizedSessionId || !normalizedThreadId) {
-    return;
-  }
-
-  const existing = promptQueuesBySession.get(normalizedSessionId);
-  if (existing && existing.length > 0) {
-    return;
-  }
-
-  const persisted = persistedPromptQueuesByThread.get(normalizedThreadId);
-  if (!persisted || persisted.length === 0) {
-    return;
-  }
-
-  promptQueuesBySession.set(normalizedSessionId, persisted.map((x) => ({
-    text: x.text,
-    images: Array.isArray(x.images) ? x.images.map((img) => ({ ...img })) : []
-  })));
-}
-
-function persistQueuedPromptState() {
-  const nextByThread = new Map();
-
-  for (const [threadId, items] of persistedPromptQueuesByThread.entries()) {
-    const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
-    if (!normalizedThreadId) {
-      continue;
-    }
-
-    const normalizedItems = normalizeQueuedPromptList(items);
-    if (normalizedItems.length > 0) {
-      nextByThread.set(normalizedThreadId, normalizedItems);
-    }
-  }
-
-  for (const [sessionId, queue] of promptQueuesBySession.entries()) {
-    const state = sessions.get(sessionId);
-    const threadId = typeof state?.threadId === "string" ? state.threadId.trim() : "";
-    if (!threadId) {
-      continue;
-    }
-
-    const normalizedQueue = normalizeQueuedPromptList(queue);
-    if (normalizedQueue.length > 0) {
-      nextByThread.set(threadId, normalizedQueue);
-    } else {
-      nextByThread.delete(threadId);
-    }
-  }
-
-  persistedPromptQueuesByThread = nextByThread;
-
-  const payload = {};
-  for (const [threadId, queue] of nextByThread.entries()) {
-    payload[threadId] = queue;
-  }
-
-  localStorage.setItem(STORAGE_QUEUED_PROMPTS_KEY, JSON.stringify(payload));
 }
 
 function normalizeProjectCwd(cwd) {
@@ -2611,16 +2513,17 @@ async function addComposerFiles(filesLike) {
   renderComposerImages();
 }
 
-function getQueueForSession(sessionId) {
+function getQueuedTurnsForSession(sessionId) {
   if (!sessionId) {
     return [];
   }
 
-  if (!promptQueuesBySession.has(sessionId)) {
-    promptQueuesBySession.set(sessionId, []);
+  const state = sessions.get(sessionId);
+  if (!state || !Array.isArray(state.queuedTurns)) {
+    return [];
   }
 
-  return promptQueuesBySession.get(sessionId);
+  return state.queuedTurns;
 }
 
 function isThreadProcessing(threadId) {
@@ -2689,7 +2592,7 @@ function renderPromptQueue() {
     return;
   }
 
-  const queue = getQueueForSession(activeSessionId);
+  const queue = getQueuedTurnsForSession(activeSessionId);
   if (!queue || queue.length === 0) {
     promptQueue.textContent = "";
     promptQueue.classList.add("hidden");
@@ -2706,58 +2609,116 @@ function renderPromptQueue() {
   list.className = "prompt-queue-list";
   for (let i = 0; i < queue.length; i++) {
     const item = queue[i];
-    const imageCount = Array.isArray(item.images) ? item.images.length : 0;
+    const imageCount = Number.isFinite(item.imageCount) ? Math.max(0, Math.floor(item.imageCount)) : 0;
     const imageSuffix = imageCount > 0 ? ` (+${imageCount} image${imageCount > 1 ? "s" : ""})` : "";
-    const rawPreview = (item.text || "").trim() || (imageCount > 0 ? "(image only)" : "");
+    const rawPreview = (item.previewText || "").trim() || (imageCount > 0 ? "(image only)" : "");
+
+    const row = document.createElement("div");
+    row.className = "prompt-queue-row";
+
     const itemButton = document.createElement("button");
     itemButton.type = "button";
     itemButton.className = "prompt-queue-item";
     itemButton.textContent = `${i + 1}. ${trimPromptPreview(rawPreview)}${imageSuffix}`;
     itemButton.addEventListener("click", () => {
-      restoreQueuedPromptForEditing(activeSessionId, i);
+      requestQueuedPromptForEditing(activeSessionId, item.queueItemId);
     });
-    list.appendChild(itemButton);
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "prompt-queue-remove";
+    removeButton.title = "Remove queued prompt";
+    removeButton.setAttribute("aria-label", "Remove queued prompt");
+    removeButton.textContent = "x";
+    removeButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      removeQueuedPrompt(activeSessionId, item.queueItemId);
+    });
+
+    row.append(itemButton, removeButton);
+    list.appendChild(row);
   }
   promptQueue.appendChild(list);
   promptQueue.classList.remove("hidden");
 }
 
-function queuePrompt(sessionId, promptText, images = []) {
+async function queuePrompt(sessionId, promptText, images = []) {
+  if (!sessionId) {
+    return false;
+  }
+
+  const normalizedText = String(promptText || "");
+  const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
+  if (!normalizedText.trim() && safeImages.length === 0) {
+    return false;
+  }
+
+  const turnCwd = cwdInput.value.trim();
+  const state = sessions.get(sessionId);
+  const turnModel = normalizeModelValue(state?.model || "");
+  const turnEffort = normalizeReasoningEffort(state?.reasoningEffort || "");
+
+  const payload = {
+    sessionId,
+    text: normalizedText,
+    images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" }))
+  };
+  if (turnCwd) {
+    payload.cwd = turnCwd;
+  }
+  if (turnModel) {
+    payload.model = turnModel;
+  }
+  if (turnEffort) {
+    payload.effort = turnEffort;
+  }
+
+  if (!send("turn_queue_add", payload)) {
+    return false;
+  }
+
+  return true;
+}
+
+function requestQueuedPromptForEditing(sessionId, queueItemId) {
   if (!sessionId) {
     return;
   }
 
-  const queue = getQueueForSession(sessionId);
-  queue.push({
-    text: String(promptText || ""),
-    images: Array.isArray(images) ? images.map((x) => ({ ...x })) : []
-  });
-  persistQueuedPromptState();
-  if (sessionId === activeSessionId) {
-    renderPromptQueue();
+  const normalizedQueueItemId = typeof queueItemId === "string" ? queueItemId.trim() : "";
+  if (!normalizedQueueItemId) {
+    return;
+  }
+
+  if (!send("turn_queue_pop", { sessionId, queueItemId: normalizedQueueItemId })) {
+    appendLog("[queue] failed to request queued prompt edit; websocket is closed");
   }
 }
 
-function restoreQueuedPromptForEditing(sessionId, itemIndex) {
+function removeQueuedPrompt(sessionId, queueItemId) {
   if (!sessionId) {
     return;
   }
 
-  const queue = getQueueForSession(sessionId);
-  if (!queue || itemIndex < 0 || itemIndex >= queue.length) {
+  const normalizedQueueItemId = typeof queueItemId === "string" ? queueItemId.trim() : "";
+  if (!normalizedQueueItemId) {
     return;
   }
 
-  const [item] = queue.splice(itemIndex, 1);
-  const text = String(item?.text || "");
-  const restoredImages = Array.isArray(item?.images)
-    ? item.images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0)
-    : [];
+  if (!send("turn_queue_remove", { sessionId, queueItemId: normalizedQueueItemId })) {
+    appendLog("[queue] failed to remove queued prompt; websocket is closed");
+  }
+}
 
-  promptInput.value = text;
+function restoreQueuedPromptForEditing(text, images = []) {
+  promptInput.value = String(text || "");
   rememberPromptDraftForState(getActiveSessionState());
 
-  pendingComposerImages = restoredImages.slice(0, MAX_COMPOSER_IMAGES).map((x) => ({
+  pendingComposerImages = images
+    .filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0)
+    .slice(0, MAX_COMPOSER_IMAGES)
+    .map((x) => ({
     id: nextComposerImageId++,
     name: x.name || "image",
     mimeType: x.mimeType || "image/*",
@@ -2765,8 +2726,6 @@ function restoreQueuedPromptForEditing(sessionId, itemIndex) {
     url: x.url
   }));
   renderComposerImages();
-  renderPromptQueue();
-  persistQueuedPromptState();
 
   promptInput.focus();
   promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
@@ -2838,39 +2797,8 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
   return true;
 }
 
-function pumpQueuedPrompt(sessionId) {
-  if (!sessionId || isTurnInFlight(sessionId)) {
-    return false;
-  }
-
-  const queue = getQueueForSession(sessionId);
-  if (!queue || queue.length === 0) {
-    return false;
-  }
-
-  const nextPrompt = queue.shift();
-  const started = startTurn(sessionId, nextPrompt.text, nextPrompt.images || [], { fromQueue: true });
-  if (!started) {
-    queue.unshift(nextPrompt);
-    persistQueuedPromptState();
-    return false;
-  }
-  persistQueuedPromptState();
-
-  if (sessionId === activeSessionId) {
-    renderPromptQueue();
-  }
-  return true;
-}
-
 function prunePromptState() {
   const validIds = new Set(sessions.keys());
-  for (const key of Array.from(promptQueuesBySession.keys())) {
-    if (!validIds.has(key)) {
-      promptQueuesBySession.delete(key);
-    }
-  }
-
   for (const key of Array.from(turnInFlightBySession.keys())) {
     if (!validIds.has(key)) {
       turnInFlightBySession.delete(key);
@@ -2882,8 +2810,6 @@ function prunePromptState() {
       lastSentPromptBySession.delete(key);
     }
   }
-
-  persistQueuedPromptState();
 }
 
 function storeLastThreadId(threadId) {
@@ -3213,9 +3139,6 @@ function setActiveSession(sessionId, options = {}) {
   if (state?.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
     clearPendingSessionLoad();
   }
-  if (state?.threadId) {
-    restorePersistedQueueForSession(sessionId, state.threadId);
-  }
   if (state && state.threadId) {
     storeLastThreadId(state.threadId);
   }
@@ -3517,7 +3440,6 @@ function applyModelFromCommandModal() {
 function applySavedUiSettings() {
   loadProjectUiState();
   loadPromptDraftState();
-  loadQueuedPromptState();
   loadThreadModelState();
   loadThreadReasoningState();
 
@@ -3603,7 +3525,6 @@ function ensureSocket() {
     setMobileProjectsOpen(false);
     clearPendingSessionLoad();
     autoAttachAttempted = false;
-    persistQueuedPromptState();
     pendingApproval = null;
     setApprovalVisible(false);
   });
@@ -3826,7 +3747,7 @@ function handleServerEvent(frame) {
       for (const s of list) {
         const existing = sessions.get(s.sessionId);
         const st =
-          existing || { threadId: null, cwd: null, model: null, reasoningEffort: null, pendingApproval: null, createdAtTick: Date.now(), lastActivityTick: 0 };
+          existing || { threadId: null, cwd: null, model: null, reasoningEffort: null, pendingApproval: null, queuedTurns: [], queuedTurnCount: 0, createdAtTick: Date.now(), lastActivityTick: 0 };
         st.threadId = s.threadId || st.threadId || null;
         st.cwd = s.cwd || st.cwd || null;
         const serverModel = normalizeModelValue(s.model);
@@ -3874,6 +3795,10 @@ function handleServerEvent(frame) {
         const pending =
           s.pendingApproval && typeof s.pendingApproval === "object" && !Array.isArray(s.pendingApproval) ? s.pendingApproval : null;
         st.pendingApproval = pending && typeof pending.approvalId === "string" && pending.approvalId.trim() ? pending : null;
+        st.queuedTurns = normalizeQueuedTurnSummaryList(s.queuedTurns || s.queuedMessages || []);
+        st.queuedTurnCount = Number.isFinite(s.queuedTurnCount)
+          ? Math.max(0, Math.floor(s.queuedTurnCount))
+          : st.queuedTurns.length;
 
         const inFlight = s.isTurnInFlight === true || s.turnInFlight === true;
         setTurnInFlight(s.sessionId, inFlight);
@@ -4002,7 +3927,6 @@ function handleServerEvent(frame) {
         lastConfirmedSessionModelSyncBySession.delete(sessionId);
       }
       if (sessionId) {
-        promptQueuesBySession.delete(sessionId);
         turnInFlightBySession.delete(sessionId);
         turnStartedAtBySession.delete(sessionId);
         lastSentPromptBySession.delete(sessionId);
@@ -4075,7 +3999,6 @@ function handleServerEvent(frame) {
           }
         }
         setTurnInFlight(sessionId, false);
-        pumpQueuedPrompt(sessionId);
       }
       const errorMessage = payload.errorMessage || null;
       if (shouldRenderTimelineForSession(sessionId)) {
@@ -4134,6 +4057,27 @@ function handleServerEvent(frame) {
         timeline.flush();
       }
       appendLog(`[turn] cancel requested for session=${sessionId || "unknown"}`);
+      return;
+    }
+
+    case "turn_queue_edit_item": {
+      const sessionId = payload.sessionId || null;
+      if (!sessionId || !activeSessionId || sessionId !== activeSessionId) {
+        return;
+      }
+
+      const images = Array.isArray(payload.images)
+        ? payload.images
+            .filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0)
+            .map((x) => ({
+              url: x.url,
+              name: typeof x.name === "string" ? x.name : "image",
+              mimeType: typeof x.mimeType === "string" ? x.mimeType : "image/*",
+              size: typeof x.size === "number" ? x.size : 0
+            }))
+        : [];
+      restoreQueuedPromptForEditing(payload.text || "", images);
+      appendLog(`[queue] restored queued prompt ${payload.queueItemId || ""} for editing`);
       return;
     }
 
@@ -4770,7 +4714,7 @@ async function tryHandleSlashCommand(inputText) {
   return true;
 }
 
-function queueCurrentComposerPrompt() {
+async function queueCurrentComposerPrompt() {
   const prompt = promptInput.value.trim();
   const images = pendingComposerImages.map((x) => ({ ...x }));
   if (!prompt && images.length === 0) {
@@ -4782,12 +4726,23 @@ function queueCurrentComposerPrompt() {
     return true;
   }
 
-  queuePrompt(activeSessionId, prompt, images);
+  try {
+    await ensureSocket();
+  } catch (error) {
+    appendLog(`[ws] connect failed: ${error}`);
+    return true;
+  }
+
+  const queued = await queuePrompt(activeSessionId, prompt, images);
+  if (!queued) {
+    appendLog(`[queue] failed to queue prompt for session=${activeSessionId}`);
+    return true;
+  }
+
   promptInput.value = "";
   clearCurrentPromptDraft();
   clearComposerImages();
   appendLog(`[turn] queued prompt for session=${activeSessionId}`);
-  renderPromptQueue();
   return true;
 }
 
@@ -4815,9 +4770,6 @@ promptForm.addEventListener("submit", async (event) => {
   const prompt = promptInput.value.trim();
   const images = pendingComposerImages.map((x) => ({ ...x }));
   if (!prompt && images.length === 0) {
-    if (activeSessionId && pumpQueuedPrompt(activeSessionId)) {
-      renderPromptQueue();
-    }
     return;
   }
 
@@ -4848,7 +4800,6 @@ promptForm.addEventListener("submit", async (event) => {
   promptInput.value = "";
   clearCurrentPromptDraft();
   clearComposerImages();
-  renderPromptQueue();
 });
 
 promptInput.addEventListener("keydown", (event) => {
@@ -4858,7 +4809,7 @@ promptInput.addEventListener("keydown", (event) => {
     }
 
     event.preventDefault();
-    queueCurrentComposerPrompt();
+    queueCurrentComposerPrompt().catch((error) => appendLog(`[queue] failed: ${error}`));
     return;
   }
 
@@ -4893,7 +4844,7 @@ promptInput.addEventListener("keydown", (event) => {
 
 if (queuePromptBtn) {
   queuePromptBtn.addEventListener("click", () => {
-    queueCurrentComposerPrompt();
+    queueCurrentComposerPrompt().catch((error) => appendLog(`[queue] failed: ${error}`));
     promptInput.focus();
   });
 }
@@ -4970,7 +4921,6 @@ window.addEventListener("resize", () => {
 
 window.addEventListener("beforeunload", () => {
   rememberPromptDraftForState(getActiveSessionState());
-  persistQueuedPromptState();
 });
 
 applySavedUiSettings();

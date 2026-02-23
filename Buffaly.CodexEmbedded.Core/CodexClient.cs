@@ -191,6 +191,25 @@ public sealed class CodexClient : IAsyncDisposable
 		return true;
 	}
 
+	public bool TryGetActiveTurnId(string threadId, out string? turnId)
+	{
+		turnId = null;
+		var normalizedThreadId = threadId?.Trim();
+		if (string.IsNullOrWhiteSpace(normalizedThreadId))
+		{
+			return false;
+		}
+
+		var tracker = FindInFlightTurnByThreadId(normalizedThreadId);
+		if (tracker is null)
+		{
+			return false;
+		}
+
+		turnId = tracker.TurnId;
+		return true;
+	}
+
 	private TurnTracker? FindInFlightTurnByThreadId(string threadId)
 	{
 		foreach (var tracker in _turnsByTurnId.Values)
@@ -267,7 +286,82 @@ public sealed class CodexClient : IAsyncDisposable
 		CancellationToken cancellationToken)
 	{
 		await InitializeAsync(cancellationToken);
+		var input = BuildTurnInput(text, images);
+		if (input.Length == 0)
+		{
+			throw new ArgumentException("Either message text or at least one image is required.");
+		}
 
+		var turnStartResult = await _rpc.SendRequestAsync(
+			method: "turn/start",
+			@params: new
+			{
+				threadId,
+				model = options?.Model,
+				effort = options?.ReasoningEffort,
+				cwd = options?.Cwd,
+				input
+			},
+			cancellationToken);
+
+		var turnId = JsonPath.GetRequiredString(turnStartResult, "turn", "id");
+		var tracker = new TurnTracker(threadId, turnId, progress);
+		if (!_turnsByTurnId.TryAdd(turnId, tracker))
+		{
+			throw new InvalidOperationException($"Duplicate turn id '{turnId}'.");
+		}
+		tracker.Prime(TakeBufferedTurnNotifications(turnId));
+
+		try
+		{
+			return await tracker.Completion.Task.WaitAsync(cancellationToken);
+		}
+		finally
+		{
+			_turnsByTurnId.TryRemove(turnId, out _);
+		}
+	}
+
+	internal async Task SendSteerAsync(
+		string threadId,
+		string expectedTurnId,
+		string text,
+		IReadOnlyList<CodexUserImageInput>? images,
+		CancellationToken cancellationToken)
+	{
+		await InitializeAsync(cancellationToken);
+
+		var normalizedThreadId = threadId?.Trim();
+		if (string.IsNullOrWhiteSpace(normalizedThreadId))
+		{
+			throw new ArgumentException("threadId is required.", nameof(threadId));
+		}
+
+		var normalizedExpectedTurnId = expectedTurnId?.Trim();
+		if (string.IsNullOrWhiteSpace(normalizedExpectedTurnId))
+		{
+			throw new ArgumentException("expectedTurnId is required.", nameof(expectedTurnId));
+		}
+
+		var input = BuildTurnInput(text, images);
+		if (input.Length == 0)
+		{
+			throw new ArgumentException("Either message text or at least one image is required.");
+		}
+
+		await _rpc.SendRequestAsync(
+			method: "turn/steer",
+			@params: new
+			{
+				threadId = normalizedThreadId,
+				expectedTurnId = normalizedExpectedTurnId,
+				input
+			},
+			cancellationToken);
+	}
+
+	private static object[] BuildTurnInput(string? text, IReadOnlyList<CodexUserImageInput>? images)
+	{
 		var input = new List<object>();
 		if (!string.IsNullOrWhiteSpace(text))
 		{
@@ -290,44 +384,12 @@ public sealed class CodexClient : IAsyncDisposable
 				input.Add(new
 				{
 					type = "image",
-					url = image.Url
+					url = image.Url.Trim()
 				});
 			}
 		}
 
-		if (input.Count == 0)
-		{
-			throw new ArgumentException("Either message text or at least one image is required.");
-		}
-
-		var turnStartResult = await _rpc.SendRequestAsync(
-			method: "turn/start",
-			@params: new
-			{
-				threadId,
-				model = options?.Model,
-				effort = options?.ReasoningEffort,
-				cwd = options?.Cwd,
-				input = input.ToArray()
-			},
-			cancellationToken);
-
-		var turnId = JsonPath.GetRequiredString(turnStartResult, "turn", "id");
-		var tracker = new TurnTracker(threadId, turnId, progress);
-		if (!_turnsByTurnId.TryAdd(turnId, tracker))
-		{
-			throw new InvalidOperationException($"Duplicate turn id '{turnId}'.");
-		}
-		tracker.Prime(TakeBufferedTurnNotifications(turnId));
-
-		try
-		{
-			return await tracker.Completion.Task.WaitAsync(cancellationToken);
-		}
-		finally
-		{
-			_turnsByTurnId.TryRemove(turnId, out _);
-		}
+		return input.ToArray();
 	}
 
 	private void HandleNotification(string method, JsonElement message)
