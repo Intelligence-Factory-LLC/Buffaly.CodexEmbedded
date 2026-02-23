@@ -660,9 +660,65 @@
       return null;
     }
 
+    extractTextFromUnknownValue(value, depth = 0) {
+      if (depth > 6 || value === null || value === undefined) {
+        return "";
+      }
+
+      if (typeof value === "string") {
+        return value.trim();
+      }
+
+      if (typeof value === "number" || typeof value === "boolean") {
+        return String(value);
+      }
+
+      if (Array.isArray(value)) {
+        const chunks = [];
+        for (const item of value) {
+          const text = this.extractTextFromUnknownValue(item, depth + 1);
+          if (text) {
+            chunks.push(text);
+          }
+        }
+        return chunks.join("\n");
+      }
+
+      if (typeof value !== "object") {
+        return "";
+      }
+
+      const directStringKeys = ["text", "value", "output_text", "outputText", "message"];
+      for (const key of directStringKeys) {
+        if (typeof value[key] === "string" && value[key].trim().length > 0) {
+          return value[key].trim();
+        }
+      }
+
+      const nestedKeys = ["text", "value", "output_text", "outputText", "content", "parts", "items", "message", "output", "data"];
+      for (const key of nestedKeys) {
+        if (!(key in value)) {
+          continue;
+        }
+        const nested = this.extractTextFromUnknownValue(value[key], depth + 1);
+        if (nested) {
+          return nested;
+        }
+      }
+
+      return "";
+    }
+
+    extractTextFromContentItem(item) {
+      return this.extractTextFromUnknownValue(item, 0);
+    }
+
     extractMessageParts(contentItems) {
       const chunks = [];
       const imageUrls = [];
+      if (typeof contentItems === "string") {
+        return { text: this.normalizeText(contentItems), imageUrls };
+      }
       if (!Array.isArray(contentItems)) {
         return { text: "", imageUrls };
       }
@@ -672,8 +728,9 @@
           continue;
         }
 
-        if (typeof item.text === "string" && item.text.trim().length > 0) {
-          chunks.push(item.text);
+        const extractedText = this.extractTextFromContentItem(item);
+        if (extractedText) {
+          chunks.push(extractedText);
           continue;
         }
 
@@ -686,7 +743,12 @@
           }
         }
 
-        if (type) {
+        const suppressPlaceholder = type === "output_text" ||
+          type === "input_text" ||
+          type === "outputText" ||
+          type === "inputText" ||
+          type === "text";
+        if (type && !suppressPlaceholder) {
           chunks.push(`[${type}]`);
         }
       }
