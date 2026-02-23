@@ -17,7 +17,6 @@ const serverRefreshBtn = document.getElementById("serverRefreshBtn");
 
 let pollTimer = null;
 let refreshInFlight = false;
-let latestSnapshot = null;
 
 function setStatus(text) {
   if (!serverStatus) {
@@ -371,8 +370,6 @@ function renderRawSnapshot(snapshot) {
 }
 
 function applySnapshot(snapshot) {
-  latestSnapshot = snapshot;
-
   renderMeta(snapshot);
   renderProjectSidebar(snapshot);
   renderSessionsTable(snapshot);
