@@ -3436,7 +3436,7 @@ async function pollTimelineOnce(initial, generation) {
   try {
     const url = new URL("api/logs/watch", document.baseURI);
     url.searchParams.set("threadId", state.threadId);
-    url.searchParams.set("maxLines", "200");
+    url.searchParams.set("maxLines", initial ? "1000" : "200");
 
     if (initial || timelineCursor === null) {
       url.searchParams.set("initial", "true");
