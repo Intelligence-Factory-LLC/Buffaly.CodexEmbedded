@@ -363,60 +363,6 @@ function updateReasoningFromLogLines(threadId, lines) {
   }
 }
 
-function updateTurnStateFromLogLines(sessionId, lines) {
-  const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
-  if (!normalizedSessionId || !Array.isArray(lines) || lines.length === 0) {
-    return;
-  }
-
-  let sawBoundary = false;
-  let nextRunning = null;
-  let startedAtTick = null;
-  for (const line of lines) {
-    if (typeof line !== "string" || !line.trim()) {
-      continue;
-    }
-
-    const parsed = safeJsonParse(line, null);
-    if (!parsed || typeof parsed !== "object" || parsed.type !== "event_msg") {
-      continue;
-    }
-
-    const payload = parsed.payload;
-    if (!payload || typeof payload !== "object") {
-      continue;
-    }
-
-    const eventType = typeof payload.type === "string" ? payload.type.trim().toLowerCase() : "";
-    if (eventType === "task_started") {
-      sawBoundary = true;
-      nextRunning = true;
-      startedAtTick = parseIsoTimestamp(parsed.timestamp || "") || Date.now();
-      continue;
-    }
-
-    if (eventType === "task_complete") {
-      sawBoundary = true;
-      nextRunning = false;
-      startedAtTick = null;
-    }
-  }
-
-  if (!sawBoundary || nextRunning === null) {
-    return;
-  }
-
-  if (nextRunning && Number.isFinite(startedAtTick)) {
-    turnStartedAtBySession.set(normalizedSessionId, startedAtTick);
-  }
-
-  if (!nextRunning) {
-    turnStartedAtBySession.delete(normalizedSessionId);
-  }
-
-  setTurnInFlight(normalizedSessionId, nextRunning);
-}
-
 function updateTurnActivityStrip() {
   if (!turnActivityStrip || !turnActivityTimer || !turnActivityReasoning) {
     return;
@@ -3080,7 +3026,6 @@ async function pollTimelineOnce(initial, generation) {
 
     timelineCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
     const lines = Array.isArray(data.lines) ? data.lines : [];
-    updateTurnStateFromLogLines(activeSessionId, lines);
     updateContextUsageFromLogLines(state.threadId, lines);
     updatePermissionInfoFromLogLines(state.threadId, lines);
     updateReasoningFromLogLines(state.threadId, lines);

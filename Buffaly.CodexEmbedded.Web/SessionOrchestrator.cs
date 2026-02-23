@@ -390,6 +390,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		_ = Task.Run(async () =>
 		{
 			var lockTaken = false;
+			var completionPublished = false;
 			CancellationTokenSource? timeoutCts = null;
 			CancellationTokenSource? turnCts = null;
 
@@ -424,9 +425,15 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				timeoutCts.CancelAfter(TimeSpan.FromSeconds(_defaults.TurnTimeoutSeconds));
 				turnCts = CancellationTokenSource.CreateLinkedTokenSource(session.LifetimeToken, timeoutCts.Token);
 				var turnToken = turnCts.Token;
-				session.MarkTurnStarted(turnCts);
-				Broadcast?.Invoke("turn_started", new { sessionId });
-				SessionsChanged?.Invoke();
+				if (session.TryMarkTurnStarted(turnCts))
+				{
+					Broadcast?.Invoke("turn_started", new { sessionId });
+					SessionsChanged?.Invoke();
+				}
+				else
+				{
+					session.Log.Write("[turn_state] suppressed duplicate turn_started emit");
+				}
 
 				Broadcast?.Invoke("status", new { sessionId, message = "Turn started." });
 				var effectiveModel = session.ResolveTurnModel(_defaults.DefaultModel);
@@ -449,7 +456,11 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					cancellationToken: turnToken);
 
 				Broadcast?.Invoke("assistant_done", new { sessionId, text = result.Text });
-				Broadcast?.Invoke("turn_complete", new { sessionId, status = result.Status, errorMessage = result.ErrorMessage });
+				completionPublished = TryPublishTurnComplete(
+					sessionId,
+					session,
+					result.Status,
+					result.ErrorMessage);
 			}
 			catch (OperationCanceledException)
 			{
@@ -460,26 +471,48 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 				if (timeoutCts?.IsCancellationRequested == true)
 				{
-					Broadcast?.Invoke("turn_complete", new { sessionId, status = "timedOut", errorMessage = "Timed out." });
+					completionPublished = TryPublishTurnComplete(
+						sessionId,
+						session,
+						status: "timedOut",
+						errorMessage: "Timed out.");
 				}
 				else
 				{
-					Broadcast?.Invoke("turn_complete", new { sessionId, status = "interrupted", errorMessage = "Turn canceled." });
+					completionPublished = TryPublishTurnComplete(
+						sessionId,
+						session,
+						status: "interrupted",
+						errorMessage: "Turn canceled.");
 				}
 			}
 			catch (Exception ex)
 			{
 				Logs.LogError(ex);
 				session.Log.Write($"[turn_error] {ex.Message}");
-				Broadcast?.Invoke("turn_complete", new { sessionId, status = "failed", errorMessage = ex.Message });
+				completionPublished = TryPublishTurnComplete(
+					sessionId,
+					session,
+					status: "failed",
+					errorMessage: ex.Message);
 			}
 			finally
 			{
 				if (lockTaken)
 				{
-					session.MarkTurnCompleted();
-					session.ReleaseTurnSlot();
-					SessionsChanged?.Invoke();
+					if (!completionPublished)
+					{
+						completionPublished = TryPublishTurnComplete(
+							sessionId,
+							session,
+							status: "unknown",
+							errorMessage: "Turn finished without an explicit completion signal.");
+					}
+
+					if (!completionPublished)
+					{
+						session.ReleaseTurnSlot();
+					}
 				}
 
 				turnCts?.Dispose();
@@ -660,21 +693,54 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	{
 		sessionLog.Write(CodexEventLogging.Format(ev, includeTimestamp: false));
 
-		if (IsCoreTurnCompletionSignal(ev))
+		if (TryParseCoreTurnSignal(ev, out var signal))
 		{
 			var managed = TryGetSession(sessionId);
-			if (managed is not null && managed.TryMarkTurnCompletedFromCoreSignal())
+			if (managed is not null)
 			{
-				sessionLog.Write("[turn_recovery] marked complete from core task completion signal");
-				SessionsChanged?.Invoke();
+				if (signal.Kind == CoreTurnSignalKind.Started)
+				{
+					if (managed.TryMarkTurnStartedFromCoreSignal())
+					{
+						sessionLog.Write($"[turn_recovery] marked started from core signal ({signal.Source})");
+						Broadcast?.Invoke("turn_started", new { sessionId });
+						SessionsChanged?.Invoke();
+					}
+				}
+				else if (TryPublishTurnComplete(
+					sessionId,
+					managed,
+					signal.Status ?? "completed",
+					signal.ErrorMessage))
+				{
+					sessionLog.Write($"[turn_recovery] marked complete from core signal ({signal.Source})");
+				}
 			}
 		}
 
 		CoreEvent?.Invoke(sessionId, ev);
 	}
 
-	private static bool IsCoreTurnCompletionSignal(CodexCoreEvent ev)
+	private bool TryPublishTurnComplete(
+		string sessionId,
+		ManagedSession session,
+		string? status,
+		string? errorMessage)
 	{
+		if (!session.TryMarkTurnCompletedFromCoreSignal())
+		{
+			return false;
+		}
+
+		var normalizedStatus = string.IsNullOrWhiteSpace(status) ? "unknown" : status!;
+		Broadcast?.Invoke("turn_complete", new { sessionId, status = normalizedStatus, errorMessage });
+		SessionsChanged?.Invoke();
+		return true;
+	}
+
+	private static bool TryParseCoreTurnSignal(CodexCoreEvent ev, out CoreTurnSignal signal)
+	{
+		signal = default;
 		if (ev is null || string.IsNullOrWhiteSpace(ev.Type) || !string.Equals(ev.Type, "stdout_jsonl", StringComparison.Ordinal))
 		{
 			return false;
@@ -686,7 +752,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return false;
 		}
 
-		if (line.IndexOf("turn/completed", StringComparison.Ordinal) < 0 &&
+		if (line.IndexOf("turn/started", StringComparison.Ordinal) < 0 &&
+			line.IndexOf("task_started", StringComparison.Ordinal) < 0 &&
+			line.IndexOf("\"turn_started\"", StringComparison.Ordinal) < 0 &&
+			line.IndexOf("turn/completed", StringComparison.Ordinal) < 0 &&
 			line.IndexOf("task_complete", StringComparison.Ordinal) < 0 &&
 			line.IndexOf("\"turn_complete\"", StringComparison.Ordinal) < 0)
 		{
@@ -707,9 +776,59 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				methodElement.ValueKind == JsonValueKind.String)
 			{
 				var method = methodElement.GetString();
-				return string.Equals(method, "turn/completed", StringComparison.Ordinal) ||
-					string.Equals(method, "codex/event/task_complete", StringComparison.Ordinal) ||
-					string.Equals(method, "codex/event/turn_complete", StringComparison.Ordinal);
+				if (string.Equals(method, "turn/started", StringComparison.Ordinal) ||
+					string.Equals(method, "codex/event/task_started", StringComparison.Ordinal) ||
+					string.Equals(method, "codex/event/turn_started", StringComparison.Ordinal))
+				{
+					signal = new CoreTurnSignal(
+						Kind: CoreTurnSignalKind.Started,
+						Status: null,
+						ErrorMessage: null,
+						Source: method ?? "unknown_method");
+					return true;
+				}
+
+				if (string.Equals(method, "turn/completed", StringComparison.Ordinal))
+				{
+					var status = WebCodexUtils.TryGetPathString(root, "params", "turn", "status")
+						?? WebCodexUtils.TryGetPathString(root, "params", "status")
+						?? "unknown";
+					var errorMessage = WebCodexUtils.TryGetPathString(root, "params", "turn", "error", "message")
+						?? WebCodexUtils.TryGetPathString(root, "params", "error", "message")
+						?? WebCodexUtils.TryGetPathString(root, "params", "errorMessage");
+					signal = new CoreTurnSignal(
+						Kind: CoreTurnSignalKind.Completed,
+						Status: status,
+						ErrorMessage: errorMessage,
+						Source: method ?? "unknown_method");
+					return true;
+				}
+
+				if (string.Equals(method, "codex/event/task_complete", StringComparison.Ordinal) ||
+					string.Equals(method, "codex/event/turn_complete", StringComparison.Ordinal))
+				{
+					var status = WebCodexUtils.TryGetPathString(root, "params", "msg", "status")
+						?? WebCodexUtils.TryGetPathString(root, "params", "status");
+					if (string.IsNullOrWhiteSpace(status))
+					{
+						status = string.Equals(method, "codex/event/task_complete", StringComparison.Ordinal)
+							? "completed"
+							: "unknown";
+					}
+
+					var errorMessage = WebCodexUtils.TryGetPathString(root, "params", "msg", "error", "message")
+						?? WebCodexUtils.TryGetPathString(root, "params", "msg", "errorMessage")
+						?? WebCodexUtils.TryGetPathString(root, "params", "error", "message")
+						?? WebCodexUtils.TryGetPathString(root, "params", "errorMessage");
+					signal = new CoreTurnSignal(
+						Kind: CoreTurnSignalKind.Completed,
+						Status: status,
+						ErrorMessage: errorMessage,
+						Source: method ?? "unknown_method");
+					return true;
+				}
+
+				return false;
 			}
 
 			if (!root.TryGetProperty("type", out var typeElement) ||
@@ -730,14 +849,57 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 
 			var payloadType = payloadTypeElement.GetString();
-			return string.Equals(payloadType, "task_complete", StringComparison.Ordinal) ||
-				string.Equals(payloadType, "turn_complete", StringComparison.Ordinal);
+			if (string.Equals(payloadType, "task_started", StringComparison.Ordinal) ||
+				string.Equals(payloadType, "turn_started", StringComparison.Ordinal))
+			{
+				signal = new CoreTurnSignal(
+					Kind: CoreTurnSignalKind.Started,
+					Status: null,
+					ErrorMessage: null,
+					Source: $"event_msg:{payloadType}");
+				return true;
+			}
+
+			if (string.Equals(payloadType, "task_complete", StringComparison.Ordinal) ||
+				string.Equals(payloadType, "turn_complete", StringComparison.Ordinal))
+			{
+				var status = WebCodexUtils.TryGetPathString(payloadElement, "status");
+				if (string.IsNullOrWhiteSpace(status))
+				{
+					status = string.Equals(payloadType, "task_complete", StringComparison.Ordinal)
+						? "completed"
+						: "unknown";
+				}
+
+				var errorMessage = WebCodexUtils.TryGetPathString(payloadElement, "error", "message")
+					?? WebCodexUtils.TryGetPathString(payloadElement, "errorMessage");
+				signal = new CoreTurnSignal(
+					Kind: CoreTurnSignalKind.Completed,
+					Status: status,
+					ErrorMessage: errorMessage,
+					Source: $"event_msg:{payloadType}");
+				return true;
+			}
+
+			return false;
 		}
 		catch
 		{
 			return false;
 		}
 	}
+
+	private enum CoreTurnSignalKind
+	{
+		Started,
+		Completed
+	}
+
+	private readonly record struct CoreTurnSignal(
+		CoreTurnSignalKind Kind,
+		string? Status,
+		string? ErrorMessage,
+		string Source);
 
 	public event Action<string, CodexCoreEvent>? CoreEvent;
 
@@ -930,6 +1092,27 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		public async Task<bool> TryWaitForTurnSlotAsync(TimeSpan timeout, CancellationToken cancellationToken)
 		{
+			var waitingOnRecoveredExternalTurn = false;
+			lock (_turnSync)
+			{
+				// External signal recovery can mark a turn as active without owning the semaphore slot.
+				// Keep queueing blocked until a matching completion signal clears in-flight state.
+				if (_turnInFlight && !_turnSlotHeld)
+				{
+					waitingOnRecoveredExternalTurn = true;
+				}
+			}
+
+			if (waitingOnRecoveredExternalTurn)
+			{
+				if (timeout > TimeSpan.Zero)
+				{
+					await Task.Delay(timeout, cancellationToken);
+				}
+
+				return false;
+			}
+
 			if (timeout <= TimeSpan.Zero)
 			{
 				return await _turnGate.WaitAsync(0, cancellationToken);
@@ -990,22 +1173,33 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
-		public void MarkTurnStarted(CancellationTokenSource turnCts)
+		public bool TryMarkTurnStarted(CancellationTokenSource turnCts)
 		{
 			lock (_turnSync)
 			{
 				_activeTurnCts = turnCts;
-				_turnInFlight = true;
 				_turnSlotHeld = true;
+				if (_turnInFlight)
+				{
+					return false;
+				}
+
+				_turnInFlight = true;
+				return true;
 			}
 		}
 
-		public void MarkTurnCompleted()
+		public bool TryMarkTurnStartedFromCoreSignal()
 		{
 			lock (_turnSync)
 			{
-				_activeTurnCts = null;
-				_turnInFlight = false;
+				if (_turnInFlight)
+				{
+					return false;
+				}
+
+				_turnInFlight = true;
+				return true;
 			}
 		}
 
