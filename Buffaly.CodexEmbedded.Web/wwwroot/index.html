@@ -55,6 +55,7 @@
 						<span>New Project</span>
 					</button>
 				</div>
+				<div class="sidebar-divider sidebar-project-divider" aria-hidden="true"></div>
 				<div id="projectList" class="project-list"></div>
 			</aside>
 			<section class="panel chat-panel">
@@ -136,6 +137,25 @@
 				<div class="command-modal-actions">
 					<button id="modelCommandApplyBtn" type="button">Apply</button>
 					<button id="modelCommandCancelBtn" type="button">Cancel</button>
+				</div>
+			</div>
+		</div>
+
+		<div id="newProjectModal" class="command-modal hidden" role="dialog" aria-modal="true" aria-labelledby="newProjectModalTitle">
+			<div class="command-modal-card">
+				<div id="newProjectModalTitle" class="command-modal-title">Create Project</div>
+				<div class="command-modal-body">
+					<div class="new-project-modal-note">
+						A project points to a working directory. Codex sessions in this project will run there.
+					</div>
+					<label for="newProjectCwdInput">Project Directory</label>
+					<input id="newProjectCwdInput" type="text" placeholder="C:/dev/my-project">
+					<label for="newProjectFirstSessionInput">First Session Name (optional)</label>
+					<input id="newProjectFirstSessionInput" type="text" placeholder="Leave blank for default">
+				</div>
+				<div class="command-modal-actions">
+					<button id="newProjectCreateBtn" type="button">Create Project</button>
+					<button id="newProjectCancelBtn" type="button">Cancel</button>
 				</div>
 			</div>
 		</div>

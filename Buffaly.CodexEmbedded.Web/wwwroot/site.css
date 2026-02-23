@@ -296,6 +296,11 @@ body {
 	background: #f8fafc;
 }
 
+.sidebar-project-divider {
+	margin-top: 0.08rem;
+	margin-bottom: 0.1rem;
+}
+
 .new-project-btn {
 	display: inline-flex;
 	align-items: center;
@@ -1002,6 +1007,16 @@ body {
 	border: 1px solid #d1d5db;
 	border-radius: 6px;
 	font: inherit;
+}
+
+.new-project-modal-note {
+	font-size: 0.86rem;
+	line-height: 1.35;
+	color: #334155;
+	background: #f8fafc;
+	border: 1px solid #e2e8f0;
+	border-radius: 8px;
+	padding: 0.5rem 0.58rem;
 }
 
 .command-modal-actions {

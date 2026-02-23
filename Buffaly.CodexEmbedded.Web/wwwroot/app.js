@@ -154,6 +154,11 @@ const modelCommandSelect = document.getElementById("modelCommandSelect");
 const modelCommandCustomInput = document.getElementById("modelCommandCustomInput");
 const modelCommandApplyBtn = document.getElementById("modelCommandApplyBtn");
 const modelCommandCancelBtn = document.getElementById("modelCommandCancelBtn");
+const newProjectModal = document.getElementById("newProjectModal");
+const newProjectCwdInput = document.getElementById("newProjectCwdInput");
+const newProjectFirstSessionInput = document.getElementById("newProjectFirstSessionInput");
+const newProjectCreateBtn = document.getElementById("newProjectCreateBtn");
+const newProjectCancelBtn = document.getElementById("newProjectCancelBtn");
 
 const timeline = new window.CodexSessionTimeline({
   container: chatMessages,
@@ -1802,7 +1807,10 @@ function formatSessionSubtitle(entry) {
 
 async function createSessionForCwd(cwd, options = {}) {
   const normalizedCwd = normalizeProjectCwd(cwd || "");
-  const rawName = options.askName === false ? "" : window.prompt("Session name (optional):", "");
+  const hasProvidedName = Object.prototype.hasOwnProperty.call(options, "threadName");
+  const rawName = hasProvidedName
+    ? String(options.threadName || "")
+    : (options.askName === false ? "" : window.prompt("Session name (optional):", ""));
   if (rawName === null) {
     return;
   }
@@ -1926,16 +1934,74 @@ function toggleSessionArchived(threadId) {
   renderProjectSidebar();
 }
 
-function promptCreateProject() {
-  const seedCwd = cwdInput.value.trim();
-  const cwdRaw = window.prompt("Project working directory:", seedCwd || "");
-  if (cwdRaw === null) {
+function promoteProjectToTop(projectKey) {
+  const normalizedProjectKey = typeof projectKey === "string" ? projectKey.trim().toLowerCase() : "";
+  if (!normalizedProjectKey) {
     return;
   }
 
-  const cwd = normalizeProjectCwd(cwdRaw || "");
+  const orderedKeys = [];
+  if (projectOrderInitialized) {
+    const ranked = Array.from(projectOrderIndexByKey.entries())
+      .sort((a, b) => (a[1] || 0) - (b[1] || 0))
+      .map((entry) => entry[0]);
+    for (const key of ranked) {
+      if (key && key !== normalizedProjectKey) {
+        orderedKeys.push(key);
+      }
+    }
+  }
+
+  projectOrderIndexByKey = new Map();
+  projectOrderIndexByKey.set(normalizedProjectKey, 0);
+  nextProjectOrderIndex = 1;
+  for (const key of orderedKeys) {
+    if (!projectOrderIndexByKey.has(key)) {
+      projectOrderIndexByKey.set(key, nextProjectOrderIndex++);
+    }
+  }
+
+  projectOrderInitialized = true;
+}
+
+function openNewProjectModal() {
+  if (!newProjectModal || !newProjectCwdInput || !newProjectFirstSessionInput) {
+    return;
+  }
+
+  const selectedGroup = buildSidebarProjectGroups().find((x) => x.key === selectedProjectKey) || null;
+  const seedCwd = normalizeProjectCwd(selectedGroup?.cwd || cwdInput.value.trim());
+  newProjectCwdInput.value = seedCwd;
+  newProjectFirstSessionInput.value = "";
+  newProjectModal.classList.remove("hidden");
+  newProjectCwdInput.focus();
+  newProjectCwdInput.select();
+}
+
+function closeNewProjectModal() {
+  if (!newProjectModal) {
+    return;
+  }
+
+  newProjectModal.classList.add("hidden");
+}
+
+async function submitNewProjectModal() {
+  if (!newProjectCwdInput || !newProjectFirstSessionInput) {
+    return;
+  }
+
+  const cwd = normalizeProjectCwd(newProjectCwdInput.value || "");
   if (!cwd) {
     appendLog("[project] working directory is required");
+    newProjectCwdInput.focus();
+    return;
+  }
+
+  const firstSessionName = String(newProjectFirstSessionInput.value || "").trim();
+  if (firstSessionName.length > 200) {
+    appendLog("[project] first session name must be 200 characters or fewer");
+    newProjectFirstSessionInput.focus();
     return;
   }
 
@@ -1945,19 +2011,15 @@ function promptCreateProject() {
     persistCustomProjects();
   }
 
-  const currentName = projectNameByKey.get(key) || pathLeaf(cwd);
-  const nameRaw = window.prompt("Project name (optional):", currentName || "");
-  if (nameRaw !== null) {
-    const name = String(nameRaw || "").trim();
-    if (name) {
-      projectNameByKey.set(key, name);
-    } else {
-      projectNameByKey.delete(key);
-    }
-    persistProjectNameMap();
-  }
-
+  promoteProjectToTop(key);
   selectProject(key, cwd);
+  closeNewProjectModal();
+
+  await createSessionForCwd(cwd, { askName: false, threadName: firstSessionName });
+}
+
+function promptCreateProject() {
+  openNewProjectModal();
 }
 
 function renameProject(project) {
@@ -4582,6 +4644,44 @@ modelCommandModal.addEventListener("click", (event) => {
   }
 });
 
+if (newProjectCreateBtn) {
+  newProjectCreateBtn.addEventListener("click", () => {
+    submitNewProjectModal().catch((error) => appendLog(`[project] create failed: ${error}`));
+  });
+}
+
+if (newProjectCancelBtn) {
+  newProjectCancelBtn.addEventListener("click", () => {
+    closeNewProjectModal();
+  });
+}
+
+if (newProjectCwdInput) {
+  newProjectCwdInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitNewProjectModal().catch((error) => appendLog(`[project] create failed: ${error}`));
+    }
+  });
+}
+
+if (newProjectFirstSessionInput) {
+  newProjectFirstSessionInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitNewProjectModal().catch((error) => appendLog(`[project] create failed: ${error}`));
+    }
+  });
+}
+
+if (newProjectModal) {
+  newProjectModal.addEventListener("click", (event) => {
+    if (event.target === newProjectModal) {
+      closeNewProjectModal();
+    }
+  });
+}
+
 if (aboutBtn) {
   aboutBtn.addEventListener("click", () => {
     openAboutModal();
@@ -5009,6 +5109,12 @@ document.addEventListener("keydown", (event) => {
   if (jumpCondensedMode) {
     event.preventDefault();
     setJumpCondensedMode(false);
+    return;
+  }
+
+  if (newProjectModal && !newProjectModal.classList.contains("hidden")) {
+    event.preventDefault();
+    closeNewProjectModal();
     return;
   }
 
