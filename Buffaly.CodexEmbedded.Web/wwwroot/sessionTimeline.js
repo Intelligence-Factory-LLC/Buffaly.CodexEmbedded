@@ -102,11 +102,15 @@
 
         const input = this.readNonNegativeNumber(usage.input_tokens ?? usage.inputTokens);
         const cachedInput = this.readNonNegativeNumber(usage.cached_input_tokens ?? usage.cachedInputTokens);
-        if (input === null && cachedInput === null) {
+        if (input !== null) {
+          return input;
+        }
+
+        if (cachedInput === null) {
           return null;
         }
 
-        return (input || 0) + (cachedInput || 0);
+        return cachedInput;
       };
 
       const readTotalTokens = (usage) => {

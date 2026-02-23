@@ -569,11 +569,15 @@ function readTokenCountInfo(payload) {
 
     const input = readNumber(usage.input_tokens ?? usage.inputTokens);
     const cachedInput = readNumber(usage.cached_input_tokens ?? usage.cachedInputTokens);
-    if (input === null && cachedInput === null) {
+    if (input !== null) {
+      return input;
+    }
+
+    if (cachedInput === null) {
       return null;
     }
 
-    return (input || 0) + (cachedInput || 0);
+    return cachedInput;
   }
 
   function readTotalTokens(usage) {
