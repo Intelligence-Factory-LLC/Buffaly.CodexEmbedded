@@ -64,6 +64,7 @@ let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
 const STORAGE_LAST_THREAD_ID_KEY = "codex-web-last-thread-id";
+const STORAGE_LAST_SESSION_ID_KEY = "codex-web-last-session-id";
 const STORAGE_PROMPT_DRAFTS_KEY = "codex-web-prompt-drafts-v1";
 const STORAGE_THREAD_MODELS_KEY = "codex-web-thread-models-v1";
 const STORAGE_THREAD_REASONING_KEY = "codex-web-thread-reasoning-v1";
@@ -2856,18 +2857,32 @@ function getStoredLastThreadId() {
   return value && value.trim().length > 0 ? value.trim() : null;
 }
 
+function storeLastSessionId(sessionId) {
+  const normalized = typeof sessionId === "string" ? sessionId.trim() : "";
+  if (!normalized) {
+    return;
+  }
+
+  localStorage.setItem(STORAGE_LAST_SESSION_ID_KEY, normalized);
+}
+
+function getStoredLastSessionId() {
+  const value = localStorage.getItem(STORAGE_LAST_SESSION_ID_KEY);
+  return value && value.trim().length > 0 ? value.trim() : null;
+}
+
 async function tryAutoAttachStoredThread() {
   if (autoAttachAttempted) {
     return;
   }
 
-  if (sessions.size > 0 || activeSessionId) {
+  const threadId = getStoredLastThreadId();
+  if (!threadId) {
     autoAttachAttempted = true;
     return;
   }
 
-  const threadId = getStoredLastThreadId();
-  if (!threadId) {
+  if (getAttachedSessionIdByThreadId(threadId)) {
     autoAttachAttempted = true;
     return;
   }
@@ -3169,6 +3184,7 @@ function setActiveSession(sessionId, options = {}) {
   if (state?.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
     clearPendingSessionLoad();
   }
+  storeLastSessionId(sessionId);
   if (state && state.threadId) {
     storeLastThreadId(state.threadId);
   }
@@ -3242,7 +3258,15 @@ function updateSessionSelect(activeIdFromServer) {
     }
   }
 
-  const toSelect = activeIdFromServer || activeSessionId || current || (ids.length > 0 ? ids[0] : null);
+  const storedSessionId = getStoredLastSessionId();
+  const storedThreadId = getStoredLastThreadId();
+  const sessionForStoredThread = storedThreadId ? getAttachedSessionIdByThreadId(storedThreadId) : null;
+  const toSelect = activeSessionId ||
+    current ||
+    (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
+    (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
+    activeIdFromServer ||
+    (ids.length > 0 ? ids[0] : null);
   if (toSelect && sessions.has(toSelect)) {
     const changed = activeSessionId !== toSelect;
     setActiveSession(toSelect, { restartTimeline: changed });
