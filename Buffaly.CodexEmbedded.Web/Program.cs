@@ -2,6 +2,8 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -470,12 +472,43 @@ app.Map("/ws", async context =>
 			runtimeTracker.OnWebSocketClosed();
 		}
 	}
+	catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+	{
+		Logs.DebugLog.WriteEvent("WebSocket", $"Websocket request canceled id={context.Connection.Id}");
+	}
+	catch (WebSocketException ex) when (IsExpectedWebSocketDisconnect(ex))
+	{
+		Logs.DebugLog.WriteEvent("WebSocket", $"Websocket disconnected abruptly id={context.Connection.Id}: {ex.Message}");
+	}
 	catch (Exception ex)
 	{
 		Logs.LogError(ex);
 		throw;
 	}
 });
+
+static bool IsExpectedWebSocketDisconnect(WebSocketException ex)
+{
+	if (ex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
+	{
+		return true;
+	}
+
+	if (ex.InnerException is SocketException socketEx &&
+		(socketEx.SocketErrorCode == SocketError.ConnectionReset || socketEx.SocketErrorCode == SocketError.OperationAborted))
+	{
+		return true;
+	}
+
+	if (ex.InnerException is IOException ioEx &&
+		ioEx.InnerException is SocketException nestedSocketEx &&
+		(nestedSocketEx.SocketErrorCode == SocketError.ConnectionReset || nestedSocketEx.SocketErrorCode == SocketError.OperationAborted))
+	{
+		return true;
+	}
+
+	return false;
+}
 
 try
 {

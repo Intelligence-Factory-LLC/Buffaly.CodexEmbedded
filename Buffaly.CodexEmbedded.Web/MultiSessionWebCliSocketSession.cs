@@ -1,5 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.IO;
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -45,15 +47,26 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		await SendEventAsync("log_verbosity", new { verbosity = _uiLogVerbosity.ToString().ToLowerInvariant() }, cancellationToken);
 		await WriteConnectionLogAsync("[ws] connected", cancellationToken);
 
-		while (!cancellationToken.IsCancellationRequested && _socket.State == WebSocketState.Open)
+		try
 		{
-			var message = await ReceiveTextMessageAsync(cancellationToken);
-			if (message is null)
+			while (!cancellationToken.IsCancellationRequested && _socket.State == WebSocketState.Open)
 			{
-				break;
-			}
+				var message = await ReceiveTextMessageAsync(cancellationToken);
+				if (message is null)
+				{
+					break;
+				}
 
-			await HandleClientMessageAsync(message, cancellationToken);
+				await HandleClientMessageAsync(message, cancellationToken);
+			}
+		}
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+		{
+			WriteConnectionLogLocal("[ws] receive loop canceled");
+		}
+		catch (WebSocketException ex) when (IsExpectedWebSocketDisconnect(ex))
+		{
+			WriteConnectionLogLocal($"[ws] remote disconnected without close handshake: {ex.Message}");
 		}
 	}
 
@@ -958,6 +971,29 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		{
 			ArrayPool<byte>.Shared.Return(rented);
 		}
+	}
+
+	private static bool IsExpectedWebSocketDisconnect(WebSocketException ex)
+	{
+		if (ex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
+		{
+			return true;
+		}
+
+		if (ex.InnerException is SocketException socketEx &&
+			(socketEx.SocketErrorCode == SocketError.ConnectionReset || socketEx.SocketErrorCode == SocketError.OperationAborted))
+		{
+			return true;
+		}
+
+		if (ex.InnerException is IOException ioEx &&
+			ioEx.InnerException is SocketException nestedSocketEx &&
+			(nestedSocketEx.SocketErrorCode == SocketError.ConnectionReset || nestedSocketEx.SocketErrorCode == SocketError.OperationAborted))
+		{
+			return true;
+		}
+
+		return false;
 	}
 
 	public async ValueTask DisposeAsync()
