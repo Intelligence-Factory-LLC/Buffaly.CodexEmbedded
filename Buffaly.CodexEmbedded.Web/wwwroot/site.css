@@ -661,6 +661,41 @@ body {
 	align-items: center;
 }
 
+.conversation-jump-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.38rem;
+	padding: 0.24rem 0.55rem;
+	border: 1px solid #cbd5e1;
+	border-radius: 999px;
+	background: #ffffff;
+	color: #0f172a;
+	font-size: 0.76rem;
+	font-weight: 700;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.conversation-jump-btn:hover {
+	background: #f8fafc;
+}
+
+.conversation-jump-btn:focus-visible {
+	outline: 2px solid #60a5fa;
+	outline-offset: 1px;
+}
+
+.conversation-jump-btn[aria-expanded="true"] {
+	border-color: #93c5fd;
+	background: #eff6ff;
+	color: #1e3a8a;
+}
+
+.conversation-jump-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
 .conversation-title-text {
 	font-weight: 700;
 	font-size: 1.05rem;
@@ -1466,6 +1501,148 @@ body {
 	background: #f8fafc;
 }
 
+.jump-to-panel {
+	position: absolute;
+	top: 3.2rem;
+	right: 0.85rem;
+	width: min(480px, calc(100% - 1.7rem));
+	max-height: min(56vh, 520px);
+	background: #ffffff;
+	border: 1px solid #cbd5e1;
+	border-radius: 10px;
+	box-shadow: 0 14px 34px rgba(15, 23, 42, 0.2);
+	padding: 0.6rem 0.65rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.48rem;
+	z-index: 8;
+}
+
+.jump-to-panel-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+}
+
+.jump-to-panel-title {
+	font-size: 0.83rem;
+	font-weight: 700;
+	color: #0f172a;
+}
+
+.jump-to-close-btn {
+	width: 1.5rem;
+	height: 1.5rem;
+	padding: 0;
+	border: 1px solid #d1d5db;
+	border-radius: 999px;
+	background: #ffffff;
+	color: #334155;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+}
+
+.jump-to-close-btn:hover {
+	background: #f8fafc;
+}
+
+.jump-to-search {
+	width: 100%;
+	border: 1px solid #d1d5db;
+	border-radius: 8px;
+	padding: 0.38rem 0.5rem;
+	font-size: 0.82rem;
+	color: #111827;
+	background: #ffffff;
+}
+
+.jump-to-search:focus {
+	outline: 2px solid #93c5fd;
+	outline-offset: 1px;
+	border-color: #93c5fd;
+}
+
+.jump-to-list {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	padding-right: 0.2rem;
+}
+
+.jump-to-group {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3rem;
+}
+
+.jump-to-group-title {
+	position: sticky;
+	top: 0;
+	font-size: 0.75rem;
+	font-weight: 700;
+	color: #475569;
+	background: #ffffff;
+	padding: 0.16rem 0;
+}
+
+.jump-to-item {
+	width: 100%;
+	border: 1px solid #e5e7eb;
+	border-radius: 8px;
+	background: #ffffff;
+	padding: 0.34rem 0.46rem;
+	text-align: left;
+	display: flex;
+	flex-direction: column;
+	gap: 0.15rem;
+	cursor: pointer;
+}
+
+.jump-to-item:hover {
+	border-color: #bfdbfe;
+	background: #f8fbff;
+}
+
+.jump-to-item:focus-visible {
+	outline: 2px solid #60a5fa;
+	outline-offset: 1px;
+}
+
+.jump-to-item:disabled {
+	cursor: default;
+	opacity: 0.6;
+	background: #f8fafc;
+}
+
+.jump-to-item.active {
+	border-color: #93c5fd;
+	background: #eff6ff;
+}
+
+.jump-to-item-label {
+	font-size: 0.8rem;
+	font-weight: 600;
+	color: #0f172a;
+	line-height: 1.3;
+}
+
+.jump-to-item-meta {
+	font-size: 0.72rem;
+	color: #64748b;
+}
+
+.jump-to-empty {
+	padding: 0.5rem 0.2rem;
+	font-size: 0.78rem;
+	color: #64748b;
+}
+
 .scroll-to-bottom-btn {
 	position: absolute;
 	left: 50%;
@@ -1497,6 +1674,27 @@ body {
 	padding: 0.55rem 0.7rem;
 	padding-right: 2.5rem;
 	position: relative;
+}
+
+.watcher-entry-jump-highlight {
+	box-shadow: 0 0 0 2px #60a5fa inset, 0 0 0 1px #bfdbfe;
+	animation: entry-jump-pulse 1.2s ease-out;
+}
+
+.watcher-inline-entry.watcher-entry-jump-highlight,
+.watcher-embedded-entry.watcher-entry-jump-highlight {
+	border-radius: 8px;
+	box-shadow: 0 0 0 2px #60a5fa inset, 0 0 0 1px #bfdbfe;
+	animation: entry-jump-pulse 1.2s ease-out;
+}
+
+@keyframes entry-jump-pulse {
+	0% {
+		box-shadow: 0 0 0 2px #3b82f6 inset, 0 0 0 1px #bfdbfe;
+	}
+	100% {
+		box-shadow: 0 0 0 2px #60a5fa inset, 0 0 0 1px #bfdbfe;
+	}
 }
 
 .watcher-entry.user {
@@ -1984,6 +2182,11 @@ body {
 		flex-wrap: wrap;
 	}
 
+	.conversation-jump-btn {
+		padding: 0.22rem 0.46rem;
+		font-size: 0.72rem;
+	}
+
 	.conversation-title-text {
 		max-width: 100%;
 	}
@@ -2019,6 +2222,14 @@ body {
 	.watcher-timeline {
 		padding: 0.42rem;
 		gap: 0.36rem;
+	}
+
+	.jump-to-panel {
+		top: 4.95rem;
+		right: 0.42rem;
+		width: calc(100% - 0.84rem);
+		max-height: min(58vh, 520px);
+		padding: 0.48rem 0.5rem;
 	}
 
 	.watcher-entry {

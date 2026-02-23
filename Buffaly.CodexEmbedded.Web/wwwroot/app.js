@@ -60,6 +60,12 @@ let pendingClientLogLines = [];
 let turnActivityTickTimer = null;
 let turnStartedAtBySession = new Map(); // sessionId -> epoch ms when running turn started
 let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
+let jumpIndexEntries = []; // [{ entryId, summary, sourceText, searchText, timestamp, sortTick, createdOrder, isPresent }]
+let jumpIndexByEntryId = new Map(); // entryId -> entry
+let nextJumpIndexOrder = 1;
+let jumpPanelOpen = false;
+let jumpIndexSearch = "";
+let jumpActiveEntryId = null;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -132,6 +138,11 @@ const sessionMetaThreadValue = document.getElementById("sessionMetaThreadValue")
 const sessionMetaModelItem = document.getElementById("sessionMetaModelItem");
 const sessionMetaCwdItem = document.getElementById("sessionMetaCwdItem");
 const sessionMetaCwdValue = document.getElementById("sessionMetaCwdValue");
+const jumpToBtn = document.getElementById("jumpToBtn");
+const jumpToPanel = document.getElementById("jumpToPanel");
+const jumpToCloseBtn = document.getElementById("jumpToCloseBtn");
+const jumpToSearchInput = document.getElementById("jumpToSearchInput");
+const jumpToList = document.getElementById("jumpToList");
 const conversationModelSelect = document.getElementById("conversationModelSelect");
 const conversationReasoningSelect = document.getElementById("conversationReasoningSelect");
 const sessionSidebar = document.getElementById("sessionSidebar");
@@ -222,6 +233,325 @@ function scrollMessagesToBottom(smooth = false) {
 
   updateScrollToBottomButton();
   updateTimelineTruncationNotice();
+}
+
+function normalizeJumpEntryId(value) {
+  const normalized = Number(value);
+  return Number.isFinite(normalized) ? Math.floor(normalized) : null;
+}
+
+function normalizeJumpText(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  return value.replace(/\r/g, "").replace(/\s+/g, " ").trim();
+}
+
+function isSyntheticJumpSourceText(text) {
+  const normalized = typeof text === "string" ? text.trim() : "";
+  if (!normalized) {
+    return true;
+  }
+
+  if (/^#\s*AGENTS\.md instructions for\s+/i.test(normalized) && normalized.includes("<INSTRUCTIONS>")) {
+    return true;
+  }
+
+  if (/^<environment_context>[\s\S]*<\/environment_context>$/i.test(normalized)) {
+    return true;
+  }
+
+  return false;
+}
+
+function extractJumpSummaryText(sourceText) {
+  const normalized = normalizeJumpText(sourceText);
+  if (!normalized) {
+    return "";
+  }
+
+  const sentenceMatch = normalized.match(/^(.{1,220}?[.!?])(?:\s|$)/);
+  const firstSentence = sentenceMatch && sentenceMatch[1]
+    ? sentenceMatch[1]
+    : normalized.split("\n")[0];
+  const trimmed = normalizeJumpText(firstSentence);
+  if (!trimmed) {
+    return "";
+  }
+
+  return trimmed.length > 170 ? `${trimmed.slice(0, 170)}...` : trimmed;
+}
+
+function formatJumpIndexDayLabel(sortTick) {
+  if (!Number.isFinite(sortTick)) {
+    return "Unknown date";
+  }
+
+  return new Date(sortTick).toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  });
+}
+
+function formatJumpIndexTimeLabel(timestamp, sortTick) {
+  const tick = parseIsoTimestamp(timestamp);
+  const resolvedTick = Number.isFinite(tick) ? tick : sortTick;
+  if (!Number.isFinite(resolvedTick)) {
+    return "time unknown";
+  }
+
+  return new Date(resolvedTick).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit"
+  });
+}
+
+function compareJumpIndexEntries(a, b) {
+  const aTick = Number.isFinite(a?.sortTick) ? a.sortTick : Number.MAX_SAFE_INTEGER;
+  const bTick = Number.isFinite(b?.sortTick) ? b.sortTick : Number.MAX_SAFE_INTEGER;
+  if (aTick !== bTick) {
+    return aTick - bTick;
+  }
+
+  const aOrder = Number.isFinite(a?.createdOrder) ? a.createdOrder : Number.MAX_SAFE_INTEGER;
+  const bOrder = Number.isFinite(b?.createdOrder) ? b.createdOrder : Number.MAX_SAFE_INTEGER;
+  if (aOrder !== bOrder) {
+    return aOrder - bOrder;
+  }
+
+  const aId = Number.isFinite(a?.entryId) ? a.entryId : Number.MAX_SAFE_INTEGER;
+  const bId = Number.isFinite(b?.entryId) ? b.entryId : Number.MAX_SAFE_INTEGER;
+  return aId - bId;
+}
+
+function clearJumpIndex() {
+  jumpIndexEntries = [];
+  jumpIndexByEntryId = new Map();
+  nextJumpIndexOrder = 1;
+  jumpActiveEntryId = null;
+  renderJumpIndexList();
+}
+
+function upsertJumpIndexEntry(entrySnapshot) {
+  if (!entrySnapshot || entrySnapshot.role !== "user") {
+    return;
+  }
+
+  const entryId = normalizeJumpEntryId(entrySnapshot.id);
+  if (entryId === null) {
+    return;
+  }
+
+  const sourceText = normalizeJumpText(
+    typeof entrySnapshot.bodyText === "string" && entrySnapshot.bodyText.trim()
+      ? entrySnapshot.bodyText
+      : entrySnapshot.text || ""
+  );
+  if (isSyntheticJumpSourceText(sourceText)) {
+    return;
+  }
+
+  const summary = extractJumpSummaryText(sourceText);
+  if (!summary) {
+    return;
+  }
+
+  const sortTickFromTimestamp = parseIsoTimestamp(entrySnapshot.timestamp);
+  const sortTick = Number.isFinite(sortTickFromTimestamp) ? sortTickFromTimestamp : Date.now();
+  const searchText = normalizeJumpText(`${summary} ${sourceText}`).toLowerCase();
+
+  let item = jumpIndexByEntryId.get(entryId) || null;
+  if (!item) {
+    item = {
+      entryId,
+      summary,
+      sourceText,
+      searchText,
+      timestamp: entrySnapshot.timestamp || null,
+      sortTick,
+      createdOrder: nextJumpIndexOrder++,
+      isPresent: true
+    };
+    jumpIndexEntries.push(item);
+    jumpIndexByEntryId.set(entryId, item);
+    renderJumpIndexList();
+    return;
+  }
+
+  item.summary = summary;
+  item.sourceText = sourceText;
+  item.searchText = searchText;
+  item.timestamp = entrySnapshot.timestamp || item.timestamp || null;
+  if (Number.isFinite(sortTickFromTimestamp)) {
+    item.sortTick = sortTickFromTimestamp;
+  }
+  item.isPresent = true;
+  renderJumpIndexList();
+}
+
+function markJumpIndexEntryRemoved(entryId) {
+  const normalizedEntryId = normalizeJumpEntryId(entryId);
+  if (normalizedEntryId === null) {
+    return;
+  }
+
+  const item = jumpIndexByEntryId.get(normalizedEntryId) || null;
+  if (!item) {
+    return;
+  }
+
+  item.isPresent = false;
+  if (jumpActiveEntryId === normalizedEntryId) {
+    jumpActiveEntryId = null;
+  }
+  renderJumpIndexList();
+}
+
+function buildJumpIndexGroups(items) {
+  const groups = [];
+  let current = null;
+  for (const item of items) {
+    const tick = Number.isFinite(item.sortTick) ? item.sortTick : NaN;
+    const key = Number.isFinite(tick) ? new Date(tick).toISOString().slice(0, 10) : "unknown";
+    if (!current || current.key !== key) {
+      current = {
+        key,
+        label: formatJumpIndexDayLabel(tick),
+        items: []
+      };
+      groups.push(current);
+    }
+
+    current.items.push(item);
+  }
+
+  return groups;
+}
+
+function renderJumpIndexList() {
+  if (!jumpToList) {
+    return;
+  }
+
+  jumpToList.textContent = "";
+  const query = normalizeJumpText(jumpIndexSearch).toLowerCase();
+  const filtered = jumpIndexEntries
+    .filter((item) => !query || item.searchText.includes(query))
+    .sort(compareJumpIndexEntries);
+
+  if (filtered.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "jump-to-empty";
+    empty.textContent = query ? "No user messages match this search." : "No user messages are available yet.";
+    jumpToList.appendChild(empty);
+    return;
+  }
+
+  const groups = buildJumpIndexGroups(filtered);
+  for (const group of groups) {
+    const groupWrap = document.createElement("div");
+    groupWrap.className = "jump-to-group";
+
+    const title = document.createElement("div");
+    title.className = "jump-to-group-title";
+    title.textContent = group.label;
+    groupWrap.appendChild(title);
+
+    for (const item of group.items) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "jump-to-item";
+      button.dataset.entryId = String(item.entryId);
+      button.disabled = item.isPresent !== true;
+      if (jumpActiveEntryId === item.entryId) {
+        button.classList.add("active");
+      }
+
+      const label = document.createElement("span");
+      label.className = "jump-to-item-label";
+      label.textContent = item.summary;
+      button.appendChild(label);
+
+      const meta = document.createElement("span");
+      meta.className = "jump-to-item-meta";
+      const timeLabel = formatJumpIndexTimeLabel(item.timestamp, item.sortTick);
+      meta.textContent = item.isPresent === true ? timeLabel : `${timeLabel} | not in current view`;
+      button.appendChild(meta);
+
+      button.addEventListener("click", () => {
+        jumpToTimelineEntry(item.entryId);
+      });
+      groupWrap.appendChild(button);
+    }
+
+    jumpToList.appendChild(groupWrap);
+  }
+}
+
+function setJumpPanelOpen(open, options = {}) {
+  const normalizedOpen = !!open && !!getActiveSessionState();
+  jumpPanelOpen = normalizedOpen;
+  if (jumpToPanel) {
+    jumpToPanel.classList.toggle("hidden", !normalizedOpen);
+  }
+  if (jumpToBtn) {
+    jumpToBtn.setAttribute("aria-expanded", normalizedOpen ? "true" : "false");
+  }
+
+  if (normalizedOpen) {
+    renderJumpIndexList();
+    if (options.focusSearch === true && jumpToSearchInput) {
+      jumpToSearchInput.focus();
+      jumpToSearchInput.select();
+    }
+  }
+}
+
+function jumpToTimelineEntry(entryId) {
+  const normalizedEntryId = normalizeJumpEntryId(entryId);
+  if (normalizedEntryId === null) {
+    return;
+  }
+
+  if (!timeline || typeof timeline.scrollToEntry !== "function") {
+    return;
+  }
+
+  const moved = timeline.scrollToEntry(normalizedEntryId, {
+    behavior: "smooth",
+    block: "center",
+    highlight: true
+  });
+  if (!moved) {
+    markJumpIndexEntryRemoved(normalizedEntryId);
+    return;
+  }
+
+  jumpActiveEntryId = normalizedEntryId;
+  setJumpPanelOpen(false);
+  renderJumpIndexList();
+}
+
+function handleTimelineEntryAppended(event) {
+  const entry = event?.detail?.entry || null;
+  upsertJumpIndexEntry(entry);
+}
+
+function handleTimelineEntryUpdated(event) {
+  const entry = event?.detail?.entry || null;
+  upsertJumpIndexEntry(entry);
+}
+
+function handleTimelineEntryRemoved(event) {
+  const entry = event?.detail?.entry || null;
+  markJumpIndexEntryRemoved(entry?.id);
+}
+
+function handleTimelineCleared() {
+  clearJumpIndex();
 }
 
 function updatePromptActionState() {
@@ -1692,6 +2022,12 @@ function updateConversationMetaVisibility() {
   sessionMeta.classList.toggle("hidden", !hasState);
   sessionMetaModelItem.classList.toggle("hidden", !hasState);
   permissionLevelIndicator?.classList.toggle("hidden", !hasState);
+  if (jumpToBtn) {
+    jumpToBtn.disabled = !hasState;
+  }
+  if (!hasState) {
+    setJumpPanelOpen(false);
+  }
 }
 
 function applySidebarCollapsed(isCollapsed) {
@@ -4640,11 +4976,35 @@ if (chatMessages) {
     updateScrollToBottomButton();
     updateTimelineTruncationNotice();
   });
+
+  chatMessages.addEventListener("codex:timeline-entry-appended", handleTimelineEntryAppended);
+  chatMessages.addEventListener("codex:timeline-entry-updated", handleTimelineEntryUpdated);
+  chatMessages.addEventListener("codex:timeline-entry-removed", handleTimelineEntryRemoved);
+  chatMessages.addEventListener("codex:timeline-cleared", handleTimelineCleared);
 }
 
 if (scrollToBottomBtn) {
   scrollToBottomBtn.addEventListener("click", () => {
     scrollMessagesToBottom(true);
+  });
+}
+
+if (jumpToBtn) {
+  jumpToBtn.addEventListener("click", () => {
+    setJumpPanelOpen(!jumpPanelOpen, { focusSearch: !jumpPanelOpen });
+  });
+}
+
+if (jumpToCloseBtn) {
+  jumpToCloseBtn.addEventListener("click", () => {
+    setJumpPanelOpen(false);
+  });
+}
+
+if (jumpToSearchInput) {
+  jumpToSearchInput.addEventListener("input", () => {
+    jumpIndexSearch = jumpToSearchInput.value || "";
+    renderJumpIndexList();
   });
 }
 
@@ -4963,8 +5323,29 @@ approvalPanel.querySelectorAll("button[data-decision]").forEach((button) => {
   });
 });
 
+document.addEventListener("mousedown", (event) => {
+  if (!jumpPanelOpen) {
+    return;
+  }
+
+  const target = event?.target;
+  const clickedPanel = !!jumpToPanel && !!target && typeof jumpToPanel.contains === "function" && jumpToPanel.contains(target);
+  const clickedButton = !!jumpToBtn && !!target && typeof jumpToBtn.contains === "function" && jumpToBtn.contains(target);
+  if (clickedPanel || clickedButton) {
+    return;
+  }
+
+  setJumpPanelOpen(false);
+});
+
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
+    return;
+  }
+
+  if (jumpPanelOpen) {
+    event.preventDefault();
+    setJumpPanelOpen(false);
     return;
   }
 

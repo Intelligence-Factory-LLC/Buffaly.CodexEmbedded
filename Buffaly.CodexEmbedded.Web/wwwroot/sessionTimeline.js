@@ -40,6 +40,44 @@
       });
     }
 
+    parseEntryId(value) {
+      const normalized = Number(value);
+      return Number.isFinite(normalized) ? Math.floor(normalized) : null;
+    }
+
+    toEntrySnapshot(entry) {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+
+      return {
+        id: this.parseEntryId(entry.id),
+        role: entry.role || "",
+        title: entry.title || "",
+        text: entry.text || "",
+        bodyText: this.getEntryBodyText(entry),
+        timestamp: entry.timestamp || null,
+        rawType: entry.rawType || "",
+        kind: entry.kind || "",
+        compact: entry.compact === true,
+        taskId: entry.taskId || null,
+        taskDepth: Number.isFinite(entry.taskDepth) ? entry.taskDepth : 0,
+        taskBoundary: entry.taskBoundary || null
+      };
+    }
+
+    dispatchTimelineEvent(name, detail = {}) {
+      if (!this.container || typeof this.container.dispatchEvent !== "function") {
+        return;
+      }
+
+      try {
+        this.container.dispatchEvent(new CustomEvent(`codex:${name}`, { detail }));
+      } catch {
+        // no-op
+      }
+    }
+
     formatTime(value) {
       if (!value) {
         return "";
@@ -307,6 +345,7 @@
       this.autoScrollPinned = true;
       this.visibleActionEntryId = null;
       this.liveAssistantEntriesByStreamKey.clear();
+      this.dispatchTimelineEvent("timeline-cleared");
     }
 
     isNearBottom() {
@@ -1580,6 +1619,8 @@
       while (this.renderCount > this.maxRenderedEntries && this.container.firstElementChild) {
         const oldest = this.container.firstElementChild;
         const oldestId = Number(oldest.getAttribute("data-entry-id"));
+        const oldestNode = Number.isFinite(oldestId) ? this.entryNodeById.get(oldestId) : null;
+        const removedEntry = oldestNode?.entry || null;
         this.container.removeChild(oldest);
         this.renderCount -= 1;
 
@@ -1589,6 +1630,13 @@
           if (this.visibleActionEntryId === oldestId) {
             this.visibleActionEntryId = null;
           }
+        }
+
+        if (removedEntry) {
+          this.dispatchTimelineEvent("timeline-entry-removed", {
+            entry: this.toEntrySnapshot(removedEntry),
+            reason: "trimmed"
+          });
         }
       }
     }
@@ -1722,6 +1770,9 @@
         this.updateTaskToggleState(node, entry);
         this.applyTaskVisibility(node, entry);
         this.trimIfNeeded();
+        this.dispatchTimelineEvent("timeline-entry-appended", {
+          entry: this.toEntrySnapshot(entry)
+        });
         return;
       }
 
@@ -1757,6 +1808,9 @@
         this.entryNodeById.set(entry.id, node);
         this.applyTaskVisibility(node, entry);
         this.trimIfNeeded();
+        this.dispatchTimelineEvent("timeline-entry-appended", {
+          entry: this.toEntrySnapshot(entry)
+        });
         return;
       }
 
@@ -1815,6 +1869,9 @@
       this.entryNodeById.set(entry.id, node);
       this.applyTaskVisibility(node, entry);
       this.trimIfNeeded();
+      this.dispatchTimelineEvent("timeline-entry-appended", {
+        entry: this.toEntrySnapshot(entry)
+      });
       } catch (error) {
         if (typeof console !== "undefined" && typeof console.error === "function") {
           console.error("timeline appendEntryNode failed", error, entry);
@@ -1832,6 +1889,9 @@
           const node = { card: fallback, body: fallback, time: null, compact: true, taskToggle: null, entry };
           this.entryNodeById.set(entry.id, node);
           this.applyTaskVisibility(node, entry);
+          this.dispatchTimelineEvent("timeline-entry-appended", {
+            entry: this.toEntrySnapshot(entry)
+          });
         } else {
           this.renderCount += 1;
         }
@@ -1852,6 +1912,9 @@
         node.time.textContent = this.formatTime(entry.timestamp);
         this.updateTaskToggleState(node, entry);
         this.applyTaskVisibility(node, entry);
+        this.dispatchTimelineEvent("timeline-entry-updated", {
+          entry: this.toEntrySnapshot(entry)
+        });
         return;
       }
 
@@ -1884,6 +1947,67 @@
         node.time.textContent = this.formatTime(entry.timestamp);
       }
       this.applyTaskVisibility(node, entry);
+      this.dispatchTimelineEvent("timeline-entry-updated", {
+        entry: this.toEntrySnapshot(entry)
+      });
+    }
+
+    hasEntry(entryId) {
+      const normalizedEntryId = this.parseEntryId(entryId);
+      if (normalizedEntryId === null) {
+        return false;
+      }
+
+      return this.entryNodeById.has(normalizedEntryId);
+    }
+
+    getRenderedEntry(entryId) {
+      const normalizedEntryId = this.parseEntryId(entryId);
+      if (normalizedEntryId === null) {
+        return null;
+      }
+
+      const node = this.entryNodeById.get(normalizedEntryId);
+      if (!node || !node.entry) {
+        return null;
+      }
+
+      return this.toEntrySnapshot(node.entry);
+    }
+
+    scrollToEntry(entryId, options = {}) {
+      const normalizedEntryId = this.parseEntryId(entryId);
+      if (normalizedEntryId === null) {
+        return false;
+      }
+
+      const node = this.entryNodeById.get(normalizedEntryId);
+      if (!node || !node.card) {
+        return false;
+      }
+
+      const behavior = options.behavior === "smooth" ? "smooth" : "auto";
+      const block = typeof options.block === "string" && options.block ? options.block : "center";
+      if (typeof node.card.scrollIntoView === "function") {
+        node.card.scrollIntoView({ behavior, block, inline: "nearest" });
+      }
+
+      if (options.highlight !== false) {
+        const durationMs = Number.isFinite(options.highlightDurationMs)
+          ? Math.max(250, Math.floor(options.highlightDurationMs))
+          : 1800;
+        if (typeof node.card.__jumpHighlightTimer !== "undefined" && node.card.__jumpHighlightTimer) {
+          clearTimeout(node.card.__jumpHighlightTimer);
+        }
+        node.card.classList.add("watcher-entry-jump-highlight");
+        node.card.__jumpHighlightTimer = setTimeout(() => {
+          node.card.classList.remove("watcher-entry-jump-highlight");
+          node.card.__jumpHighlightTimer = null;
+        }, durationMs);
+      }
+
+      this.autoScrollPinned = false;
+      return true;
     }
   }
 

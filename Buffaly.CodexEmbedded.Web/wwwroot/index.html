@@ -60,6 +60,10 @@
 			<section class="panel chat-panel">
 				<div class="panel-title panel-title-row conversation-title-row">
 					<span id="conversationTitle" class="conversation-title-text">Conversation</span>
+					<button id="jumpToBtn" class="conversation-jump-btn" type="button" title="Jump to user message" aria-label="Jump to user message" aria-expanded="false">
+						<i class="bi bi-signpost-split" aria-hidden="true"></i>
+						<span>Jump to</span>
+					</button>
 					<div id="sessionMeta" class="conversation-meta">
 						<label id="sessionMetaModelItem" class="conversation-meta-item conversation-meta-model conversation-meta-detail" for="conversationModelSelect">
 							<select id="conversationModelSelect"></select>
@@ -71,6 +75,16 @@
 				<div id="timelineTruncationNotice" class="timeline-truncation-note hidden">
 					<strong>Note</strong>
 					<span>Showing latest log lines.</span>
+				</div>
+				<div id="jumpToPanel" class="jump-to-panel hidden" role="dialog" aria-modal="false" aria-label="Jump to user message index">
+					<div class="jump-to-panel-header">
+						<div class="jump-to-panel-title">Jump to user message</div>
+						<button id="jumpToCloseBtn" class="jump-to-close-btn" type="button" title="Close jump list" aria-label="Close jump list">
+							<i class="bi bi-x-lg" aria-hidden="true"></i>
+						</button>
+					</div>
+					<input id="jumpToSearchInput" class="jump-to-search" type="text" placeholder="Search first sentence..." autocomplete="off" aria-label="Search user messages">
+					<div id="jumpToList" class="jump-to-list"></div>
 				</div>
 				<div id="chatMessages" class="watcher-timeline"></div>
 				<div id="turnActivityStrip" class="turn-activity hidden" role="status" aria-live="polite">
