@@ -34,6 +34,21 @@ function normalizeString(value) {
   return String(value).trim();
 }
 
+function getSessionDisplayName(session) {
+  const threadName = normalizeString(session && session.threadName);
+  if (threadName) {
+    return threadName;
+  }
+
+  const threadId = normalizeString(session && session.threadId);
+  if (threadId) {
+    return threadId;
+  }
+
+  const sessionId = normalizeString(session && session.sessionId);
+  return sessionId || "(unknown)";
+}
+
 function formatDate(value) {
   const text = normalizeString(value);
   if (!text) {
@@ -265,7 +280,8 @@ function renderProjectSidebar(snapshot) {
 
       const row = document.createElement("div");
       row.className = "session-item-row";
-      row.textContent = normalizeString(session.threadId) || normalizeString(session.sessionId) || "(unknown)";
+      row.textContent = getSessionDisplayName(session);
+      row.title = `thread=${normalizeString(session.threadId) || "unknown"} session=${normalizeString(session.sessionId) || "unknown"}`;
 
       const meta = document.createElement("div");
       meta.className = "session-item-meta";
@@ -324,7 +340,8 @@ function renderSessionsTable(snapshot) {
     sessionCell.textContent = normalizeString(session.sessionId) || "-";
 
     const threadCell = document.createElement("td");
-    threadCell.textContent = normalizeString(session.threadId) || "-";
+    threadCell.textContent = getSessionDisplayName(session);
+    threadCell.title = normalizeString(session.threadId) || "-";
 
     const projectCell = document.createElement("td");
     projectCell.textContent = normalizePath(session.cwd || session.normalizedCwd || "");

@@ -276,11 +276,27 @@ app.MapGet("/api/server/state/current", (
 	ServerRuntimeStateTracker runtimeTracker) =>
 {
 	var capturedAtUtc = DateTimeOffset.UtcNow;
+	var threadNameById = new Dictionary<string, string>(StringComparer.Ordinal);
+	foreach (var stored in CodexSessionCatalog.ListSessions(defaults.CodexHomePath, limit: 0))
+	{
+		if (string.IsNullOrWhiteSpace(stored.ThreadId) || string.IsNullOrWhiteSpace(stored.ThreadName))
+		{
+			continue;
+		}
+
+		if (!threadNameById.ContainsKey(stored.ThreadId))
+		{
+			threadNameById[stored.ThreadId] = stored.ThreadName;
+		}
+	}
+
 	var snapshots = orchestrator.GetSessionSnapshots()
 		.Select(snapshot =>
 		{
 			var normalizedCwd = ServerStateSnapshotBuilder.NormalizeProjectCwd(snapshot.Cwd);
 			var pendingApproval = snapshot.PendingApproval;
+			threadNameById.TryGetValue(snapshot.ThreadId, out var threadName);
+			threadName = string.IsNullOrWhiteSpace(threadName) ? null : threadName;
 			var sessionState = snapshot.IsTurnInFlight
 				? "in_response"
 				: pendingApproval is not null
@@ -290,6 +306,7 @@ app.MapGet("/api/server/state/current", (
 			return new ServerStateSnapshotBuilder.ServerSessionRow(
 				SessionId: snapshot.SessionId,
 				ThreadId: snapshot.ThreadId,
+				ThreadName: threadName,
 				Cwd: snapshot.Cwd,
 				NormalizedCwd: normalizedCwd,
 				Model: snapshot.Model,
@@ -333,6 +350,7 @@ app.MapGet("/api/server/state/current", (
 				{
 					sessionId = item.SessionId,
 					threadId = item.ThreadId,
+					threadName = item.ThreadName,
 					model = item.Model,
 					reasoningEffort = item.ReasoningEffort,
 					isTurnInFlight = item.IsTurnInFlight,
@@ -380,6 +398,7 @@ app.MapGet("/api/server/state/current", (
 		{
 			sessionId = row.SessionId,
 			threadId = row.ThreadId,
+			threadName = row.ThreadName,
 			cwd = row.Cwd,
 			normalizedCwd = row.NormalizedCwd,
 			model = row.Model,
@@ -2001,6 +2020,7 @@ internal static class ServerStateSnapshotBuilder
 	internal sealed record ServerSessionRow(
 		string SessionId,
 		string ThreadId,
+		string? ThreadName,
 		string? Cwd,
 		string NormalizedCwd,
 		string? Model,
