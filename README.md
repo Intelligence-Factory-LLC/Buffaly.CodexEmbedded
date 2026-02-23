@@ -28,6 +28,10 @@ Or start a session in the web UI and manage it from any browser. Use Tailscale t
 
 ![Animated walkthrough of Buffaly Codex Embedded across web, CLI, and mobile](screenshots/Animation.gif)
 
+## Release Notes
+
+- [Release Notes - February 23, 2026](docs/release-notes-2026-02-23.md)
+
 ## ⚡ Quick Start
 
 Download:

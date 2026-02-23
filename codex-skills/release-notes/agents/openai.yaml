@@ -1,0 +1,3 @@
+display_name: Release Notes
+short_description: Write release notes from git commits and screenshots.
+default_prompt: Draft release notes for today. Create a new markdown file in docs/, link it from README, summarize todays commits into UI/Server/Developer/Reliability sections, include relevant screenshots from screenshots/, and rewrite for a natural human tone.
