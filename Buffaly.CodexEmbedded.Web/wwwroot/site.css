@@ -814,11 +814,13 @@ body {
 
 .turn-activity {
 	position: relative;
-	margin: 0.45rem 0.75rem 0;
-	padding: 0.5rem 0.65rem;
-	border: 1px solid #bfdbfe;
-	border-radius: 10px;
-	background: #eff6ff;
+	margin: 0.35rem 0.75rem 0.5rem;
+	padding: 0.42rem 0.58rem;
+	border: 1px solid #c7dcff;
+	border-left: 4px solid #3b82f6;
+	border-radius: 12px;
+	background: linear-gradient(180deg, #f2f7ff 0%, #e9f2ff 100%);
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 	color: #1e3a8a;
 	overflow: hidden;
 }
@@ -827,7 +829,7 @@ body {
 	content: "";
 	position: absolute;
 	inset: 0;
-	background: linear-gradient(105deg, rgba(255, 255, 255, 0) 20%, rgba(255, 255, 255, 0.55) 50%, rgba(255, 255, 255, 0) 80%);
+	background: linear-gradient(105deg, rgba(37, 99, 235, 0) 20%, rgba(37, 99, 235, 0.12) 50%, rgba(37, 99, 235, 0) 80%);
 	transform: translateX(-110%);
 	animation: turn-activity-shimmer 1.6s linear infinite;
 	pointer-events: none;
@@ -840,7 +842,7 @@ body {
 	align-items: center;
 	gap: 0.45rem;
 	min-width: 0;
-	font-size: 0.79rem;
+	font-size: 0.78rem;
 	font-weight: 700;
 }
 
@@ -871,9 +873,9 @@ body {
 	z-index: 1;
 	flex: 1 1 auto;
 	min-width: 0;
-	font-size: 0.8rem;
+	font-size: 0.79rem;
 	font-family: Consolas, "Courier New", monospace;
-	color: #0f172a;
+	color: #1e293b;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -2051,8 +2053,8 @@ body {
 	}
 
 	.turn-activity {
-		margin: 0.35rem 0.45rem 0;
-		padding: 0.42rem 0.5rem;
+		margin: 0.3rem 0.45rem 0.4rem;
+		padding: 0.36rem 0.46rem;
 	}
 
 	.turn-activity-header {
