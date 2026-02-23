@@ -91,6 +91,16 @@
       return this.viewMode === "condensed-user";
     }
 
+    clearCondensedExpandedSelection() {
+      if (this.condensedExpandedEntryId === null && this.condensedExpandedTaskId === null) {
+        return;
+      }
+
+      this.condensedExpandedEntryId = null;
+      this.condensedExpandedTaskId = null;
+      this.refreshViewMode();
+    }
+
     setViewMode(mode) {
       const normalized = this.normalizeViewMode(mode);
       if (this.viewMode === normalized) {
@@ -98,8 +108,7 @@
       }
 
       this.viewMode = normalized;
-      this.condensedExpandedEntryId = null;
-      this.condensedExpandedTaskId = null;
+      this.clearCondensedExpandedSelection();
       this.refreshViewMode();
     }
 
@@ -142,9 +151,7 @@
       const isSameSelection = this.condensedExpandedEntryId === normalizedEntryId
         && ((taskId && this.condensedExpandedTaskId === taskId) || (!taskId && !this.condensedExpandedTaskId));
       if (isSameSelection) {
-        this.condensedExpandedEntryId = null;
-        this.condensedExpandedTaskId = null;
-        this.refreshViewMode();
+        this.clearCondensedExpandedSelection();
         return;
       }
 
@@ -193,7 +200,7 @@
     }
 
     wireCondensedEntryInteraction(node, entry) {
-      if (!node || !node.card || !entry || entry.role !== "user") {
+      if (!node || !node.card || !entry) {
         return;
       }
 
@@ -221,7 +228,14 @@
           return;
         }
 
-        this.setCondensedExpandedEntry(entry.id);
+        if (entry.role === "user") {
+          this.setCondensedExpandedEntry(entry.id);
+          return;
+        }
+
+        if (this.isEntryInExpandedCondensedSection(entry)) {
+          this.clearCondensedExpandedSelection();
+        }
       };
 
       node.card.addEventListener("click", activate);
@@ -243,24 +257,31 @@
       const condensed = this.isCondensedUserMode();
       const hidden = this.shouldHideEntryForViewMode(entry);
       const expanded = this.isCondensedEntryExpanded(entry);
+      const inExpandedSection = this.isEntryInExpandedCondensedSection(entry);
       const collapsed = condensed && entry.role === "user" && !expanded;
+      const condensedClickable = condensed && (entry.role === "user" || inExpandedSection);
 
       node.card.classList.toggle("watcher-view-hidden", hidden);
       node.card.classList.toggle("watcher-condensed-entry", condensed && entry.role === "user");
       node.card.classList.toggle("watcher-condensed-collapsed", collapsed);
       node.card.classList.toggle("watcher-condensed-expanded", condensed && entry.role === "user" && expanded);
 
-      if (condensed && entry.role === "user") {
+      if (condensedClickable) {
         node.card.classList.add("watcher-condensed-clickable");
         node.card.setAttribute("tabindex", "0");
         node.card.setAttribute("role", "button");
-        node.card.setAttribute("aria-expanded", expanded ? "true" : "false");
+        if (entry.role === "user") {
+          node.card.setAttribute("aria-expanded", expanded ? "true" : "false");
+        } else {
+          node.card.setAttribute("aria-label", "Collapse section");
+        }
         node.card.dataset.condensedToggle = "1";
       } else if (node.card.dataset.condensedToggle === "1") {
         node.card.classList.remove("watcher-condensed-clickable");
         node.card.removeAttribute("tabindex");
         node.card.removeAttribute("role");
         node.card.removeAttribute("aria-expanded");
+        node.card.removeAttribute("aria-label");
         delete node.card.dataset.condensedToggle;
       }
     }
