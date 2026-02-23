@@ -34,10 +34,14 @@
       this.currentSessionModel = "";
       this.visibleActionEntryId = null;
       this.liveAssistantEntriesByStreamKey = new Map(); // streamKey -> entry
+      this.viewMode = "default";
+      this.condensedExpandedEntryId = null;
 
       this.container.addEventListener("scroll", () => {
         this.autoScrollPinned = this.isNearBottom();
       });
+
+      this.refreshViewMode();
     }
 
     parseEntryId(value) {
@@ -75,6 +79,143 @@
         this.container.dispatchEvent(new CustomEvent(`codex:${name}`, { detail }));
       } catch {
         // no-op
+      }
+    }
+
+    normalizeViewMode(value) {
+      return value === "condensed-user" ? "condensed-user" : "default";
+    }
+
+    isCondensedUserMode() {
+      return this.viewMode === "condensed-user";
+    }
+
+    setViewMode(mode) {
+      const normalized = this.normalizeViewMode(mode);
+      if (this.viewMode === normalized) {
+        return;
+      }
+
+      this.viewMode = normalized;
+      this.condensedExpandedEntryId = null;
+      this.refreshViewMode();
+    }
+
+    setCondensedExpandedEntry(entryId) {
+      if (!this.isCondensedUserMode()) {
+        return;
+      }
+
+      const normalizedEntryId = this.parseEntryId(entryId);
+      if (normalizedEntryId === null || this.condensedExpandedEntryId === normalizedEntryId) {
+        return;
+      }
+
+      this.condensedExpandedEntryId = normalizedEntryId;
+      this.refreshViewMode();
+    }
+
+    shouldHideEntryForViewMode(entry) {
+      if (!this.isCondensedUserMode()) {
+        return false;
+      }
+
+      return entry?.role !== "user";
+    }
+
+    isCondensedEntryExpanded(entry) {
+      if (!this.isCondensedUserMode() || entry?.role !== "user") {
+        return false;
+      }
+
+      const entryId = this.parseEntryId(entry.id);
+      return entryId !== null && this.condensedExpandedEntryId === entryId;
+    }
+
+    wireCondensedEntryInteraction(node, entry) {
+      if (!node || !node.card || !entry || entry.role !== "user") {
+        return;
+      }
+
+      if (node.card.dataset.condensedHandlerBound === "1") {
+        return;
+      }
+
+      const activate = (event) => {
+        if (!this.isCondensedUserMode()) {
+          return;
+        }
+
+        const target = event?.target;
+        if (target && typeof target.closest === "function") {
+          if (target.closest(".watcher-entry-copy-btn") || target.closest(".watcher-entry-actions")) {
+            return;
+          }
+
+          if (target.closest("summary") || target.closest("a")) {
+            return;
+          }
+        }
+
+        if (this.hasActiveTextSelection()) {
+          return;
+        }
+
+        this.setCondensedExpandedEntry(entry.id);
+      };
+
+      node.card.addEventListener("click", activate);
+      node.card.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          activate(event);
+        }
+      });
+
+      node.card.dataset.condensedHandlerBound = "1";
+    }
+
+    applyViewModeToNode(node, entry) {
+      if (!node || !node.card || !entry) {
+        return;
+      }
+
+      const condensed = this.isCondensedUserMode();
+      const hidden = this.shouldHideEntryForViewMode(entry);
+      const expanded = this.isCondensedEntryExpanded(entry);
+      const collapsed = condensed && entry.role === "user" && !expanded;
+
+      node.card.classList.toggle("watcher-view-hidden", hidden);
+      node.card.classList.toggle("watcher-condensed-entry", condensed && entry.role === "user");
+      node.card.classList.toggle("watcher-condensed-collapsed", collapsed);
+      node.card.classList.toggle("watcher-condensed-expanded", condensed && entry.role === "user" && expanded);
+
+      if (condensed && entry.role === "user") {
+        node.card.classList.add("watcher-condensed-clickable");
+        node.card.setAttribute("tabindex", "0");
+        node.card.setAttribute("role", "button");
+        node.card.setAttribute("aria-expanded", expanded ? "true" : "false");
+        node.card.dataset.condensedToggle = "1";
+      } else if (node.card.dataset.condensedToggle === "1") {
+        node.card.classList.remove("watcher-condensed-clickable");
+        node.card.removeAttribute("tabindex");
+        node.card.removeAttribute("role");
+        node.card.removeAttribute("aria-expanded");
+        delete node.card.dataset.condensedToggle;
+      }
+    }
+
+    refreshViewMode() {
+      if (this.container) {
+        this.container.classList.toggle("watcher-condensed-user-mode", this.isCondensedUserMode());
+      }
+
+      for (const node of this.entryNodeById.values()) {
+        if (!node || !node.entry) {
+          continue;
+        }
+
+        this.applyViewModeToNode(node, node.entry);
       }
     }
 
@@ -345,6 +486,8 @@
       this.autoScrollPinned = true;
       this.visibleActionEntryId = null;
       this.liveAssistantEntriesByStreamKey.clear();
+      this.condensedExpandedEntryId = null;
+      this.refreshViewMode();
       this.dispatchTimelineEvent("timeline-cleared");
     }
 
@@ -1633,6 +1776,9 @@
         }
 
         if (removedEntry) {
+          if (this.parseEntryId(removedEntry.id) === this.condensedExpandedEntryId) {
+            this.condensedExpandedEntryId = null;
+          }
           this.dispatchTimelineEvent("timeline-entry-removed", {
             entry: this.toEntrySnapshot(removedEntry),
             reason: "trimmed"
@@ -1767,8 +1913,10 @@
         this.renderCount += 1;
         const node = { card: row, body: text, time, compact: true, taskToggle, entry };
         this.entryNodeById.set(entry.id, node);
+        this.wireCondensedEntryInteraction(node, entry);
         this.updateTaskToggleState(node, entry);
         this.applyTaskVisibility(node, entry);
+        this.applyViewModeToNode(node, entry);
         this.trimIfNeeded();
         this.dispatchTimelineEvent("timeline-entry-appended", {
           entry: this.toEntrySnapshot(entry)
@@ -1806,7 +1954,9 @@
           entry
         };
         this.entryNodeById.set(entry.id, node);
+        this.wireCondensedEntryInteraction(node, entry);
         this.applyTaskVisibility(node, entry);
+        this.applyViewModeToNode(node, entry);
         this.trimIfNeeded();
         this.dispatchTimelineEvent("timeline-entry-appended", {
           entry: this.toEntrySnapshot(entry)
@@ -1867,7 +2017,9 @@
         entry
       };
       this.entryNodeById.set(entry.id, node);
+      this.wireCondensedEntryInteraction(node, entry);
       this.applyTaskVisibility(node, entry);
+      this.applyViewModeToNode(node, entry);
       this.trimIfNeeded();
       this.dispatchTimelineEvent("timeline-entry-appended", {
         entry: this.toEntrySnapshot(entry)
@@ -1888,7 +2040,9 @@
           this.renderCount += 1;
           const node = { card: fallback, body: fallback, time: null, compact: true, taskToggle: null, entry };
           this.entryNodeById.set(entry.id, node);
+          this.wireCondensedEntryInteraction(node, entry);
           this.applyTaskVisibility(node, entry);
+          this.applyViewModeToNode(node, entry);
           this.dispatchTimelineEvent("timeline-entry-appended", {
             entry: this.toEntrySnapshot(entry)
           });
@@ -1912,6 +2066,7 @@
         node.time.textContent = this.formatTime(entry.timestamp);
         this.updateTaskToggleState(node, entry);
         this.applyTaskVisibility(node, entry);
+        this.applyViewModeToNode(node, entry);
         this.dispatchTimelineEvent("timeline-entry-updated", {
           entry: this.toEntrySnapshot(entry)
         });
@@ -1947,6 +2102,7 @@
         node.time.textContent = this.formatTime(entry.timestamp);
       }
       this.applyTaskVisibility(node, entry);
+      this.applyViewModeToNode(node, entry);
       this.dispatchTimelineEvent("timeline-entry-updated", {
         entry: this.toEntrySnapshot(entry)
       });
