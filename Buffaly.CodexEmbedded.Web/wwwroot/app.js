@@ -1542,7 +1542,7 @@ function buildSidebarProjectGroups() {
       reasoningEffort: normalizeReasoningEffort(entry.reasoningEffort || attachedState?.reasoningEffort || ""),
       attachedSessionId,
       isAttached: !!attachedSessionId,
-      isProcessing: (attachedSessionId ? isTurnInFlight(attachedSessionId) : false) || isThreadProcessing(entry.threadId),
+      isProcessing: attachedSessionId ? isTurnInFlight(attachedSessionId) : isThreadProcessing(entry.threadId),
       isArchived: archivedThreadIds.has(entry.threadId),
       hasUnreadCompletion: hasThreadCompletionUnread(entry.threadId)
     });
@@ -1569,7 +1569,7 @@ function buildSidebarProjectGroups() {
       reasoningEffort: normalizeReasoningEffort(state.reasoningEffort || ""),
       attachedSessionId: sessionId,
       isAttached: true,
-      isProcessing: isTurnInFlight(sessionId) || isThreadProcessing(state.threadId),
+      isProcessing: isTurnInFlight(sessionId),
       isArchived: archivedThreadIds.has(state.threadId),
       hasUnreadCompletion: hasThreadCompletionUnread(state.threadId)
     });
