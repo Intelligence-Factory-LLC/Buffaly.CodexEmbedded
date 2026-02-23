@@ -391,6 +391,19 @@ body {
 	text-overflow: ellipsis;
 }
 
+.project-count {
+	min-width: 1.6rem;
+	padding: 0.08rem 0.4rem;
+	border-radius: 999px;
+	border: 1px solid #bfdbfe;
+	background: #eff6ff;
+	color: #1e3a8a;
+	font-size: 0.72rem;
+	font-weight: 700;
+	line-height: 1.2;
+	text-align: center;
+}
+
 .project-actions {
 	display: inline-flex;
 	align-items: center;

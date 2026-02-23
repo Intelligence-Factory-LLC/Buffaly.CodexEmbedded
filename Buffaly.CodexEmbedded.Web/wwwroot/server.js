@@ -34,13 +34,21 @@ function normalizeString(value) {
   return String(value).trim();
 }
 
+function getSessionThreadName(session) {
+  return normalizeString(session && session.threadName);
+}
+
+function getSessionThreadId(session) {
+  return normalizeString(session && session.threadId);
+}
+
 function getSessionDisplayName(session) {
-  const threadName = normalizeString(session && session.threadName);
+  const threadName = getSessionThreadName(session);
   if (threadName) {
     return threadName;
   }
 
-  const threadId = normalizeString(session && session.threadId);
+  const threadId = getSessionThreadId(session);
   if (threadId) {
     return threadId;
   }
@@ -281,14 +289,14 @@ function renderProjectSidebar(snapshot) {
       const row = document.createElement("div");
       row.className = "session-item-row";
       row.textContent = getSessionDisplayName(session);
-      row.title = `thread=${normalizeString(session.threadId) || "unknown"} session=${normalizeString(session.sessionId) || "unknown"}`;
+      row.title = `thread=${getSessionThreadId(session) || "unknown"} session=${normalizeString(session.sessionId) || "unknown"}`;
 
       const meta = document.createElement("div");
       meta.className = "session-item-meta";
       const state = normalizeString(session.state) || "unknown";
       const model = normalizeString(session.model) || "(default)";
       const effort = normalizeString(session.reasoningEffort) || "(default)";
-      meta.textContent = `${state} | ${model} | ${effort}`;
+      meta.textContent = `${state} | ${model} | ${effort} | thread=${getSessionThreadId(session) || "-"}`;
 
       item.append(row, meta);
       wrap.appendChild(item);
@@ -317,7 +325,7 @@ function renderSessionsTable(snapshot) {
   if (sessions.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 8;
+    cell.colSpan = 9;
     cell.className = "server-table-empty";
     cell.textContent = "No active sessions are loaded in the server orchestrator.";
     row.appendChild(cell);
@@ -339,9 +347,11 @@ function renderSessionsTable(snapshot) {
     const sessionCell = document.createElement("td");
     sessionCell.textContent = normalizeString(session.sessionId) || "-";
 
+    const nameCell = document.createElement("td");
+    nameCell.textContent = getSessionThreadName(session) || "-";
+
     const threadCell = document.createElement("td");
-    threadCell.textContent = getSessionDisplayName(session);
-    threadCell.title = normalizeString(session.threadId) || "-";
+    threadCell.textContent = getSessionThreadId(session) || "-";
 
     const projectCell = document.createElement("td");
     projectCell.textContent = normalizePath(session.cwd || session.normalizedCwd || "");
@@ -361,6 +371,7 @@ function renderSessionsTable(snapshot) {
     row.append(
       stateCell,
       sessionCell,
+      nameCell,
       threadCell,
       projectCell,
       modelCell,
