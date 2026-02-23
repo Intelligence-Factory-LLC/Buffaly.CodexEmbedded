@@ -3192,6 +3192,7 @@ function setActiveSession(sessionId, options = {}) {
   const previousState = getActiveSessionState();
   if (changed) {
     rememberPromptDraftForState(previousState);
+    setJumpCondensedMode(false);
   }
 
   activeSessionId = sessionId;
@@ -3247,6 +3248,7 @@ function setActiveSession(sessionId, options = {}) {
 function clearActiveSession() {
   const previousState = getActiveSessionState();
   rememberPromptDraftForState(previousState);
+  setJumpCondensedMode(false);
 
   activeSessionId = null;
   refreshSessionMeta();

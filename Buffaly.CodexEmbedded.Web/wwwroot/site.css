@@ -1521,6 +1521,20 @@ body {
 	overflow: hidden;
 }
 
+.watcher-condensed-user-mode .watcher-condensed-collapsed {
+	border-left-color: #2563eb;
+	background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.watcher-condensed-user-mode .watcher-condensed-collapsed::after {
+	content: "Preview - click to expand section";
+	display: block;
+	margin-top: 0.32rem;
+	font-size: 0.72rem;
+	font-weight: 700;
+	color: #475569;
+}
+
 .watcher-condensed-user-mode .watcher-condensed-collapsed .watcher-entry-images {
 	display: none;
 }
