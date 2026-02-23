@@ -1527,7 +1527,7 @@ function buildSidebarProjectGroups() {
     const attachedState = attachedSessionId ? sessions.get(attachedSessionId) : null;
     const effectiveCwd = normalizeProjectCwd(entry.cwd || attachedState?.cwd || "");
     const project = ensureProject(effectiveCwd);
-    const tick = Math.max(getCatalogSessionUpdatedTick(entry), attachedState?.lastActivityTick || attachedState?.createdAtTick || 0);
+    const tick = Math.max(getCatalogSessionUpdatedTick(entry), attachedState?.lastActivityTick || 0);
     if (tick > project.latestTick) {
       project.latestTick = tick;
     }
@@ -3693,12 +3693,15 @@ function handleServerEvent(frame) {
         persistThreadModelState();
         persistThreadReasoningState();
       }
-      touchSessionActivity(sessionId);
+      const attachedMode = payload.attached === true || type === "session_attached";
+      if (!attachedMode) {
+        touchSessionActivity(sessionId);
+      }
       if (state.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
         clearPendingSessionLoad();
       }
       setTurnInFlight(sessionId, false);
-      const mode = payload.attached || type === "session_attached" ? "attached" : "created";
+      const mode = attachedMode ? "attached" : "created";
       appendLog(`[session] ${mode} id=${sessionId} thread=${state.threadId || "unknown"} log=${payload.logPath || "n/a"}`);
 
       if (pendingCreate && pendingCreate.threadName) {
