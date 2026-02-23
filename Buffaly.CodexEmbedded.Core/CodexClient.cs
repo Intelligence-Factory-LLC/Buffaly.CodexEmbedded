@@ -354,23 +354,17 @@ public sealed class CodexClient : IAsyncDisposable
 					return;
 				}
 				case "turn/completed":
+				case "codex/event/task_complete":
+				case "codex/event/turn_complete":
 				{
-					var turnId = JsonPath.TryGetString(paramsElement, "turn", "id");
-					if (string.IsNullOrWhiteSpace(turnId))
-					{
-						turnId = JsonPath.TryGetString(paramsElement, "turnId");
-					}
-
-					if (string.IsNullOrWhiteSpace(turnId))
+					if (!TryParseCompletionNotification(method, paramsElement, out var completion))
 					{
 						return;
 					}
 
-					var status = JsonPath.TryGetString(paramsElement, "turn", "status") ?? "unknown";
-					var errorMessage = JsonPath.TryGetString(paramsElement, "turn", "error", "message");
-					var threadId = JsonPath.TryGetString(paramsElement, "threadId");
-
-					RouteTurnNotification(turnId, TurnNotification.ForCompleted(threadId, status, errorMessage));
+					RouteTurnNotification(
+						completion.TurnId,
+						TurnNotification.ForCompleted(completion.ThreadId, completion.Status, completion.ErrorMessage));
 
 					return;
 				}
@@ -400,6 +394,97 @@ public sealed class CodexClient : IAsyncDisposable
 		{
 			OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "warn", "notification_handler_failed", ex.Message));
 		}
+	}
+
+	private static bool TryParseCompletionNotification(string method, JsonElement paramsElement, out CompletionNotification completion)
+	{
+		completion = default;
+
+		if (string.Equals(method, "turn/completed", StringComparison.Ordinal))
+		{
+			var turnId = JsonPath.TryGetString(paramsElement, "turn", "id");
+			if (string.IsNullOrWhiteSpace(turnId))
+			{
+				turnId = JsonPath.TryGetString(paramsElement, "turnId");
+			}
+
+			if (string.IsNullOrWhiteSpace(turnId))
+			{
+				return false;
+			}
+
+			var status = JsonPath.TryGetString(paramsElement, "turn", "status") ?? "unknown";
+			var errorMessage = JsonPath.TryGetString(paramsElement, "turn", "error", "message");
+			var threadId = JsonPath.TryGetString(paramsElement, "threadId");
+
+			completion = new CompletionNotification(turnId, threadId, status, errorMessage);
+			return true;
+		}
+
+		if (!string.Equals(method, "codex/event/task_complete", StringComparison.Ordinal) &&
+			!string.Equals(method, "codex/event/turn_complete", StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		var eventTurnId = JsonPath.TryGetString(paramsElement, "msg", "turn_id")
+			?? JsonPath.TryGetString(paramsElement, "msg", "turnId")
+			?? JsonPath.TryGetString(paramsElement, "id")
+			?? JsonPath.TryGetString(paramsElement, "turnId");
+		if (string.IsNullOrWhiteSpace(eventTurnId))
+		{
+			return false;
+		}
+
+		var eventStatus = JsonPath.TryGetString(paramsElement, "msg", "status");
+		if (string.IsNullOrWhiteSpace(eventStatus))
+		{
+			eventStatus = string.Equals(method, "codex/event/task_complete", StringComparison.Ordinal)
+				? "completed"
+				: "unknown";
+		}
+
+		var eventErrorMessage =
+			JsonPath.TryGetString(paramsElement, "msg", "error", "message")
+			?? JsonPath.TryGetString(paramsElement, "msg", "errorMessage")
+			?? JsonPath.TryGetString(paramsElement, "error", "message")
+			?? JsonPath.TryGetString(paramsElement, "errorMessage")
+			?? TryReadPrimitiveString(paramsElement, "msg", "error")
+			?? TryReadPrimitiveString(paramsElement, "error");
+
+		var eventThreadId = JsonPath.TryGetString(paramsElement, "threadId")
+			?? JsonPath.TryGetString(paramsElement, "msg", "thread_id")
+			?? JsonPath.TryGetString(paramsElement, "msg", "threadId")
+			?? JsonPath.TryGetString(paramsElement, "conversationId");
+
+		completion = new CompletionNotification(eventTurnId, eventThreadId, eventStatus, eventErrorMessage);
+		return true;
+	}
+
+	private static string? TryReadPrimitiveString(JsonElement root, params string[] path)
+	{
+		if (path is null || path.Length == 0)
+		{
+			return null;
+		}
+
+		var current = root;
+		foreach (var segment in path)
+		{
+			if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(segment, out current))
+			{
+				return null;
+			}
+		}
+
+		return current.ValueKind switch
+		{
+			JsonValueKind.String => current.GetString(),
+			JsonValueKind.Number => current.ToString(),
+			JsonValueKind.True => "true",
+			JsonValueKind.False => "false",
+			_ => null
+		};
 	}
 
 	private async Task<JsonElement> HandleServerRequestAsync(string method, JsonElement idElement, JsonElement message, CancellationToken cancellationToken)
@@ -451,6 +536,12 @@ public sealed class CodexClient : IAsyncDisposable
 		Delta,
 		Completed
 	}
+
+	private readonly record struct CompletionNotification(
+		string TurnId,
+		string? ThreadId,
+		string Status,
+		string? ErrorMessage);
 
 	private readonly struct TurnNotification
 	{

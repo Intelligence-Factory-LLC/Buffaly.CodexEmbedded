@@ -704,10 +704,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 
 			if (root.TryGetProperty("method", out var methodElement) &&
-				methodElement.ValueKind == JsonValueKind.String &&
-				string.Equals(methodElement.GetString(), "turn/completed", StringComparison.Ordinal))
+				methodElement.ValueKind == JsonValueKind.String)
 			{
-				return true;
+				var method = methodElement.GetString();
+				return string.Equals(method, "turn/completed", StringComparison.Ordinal) ||
+					string.Equals(method, "codex/event/task_complete", StringComparison.Ordinal) ||
+					string.Equals(method, "codex/event/turn_complete", StringComparison.Ordinal);
 			}
 
 			if (!root.TryGetProperty("type", out var typeElement) ||

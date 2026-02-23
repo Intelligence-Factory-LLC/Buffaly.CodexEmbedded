@@ -82,15 +82,48 @@ public sealed class InMemoryCodexClientTests
 		}
 	}
 
+	[TestMethod]
+	public async Task SendMessage_CompletesFromCodexTaskCompleteEvent_WhenTurnCompletedNotificationIsMissing()
+	{
+		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+		await using var transport = new InMemoryJsonlTransport();
+		var server = new FakeAppServer(transport, CompletionSignalMode.CodexTaskCompleteOnly);
+		var serverTask = server.RunAsync(cts.Token);
+
+		await using var client = await CodexClient.ConnectAsync(transport, cts.Token);
+		var session = await client.CreateSessionAsync(new CodexSessionCreateOptions
+		{
+			Cwd = "C:\\tmp",
+			Model = "fake-model"
+		}, cts.Token);
+
+		var result = await session.SendMessageAsync("hello", cancellationToken: cts.Token);
+
+		Assert.AreEqual("completed", result.Status);
+		Assert.AreEqual("Hello from fake server.", result.Text);
+
+		cts.Cancel();
+		try
+		{
+			await serverTask;
+		}
+		catch
+		{
+		}
+	}
+
 	private sealed class FakeAppServer
 	{
 		private readonly InMemoryJsonlTransport _transport;
+		private readonly CompletionSignalMode _completionSignalMode;
 		private int _turnCount;
 		private const string ThreadId = "thread-1";
 
-		public FakeAppServer(InMemoryJsonlTransport transport)
+		public FakeAppServer(InMemoryJsonlTransport transport, CompletionSignalMode completionSignalMode = CompletionSignalMode.TurnCompleted)
 		{
 			_transport = transport;
+			_completionSignalMode = completionSignalMode;
 		}
 
 		public async Task RunAsync(CancellationToken cancellationToken)
@@ -133,20 +166,41 @@ public sealed class InMemoryCodexClientTests
 
 						var text = _turnCount == 1 ? "Hello from fake server." : "Second turn ok.";
 						await WriteStdoutAsync(new { method = "item/agentMessage/delta", @params = new { delta = text, threadId = ThreadId, turnId } }, cancellationToken);
-						await WriteStdoutAsync(new
+						if (_completionSignalMode == CompletionSignalMode.TurnCompleted)
 						{
-							method = "turn/completed",
-							@params = new
+							await WriteStdoutAsync(new
 							{
-								threadId = ThreadId,
-								turn = new
+								method = "turn/completed",
+								@params = new
+								{
+									threadId = ThreadId,
+									turn = new
+									{
+										id = turnId,
+										status = "completed",
+										error = (object?)null
+									}
+								}
+							}, cancellationToken);
+						}
+						else
+						{
+							await WriteStdoutAsync(new
+							{
+								method = "codex/event/task_complete",
+								@params = new
 								{
 									id = turnId,
-									status = "completed",
-									error = (object?)null
+									msg = new
+									{
+										type = "task_complete",
+										turn_id = turnId,
+										last_agent_message = text
+									},
+									conversationId = ThreadId
 								}
-							}
-						}, cancellationToken);
+							}, cancellationToken);
+						}
 						break;
 					default:
 						await WriteStdoutAsync(new { id = CloneId(id), result = new { } }, cancellationToken);
@@ -170,6 +224,12 @@ public sealed class InMemoryCodexClientTests
 			var json = JsonSerializer.Serialize(payload);
 			return _transport.StdoutWriter.WriteAsync(json, cancellationToken).AsTask();
 		}
+	}
+
+	private enum CompletionSignalMode
+	{
+		TurnCompleted,
+		CodexTaskCompleteOnly
 	}
 }
 
