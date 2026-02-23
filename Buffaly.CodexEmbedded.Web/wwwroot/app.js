@@ -1,4 +1,8 @@
 const TIMELINE_POLL_INTERVAL_MS = 2000;
+const TIMELINE_FLUSH_INTERVAL_MS = 350;
+const LOG_FLUSH_INTERVAL_MS = 250;
+const MAX_RENDERED_CLIENT_LOG_LINES = 800;
+const ENABLE_CONSOLE_LOG_FALLBACK = false;
 const INDEX_TIMELINE_SOURCE = "logs"; // keep index timeline log-primary; websocket remains for runtime state
 
 let socket = null;
@@ -32,6 +36,7 @@ let timelineFlushTimer = null;
 let timelinePollGeneration = 0;
 let timelinePollInFlight = false;
 let sessionListPollTimer = null;
+let logFlushTimer = null;
 let autoAttachAttempted = false;
 let syncingConversationModelSelect = false;
 let sessionMetaDetailsExpanded = false;
@@ -42,9 +47,12 @@ let preferredReasoningByThread = new Map(); // threadId -> reasoning effort stri
 let processingByThread = new Map(); // threadId -> boolean
 let completedUnreadThreadIds = new Set(); // threadId -> completion happened while not selected
 let pendingSessionModelSyncBySession = new Map(); // sessionId -> "model||effort" pending sync request key
+let lastConfirmedSessionModelSyncBySession = new Map(); // sessionId -> "model||effort" confirmed from server session state
 let timelineHasTruncatedHead = false;
 let timelineConnectionIssueShown = false;
 let runtimeSecurityConfig = null;
+let renderedClientLogLines = [];
+let pendingClientLogLines = [];
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -64,7 +72,7 @@ const MAX_PROJECT_SESSIONS_COLLAPSED = 4;
 const MAX_COMPOSER_IMAGES = 4;
 const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
-const SESSION_LIST_SYNC_INTERVAL_MS = 2500;
+const SESSION_LIST_SYNC_INTERVAL_MS = 10000;
 const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only.";
 const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 
@@ -1988,13 +1996,34 @@ function wsUrl() {
 
 function appendLog(text) {
   const stamp = new Date().toISOString();
+  const line = `${stamp} ${text}`;
   if (!logOutput) {
-    console.log(`${stamp} ${text}`);
+    if (ENABLE_CONSOLE_LOG_FALLBACK) {
+      console.log(line);
+    }
     return;
   }
 
-  logOutput.textContent += `${stamp} ${text}\n`;
-  logOutput.scrollTop = logOutput.scrollHeight;
+  pendingClientLogLines.push(line);
+}
+
+function flushPendingClientLogs() {
+  if (!logOutput || pendingClientLogLines.length === 0) {
+    return;
+  }
+
+  const shouldStickToBottom = (logOutput.scrollHeight - (logOutput.scrollTop + logOutput.clientHeight)) <= 20;
+  renderedClientLogLines.push(...pendingClientLogLines);
+  pendingClientLogLines = [];
+
+  if (renderedClientLogLines.length > MAX_RENDERED_CLIENT_LOG_LINES) {
+    renderedClientLogLines = renderedClientLogLines.slice(renderedClientLogLines.length - MAX_RENDERED_CLIENT_LOG_LINES);
+  }
+
+  logOutput.textContent = renderedClientLogLines.join("\n");
+  if (shouldStickToBottom) {
+    logOutput.scrollTop = logOutput.scrollHeight;
+  }
 }
 
 function setSecurityWarningVisible(message, reasons = []) {
@@ -3297,6 +3326,9 @@ function trySendSessionModelSync(sessionId, model, effort) {
   }
 
   const key = buildSessionModelSyncKey(model, effort);
+  if (lastConfirmedSessionModelSyncBySession.get(normalizedSessionId) === key) {
+    return false;
+  }
   if (pendingSessionModelSyncBySession.get(normalizedSessionId) === key) {
     return false;
   }
@@ -3317,12 +3349,14 @@ function acknowledgeSessionModelSync(sessionId, model, effort) {
     return;
   }
 
+  const serverKey = buildSessionModelSyncKey(model, effort);
+  lastConfirmedSessionModelSyncBySession.set(normalizedSessionId, serverKey);
+
   const pending = pendingSessionModelSyncBySession.get(normalizedSessionId);
   if (!pending) {
     return;
   }
 
-  const serverKey = buildSessionModelSyncKey(model, effort);
   if (pending === serverKey) {
     pendingSessionModelSyncBySession.delete(normalizedSessionId);
   }
@@ -3333,6 +3367,11 @@ function prunePendingSessionModelSync(validSessionIds) {
   for (const sessionId of Array.from(pendingSessionModelSyncBySession.keys())) {
     if (!valid.has(sessionId)) {
       pendingSessionModelSyncBySession.delete(sessionId);
+    }
+  }
+  for (const sessionId of Array.from(lastConfirmedSessionModelSyncBySession.keys())) {
+    if (!valid.has(sessionId)) {
+      lastConfirmedSessionModelSyncBySession.delete(sessionId);
     }
   }
 }
@@ -3619,6 +3658,7 @@ function handleServerEvent(frame) {
       if (sessionId && sessions.has(sessionId)) {
         sessions.delete(sessionId);
         pendingSessionModelSyncBySession.delete(sessionId);
+        lastConfirmedSessionModelSyncBySession.delete(sessionId);
       }
       if (sessionId) {
         promptQueuesBySession.delete(sessionId);
@@ -3810,6 +3850,9 @@ function handleServerEvent(frame) {
       return;
 
     case "log": {
+      if (payload.source === "connection" && typeof payload.message === "string" && payload.message.startsWith("[client] raw")) {
+        return;
+      }
       const parts = [];
       if (payload.source) parts.push(payload.source);
       if (payload.sessionId) parts.push(`session=${payload.sessionId}`);
@@ -4428,7 +4471,8 @@ updatePermissionLevelIndicator();
 updateMobileProjectsButton();
 updateConversationMetaVisibility();
 
-timelineFlushTimer = setInterval(() => timeline.flush(), TIMELINE_POLL_INTERVAL_MS);
+timelineFlushTimer = setInterval(() => timeline.flush(), TIMELINE_FLUSH_INTERVAL_MS);
+logFlushTimer = setInterval(() => flushPendingClientLogs(), LOG_FLUSH_INTERVAL_MS);
 
 loadRuntimeSecurityConfig()
   .catch((error) => {

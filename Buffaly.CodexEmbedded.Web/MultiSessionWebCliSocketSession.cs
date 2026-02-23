@@ -20,6 +20,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	private static readonly TimeSpan SafeSocketSendTimeout = TimeSpan.FromSeconds(5);
 	private string? _activeSessionId;
 	private volatile CodexEventVerbosity _uiLogVerbosity = CodexEventVerbosity.Normal;
+	private int _sessionListPushQueued = 0;
 
 	private readonly LocalLogWriter _connectionLog;
 
@@ -63,7 +64,23 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 	private void HandleOrchestratorSessionsChanged()
 	{
-		_ = SendSessionListSafeAsync();
+		if (Interlocked.Exchange(ref _sessionListPushQueued, 1) != 0)
+		{
+			return;
+		}
+
+		_ = Task.Run(async () =>
+		{
+			try
+			{
+				await Task.Delay(150);
+				await SendSessionListSafeAsync();
+			}
+			finally
+			{
+				Interlocked.Exchange(ref _sessionListPushQueued, 0);
+			}
+		});
 	}
 
 	private void HandleOrchestratorCoreEvent(string sessionId, CodexCoreEvent ev)
@@ -87,7 +104,15 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 	private async Task HandleClientMessageAsync(string message, CancellationToken cancellationToken)
 	{
-		await WriteConnectionLogAsync($"[client] raw {Truncate(message, 800)}", cancellationToken);
+		var rawMessage = $"[client] raw {Truncate(message, 800)}";
+		if (_uiLogVerbosity >= CodexEventVerbosity.Trace)
+		{
+			await WriteConnectionLogAsync(rawMessage, cancellationToken);
+		}
+		else
+		{
+			WriteConnectionLogLocal(rawMessage);
+		}
 
 		JsonDocument document;
 		try
@@ -394,8 +419,19 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
-		var normalizedModel = hasModelOverride ? (string.IsNullOrWhiteSpace(model) ? null : model.Trim()) : null;
-		var normalizedEffort = hasEffortOverride ? WebCodexUtils.NormalizeReasoningEffort(effort) : null;
+		var snapshotBefore = _orchestrator.GetSessionSnapshots().FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
+		var currentModel = string.IsNullOrWhiteSpace(snapshotBefore?.Model) ? null : snapshotBefore.Model.Trim();
+		var currentEffort = WebCodexUtils.NormalizeReasoningEffort(snapshotBefore?.ReasoningEffort);
+		var targetModel = hasModelOverride ? (string.IsNullOrWhiteSpace(model) ? null : model.Trim()) : currentModel;
+		var targetEffort = hasEffortOverride ? WebCodexUtils.NormalizeReasoningEffort(effort) : currentEffort;
+		if (string.Equals(currentModel, targetModel, StringComparison.Ordinal) &&
+			string.Equals(currentEffort, targetEffort, StringComparison.Ordinal))
+		{
+			return;
+		}
+
+		var normalizedModel = hasModelOverride ? targetModel : null;
+		var normalizedEffort = hasEffortOverride ? targetEffort : null;
 		_orchestrator.TrySetSessionModel(sessionId, normalizedModel, normalizedEffort);
 
 		var snapshot = _orchestrator.GetSessionSnapshots().FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
@@ -741,9 +777,14 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 	private async Task WriteConnectionLogAsync(string message, CancellationToken cancellationToken)
 	{
+		WriteConnectionLogLocal(message);
+		await SendEventAsync("log", new { source = "connection", message }, cancellationToken);
+	}
+
+	private void WriteConnectionLogLocal(string message)
+	{
 		_connectionLog.Write(message);
 		Logs.DebugLog.WriteEvent("MultiSessionWebCliSocketSession", message);
-		await SendEventAsync("log", new { source = "connection", message }, cancellationToken);
 	}
 
 	private async Task<string?> ReceiveTextMessageAsync(CancellationToken cancellationToken)
