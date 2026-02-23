@@ -812,6 +812,83 @@ body {
 	border-color: #a5b4fc;
 }
 
+.turn-activity {
+	position: relative;
+	margin: 0.45rem 0.75rem 0;
+	padding: 0.5rem 0.65rem;
+	border: 1px solid #bfdbfe;
+	border-radius: 10px;
+	background: #eff6ff;
+	color: #1e3a8a;
+	overflow: hidden;
+}
+
+.turn-activity.running::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	background: linear-gradient(105deg, rgba(255, 255, 255, 0) 20%, rgba(255, 255, 255, 0.55) 50%, rgba(255, 255, 255, 0) 80%);
+	transform: translateX(-110%);
+	animation: turn-activity-shimmer 1.6s linear infinite;
+	pointer-events: none;
+}
+
+.turn-activity-header {
+	position: relative;
+	z-index: 1;
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	font-size: 0.79rem;
+	font-weight: 700;
+}
+
+.turn-activity-timer {
+	color: #1d4ed8;
+	white-space: nowrap;
+}
+
+.turn-activity-help {
+	color: #334155;
+	font-weight: 600;
+}
+
+.turn-activity-cancel-link {
+	margin-left: auto;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: #b91c1c;
+	font-size: 0.79rem;
+	font-weight: 700;
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+.turn-activity-cancel-link:hover {
+	color: #991b1b;
+}
+
+.turn-activity-reasoning {
+	position: relative;
+	z-index: 1;
+	margin-top: 0.28rem;
+	font-size: 0.8rem;
+	font-family: Consolas, "Courier New", monospace;
+	color: #0f172a;
+	white-space: normal;
+	word-break: break-word;
+}
+
+@keyframes turn-activity-shimmer {
+	from {
+		transform: translateX(-110%);
+	}
+	to {
+		transform: translateX(110%);
+	}
+}
+
 .command-modal {
 	position: fixed;
 	inset: 0;
@@ -1787,6 +1864,25 @@ body {
 		font-size: 0.77rem;
 		max-height: 88px;
 		overflow: auto;
+	}
+
+	.turn-activity {
+		margin: 0.35rem 0.45rem 0;
+		padding: 0.42rem 0.5rem;
+	}
+
+	.turn-activity-header {
+		font-size: 0.72rem;
+		gap: 0.35rem;
+	}
+
+	.turn-activity-cancel-link {
+		font-size: 0.72rem;
+	}
+
+	.turn-activity-reasoning {
+		margin-top: 0.2rem;
+		font-size: 0.73rem;
 	}
 
 	.composer-images {

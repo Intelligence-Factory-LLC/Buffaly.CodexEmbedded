@@ -1,5 +1,6 @@
 const TIMELINE_POLL_INTERVAL_MS = 2000;
 const TIMELINE_FLUSH_INTERVAL_MS = 350;
+const TURN_ACTIVITY_TICK_INTERVAL_MS = 1000;
 const LOG_FLUSH_INTERVAL_MS = 250;
 const MAX_RENDERED_CLIENT_LOG_LINES = 800;
 const ENABLE_CONSOLE_LOG_FALLBACK = false;
@@ -53,6 +54,9 @@ let timelineConnectionIssueShown = false;
 let runtimeSecurityConfig = null;
 let renderedClientLogLines = [];
 let pendingClientLogLines = [];
+let turnActivityTickTimer = null;
+let turnStartedAtBySession = new Map(); // sessionId -> epoch ms when running turn started
+let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -92,6 +96,10 @@ const imageUploadInput = document.getElementById("imageUploadInput");
 const imageUploadBtn = document.getElementById("imageUploadBtn");
 const queuePromptBtn = document.getElementById("queuePromptBtn");
 const cancelTurnBtn = document.getElementById("cancelTurnBtn");
+const turnActivityStrip = document.getElementById("turnActivityStrip");
+const turnActivityTimer = document.getElementById("turnActivityTimer");
+const turnActivityReasoning = document.getElementById("turnActivityReasoning");
+const turnActivityCancelLink = document.getElementById("turnActivityCancelLink");
 const sendPromptBtn = document.getElementById("sendPromptBtn");
 const mobileProjectsBtn = document.getElementById("mobileProjectsBtn");
 const sidebarBackdrop = document.getElementById("sidebarBackdrop");
@@ -226,6 +234,152 @@ function updatePromptActionState() {
   sendPromptBtn.title = processingActive ? "Send now (Enter)" : "Send (Enter)";
   queuePromptBtn.title = "Queue this instruction (Tab)";
   cancelTurnBtn.title = "Stop running turn";
+  updateTurnActivityStrip();
+}
+
+function formatTurnElapsed(ms) {
+  const totalSeconds = Math.max(0, Math.floor((Number.isFinite(ms) ? ms : 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const paddedMinutes = String(minutes).padStart(2, "0");
+  const paddedSeconds = String(seconds).padStart(2, "0");
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${paddedMinutes}:${paddedSeconds}`;
+  }
+
+  return `${paddedMinutes}:${paddedSeconds}`;
+}
+
+function normalizeReasoningSummary(text) {
+  if (typeof text !== "string") {
+    return "";
+  }
+
+  const normalized = text.replace(/\r/g, "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  return normalized.length > 800 ? `${normalized.slice(0, 800)}...` : normalized;
+}
+
+function extractReasoningSummaryFromPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+
+  const eventType = typeof payload.type === "string" ? payload.type.trim().toLowerCase() : "";
+  if (eventType === "reasoning") {
+    if (Array.isArray(payload.summary)) {
+      const parts = [];
+      for (const item of payload.summary) {
+        if (item && typeof item.text === "string" && item.text.trim().length > 0) {
+          parts.push(item.text.trim());
+        }
+      }
+      const combined = normalizeReasoningSummary(parts.join(" "));
+      if (combined) {
+        return combined;
+      }
+    }
+
+    const fromContent = normalizeReasoningSummary(typeof payload.content === "string" ? payload.content : "");
+    if (fromContent) {
+      return fromContent;
+    }
+  }
+
+  if (eventType === "agent_reasoning") {
+    const fromMessage = normalizeReasoningSummary(
+      typeof payload.message === "string"
+        ? payload.message
+        : typeof payload.summary === "string"
+          ? payload.summary
+          : typeof payload.text === "string"
+            ? payload.text
+            : ""
+    );
+    if (fromMessage) {
+      return fromMessage;
+    }
+  }
+
+  return "";
+}
+
+function extractReasoningSummaryFromLogLine(line) {
+  if (typeof line !== "string" || !line.trim()) {
+    return "";
+  }
+
+  const parsed = safeJsonParse(line, null);
+  if (!parsed || typeof parsed !== "object") {
+    return "";
+  }
+
+  if (parsed.type === "response_item") {
+    return extractReasoningSummaryFromPayload(parsed.payload || {});
+  }
+
+  if (parsed.type === "event_msg") {
+    return extractReasoningSummaryFromPayload(parsed.payload || {});
+  }
+
+  return "";
+}
+
+function updateReasoningFromLogLines(threadId, lines) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  if (!normalizedThreadId || !Array.isArray(lines) || lines.length === 0) {
+    return;
+  }
+
+  let latest = "";
+  for (const line of lines) {
+    const next = extractReasoningSummaryFromLogLine(line);
+    if (next) {
+      latest = next;
+    }
+  }
+
+  if (!latest) {
+    return;
+  }
+
+  lastReasoningByThread.set(normalizedThreadId, latest);
+  const activeThreadId = normalizeThreadId(getActiveSessionState()?.threadId || "");
+  if (activeThreadId && activeThreadId === normalizedThreadId) {
+    updateTurnActivityStrip();
+  }
+}
+
+function updateTurnActivityStrip() {
+  if (!turnActivityStrip || !turnActivityTimer || !turnActivityReasoning) {
+    return;
+  }
+
+  const sessionId = activeSessionId || "";
+  const running = !!sessionId && isTurnInFlight(sessionId);
+  if (!running) {
+    turnActivityStrip.classList.add("hidden");
+    turnActivityStrip.classList.remove("running");
+    return;
+  }
+
+  if (!turnStartedAtBySession.has(sessionId)) {
+    turnStartedAtBySession.set(sessionId, Date.now());
+  }
+
+  const startedAt = turnStartedAtBySession.get(sessionId) || Date.now();
+  const elapsed = formatTurnElapsed(Date.now() - startedAt);
+  turnActivityTimer.textContent = `Working ${elapsed}`;
+
+  const threadId = normalizeThreadId(getActiveSessionState()?.threadId || "");
+  const reasoning = threadId ? normalizeReasoningSummary(lastReasoningByThread.get(threadId) || "") : "";
+  turnActivityReasoning.textContent = reasoning || "Waiting for reasoning update...";
+  turnActivityStrip.classList.remove("hidden");
+  turnActivityStrip.classList.add("running");
 }
 
 function updateContextLeftIndicator() {
@@ -2345,6 +2499,19 @@ function setTurnInFlight(sessionId, value) {
   const prior = turnInFlightBySession.get(sessionId) === true;
   turnInFlightBySession.set(sessionId, normalized);
   if (prior !== normalized) {
+    const state = sessions.get(sessionId) || null;
+    const threadId = normalizeThreadId(state?.threadId || "");
+    if (normalized) {
+      if (!turnStartedAtBySession.has(sessionId)) {
+        turnStartedAtBySession.set(sessionId, Date.now());
+      }
+      if (threadId) {
+        lastReasoningByThread.delete(threadId);
+      }
+    } else {
+      turnStartedAtBySession.delete(sessionId);
+    }
+
     renderProjectSidebar();
     if (sessionId === activeSessionId) {
       updatePromptActionState();
@@ -2852,6 +3019,7 @@ async function pollTimelineOnce(initial, generation) {
     const lines = Array.isArray(data.lines) ? data.lines : [];
     updateContextUsageFromLogLines(state.threadId, lines);
     updatePermissionInfoFromLogLines(state.threadId, lines);
+    updateReasoningFromLogLines(state.threadId, lines);
     timeline.enqueueParsedLines(lines);
 
     if (data.truncated === true) {
@@ -3376,6 +3544,15 @@ function prunePendingSessionModelSync(validSessionIds) {
   }
 }
 
+function pruneTurnActivityState(validSessionIds) {
+  const valid = new Set(Array.isArray(validSessionIds) ? validSessionIds.filter((x) => typeof x === "string" && x.trim()) : []);
+  for (const sessionId of Array.from(turnStartedAtBySession.keys())) {
+    if (!valid.has(sessionId)) {
+      turnStartedAtBySession.delete(sessionId);
+    }
+  }
+}
+
 function handleServerEvent(frame) {
   const type = frame.type;
   const payload = frame.payload || {};
@@ -3562,6 +3739,7 @@ function handleServerEvent(frame) {
       }
       sessions = next;
       prunePendingSessionModelSync(Array.from(next.keys()));
+      pruneTurnActivityState(Array.from(next.keys()));
       applyProcessingByThread(nextProcessingByThread);
       prunePromptState();
       updateSessionSelect(payload.activeSessionId || null);
@@ -3663,6 +3841,7 @@ function handleServerEvent(frame) {
       if (sessionId) {
         promptQueuesBySession.delete(sessionId);
         turnInFlightBySession.delete(sessionId);
+        turnStartedAtBySession.delete(sessionId);
         lastSentPromptBySession.delete(sessionId);
       }
       appendLog(`[session] stopped id=${sessionId || "unknown"}`);
@@ -4402,6 +4581,16 @@ if (cancelTurnBtn) {
   });
 }
 
+if (turnActivityCancelLink) {
+  turnActivityCancelLink.addEventListener("click", (event) => {
+    event.preventDefault();
+    cancelCurrentTurn();
+    if (promptInput) {
+      promptInput.focus();
+    }
+  });
+}
+
 approvalPanel.querySelectorAll("button[data-decision]").forEach((button) => {
   button.addEventListener("click", () => {
     const decision = button.getAttribute("data-decision");
@@ -4472,6 +4661,9 @@ updateMobileProjectsButton();
 updateConversationMetaVisibility();
 
 timelineFlushTimer = setInterval(() => timeline.flush(), TIMELINE_FLUSH_INTERVAL_MS);
+turnActivityTickTimer = setInterval(() => {
+  updateTurnActivityStrip();
+}, TURN_ACTIVITY_TICK_INTERVAL_MS);
 logFlushTimer = setInterval(() => flushPendingClientLogs(), LOG_FLUSH_INTERVAL_MS);
 
 loadRuntimeSecurityConfig()
