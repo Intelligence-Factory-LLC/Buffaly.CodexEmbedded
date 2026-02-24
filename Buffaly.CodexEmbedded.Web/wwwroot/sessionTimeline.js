@@ -92,7 +92,7 @@
     }
 
     clearCondensedExpandedSelection() {
-      if (this.condensedExpandedEntryId === null && this.condensedExpandedTaskId === null) {
+      if (this.condensedExpandedEntryId === null) {
         return;
       }
 
@@ -112,25 +112,6 @@
       this.refreshViewMode();
     }
 
-    getEntryPrimaryTaskId(entry) {
-      if (!entry || typeof entry !== "object") {
-        return null;
-      }
-
-      if (typeof entry.taskId === "string" && entry.taskId.trim().length > 0) {
-        return entry.taskId;
-      }
-
-      if (Array.isArray(entry.taskPath) && entry.taskPath.length > 0) {
-        const candidate = entry.taskPath[entry.taskPath.length - 1];
-        if (typeof candidate === "string" && candidate.trim().length > 0) {
-          return candidate;
-        }
-      }
-
-      return null;
-    }
-
     setCondensedExpandedEntry(entryId) {
       if (!this.isCondensedUserMode()) {
         return;
@@ -147,17 +128,49 @@
         return;
       }
 
-      const taskId = this.getEntryPrimaryTaskId(entry);
-      const isSameSelection = this.condensedExpandedEntryId === normalizedEntryId
-        && ((taskId && this.condensedExpandedTaskId === taskId) || (!taskId && !this.condensedExpandedTaskId));
+      const isSameSelection = this.condensedExpandedEntryId === normalizedEntryId;
       if (isSameSelection) {
         this.clearCondensedExpandedSelection();
         return;
       }
 
       this.condensedExpandedEntryId = normalizedEntryId;
-      this.condensedExpandedTaskId = taskId || null;
+      this.condensedExpandedTaskId = null;
       this.refreshViewMode();
+    }
+
+    getExpandedCondensedRange() {
+      if (!this.isCondensedUserMode()) {
+        return null;
+      }
+
+      const selectedEntryId = this.parseEntryId(this.condensedExpandedEntryId);
+      if (selectedEntryId === null) {
+        return null;
+      }
+
+      const selectedNode = this.entryNodeById.get(selectedEntryId) || null;
+      const selectedEntry = selectedNode?.entry || null;
+      if (!selectedEntry || selectedEntry.role !== "user") {
+        return null;
+      }
+
+      let endExclusiveId = null;
+      for (const [entryId, node] of this.entryNodeById.entries()) {
+        if (entryId <= selectedEntryId) {
+          continue;
+        }
+
+        if (node?.entry?.role === "user") {
+          endExclusiveId = entryId;
+          break;
+        }
+      }
+
+      return {
+        startId: selectedEntryId,
+        endExclusiveId
+      };
     }
 
     isEntryInExpandedCondensedSection(entry) {
@@ -165,18 +178,21 @@
         return false;
       }
 
-      if (this.condensedExpandedTaskId) {
-        if (entry.taskId === this.condensedExpandedTaskId) {
-          return true;
-        }
-
-        if (Array.isArray(entry.taskPath) && entry.taskPath.includes(this.condensedExpandedTaskId)) {
-          return true;
-        }
+      const range = this.getExpandedCondensedRange();
+      if (!range) {
+        return false;
       }
 
       const entryId = this.parseEntryId(entry.id);
-      return entryId !== null && this.condensedExpandedEntryId === entryId;
+      if (entryId === null || entryId < range.startId) {
+        return false;
+      }
+
+      if (range.endExclusiveId !== null && entryId >= range.endExclusiveId) {
+        return false;
+      }
+
+      return true;
     }
 
     shouldHideEntryForViewMode(entry) {
