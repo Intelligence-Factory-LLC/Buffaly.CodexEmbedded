@@ -784,6 +784,86 @@
       }
     }
 
+    normalizeServerEntry(rawEntry) {
+      if (!rawEntry || typeof rawEntry !== "object") {
+        return null;
+      }
+
+      let entryId = this.parseEntryId(rawEntry.id);
+      if (entryId === null) {
+        entryId = this.nextEntryId++;
+      } else if (entryId >= this.nextEntryId) {
+        this.nextEntryId = entryId + 1;
+      }
+
+      const role = typeof rawEntry.role === "string" && rawEntry.role.trim().length > 0
+        ? rawEntry.role.trim()
+        : "system";
+      const title = typeof rawEntry.title === "string" && rawEntry.title.trim().length > 0
+        ? rawEntry.title.trim()
+        : (role === "assistant" ? "Assistant" : "System");
+      const text = this.normalizeText(rawEntry.text || "");
+      const rawType = typeof rawEntry.rawType === "string" ? rawEntry.rawType : "";
+      const images = Array.isArray(rawEntry.images)
+        ? rawEntry.images.filter((x) => typeof x === "string" && x.trim().length > 0)
+        : [];
+      const taskDepthRaw = Number(rawEntry.taskDepth);
+      const taskDepth = Number.isFinite(taskDepthRaw) ? Math.max(0, Math.floor(taskDepthRaw)) : 0;
+      const taskBoundary = (typeof rawEntry.taskBoundary === "string" && rawEntry.taskBoundary)
+        ? rawEntry.taskBoundary
+        : null;
+      const taskId = typeof rawEntry.taskId === "string" && rawEntry.taskId.trim().length > 0
+        ? rawEntry.taskId.trim()
+        : null;
+
+      return {
+        id: entryId,
+        role,
+        title,
+        text,
+        timestamp: rawEntry.timestamp || null,
+        rawType,
+        compact: rawEntry.compact === true,
+        taskId,
+        taskDepth,
+        taskBoundary,
+        images,
+        rendered: false
+      };
+    }
+
+    enqueueServerEntries(entries) {
+      if (!Array.isArray(entries) || entries.length === 0) {
+        return;
+      }
+
+      for (const rawEntry of entries) {
+        const normalized = this.normalizeServerEntry(rawEntry);
+        if (!normalized) {
+          continue;
+        }
+
+        const existingNode = this.entryNodeById.get(normalized.id) || null;
+        if (existingNode && existingNode.entry) {
+          const existing = existingNode.entry;
+          existing.role = normalized.role;
+          existing.title = normalized.title;
+          existing.text = normalized.text;
+          existing.timestamp = normalized.timestamp;
+          existing.rawType = normalized.rawType;
+          existing.compact = normalized.compact === true;
+          existing.taskId = normalized.taskId;
+          existing.taskDepth = normalized.taskDepth;
+          existing.taskBoundary = normalized.taskBoundary;
+          existing.images = normalized.images;
+          this.queueEntryUpdate(existing);
+          continue;
+        }
+
+        this.pendingEntries.push(normalized);
+      }
+    }
+
     flush() {
       if (this.pendingEntries.length === 0 && this.pendingUpdatedEntries.size === 0) {
         return;

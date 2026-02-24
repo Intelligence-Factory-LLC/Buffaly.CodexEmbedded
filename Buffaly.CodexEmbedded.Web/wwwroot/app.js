@@ -4,7 +4,7 @@ const TURN_ACTIVITY_TICK_INTERVAL_MS = 1000;
 const LOG_FLUSH_INTERVAL_MS = 250;
 const MAX_RENDERED_CLIENT_LOG_LINES = 800;
 const ENABLE_CONSOLE_LOG_FALLBACK = false;
-const INDEX_TIMELINE_SOURCE = "logs"; // keep index timeline log-primary; websocket remains for runtime state
+const INDEX_TIMELINE_SOURCE = "logs"; // keep index timeline poll-based; backend now projects timeline entries from logs
 
 let socket = null;
 let socketReadyPromise = null;
@@ -878,6 +878,47 @@ function updatePermissionInfoFromLogLines(threadId, lines) {
       if (next) {
         setPermissionLevelForThread(normalizedThreadId, next);
       }
+    }
+  }
+}
+
+function applyTimelineWatchMetadata(threadId, data) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !data || typeof data !== "object") {
+    return;
+  }
+
+  const usage = data.contextUsage;
+  if (usage && typeof usage === "object") {
+    const contextWindow = Number(usage.contextWindow);
+    const usedTokens = Number(usage.usedTokens);
+    const percentLeft = Number(usage.percentLeft);
+    applyContextUsageForThread(
+      normalizedThreadId,
+      {
+        contextWindow: Number.isFinite(contextWindow) ? contextWindow : null,
+        usedTokens: Number.isFinite(usedTokens) ? usedTokens : null,
+        percentLeft: Number.isFinite(percentLeft) ? percentLeft : null
+      },
+      "timeline_watch"
+    );
+  }
+
+  const permission = data.permission;
+  if (permission && typeof permission === "object") {
+    const approval = normalizePermissionPolicy(permission.approval || "");
+    const sandbox = normalizePermissionPolicy(permission.sandbox || "");
+    if (approval || sandbox) {
+      setPermissionLevelForThread(normalizedThreadId, { approval, sandbox });
+    }
+  }
+
+  const reasoning = normalizeReasoningSummary(data.reasoningSummary || "");
+  if (reasoning) {
+    lastReasoningByThread.set(normalizedThreadId, reasoning);
+    const activeThreadId = normalizeThreadId(getActiveSessionState()?.threadId || "");
+    if (activeThreadId && activeThreadId === normalizedThreadId) {
+      updateTurnActivityStrip();
     }
   }
 }
@@ -3190,9 +3231,9 @@ async function pollTimelineOnce(initial, generation) {
 
   timelinePollInFlight = true;
   try {
-    const url = new URL("api/logs/watch", document.baseURI);
+    const url = new URL("api/timeline/watch", document.baseURI);
     url.searchParams.set("threadId", state.threadId);
-    url.searchParams.set("maxLines", initial ? "1000" : "200");
+    url.searchParams.set("maxEntries", initial ? "1000" : "200");
 
     if (initial || timelineCursor === null) {
       url.searchParams.set("initial", "true");
@@ -3229,11 +3270,9 @@ async function pollTimelineOnce(initial, generation) {
     }
 
     timelineCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
-    const lines = Array.isArray(data.lines) ? data.lines : [];
-    updateContextUsageFromLogLines(state.threadId, lines);
-    updatePermissionInfoFromLogLines(state.threadId, lines);
-    updateReasoningFromLogLines(state.threadId, lines);
-    timeline.enqueueParsedLines(lines);
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    timeline.enqueueServerEntries(entries);
+    applyTimelineWatchMetadata(state.threadId, data);
 
     if (data.truncated === true) {
       timelineHasTruncatedHead = true;

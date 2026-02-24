@@ -23,6 +23,7 @@ var defaults = WebRuntimeDefaults.Load(builder.Configuration);
 builder.Services.AddSingleton(defaults);
 builder.Services.AddSingleton<SessionOrchestrator>();
 builder.Services.AddSingleton<ServerRuntimeStateTracker>();
+builder.Services.AddSingleton<TimelineProjectionService>();
 
 var app = builder.Build();
 app.UseDefaultFiles();
@@ -192,6 +193,76 @@ app.MapGet("/api/logs/watch", (HttpRequest request, WebRuntimeDefaults defaults)
 		reset = watchResult.Reset,
 		truncated = watchResult.Truncated,
 		lines = watchResult.Lines
+	});
+});
+
+app.MapGet("/api/timeline/watch", (HttpRequest request, WebRuntimeDefaults defaults, TimelineProjectionService timelineProjection) =>
+{
+	var threadId = request.Query["threadId"].ToString();
+	if (string.IsNullOrWhiteSpace(threadId))
+	{
+		return Results.BadRequest(new { message = "threadId query parameter is required." });
+	}
+
+	var session = CodexSessionCatalog.ListSessions(defaults.CodexHomePath, limit: 0)
+		.FirstOrDefault(x => string.Equals(x.ThreadId, threadId, StringComparison.Ordinal));
+
+	if (session is null || string.IsNullOrWhiteSpace(session.SessionFilePath))
+	{
+		return Results.NotFound(new { message = $"No session file found for threadId '{threadId}'." });
+	}
+
+	var path = Path.GetFullPath(session.SessionFilePath);
+	if (!File.Exists(path))
+	{
+		return Results.NotFound(new { message = $"Session file does not exist: '{path}'." });
+	}
+
+	var maxEntries = QueryValueParser.GetPositiveInt(request.Query["maxEntries"], fallback: 200, max: 1000);
+	var initial = QueryValueParser.GetBool(request.Query["initial"]);
+	var cursorRaw = request.Query["cursor"].ToString();
+	long? cursor = null;
+	if (!string.IsNullOrWhiteSpace(cursorRaw))
+	{
+		if (!long.TryParse(cursorRaw, out var parsedCursor) || parsedCursor < 0)
+		{
+			return Results.BadRequest(new { message = "cursor must be a non-negative integer." });
+		}
+
+		cursor = parsedCursor;
+	}
+
+	JsonlWatchResult watchResult;
+	try
+	{
+		watchResult = initial || cursor is null
+			? JsonlFileTailReader.ReadInitial(path, maxEntries)
+			: JsonlFileTailReader.ReadFromCursor(path, cursor.Value, maxEntries);
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem(
+			statusCode: StatusCodes.Status500InternalServerError,
+			title: "Failed to read session log file.",
+			detail: ex.Message);
+	}
+
+	var projected = timelineProjection.Project(threadId, watchResult, initial || cursor is null);
+	return Results.Ok(new
+	{
+		threadId = session.ThreadId,
+		threadName = session.ThreadName,
+		sessionFilePath = path,
+		updatedAtUtc = session.UpdatedAtUtc?.ToString("O"),
+		cursor = watchResult.Cursor,
+		nextCursor = watchResult.NextCursor,
+		fileLength = watchResult.FileLength,
+		reset = watchResult.Reset,
+		truncated = watchResult.Truncated,
+		entries = projected.Entries,
+		contextUsage = projected.ContextUsage,
+		permission = projected.Permission,
+		reasoningSummary = projected.ReasoningSummary
 	});
 });
 
