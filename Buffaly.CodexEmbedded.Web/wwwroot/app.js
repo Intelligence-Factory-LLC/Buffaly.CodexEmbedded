@@ -221,8 +221,12 @@ function setJumpCollapseMode(enabled) {
   }
 
   if (jumpToBtn) {
+    const labelNode = jumpToBtn.querySelector("span");
+    if (labelNode) {
+      labelNode.textContent = next ? "Collapsed" : "Expanded";
+    }
     jumpToBtn.setAttribute("aria-expanded", next ? "true" : "false");
-    jumpToBtn.title = next ? "Expand all turn details" : "Collapse all turn details";
+    jumpToBtn.title = next ? "Click to expand all turn details" : "Click to collapse all turn details";
     jumpToBtn.setAttribute("aria-label", jumpToBtn.title);
   }
 
@@ -3278,7 +3282,7 @@ function setActiveSession(sessionId, options = {}) {
   const previousState = getActiveSessionState();
   if (changed) {
     rememberPromptDraftForState(previousState);
-    setJumpCollapseMode(false);
+    setJumpCollapseMode(true);
   }
 
   activeSessionId = sessionId;
