@@ -115,6 +115,71 @@
       };
     }
 
+    rebuildTaskContextForRenderedEntries() {
+      const stack = [];
+
+      for (const node of this.entryNodeById.values()) {
+        const entry = node?.entry;
+        if (!entry) {
+          continue;
+        }
+
+        const taskId = typeof entry.taskId === "string" && entry.taskId.trim().length > 0
+          ? entry.taskId
+          : null;
+
+        if (entry.taskBoundary === "start" && taskId) {
+          stack.push(taskId);
+          entry.taskPath = stack.slice();
+          entry.taskDepth = stack.length;
+          continue;
+        }
+
+        if (entry.taskBoundary === "end" && taskId) {
+          if (stack.length > 0 && stack[stack.length - 1] === taskId) {
+            entry.taskPath = stack.slice();
+            entry.taskDepth = stack.length;
+            stack.pop();
+            continue;
+          }
+
+          const fallbackIndex = stack.lastIndexOf(taskId);
+          if (fallbackIndex >= 0) {
+            entry.taskPath = stack.slice(0, fallbackIndex + 1);
+            entry.taskDepth = fallbackIndex + 1;
+            stack.splice(fallbackIndex, 1);
+            continue;
+          }
+        }
+
+        if (stack.length > 0) {
+          entry.taskPath = stack.slice();
+          entry.taskDepth = stack.length;
+        } else {
+          entry.taskPath = [];
+          entry.taskDepth = 0;
+        }
+      }
+
+      this.activeTaskStack = stack.slice();
+    }
+
+    applyTaskStructure(node, entry) {
+      if (!node || !node.card || !entry) {
+        return;
+      }
+
+      const isChild = Number.isFinite(entry.taskDepth) && entry.taskDepth > 0 && !entry.taskBoundary;
+      node.card.classList.toggle("watcher-task-child", isChild);
+      if (isChild) {
+        node.card.style.setProperty("--task-depth", String(entry.taskDepth));
+      } else {
+        node.card.style.removeProperty("--task-depth");
+      }
+      node.card.classList.toggle("watcher-task-start", entry.taskBoundary === "start");
+      node.card.classList.toggle("watcher-task-end", entry.taskBoundary === "end");
+    }
+
     applyEntryVisibility(node, entry) {
       if (!node || !node.card || !entry) {
         return;
@@ -125,11 +190,14 @@
     }
 
     refreshVisibility() {
+      this.rebuildTaskContextForRenderedEntries();
+
       for (const node of this.entryNodeById.values()) {
         if (!node || !node.entry) {
           continue;
         }
 
+        this.applyTaskStructure(node, node.entry);
         this.updateTaskToggleState(node, node.entry);
         this.applyEntryVisibility(node, node.entry);
       }
