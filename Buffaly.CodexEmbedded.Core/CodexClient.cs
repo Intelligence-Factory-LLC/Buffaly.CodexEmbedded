@@ -438,6 +438,11 @@ public sealed class CodexClient : IAsyncDisposable
 					var additional = JsonPath.TryGetString(paramsElement, "error", "additionalDetails")
 						?? JsonPath.TryGetString(paramsElement, "additionalDetails");
 					var composite = string.IsNullOrWhiteSpace(additional) ? messageText : $"{messageText} ({additional})";
+					var turnId = JsonPath.TryGetString(paramsElement, "turnId")
+						?? JsonPath.TryGetString(paramsElement, "turn", "id");
+					var threadId = JsonPath.TryGetString(paramsElement, "threadId")
+						?? JsonPath.TryGetString(paramsElement, "turn", "threadId");
+					var willRetry = TryReadOptionalBool(paramsElement, "willRetry");
 
 					if (!string.IsNullOrWhiteSpace(composite))
 					{
@@ -446,6 +451,19 @@ public sealed class CodexClient : IAsyncDisposable
 							tracker.OnError(composite);
 						}
 					}
+
+					// Some providers emit a terminal error without a separate turn-completed event.
+					// When retry has been exhausted, close the turn tracker immediately.
+					if (!string.IsNullOrWhiteSpace(turnId) && willRetry == false)
+					{
+						RouteTurnNotification(
+							turnId,
+							TurnNotification.ForCompleted(
+								threadId,
+								status: "failed",
+								errorMessage: string.IsNullOrWhiteSpace(composite) ? "Turn failed." : composite));
+					}
+
 					return;
 				}
 				default:
@@ -545,6 +563,31 @@ public sealed class CodexClient : IAsyncDisposable
 			JsonValueKind.Number => current.ToString(),
 			JsonValueKind.True => "true",
 			JsonValueKind.False => "false",
+			_ => null
+		};
+	}
+
+	private static bool? TryReadOptionalBool(JsonElement root, params string[] path)
+	{
+		if (path is null || path.Length == 0)
+		{
+			return null;
+		}
+
+		var current = root;
+		foreach (var segment in path)
+		{
+			if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(segment, out current))
+			{
+				return null;
+			}
+		}
+
+		return current.ValueKind switch
+		{
+			JsonValueKind.True => true,
+			JsonValueKind.False => false,
+			JsonValueKind.String when bool.TryParse(current.GetString(), out var parsed) => parsed,
 			_ => null
 		};
 	}
