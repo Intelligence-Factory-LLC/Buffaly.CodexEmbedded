@@ -1136,21 +1136,21 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return new SteerTurnResult(false, "Unable to steer because the active turn id is unavailable. Prompt was not sent.", fallback);
 		}
 
-		try
-		{
-			await session.Session.SteerTurnAsync(expectedTurnId, normalizedText, safeImages, cancellationToken);
-			session.Log.Write($"[turn_steer] expectedTurnId={expectedTurnId} text={BuildQueuedTurnPreview(normalizedText, safeImages.Count)}");
-			Broadcast?.Invoke("status", new { sessionId, message = "Steer message sent to active turn." });
+			try
+			{
+				await session.Session.SteerTurnAsync(expectedTurnId, normalizedText, safeImages, cancellationToken);
+				session.Log.Write($"[turn_steer] expectedTurnId={expectedTurnId} text={BuildQueuedTurnPreview(normalizedText, safeImages.Count)}");
+				Broadcast?.Invoke("status", new { sessionId, message = "Steer message sent to active turn." });
 				return new SteerTurnResult(true, null, TurnSubmitFallback.None);
 			}
 			catch (Exception ex)
 			{
-			if (IsSteerPreconditionMismatch(ex, out var detailed))
-			{
-				var message = string.IsNullOrWhiteSpace(detailed)
-					? "Steer was rejected because the active turn changed. Edit and resend your message."
-					: $"Steer was rejected because the active turn changed ({detailed}). Edit and resend your message.";
-				session.Log.Write($"[turn_steer] precondition mismatch expectedTurnId={expectedTurnId} detail={detailed ?? "(none)"}");
+				if (IsSteerPreconditionMismatch(ex, out var detailed))
+				{
+					var message = string.IsNullOrWhiteSpace(detailed)
+						? "Steer was rejected because the active turn changed. Edit and resend your message."
+						: $"Steer was rejected because the active turn changed ({detailed}). Edit and resend your message.";
+					session.Log.Write($"[turn_steer] precondition mismatch expectedTurnId={expectedTurnId} detail={detailed ?? "(none)"}");
 					return new SteerTurnResult(false, message, TurnSubmitFallback.QueueTurn);
 				}
 
@@ -3426,13 +3426,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					return false;
 				}
 
-					if (Session.TryGetActiveTurnId(out var activeFromClient) && !string.IsNullOrWhiteSpace(activeFromClient))
+				if (Session.TryGetActiveTurnId(out var activeFromClient) && !string.IsNullOrWhiteSpace(activeFromClient))
+				{
+					_activeTurnId = activeFromClient;
+					if (age < activeTurnIdMaxAge)
 					{
-						_activeTurnId = activeFromClient;
-						if (age < activeTurnIdMaxAge)
-						{
-							reason = "active_turn_id_present";
-							return false;
+						reason = "active_turn_id_present";
+						return false;
 					}
 				}
 
