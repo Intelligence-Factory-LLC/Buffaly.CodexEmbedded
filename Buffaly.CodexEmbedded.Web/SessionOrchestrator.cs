@@ -354,7 +354,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		IReadOnlyList<TimelineProjectedEntry> entries,
 		IReadOnlyList<ConsolidatedTurnSnapshot> turns)
 	{
-		var openTaskDepth = 0;
+		var lastBoundaryDirection = 0; // 1=start, -1=end, 0=none
 		foreach (var entry in entries)
 		{
 			if (entry is null)
@@ -365,20 +365,28 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			var rawType = entry.RawType ?? string.Empty;
 			var boundary = entry.TaskBoundary ?? string.Empty;
 			if (string.Equals(boundary, "start", StringComparison.Ordinal) ||
-				string.Equals(rawType, "task_started", StringComparison.Ordinal))
+				string.Equals(rawType, "task_started", StringComparison.Ordinal) ||
+				string.Equals(rawType, "turn_started", StringComparison.Ordinal))
 			{
-				openTaskDepth += 1;
+				lastBoundaryDirection = 1;
 				continue;
 			}
 
 			if (string.Equals(boundary, "end", StringComparison.Ordinal) ||
-				string.Equals(rawType, "task_complete", StringComparison.Ordinal))
+				string.Equals(rawType, "task_complete", StringComparison.Ordinal) ||
+				string.Equals(rawType, "turn_complete", StringComparison.Ordinal))
 			{
-				openTaskDepth = Math.Max(0, openTaskDepth - 1);
+				lastBoundaryDirection = -1;
 			}
 		}
 
-		if (openTaskDepth > 0)
+		// When the newest explicit boundary is completion, treat the turn as complete.
+		if (lastBoundaryDirection < 0)
+		{
+			return false;
+		}
+
+		if (lastBoundaryDirection > 0)
 		{
 			return true;
 		}

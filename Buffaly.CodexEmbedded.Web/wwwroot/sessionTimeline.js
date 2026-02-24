@@ -1992,10 +1992,10 @@
         return null;
       }
 
-      if (eventType === "task_started") {
+      if (eventType === "task_started" || eventType === "turn_started") {
         this.updateLatestContextUsageFromPayload(payload);
         const summary = payload.title || payload.message || "Task started";
-        const entry = this.createEntry("system", "Task Started", this.truncateText(summary, 240), timestamp, eventType);
+        const entry = this.createEntry("system", "Task Started", this.truncateText(summary, 240), timestamp, "task_started");
         entry.compact = true;
         const started = this.markTaskStart(entry);
         if (started?.taskId) {
@@ -2007,7 +2007,7 @@
         return started;
       }
 
-      if (eventType === "task_complete") {
+      if (eventType === "task_complete" || eventType === "turn_complete") {
         const summary = payload.message || "Task complete";
         const contextLeftLabel = this.formatLatestContextLeftLabel();
         const taskId = this.activeTaskStack.length > 0 ? this.activeTaskStack[this.activeTaskStack.length - 1] : null;
@@ -2031,7 +2031,7 @@
         }
 
         const displayText = parts.join(" | ");
-        const entry = this.createEntry("system", "Task Complete", this.truncateText(displayText, 240), timestamp, eventType);
+        const entry = this.createEntry("system", "Task Complete", this.truncateText(displayText, 240), timestamp, "task_complete");
         entry.compact = true;
         const completed = this.markTaskEnd(entry);
         if (completed?.taskId) {

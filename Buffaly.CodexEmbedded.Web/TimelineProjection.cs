@@ -308,11 +308,12 @@ internal sealed class TimelineProjectionService
 			return;
 		}
 
-		if (string.Equals(eventType, "task_started", StringComparison.Ordinal))
+		if (string.Equals(eventType, "task_started", StringComparison.Ordinal) ||
+			string.Equals(eventType, "turn_started", StringComparison.Ordinal))
 		{
 			UpdateContextUsage(state, payload, "task_started");
 			var summary = TryGetString(payload, "title") ?? TryGetString(payload, "message") ?? "Task started";
-			var entry = state.CreateEntry("system", "Task Started", Truncate(summary, 240), timestamp, eventType, compact: true);
+			var entry = state.CreateEntry("system", "Task Started", Truncate(summary, 240), timestamp, "task_started", compact: true);
 			state.MarkTaskStart(entry);
 			var taskModel = !string.IsNullOrWhiteSpace(state.LatestTurnModel) ? state.LatestTurnModel : state.CurrentSessionModel;
 			if (!string.IsNullOrWhiteSpace(taskModel) && !string.IsNullOrWhiteSpace(entry.TaskId))
@@ -323,7 +324,8 @@ internal sealed class TimelineProjectionService
 			return;
 		}
 
-		if (string.Equals(eventType, "task_complete", StringComparison.Ordinal))
+		if (string.Equals(eventType, "task_complete", StringComparison.Ordinal) ||
+			string.Equals(eventType, "turn_complete", StringComparison.Ordinal))
 		{
 			UpdateContextUsage(state, payload, "task_complete");
 			var summary = TryGetString(payload, "message") ?? "Task complete";
@@ -348,7 +350,7 @@ internal sealed class TimelineProjectionService
 			{
 				parts.Add($"Model: {taskModel}");
 			}
-			var entry = state.CreateEntry("system", "Task Complete", Truncate(string.Join(" | ", parts), 240), timestamp, eventType, compact: true);
+			var entry = state.CreateEntry("system", "Task Complete", Truncate(string.Join(" | ", parts), 240), timestamp, "task_complete", compact: true);
 			state.MarkTaskEnd(entry);
 			if (!string.IsNullOrWhiteSpace(entry.TaskId))
 			{
@@ -387,7 +389,8 @@ internal sealed class TimelineProjectionService
 			return;
 		}
 
-		if (string.Equals(payloadType, "task_started", StringComparison.Ordinal))
+		if (string.Equals(payloadType, "task_started", StringComparison.Ordinal) ||
+			string.Equals(payloadType, "turn_started", StringComparison.Ordinal))
 		{
 			var modelContextWindow = TryReadDouble(TryGetString(payload, "model_context_window") ?? TryGetString(payload, "modelContextWindow"));
 			if (modelContextWindow is not null)

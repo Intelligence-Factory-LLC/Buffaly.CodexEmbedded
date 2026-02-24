@@ -788,7 +788,7 @@ function updateContextUsageFromLogLines(threadId, lines) {
 
     if (parsed.type === "event_msg" && parsed.payload && typeof parsed.payload === "object") {
       const payload = parsed.payload;
-      if (payload.type === "task_started") {
+      if (payload.type === "task_started" || payload.type === "turn_started") {
         const startedWindow = Number(payload.model_context_window ?? payload.modelContextWindow ?? null);
         if (Number.isFinite(startedWindow) && startedWindow > 0) {
           contextWindow = startedWindow;
