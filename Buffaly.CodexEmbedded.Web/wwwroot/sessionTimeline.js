@@ -35,6 +35,10 @@
       this.visibleActionEntryId = null;
       this.liveAssistantEntriesByStreamKey = new Map(); // streamKey -> entry
       this.viewMode = "default";
+      this.turnModeActive = false;
+      this.turns = [];
+      this.turnNodeById = new Map();
+      this.turnCollapsedById = new Map();
 
       this.container.addEventListener("scroll", () => {
         this.autoScrollPinned = this.isNearBottom();
@@ -190,6 +194,11 @@
     }
 
     refreshVisibility() {
+      if (this.turnModeActive) {
+        this.refreshTurnVisibility();
+        return;
+      }
+
       this.rebuildTaskContextForRenderedEntries();
 
       for (const node of this.entryNodeById.values()) {
@@ -201,6 +210,246 @@
         this.updateTaskToggleState(node, node.entry);
         this.applyEntryVisibility(node, node.entry);
       }
+    }
+
+    setServerTurns(rawTurns) {
+      const safeTurns = this.normalizeServerTurns(rawTurns);
+      const shouldStick = this.autoScrollPinned || this.isNearBottom();
+
+      this.turnModeActive = true;
+      this.turns = safeTurns;
+      const validTurnIds = new Set(safeTurns.map((x) => x.turnId));
+      for (const existingTurnId of Array.from(this.turnCollapsedById.keys())) {
+        if (!validTurnIds.has(existingTurnId)) {
+          this.turnCollapsedById.delete(existingTurnId);
+        }
+      }
+      this.pendingEntries = [];
+      this.pendingUpdatedEntries.clear();
+      this.entryNodeById.clear();
+      this.toolEntriesByCallId.clear();
+      this.liveAssistantEntriesByStreamKey.clear();
+      this.visibleActionEntryId = null;
+      this.container.textContent = "";
+      this.turnNodeById.clear();
+
+      for (const turn of safeTurns) {
+        this.appendTurnNode(turn);
+      }
+
+      this.refreshTurnVisibility();
+      if (shouldStick) {
+        this.container.scrollTop = this.container.scrollHeight;
+        this.autoScrollPinned = true;
+      }
+
+      this.dispatchTimelineEvent("timeline-updated", { mode: "turns", turnCount: safeTurns.length });
+      try {
+        this.container.dispatchEvent(new CustomEvent("codex:timeline-updated"));
+      } catch {
+        // no-op
+      }
+    }
+
+    normalizeServerTurns(rawTurns) {
+      if (!Array.isArray(rawTurns)) {
+        return [];
+      }
+
+      const turns = [];
+      for (let i = 0; i < rawTurns.length; i += 1) {
+        const rawTurn = rawTurns[i];
+        if (!rawTurn || typeof rawTurn !== "object") {
+          continue;
+        }
+
+        const turnIdRaw = typeof rawTurn.turnId === "string" ? rawTurn.turnId.trim() : "";
+        const turnId = turnIdRaw || `turn-${i + 1}`;
+        const user = this.normalizeTurnEntry(rawTurn.user, "user", "User");
+        if (!user) {
+          continue;
+        }
+
+        const assistantFinal = this.normalizeTurnEntry(rawTurn.assistantFinal, "assistant", "Assistant");
+        const intermediateRaw = Array.isArray(rawTurn.intermediate) ? rawTurn.intermediate : [];
+        const intermediate = [];
+        for (const item of intermediateRaw) {
+          const normalized = this.normalizeTurnEntry(item, "system", "System");
+          if (normalized) {
+            intermediate.push(normalized);
+          }
+        }
+
+        turns.push({
+          turnId,
+          user,
+          assistantFinal,
+          intermediate,
+          isInFlight: rawTurn.isInFlight === true
+        });
+      }
+
+      return turns;
+    }
+
+    normalizeTurnEntry(rawEntry, fallbackRole, fallbackTitle) {
+      if (!rawEntry || typeof rawEntry !== "object") {
+        return null;
+      }
+
+      const role = typeof rawEntry.role === "string" && rawEntry.role.trim().length > 0
+        ? rawEntry.role.trim()
+        : fallbackRole;
+      const title = typeof rawEntry.title === "string" && rawEntry.title.trim().length > 0
+        ? rawEntry.title.trim()
+        : fallbackTitle;
+      const text = this.normalizeText(rawEntry.text || "");
+      const images = Array.isArray(rawEntry.images)
+        ? rawEntry.images.filter((x) => typeof x === "string" && x.trim().length > 0)
+        : [];
+      return {
+        role,
+        title,
+        text,
+        timestamp: rawEntry.timestamp || null,
+        rawType: typeof rawEntry.rawType === "string" ? rawEntry.rawType : "",
+        compact: rawEntry.compact === true,
+        images
+      };
+    }
+
+    appendTurnNode(turn) {
+      const container = document.createElement("div");
+      container.className = "watcher-turn-block";
+      if (turn.isInFlight) {
+        container.classList.add("watcher-turn-active");
+      }
+
+      const userNode = this.createTurnEntryNode(turn.user, { roleClassOverride: "user", includeToggle: turn.intermediate.length > 0 });
+      container.appendChild(userNode.card);
+
+      const intermediateWrap = document.createElement("div");
+      intermediateWrap.className = "watcher-turn-intermediate-wrap";
+      for (const entry of turn.intermediate) {
+        const itemNode = this.createTurnEntryNode(entry, { roleClassOverride: entry.role || "system", intermediate: true });
+        intermediateWrap.appendChild(itemNode.card);
+      }
+      container.appendChild(intermediateWrap);
+
+      if (turn.assistantFinal) {
+        const assistantNode = this.createTurnEntryNode(turn.assistantFinal, { roleClassOverride: "assistant" });
+        assistantNode.card.classList.add("watcher-turn-final");
+        container.appendChild(assistantNode.card);
+      }
+
+      this.container.appendChild(container);
+      if (turn.isInFlight === true && !this.turnCollapsedById.has(turn.turnId)) {
+        this.turnCollapsedById.set(turn.turnId, false);
+      }
+      this.turnNodeById.set(turn.turnId, {
+        turn,
+        container,
+        toggle: userNode.toggle,
+        intermediateWrap
+      });
+
+      if (userNode.toggle) {
+        userNode.toggle.addEventListener("click", () => {
+          const collapsed = this.isTurnCollapsed(turn);
+          this.turnCollapsedById.set(turn.turnId, !collapsed);
+          this.refreshTurnVisibility();
+        });
+      }
+    }
+
+    isTurnCollapsed(turn) {
+      if (!turn || !turn.turnId) {
+        return true;
+      }
+
+      if (this.isUserAnchorsMode()) {
+        return true;
+      }
+
+      if (this.turnCollapsedById.has(turn.turnId)) {
+        return this.turnCollapsedById.get(turn.turnId) === true;
+      }
+
+      return turn.isInFlight !== true;
+    }
+
+    refreshTurnVisibility() {
+      for (const node of this.turnNodeById.values()) {
+        const turn = node.turn;
+        const collapsed = this.isTurnCollapsed(turn);
+        node.intermediateWrap.classList.toggle("watcher-view-hidden", collapsed);
+
+        if (node.toggle) {
+          node.toggle.textContent = collapsed ? "[+]" : "[-]";
+          node.toggle.title = collapsed ? "Expand turn details" : "Collapse turn details";
+          node.toggle.setAttribute("aria-label", node.toggle.title);
+        }
+      }
+    }
+
+    createTurnEntryNode(entry, options = {}) {
+      const card = document.createElement("div");
+      const roleClass = options.roleClassOverride || entry.role || "system";
+      card.className = `watcher-entry ${roleClass}`;
+      if (options.intermediate === true) {
+        card.classList.add("watcher-turn-intermediate");
+      }
+
+      const header = document.createElement("div");
+      header.className = "watcher-entry-header";
+
+      const title = document.createElement("div");
+      title.className = "watcher-entry-title";
+
+      let toggle = null;
+      if (options.includeToggle === true) {
+        toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "watcher-turn-toggle";
+        toggle.textContent = "[-]";
+        title.appendChild(toggle);
+      }
+
+      const titleText = document.createElement("span");
+      titleText.textContent = entry.title || "System";
+      title.appendChild(titleText);
+
+      const time = document.createElement("div");
+      time.className = "watcher-entry-time";
+      time.textContent = this.formatTime(entry.timestamp);
+
+      header.append(title, time);
+      card.appendChild(header);
+
+      const body = document.createElement("pre");
+      body.className = "watcher-entry-text";
+      body.textContent = this.truncateText(entry.text || "");
+      card.appendChild(body);
+
+      const images = Array.isArray(entry.images) ? entry.images : [];
+      if (images.length > 0) {
+        const wrap = document.createElement("div");
+        wrap.className = "watcher-entry-images";
+        for (const src of images) {
+          const imageWrap = document.createElement("div");
+          imageWrap.className = "watcher-entry-image";
+
+          const image = document.createElement("img");
+          image.src = src;
+          image.loading = "lazy";
+          image.alt = "User image";
+          imageWrap.appendChild(image);
+          wrap.appendChild(imageWrap);
+        }
+        card.appendChild(wrap);
+      }
+
+      return { card, toggle };
     }
 
     formatTime(value) {
@@ -457,6 +706,10 @@
       this.pendingUpdatedEntries.clear();
       this.renderCount = 0;
       this.container.textContent = "";
+      this.turnModeActive = false;
+      this.turns = [];
+      this.turnNodeById.clear();
+      this.turnCollapsedById.clear();
       this.entryNodeById.clear();
       this.toolEntriesByCallId.clear();
       this.pendingOptimisticUserKeys = [];

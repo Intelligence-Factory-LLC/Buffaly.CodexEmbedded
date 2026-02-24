@@ -7,9 +7,12 @@ using BasicUtilities;
 internal sealed class SessionOrchestrator : IAsyncDisposable
 {
 	private readonly WebRuntimeDefaults _defaults;
+	private readonly TimelineProjectionService _timelineProjection;
 	private readonly object _sync = new();
 	private readonly object _coreSignalSync = new();
+	private readonly object _turnCacheSync = new();
 	private readonly Dictionary<string, ManagedSession> _sessions = new(StringComparer.Ordinal);
+	private readonly Dictionary<string, ThreadTurnCacheState> _turnCacheByThread = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, string> _lastSessionConfiguredFingerprintBySession = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, string> _lastThreadCompactedFingerprintByThread = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, string> _lastThreadNameByThread = new(StringComparer.Ordinal);
@@ -19,9 +22,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	public event Action? SessionsChanged;
 	public event Action<string, object>? Broadcast;
 
-	public SessionOrchestrator(WebRuntimeDefaults defaults)
+	public SessionOrchestrator(WebRuntimeDefaults defaults, TimelineProjectionService timelineProjection)
 	{
 		_defaults = defaults;
+		_timelineProjection = timelineProjection;
 	}
 
 	public bool HasSession(string sessionId)
@@ -39,11 +43,128 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	public IReadOnlyList<SessionSnapshot> GetSessionSnapshots()
 	{
+		Dictionary<string, int> turnCountByThread;
+		lock (_turnCacheSync)
+		{
+			turnCountByThread = _turnCacheByThread.ToDictionary(
+				x => x.Key,
+				x => x.Value.Turns.Count,
+				StringComparer.Ordinal);
+		}
+
 		lock (_sync)
 		{
 			return _sessions.Values
-				.Select(s => s.ToSnapshot())
+				.Select(s =>
+				{
+					turnCountByThread.TryGetValue(s.Session.ThreadId, out var turnCountInMemory);
+					return s.ToSnapshot(turnCountInMemory);
+				})
 				.ToList();
+		}
+	}
+
+	public int GetTurnCountInMemory()
+	{
+		lock (_turnCacheSync)
+		{
+			return _turnCacheByThread.Values.Sum(x => x.Turns.Count);
+		}
+	}
+
+	public TurnWatchSnapshot WatchTurns(
+		string threadId,
+		int maxEntries,
+		bool initial,
+		long? cursor)
+	{
+		var normalizedThreadId = threadId?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(normalizedThreadId))
+		{
+			throw new InvalidOperationException("threadId is required.");
+		}
+
+		var sessionCatalogEntry = CodexSessionCatalog.ListSessions(_defaults.CodexHomePath, limit: 0)
+			.FirstOrDefault(x => string.Equals(x.ThreadId, normalizedThreadId, StringComparison.Ordinal));
+		if (sessionCatalogEntry is null || string.IsNullOrWhiteSpace(sessionCatalogEntry.SessionFilePath))
+		{
+			throw new FileNotFoundException($"No session file found for threadId '{normalizedThreadId}'.");
+		}
+
+		var sessionFilePath = Path.GetFullPath(sessionCatalogEntry.SessionFilePath);
+		if (!File.Exists(sessionFilePath))
+		{
+			throw new FileNotFoundException($"Session file does not exist: '{sessionFilePath}'.");
+		}
+
+		var fileInfo = new FileInfo(sessionFilePath);
+		var fileLength = fileInfo.Length;
+		var lastWriteUtc = fileInfo.LastWriteTimeUtc;
+
+		var rebuild = false;
+		lock (_turnCacheSync)
+		{
+			if (!_turnCacheByThread.TryGetValue(normalizedThreadId, out var state))
+			{
+				rebuild = true;
+			}
+			else
+			{
+				rebuild =
+					initial ||
+					!string.Equals(state.SessionFilePath, sessionFilePath, StringComparison.Ordinal) ||
+					state.FileLength != fileLength ||
+					state.FileLastWriteUtc != lastWriteUtc ||
+					state.MaxEntries != maxEntries;
+			}
+		}
+
+		if (rebuild)
+		{
+			RebuildThreadTurnCache(normalizedThreadId, sessionFilePath, maxEntries, fileLength, lastWriteUtc);
+		}
+
+		var isTurnInFlight = IsTurnInFlightForThread(normalizedThreadId);
+		lock (_turnCacheSync)
+		{
+			if (!_turnCacheByThread.TryGetValue(normalizedThreadId, out var state))
+			{
+				throw new InvalidOperationException($"Turn cache is unavailable for thread '{normalizedThreadId}'.");
+			}
+
+			var inFlightChanged = state.LastIsTurnInFlight != isTurnInFlight;
+			if (inFlightChanged)
+			{
+				state.Turns = ApplyInFlightFlag(state.Turns, isTurnInFlight);
+				state.LastIsTurnInFlight = isTurnInFlight;
+				state.Version += 1;
+			}
+
+			var version = state.Version;
+			var cursorAhead = cursor.HasValue && cursor.Value > version;
+			var shouldSendFull =
+				initial ||
+				cursor is null ||
+				cursorAhead ||
+				cursor.Value != version;
+
+			var turns = shouldSendFull
+				? state.Turns.Select(x => x.Clone()).ToArray()
+				: Array.Empty<ConsolidatedTurnSnapshot>();
+			return new TurnWatchSnapshot(
+				ThreadId: normalizedThreadId,
+				ThreadName: sessionCatalogEntry.ThreadName,
+				SessionFilePath: sessionFilePath,
+				UpdatedAtUtc: sessionCatalogEntry.UpdatedAtUtc,
+				Cursor: cursor ?? version,
+				NextCursor: version,
+				Reset: initial || cursorAhead,
+				Truncated: state.Truncated,
+				TurnCountInMemory: state.Turns.Count,
+				ContextUsage: state.ContextUsage,
+				Permission: state.Permission,
+				ReasoningSummary: state.ReasoningSummary,
+				Turns: turns);
 		}
 	}
 
@@ -65,6 +186,154 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		return output;
+	}
+
+	private void RebuildThreadTurnCache(
+		string threadId,
+		string sessionFilePath,
+		int maxEntries,
+		long fileLength,
+		DateTime lastWriteUtc)
+	{
+		var watch = JsonlFileTailReader.ReadInitial(sessionFilePath, maxEntries);
+		var projected = _timelineProjection.Project(threadId, watch, initial: true);
+		var inFlight = IsTurnInFlightForThread(threadId);
+		var rebuiltTurns = BuildConsolidatedTurns(threadId, projected.Entries, inFlight);
+
+		lock (_turnCacheSync)
+		{
+			if (!_turnCacheByThread.TryGetValue(threadId, out var state))
+			{
+				state = new ThreadTurnCacheState();
+				_turnCacheByThread[threadId] = state;
+			}
+
+			state.SessionFilePath = sessionFilePath;
+			state.FileLength = fileLength;
+			state.FileLastWriteUtc = lastWriteUtc;
+			state.MaxEntries = maxEntries;
+			state.Truncated = watch.Truncated;
+			state.ContextUsage = projected.ContextUsage is null
+				? null
+				: new TurnContextUsageSnapshot(
+					UsedTokens: projected.ContextUsage.UsedTokens,
+					ContextWindow: projected.ContextUsage.ContextWindow,
+					PercentLeft: projected.ContextUsage.PercentLeft);
+			state.Permission = projected.Permission is null
+				? null
+				: new TurnPermissionInfoSnapshot(
+					Approval: projected.Permission.Approval,
+					Sandbox: projected.Permission.Sandbox);
+			state.ReasoningSummary = projected.ReasoningSummary;
+			state.LastIsTurnInFlight = inFlight;
+			state.Turns = rebuiltTurns;
+			state.Version += 1;
+		}
+	}
+
+	private bool IsTurnInFlightForThread(string threadId)
+	{
+		lock (_sync)
+		{
+			foreach (var session in _sessions.Values)
+			{
+				if (!string.Equals(session.Session.ThreadId, threadId, StringComparison.Ordinal))
+				{
+					continue;
+				}
+
+				if (session.IsTurnInFlight)
+				{
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	private static List<ConsolidatedTurnSnapshot> BuildConsolidatedTurns(
+		string threadId,
+		IReadOnlyList<TimelineProjectedEntry> entries,
+		bool inFlight)
+	{
+		var turns = new List<ConsolidatedTurnBuilder>();
+		ConsolidatedTurnBuilder? current = null;
+
+		foreach (var entry in entries)
+		{
+			if (entry is null)
+			{
+				continue;
+			}
+
+			if (string.Equals(entry.Role, "user", StringComparison.Ordinal))
+			{
+				current = new ConsolidatedTurnBuilder(entry);
+				turns.Add(current);
+				continue;
+			}
+
+			if (current is null)
+			{
+				continue;
+			}
+
+			if (string.Equals(entry.Role, "assistant", StringComparison.Ordinal))
+			{
+				if (current.FinalAssistant is not null)
+				{
+					current.Intermediate.Add(ToTurnEntry(current.FinalAssistant));
+				}
+
+				current.FinalAssistant = entry.Clone();
+				continue;
+			}
+
+			current.Intermediate.Add(ToTurnEntry(entry));
+		}
+
+		if (turns.Count > 0 && inFlight)
+		{
+			turns[^1].IsInFlight = true;
+		}
+
+		return turns.Select((turn, idx) => turn.ToSnapshot(threadId, idx + 1)).ToList();
+	}
+
+	private static List<ConsolidatedTurnSnapshot> ApplyInFlightFlag(
+		IReadOnlyList<ConsolidatedTurnSnapshot> prior,
+		bool inFlight)
+	{
+		if (prior.Count == 0)
+		{
+			return new List<ConsolidatedTurnSnapshot>();
+		}
+
+		var next = prior.Select(x => x.Clone()).ToList();
+		for (var i = 0; i < next.Count; i += 1)
+		{
+			next[i].IsInFlight = false;
+		}
+
+		if (inFlight)
+		{
+			next[^1].IsInFlight = true;
+		}
+
+		return next;
+	}
+
+	private static TurnEntrySnapshot ToTurnEntry(TimelineProjectedEntry source)
+	{
+		return new TurnEntrySnapshot(
+			source.Role,
+			source.Title,
+			source.Text,
+			source.Timestamp,
+			source.RawType,
+			source.Compact,
+			source.Images?.ToArray() ?? Array.Empty<string>());
 	}
 
 	public async Task<SessionCreatedPayload> CreateSessionAsync(
@@ -121,6 +390,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		lock (_sync)
 		{
 			_sessions[sessionId] = managed;
+		}
+
+		try
+		{
+			WatchTurns(session.ThreadId, maxEntries: 6000, initial: true, cursor: null);
+		}
+		catch
+		{
 		}
 
 		SessionsChanged?.Invoke();
@@ -196,6 +473,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		lock (_sync)
 		{
 			_sessions[sessionId] = managed;
+		}
+
+		try
+		{
+			WatchTurns(session.ThreadId, maxEntries: 6000, initial: true, cursor: null);
+		}
+		catch
+		{
 		}
 
 		SessionsChanged?.Invoke();
@@ -354,6 +639,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		CleanupCoreSignalState(sessionId, removed?.Session.ThreadId);
+		CleanupTurnCacheStateForThreadIfUnused(removed?.Session.ThreadId);
 		return true;
 	}
 
@@ -371,6 +657,30 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 			_lastThreadCompactedFingerprintByThread.Remove(threadId);
 			_lastThreadNameByThread.Remove(threadId);
+		}
+	}
+
+	private void CleanupTurnCacheStateForThreadIfUnused(string? threadId)
+	{
+		if (string.IsNullOrWhiteSpace(threadId))
+		{
+			return;
+		}
+
+		var stillLoaded = false;
+		lock (_sync)
+		{
+			stillLoaded = _sessions.Values.Any(x => string.Equals(x.Session.ThreadId, threadId, StringComparison.Ordinal));
+		}
+
+		if (stillLoaded)
+		{
+			return;
+		}
+
+		lock (_turnCacheSync)
+		{
+			_turnCacheByThread.Remove(threadId);
 		}
 	}
 
@@ -2156,6 +2466,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			sessions = _sessions.Values.ToArray();
 			_sessions.Clear();
 		}
+		lock (_turnCacheSync)
+		{
+			_turnCacheByThread.Clear();
+		}
 
 		foreach (var s in sessions)
 		{
@@ -2183,6 +2497,136 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string logPath,
 		bool attached);
 
+	internal sealed record TurnWatchSnapshot(
+		string ThreadId,
+		string? ThreadName,
+		string SessionFilePath,
+		DateTimeOffset? UpdatedAtUtc,
+		long Cursor,
+		long NextCursor,
+		bool Reset,
+		bool Truncated,
+		int TurnCountInMemory,
+		TurnContextUsageSnapshot? ContextUsage,
+		TurnPermissionInfoSnapshot? Permission,
+		string ReasoningSummary,
+		IReadOnlyList<ConsolidatedTurnSnapshot> Turns);
+
+	internal sealed record TurnContextUsageSnapshot(
+		double? UsedTokens,
+		double? ContextWindow,
+		double? PercentLeft);
+
+	internal sealed record TurnPermissionInfoSnapshot(
+		string Approval,
+		string Sandbox);
+
+	internal sealed class ConsolidatedTurnSnapshot
+	{
+		public string TurnId { get; set; } = string.Empty;
+		public TurnEntrySnapshot User { get; set; } = new("user", "User", string.Empty, null, "message", false, Array.Empty<string>());
+		public TurnEntrySnapshot? AssistantFinal { get; set; }
+		public List<TurnEntrySnapshot> Intermediate { get; set; } = new();
+		public bool IsInFlight { get; set; }
+
+		public ConsolidatedTurnSnapshot Clone()
+		{
+			return new ConsolidatedTurnSnapshot
+			{
+				TurnId = TurnId,
+				User = User.Clone(),
+				AssistantFinal = AssistantFinal?.Clone(),
+				Intermediate = Intermediate.Select(x => x.Clone()).ToList(),
+				IsInFlight = IsInFlight
+			};
+		}
+	}
+
+	internal sealed class TurnEntrySnapshot
+	{
+		public TurnEntrySnapshot(
+			string role,
+			string title,
+			string text,
+			string? timestamp,
+			string rawType,
+			bool compact,
+			IReadOnlyList<string> images)
+		{
+			Role = role;
+			Title = title;
+			Text = text;
+			Timestamp = timestamp;
+			RawType = rawType;
+			Compact = compact;
+			Images = images?.ToArray() ?? Array.Empty<string>();
+		}
+
+		public string Role { get; set; }
+		public string Title { get; set; }
+		public string Text { get; set; }
+		public string? Timestamp { get; set; }
+		public string RawType { get; set; }
+		public bool Compact { get; set; }
+		public string[] Images { get; set; } = Array.Empty<string>();
+
+		public TurnEntrySnapshot Clone()
+		{
+			return new TurnEntrySnapshot(Role, Title, Text, Timestamp, RawType, Compact, Images.ToArray());
+		}
+	}
+
+	private sealed class ThreadTurnCacheState
+	{
+		public string SessionFilePath { get; set; } = string.Empty;
+		public long FileLength { get; set; }
+		public DateTime FileLastWriteUtc { get; set; }
+		public int MaxEntries { get; set; }
+		public long Version { get; set; }
+		public bool Truncated { get; set; }
+		public bool LastIsTurnInFlight { get; set; }
+		public string ReasoningSummary { get; set; } = string.Empty;
+		public TurnContextUsageSnapshot? ContextUsage { get; set; }
+		public TurnPermissionInfoSnapshot? Permission { get; set; }
+		public List<ConsolidatedTurnSnapshot> Turns { get; set; } = new();
+	}
+
+	private sealed class ConsolidatedTurnBuilder
+	{
+		public ConsolidatedTurnBuilder(TimelineProjectedEntry userEntry)
+		{
+			User = userEntry.Clone();
+		}
+
+		public TimelineProjectedEntry User { get; }
+		public TimelineProjectedEntry? FinalAssistant { get; set; }
+		public List<TurnEntrySnapshot> Intermediate { get; } = new();
+		public bool IsInFlight { get; set; }
+
+		public ConsolidatedTurnSnapshot ToSnapshot(string threadId, int sequence)
+		{
+			var userTurnEntry = new TurnEntrySnapshot(
+				"user",
+				string.IsNullOrWhiteSpace(User.Title) ? "User" : User.Title,
+				User.Text ?? string.Empty,
+				User.Timestamp,
+				string.IsNullOrWhiteSpace(User.RawType) ? "message" : User.RawType,
+				User.Compact,
+				User.Images ?? Array.Empty<string>());
+			var turnId = !string.IsNullOrWhiteSpace(User.Timestamp)
+				? $"{threadId}:{User.Timestamp}:{sequence}"
+				: $"{threadId}:turn-{sequence}";
+			return new ConsolidatedTurnSnapshot
+			{
+				TurnId = turnId,
+				User = userTurnEntry,
+				AssistantFinal = FinalAssistant is null ? null : ToTurnEntry(FinalAssistant),
+				Intermediate = Intermediate.Select(x => x.Clone()).ToList(),
+				IsInFlight = IsInFlight
+			};
+		}
+	}
+
 	internal sealed record SessionSnapshot(
 		string SessionId,
 		string ThreadId,
@@ -2194,7 +2638,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		bool IsTurnInFlight,
 		PendingApprovalSnapshot? PendingApproval,
 		int QueuedTurnCount,
-		IReadOnlyList<QueuedTurnSummarySnapshot> QueuedTurns);
+		IReadOnlyList<QueuedTurnSummarySnapshot> QueuedTurns,
+		int TurnCountInMemory);
 
 	internal sealed record QueuedTurnSummarySnapshot(
 		string QueueItemId,
@@ -2329,7 +2774,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
-		public SessionSnapshot ToSnapshot()
+		public SessionSnapshot ToSnapshot(int turnCountInMemory)
 		{
 			var queuedTurns = GetQueuedTurnSummaries();
 			return new SessionSnapshot(
@@ -2343,7 +2788,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				IsTurnInFlight: IsTurnInFlight,
 				PendingApproval: GetPendingApproval(),
 				QueuedTurnCount: queuedTurns.Count,
-				QueuedTurns: queuedTurns);
+				QueuedTurns: queuedTurns,
+				TurnCountInMemory: turnCountInMemory);
 		}
 
 		public void SetModel(string? model)

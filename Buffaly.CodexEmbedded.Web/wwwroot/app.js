@@ -1,10 +1,9 @@
 const TIMELINE_POLL_INTERVAL_MS = 2000;
-const TIMELINE_FLUSH_INTERVAL_MS = 350;
 const TURN_ACTIVITY_TICK_INTERVAL_MS = 1000;
 const LOG_FLUSH_INTERVAL_MS = 250;
 const MAX_RENDERED_CLIENT_LOG_LINES = 800;
 const ENABLE_CONSOLE_LOG_FALLBACK = false;
-const INDEX_TIMELINE_SOURCE = "logs"; // keep index timeline poll-based; backend now projects timeline entries from logs
+const INDEX_TIMELINE_SOURCE = "logs"; // keep index timeline poll-based; backend now serves consolidated turns from logs
 
 let socket = null;
 let socketReadyPromise = null;
@@ -34,7 +33,6 @@ let pendingSessionLoadPreviousActiveId = null;
 
 let timelineCursor = null;
 let timelinePollTimer = null;
-let timelineFlushTimer = null;
 let timelinePollGeneration = 0;
 let timelinePollInFlight = false;
 let sessionListPollTimer = null;
@@ -170,24 +168,6 @@ function timelineUsesEventFeed() {
   return INDEX_TIMELINE_SOURCE === "events";
 }
 
-function timelineStreamKeyForSession(sessionId) {
-  const normalized = typeof sessionId === "string" ? sessionId.trim() : "";
-  return normalized ? `session:${normalized}` : "session:active";
-}
-
-function shouldRenderTimelineForSession(sessionId) {
-  if (!timelineUsesEventFeed()) {
-    return false;
-  }
-
-  const normalized = typeof sessionId === "string" ? sessionId.trim() : "";
-  if (!normalized) {
-    return true;
-  }
-
-  return !!activeSessionId && normalized === activeSessionId;
-}
-
 function getMessageListRemainingScroll() {
   if (!chatMessages) {
     return 0;
@@ -242,7 +222,7 @@ function setJumpCollapseMode(enabled) {
 
   if (jumpToBtn) {
     jumpToBtn.setAttribute("aria-expanded", next ? "true" : "false");
-    jumpToBtn.title = next ? "Show all messages" : "Show only user messages";
+    jumpToBtn.title = next ? "Expand all turn details" : "Collapse all turn details";
     jumpToBtn.setAttribute("aria-label", jumpToBtn.title);
   }
 
@@ -1486,8 +1466,7 @@ function beginPendingSessionLoad(threadId, displayName = "") {
   const title = displayName && displayName.trim().length > 0
     ? `Loading ${displayName.trim()}...`
     : `Loading ${normalizedThreadId}...`;
-  timeline.enqueueSystem(title, "Session");
-  timeline.flush();
+  appendLog(`[session] ${title}`);
   renderProjectSidebar();
 }
 
@@ -2947,8 +2926,6 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
   if (normalizedText) {
     lastSentPromptBySession.set(sessionId, normalizedText);
   }
-  timeline.enqueueOptimisticUserMessage(normalizedText, safeImages.map((x) => x.url));
-  timeline.flush();
 
   if (options.fromQueue === true) {
     appendLog(`[turn] dequeued next prompt for session=${sessionId}`);
@@ -3206,13 +3183,13 @@ function handleTimelinePollError(error) {
   const isConnectionError = message.includes("Failed to fetch") || message.includes("NetworkError");
   if (isConnectionError) {
     if (!timelineConnectionIssueShown) {
-      timeline.enqueueSystem("There is a problem connecting to the server. The application may have stopped.");
+      appendLog("[timeline] There is a problem connecting to the server. The application may have stopped.");
       timelineConnectionIssueShown = true;
     }
     return;
   }
 
-  timeline.enqueueSystem(`[error] ${message}`);
+  appendLog(`[timeline] error: ${message}`);
 }
 
 async function pollTimelineOnce(initial, generation) {
@@ -3227,9 +3204,9 @@ async function pollTimelineOnce(initial, generation) {
 
   timelinePollInFlight = true;
   try {
-    const url = new URL("api/timeline/watch", document.baseURI);
+    const url = new URL("api/turns/watch", document.baseURI);
     url.searchParams.set("threadId", state.threadId);
-    url.searchParams.set("maxEntries", initial ? "1000" : "200");
+    url.searchParams.set("maxEntries", "6000");
 
     if (initial || timelineCursor === null) {
       url.searchParams.set("initial", "true");
@@ -3257,17 +3234,29 @@ async function pollTimelineOnce(initial, generation) {
       return;
     }
 
-    if (initial || data.reset === true) {
-      timeline.clear();
+    const priorCursor = timelineCursor;
+    const nextCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
+    const turns = Array.isArray(data.turns) ? data.turns : [];
+    const cursorChanged = Number.isFinite(nextCursor) && priorCursor !== null && nextCursor !== priorCursor;
+    const shouldReplaceTurns =
+      initial ||
+      data.reset === true ||
+      priorCursor === null ||
+      cursorChanged;
+
+    if (shouldReplaceTurns) {
+      if (typeof timeline.setServerTurns === "function") {
+        timeline.setServerTurns(turns);
+      } else {
+        timeline.clear();
+      }
       timelineHasTruncatedHead = false;
       if (data.reset === true) {
-        timeline.enqueueSystem("session file was reset or rotated");
+        appendLog("[timeline] session file was reset or rotated");
       }
     }
 
-    timelineCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
-    const entries = Array.isArray(data.entries) ? data.entries : [];
-    timeline.enqueueServerEntries(entries);
+    timelineCursor = nextCursor;
     applyTimelineWatchMetadata(state.threadId, data);
 
     if (data.truncated === true) {
@@ -3823,10 +3812,6 @@ function handleServerEvent(frame) {
   switch (type) {
     case "status":
       appendLog(`[status] ${payload.message || ""}`);
-      if (shouldRenderTimelineForSession(payload.sessionId || null) && payload.message) {
-        timeline.enqueueSystem(String(payload.message), "Status", { compact: true });
-        timeline.flush();
-      }
       return;
 
     case "session_created":
@@ -3930,7 +3915,7 @@ function handleServerEvent(frame) {
       for (const s of list) {
         const existing = sessions.get(s.sessionId);
         const st =
-          existing || { threadId: null, cwd: null, model: null, reasoningEffort: null, pendingApproval: null, queuedTurns: [], queuedTurnCount: 0, createdAtTick: Date.now(), lastActivityTick: 0 };
+          existing || { threadId: null, cwd: null, model: null, reasoningEffort: null, pendingApproval: null, queuedTurns: [], queuedTurnCount: 0, turnCountInMemory: 0, createdAtTick: Date.now(), lastActivityTick: 0 };
         st.threadId = s.threadId || st.threadId || null;
         st.cwd = s.cwd || st.cwd || null;
         const serverModel = normalizeModelValue(s.model);
@@ -3982,6 +3967,9 @@ function handleServerEvent(frame) {
         st.queuedTurnCount = Number.isFinite(s.queuedTurnCount)
           ? Math.max(0, Math.floor(s.queuedTurnCount))
           : st.queuedTurns.length;
+        st.turnCountInMemory = Number.isFinite(s.turnCountInMemory)
+          ? Math.max(0, Math.floor(s.turnCountInMemory))
+          : Number.isFinite(st.turnCountInMemory) ? st.turnCountInMemory : 0;
 
         const inFlight = s.isTurnInFlight === true || s.turnInFlight === true;
         setTurnInFlight(s.sessionId, inFlight);
@@ -4117,50 +4105,19 @@ function handleServerEvent(frame) {
         rateLimitBySession.delete(sessionId);
       }
       appendLog(`[session] stopped id=${sessionId || "unknown"}`);
-      if (shouldRenderTimelineForSession(sessionId || null)) {
-        timeline.enqueueInlineNotice("Session stopped");
-        timeline.flush();
-      }
       updateSessionSelect(payload.activeSessionId || null);
       return;
     }
 
     case "assistant_delta": {
-      const sessionId = payload.sessionId || null;
-      if (shouldRenderTimelineForSession(sessionId)) {
-        timeline.appendAssistantDelta(payload.text || "", {
-          streamKey: timelineStreamKeyForSession(sessionId || activeSessionId),
-          timestamp: new Date().toISOString()
-        });
-        timeline.flush();
-      }
       return;
     }
 
     case "assistant_response_started": {
-      const sessionId = payload.sessionId || null;
-      if (shouldRenderTimelineForSession(sessionId)) {
-        timeline.enqueueInlineNotice("Assistant response started");
-        timeline.flush();
-      }
       return;
     }
 
     case "assistant_done": {
-      const sessionId = payload.sessionId || null;
-      if (shouldRenderTimelineForSession(sessionId)) {
-        if (payload.text) {
-          timeline.appendAssistantDelta(payload.text, {
-            streamKey: timelineStreamKeyForSession(sessionId || activeSessionId),
-            timestamp: new Date().toISOString()
-          });
-        }
-        timeline.completeAssistantDelta({
-          streamKey: timelineStreamKeyForSession(sessionId || activeSessionId),
-          timestamp: new Date().toISOString()
-        });
-        timeline.flush();
-      }
       return;
     }
 
@@ -4185,17 +4142,6 @@ function handleServerEvent(frame) {
         setTurnInFlight(sessionId, false);
       }
       const errorMessage = payload.errorMessage || null;
-      if (shouldRenderTimelineForSession(sessionId)) {
-        timeline.completeAssistantDelta({
-          streamKey: timelineStreamKeyForSession(sessionId || activeSessionId),
-          timestamp: new Date().toISOString()
-        });
-        const summary = errorMessage
-          ? `status=${status} | error=${errorMessage}`
-          : `status=${status}`;
-        timeline.completeEventTask(summary, new Date().toISOString());
-        timeline.flush();
-      }
       appendLog(`[turn] session=${payload.sessionId || "unknown"} status=${status}${errorMessage ? " error=" + errorMessage : ""}`);
       if (sidebarStateChanged) {
         renderProjectSidebar();
@@ -4220,10 +4166,6 @@ function handleServerEvent(frame) {
         }
         setTurnInFlight(sessionId, true);
       }
-      if (shouldRenderTimelineForSession(sessionId)) {
-        timeline.beginEventTask("Turn started", new Date().toISOString());
-        timeline.flush();
-      }
       if (sidebarStateChanged) {
         renderProjectSidebar();
       }
@@ -4235,10 +4177,6 @@ function handleServerEvent(frame) {
       if (sessionId) {
         touchSessionActivity(sessionId);
         setTurnInFlight(sessionId, true);
-      }
-      if (shouldRenderTimelineForSession(sessionId)) {
-        timeline.enqueueInlineNotice("Cancel requested");
-        timeline.flush();
       }
       appendLog(`[turn] cancel requested for session=${sessionId || "unknown"}`);
       return;
@@ -4275,10 +4213,6 @@ function handleServerEvent(frame) {
         ? payload.summary.trim()
         : "Rate limits updated";
       appendLog(`[rate_limit] session=${sessionId || "unknown"} ${summary}`);
-      if (shouldRenderTimelineForSession(sessionId)) {
-        timeline.enqueueSystem(summary, "Rate Limit", { compact: true });
-        timeline.flush();
-      }
       return;
     }
 
@@ -4354,10 +4288,6 @@ function handleServerEvent(frame) {
       if (sidebarStateChanged) {
         renderProjectSidebar();
       }
-      if (shouldRenderTimelineForSession(sessionId)) {
-        timeline.enqueueSystem(summary, "Session Configured", { compact: true });
-        timeline.flush();
-      }
       return;
     }
 
@@ -4385,10 +4315,6 @@ function handleServerEvent(frame) {
       const summary = compactionPieces?.summary
         || (typeof payload.summary === "string" && payload.summary.trim() ? payload.summary.trim() : "Context compressed");
       appendLog(`[thread_compacted] thread=${threadId || "unknown"} ${summary}`);
-      if (shouldRenderTimelineForSession(sessionId)) {
-        timeline.enqueueSystem(summary, "Context Compression", { compact: true });
-        timeline.flush();
-      }
       return;
     }
 
@@ -4430,11 +4356,6 @@ function handleServerEvent(frame) {
       }
 
       appendLog(`[thread_name_updated] thread=${threadId} name=${threadName}`);
-      const shouldRender = shouldRenderTimelineForSession(sessionId) || (!!activeThreadId && activeThreadId === threadId);
-      if (shouldRender) {
-        timeline.enqueueSystem(`Renamed to ${threadName}`, "Thread Name", { compact: true });
-        timeline.flush();
-      }
       return;
     }
 
@@ -4454,11 +4375,6 @@ function handleServerEvent(frame) {
       if (Array.isArray(payload.actions) && payload.actions.length > 0) lines.push(`Actions: ${payload.actions.join("; ")}`);
       approvalDetails.textContent = lines.join("\n");
       setApprovalVisible(true);
-      if (shouldRenderTimelineForSession(sessionId || null)) {
-        const summary = payload.summary || "Approval requested";
-        timeline.enqueueSystem(summary, "Approval", { compact: true });
-        timeline.flush();
-      }
       appendLog(`[approval] requested session=${sessionId || "unknown"} approvalId=${approvalId || "unknown"}`);
       return;
     }
@@ -4512,10 +4428,6 @@ function handleServerEvent(frame) {
         handlePendingSessionLoadFailure();
       }
       appendLog(`[error] ${payload.message || "unknown error"}`);
-      if (shouldRenderTimelineForSession(payload.sessionId || null) && payload.message) {
-        timeline.enqueueSystem(`[error] ${payload.message}`, "Error");
-        timeline.flush();
-      }
       return;
 
     case "session_started":
@@ -5196,7 +5108,6 @@ updatePermissionLevelIndicator();
 updateMobileProjectsButton();
 updateConversationMetaVisibility();
 
-timelineFlushTimer = setInterval(() => timeline.flush(), TIMELINE_FLUSH_INTERVAL_MS);
 turnActivityTickTimer = setInterval(() => {
   updateTurnActivityStrip();
 }, TURN_ACTIVITY_TICK_INTERVAL_MS);

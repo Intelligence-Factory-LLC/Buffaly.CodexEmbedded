@@ -527,6 +527,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					}
 					: null,
 				queuedTurnCount = s.QueuedTurnCount,
+				turnCountInMemory = s.TurnCountInMemory,
 				queuedTurns = s.QueuedTurns.Select(queued => new
 				{
 					queueItemId = queued.QueueItemId,

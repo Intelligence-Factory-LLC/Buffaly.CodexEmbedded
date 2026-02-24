@@ -266,6 +266,61 @@ app.MapGet("/api/timeline/watch", (HttpRequest request, WebRuntimeDefaults defau
 	});
 });
 
+app.MapGet("/api/turns/watch", (HttpRequest request, SessionOrchestrator orchestrator) =>
+{
+	var threadId = request.Query["threadId"].ToString();
+	if (string.IsNullOrWhiteSpace(threadId))
+	{
+		return Results.BadRequest(new { message = "threadId query parameter is required." });
+	}
+
+	var maxEntries = QueryValueParser.GetPositiveInt(request.Query["maxEntries"], fallback: 6000, max: 20000);
+	var initial = QueryValueParser.GetBool(request.Query["initial"]);
+	var cursorRaw = request.Query["cursor"].ToString();
+	long? cursor = null;
+	if (!string.IsNullOrWhiteSpace(cursorRaw))
+	{
+		if (!long.TryParse(cursorRaw, out var parsedCursor) || parsedCursor < 0)
+		{
+			return Results.BadRequest(new { message = "cursor must be a non-negative integer." });
+		}
+
+		cursor = parsedCursor;
+	}
+
+	try
+	{
+		var watch = orchestrator.WatchTurns(threadId, maxEntries, initial, cursor);
+		return Results.Ok(new
+		{
+			threadId = watch.ThreadId,
+			threadName = watch.ThreadName,
+			sessionFilePath = watch.SessionFilePath,
+			updatedAtUtc = watch.UpdatedAtUtc?.ToString("O"),
+			cursor = watch.Cursor,
+			nextCursor = watch.NextCursor,
+			reset = watch.Reset,
+			truncated = watch.Truncated,
+			turnCountInMemory = watch.TurnCountInMemory,
+			contextUsage = watch.ContextUsage,
+			permission = watch.Permission,
+			reasoningSummary = watch.ReasoningSummary,
+			turns = watch.Turns
+		});
+	}
+	catch (FileNotFoundException ex)
+	{
+		return Results.NotFound(new { message = ex.Message });
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem(
+			statusCode: StatusCodes.Status500InternalServerError,
+			title: "Failed to build turn timeline.",
+			detail: ex.Message);
+	}
+});
+
 app.MapGet("/api/logs/realtime/current", (HttpRequest request, WebRuntimeDefaults defaults) =>
 {
 	var maxLines = QueryValueParser.GetPositiveInt(request.Query["maxLines"], fallback: 200, max: 1000);
@@ -389,6 +444,7 @@ app.MapGet("/api/server/state/current", (
 				IsTurnInFlight: snapshot.IsTurnInFlight,
 				State: sessionState,
 				QueuedTurnCount: snapshot.QueuedTurnCount,
+				TurnCountInMemory: snapshot.TurnCountInMemory,
 				PendingApproval: pendingApproval is null
 					? null
 					: new ServerStateSnapshotBuilder.ServerPendingApprovalRow(
@@ -423,6 +479,7 @@ app.MapGet("/api/server/state/current", (
 				turnsInFlight = orderedSessions.Count(item => item.IsTurnInFlight),
 				pendingApprovals = orderedSessions.Count(item => item.PendingApproval is not null),
 				queuedMessages = orderedSessions.Sum(item => item.QueuedTurnCount),
+				turnsInMemory = orderedSessions.Sum(item => item.TurnCountInMemory),
 				sessions = orderedSessions.Select(item => new
 				{
 					sessionId = item.SessionId,
@@ -433,6 +490,7 @@ app.MapGet("/api/server/state/current", (
 					isTurnInFlight = item.IsTurnInFlight,
 					state = item.State,
 					queuedTurnCount = item.QueuedTurnCount,
+					turnCountInMemory = item.TurnCountInMemory,
 					pendingApprovalId = item.PendingApproval?.ApprovalId
 				}).ToArray()
 			};
@@ -446,6 +504,7 @@ app.MapGet("/api/server/state/current", (
 	var turnsInFlight = snapshots.Count(row => row.IsTurnInFlight);
 	var pendingApprovals = snapshots.Count(row => row.PendingApproval is not null);
 	var queuedMessages = snapshots.Sum(row => row.QueuedTurnCount);
+	var turnsInMemory = snapshots.Sum(row => row.TurnCountInMemory);
 
 	return Results.Ok(new
 	{
@@ -471,7 +530,8 @@ app.MapGet("/api/server/state/current", (
 			activeSessions = snapshots.Count,
 			turnsInFlight,
 			pendingApprovals,
-			queuedMessages
+			queuedMessages,
+			turnsInMemory
 		},
 		projects,
 		sessions = snapshots.Select(row => new
@@ -486,6 +546,7 @@ app.MapGet("/api/server/state/current", (
 			isTurnInFlight = row.IsTurnInFlight,
 			state = row.State,
 			queuedTurnCount = row.QueuedTurnCount,
+			turnCountInMemory = row.TurnCountInMemory,
 			pendingApproval = row.PendingApproval
 		}).ToArray()
 	});
@@ -2138,6 +2199,7 @@ internal static class ServerStateSnapshotBuilder
 		bool IsTurnInFlight,
 		string State,
 		int QueuedTurnCount,
+		int TurnCountInMemory,
 		ServerPendingApprovalRow? PendingApproval);
 
 	internal sealed record ServerPendingApprovalRow(

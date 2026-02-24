@@ -229,6 +229,7 @@ function renderMeta(snapshot) {
     createMetaChip("Turns In Flight", formatNumber(Number(totals.turnsInFlight || 0))),
     createMetaChip("Pending Approvals", formatNumber(Number(totals.pendingApprovals || 0))),
     createMetaChip("Queued Messages", formatNumber(Number(totals.queuedMessages || 0))),
+    createMetaChip("Turns In Memory", formatNumber(Number(totals.turnsInMemory || 0))),
     createMetaChip("WS Connections", formatNumber(Number(server.activeWebSocketConnections || 0))),
     createMetaChip("WS Accepted Total", formatNumber(Number(server.totalWebSocketConnectionsAccepted || 0))),
     createMetaChip("Uptime", formatDurationSeconds(Number(server.uptimeSeconds || 0))),
@@ -326,7 +327,7 @@ function renderSessionsTable(snapshot) {
   if (sessions.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 10;
+    cell.colSpan = 11;
     cell.className = "server-table-empty";
     cell.textContent = "No active sessions are loaded in the server orchestrator.";
     row.appendChild(cell);
@@ -369,6 +370,9 @@ function renderSessionsTable(snapshot) {
     const queuedCell = document.createElement("td");
     queuedCell.textContent = formatNumber(Number(session.queuedTurnCount || 0));
 
+    const turnsInMemoryCell = document.createElement("td");
+    turnsInMemoryCell.textContent = formatNumber(Number(session.turnCountInMemory || 0));
+
     const approvalCell = document.createElement("td");
     approvalCell.textContent = pendingApproval ? normalizeString(pendingApproval.approvalId) || "(pending)" : "-";
 
@@ -382,6 +386,7 @@ function renderSessionsTable(snapshot) {
       effortCell,
       inFlightCell,
       queuedCell,
+      turnsInMemoryCell,
       approvalCell
     );
 
