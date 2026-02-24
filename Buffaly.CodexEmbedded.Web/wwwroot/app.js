@@ -3358,7 +3358,7 @@ function clearActiveSession() {
   updateScrollToBottomButton();
 }
 
-function updateSessionSelect(activeIdFromServer) {
+function updateSessionSelect(activeIdFromServer, options = {}) {
   const current = sessionSelect ? sessionSelect.value : "";
   if (sessionSelect) {
     sessionSelect.textContent = "";
@@ -3383,12 +3383,28 @@ function updateSessionSelect(activeIdFromServer) {
   const storedSessionId = getStoredLastSessionId();
   const storedThreadId = getStoredLastThreadId();
   const sessionForStoredThread = storedThreadId ? getAttachedSessionIdByThreadId(storedThreadId) : null;
-  const toSelect = activeSessionId ||
-    current ||
-    (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
-    (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
-    activeIdFromServer ||
-    (ids.length > 0 ? ids[0] : null);
+  const serverActiveId = typeof activeIdFromServer === "string" && sessions.has(activeIdFromServer)
+    ? activeIdFromServer
+    : null;
+  const serverActiveState = serverActiveId ? sessions.get(serverActiveId) || null : null;
+  const pendingThreadMatch =
+    !!pendingSessionLoadThreadId &&
+    !!serverActiveState &&
+    normalizeThreadId(serverActiveState.threadId || "") === normalizeThreadId(pendingSessionLoadThreadId);
+  const preferServerActive = options.preferServerActive === true || pendingThreadMatch;
+  const toSelect = preferServerActive
+    ? (serverActiveId ||
+      activeSessionId ||
+      current ||
+      (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
+      (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
+      (ids.length > 0 ? ids[0] : null))
+    : (activeSessionId ||
+      current ||
+      (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
+      (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
+      serverActiveId ||
+      (ids.length > 0 ? ids[0] : null));
   if (toSelect && sessions.has(toSelect)) {
     const changed = activeSessionId !== toSelect;
     setActiveSession(toSelect, { restartTimeline: changed });
@@ -3906,7 +3922,7 @@ function handleServerEvent(frame) {
         }
       }
 
-      updateSessionSelect(sessionId);
+      updateSessionSelect(sessionId, { preferServerActive: true });
       return;
     }
 
@@ -4109,7 +4125,7 @@ function handleServerEvent(frame) {
         rateLimitBySession.delete(sessionId);
       }
       appendLog(`[session] stopped id=${sessionId || "unknown"}`);
-      updateSessionSelect(payload.activeSessionId || null);
+      updateSessionSelect(payload.activeSessionId || null, { preferServerActive: true });
       return;
     }
 
