@@ -35,14 +35,12 @@
       this.visibleActionEntryId = null;
       this.liveAssistantEntriesByStreamKey = new Map(); // streamKey -> entry
       this.viewMode = "default";
-      this.condensedExpandedEntryId = null;
-      this.condensedExpandedTaskId = null;
 
       this.container.addEventListener("scroll", () => {
         this.autoScrollPinned = this.isNearBottom();
       });
 
-      this.refreshViewMode();
+      this.refreshVisibility();
     }
 
     parseEntryId(value) {
@@ -84,21 +82,15 @@
     }
 
     normalizeViewMode(value) {
-      return value === "condensed-user" ? "condensed-user" : "default";
-    }
-
-    isCondensedUserMode() {
-      return this.viewMode === "condensed-user";
-    }
-
-    clearCondensedExpandedSelection() {
-      if (this.condensedExpandedEntryId === null) {
-        return;
+      if (value === "condensed-user" || value === "user-anchors") {
+        return "user-anchors";
       }
 
-      this.condensedExpandedEntryId = null;
-      this.condensedExpandedTaskId = null;
-      this.refreshViewMode();
+      return "default";
+    }
+
+    isUserAnchorsMode() {
+      return this.viewMode === "user-anchors";
     }
 
     setViewMode(mode) {
@@ -108,211 +100,38 @@
       }
 
       this.viewMode = normalized;
-      this.clearCondensedExpandedSelection();
-      this.refreshViewMode();
+      this.refreshVisibility();
     }
 
-    setCondensedExpandedEntry(entryId) {
-      if (!this.isCondensedUserMode()) {
-        return;
-      }
-
-      const normalizedEntryId = this.parseEntryId(entryId);
-      if (normalizedEntryId === null) {
-        return;
-      }
-
-      const node = this.entryNodeById.get(normalizedEntryId) || null;
-      const entry = node?.entry || null;
-      if (!entry || entry.role !== "user") {
-        return;
-      }
-
-      const isSameSelection = this.condensedExpandedEntryId === normalizedEntryId;
-      if (isSameSelection) {
-        this.clearCondensedExpandedSelection();
-        return;
-      }
-
-      this.condensedExpandedEntryId = normalizedEntryId;
-      this.condensedExpandedTaskId = null;
-      this.refreshViewMode();
+    isEntryHiddenForCurrentMode(entry) {
+      return this.isUserAnchorsMode() && entry?.role !== "user";
     }
 
-    getExpandedCondensedRange() {
-      if (!this.isCondensedUserMode()) {
-        return null;
-      }
-
-      const selectedEntryId = this.parseEntryId(this.condensedExpandedEntryId);
-      if (selectedEntryId === null) {
-        return null;
-      }
-
-      const selectedNode = this.entryNodeById.get(selectedEntryId) || null;
-      const selectedEntry = selectedNode?.entry || null;
-      if (!selectedEntry || selectedEntry.role !== "user") {
-        return null;
-      }
-
-      let endExclusiveId = null;
-      for (const [entryId, node] of this.entryNodeById.entries()) {
-        if (entryId <= selectedEntryId) {
-          continue;
-        }
-
-        if (node?.entry?.role === "user") {
-          endExclusiveId = entryId;
-          break;
-        }
-      }
-
+    getEntryVisibility(entry) {
+      const hiddenByMode = this.isEntryHiddenForCurrentMode(entry);
+      const hiddenByTask = !this.isUserAnchorsMode() && !hiddenByMode && this.isEntryHiddenForCollapsedTask(entry);
       return {
-        startId: selectedEntryId,
-        endExclusiveId
+        hidden: hiddenByMode || hiddenByTask
       };
     }
 
-    isEntryInExpandedCondensedSection(entry) {
-      if (!this.isCondensedUserMode() || !entry) {
-        return false;
-      }
-
-      const range = this.getExpandedCondensedRange();
-      if (!range) {
-        return false;
-      }
-
-      const entryId = this.parseEntryId(entry.id);
-      if (entryId === null || entryId < range.startId) {
-        return false;
-      }
-
-      if (range.endExclusiveId !== null && entryId >= range.endExclusiveId) {
-        return false;
-      }
-
-      return true;
-    }
-
-    shouldHideEntryForViewMode(entry) {
-      if (!this.isCondensedUserMode()) {
-        return false;
-      }
-
-      if (this.isEntryInExpandedCondensedSection(entry)) {
-        return false;
-      }
-
-      return entry?.role !== "user";
-    }
-
-    isCondensedEntryExpanded(entry) {
-      if (!this.isCondensedUserMode() || entry?.role !== "user") {
-        return false;
-      }
-
-      return this.isEntryInExpandedCondensedSection(entry);
-    }
-
-    wireCondensedEntryInteraction(node, entry) {
+    applyEntryVisibility(node, entry) {
       if (!node || !node.card || !entry) {
         return;
       }
 
-      if (node.card.dataset.condensedHandlerBound === "1") {
-        return;
-      }
-
-      const activate = (event) => {
-        if (!this.isCondensedUserMode()) {
-          return;
-        }
-
-        const target = event?.target;
-        if (target && typeof target.closest === "function") {
-          if (target.closest(".watcher-entry-copy-btn") || target.closest(".watcher-entry-actions")) {
-            return;
-          }
-
-          if (target.closest("summary") || target.closest("a")) {
-            return;
-          }
-        }
-
-        if (this.hasActiveTextSelection()) {
-          return;
-        }
-
-        if (entry.role === "user") {
-          this.setCondensedExpandedEntry(entry.id);
-          return;
-        }
-
-        if (this.isEntryInExpandedCondensedSection(entry)) {
-          this.clearCondensedExpandedSelection();
-        }
-      };
-
-      node.card.addEventListener("click", activate);
-      node.card.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          activate(event);
-        }
-      });
-
-      node.card.dataset.condensedHandlerBound = "1";
+      const visibility = this.getEntryVisibility(entry);
+      node.card.classList.toggle("watcher-view-hidden", visibility.hidden);
     }
 
-    applyViewModeToNode(node, entry) {
-      if (!node || !node.card || !entry) {
-        return;
-      }
-
-      const condensed = this.isCondensedUserMode();
-      const hidden = this.shouldHideEntryForViewMode(entry);
-      const expanded = this.isCondensedEntryExpanded(entry);
-      const inExpandedSection = this.isEntryInExpandedCondensedSection(entry);
-      const collapsed = condensed && entry.role === "user" && !expanded;
-      const condensedClickable = condensed && (entry.role === "user" || inExpandedSection);
-
-      node.card.classList.toggle("watcher-view-hidden", hidden);
-      node.card.classList.toggle("watcher-condensed-entry", condensed && entry.role === "user");
-      node.card.classList.toggle("watcher-condensed-collapsed", collapsed);
-      node.card.classList.toggle("watcher-condensed-expanded", condensed && entry.role === "user" && expanded);
-
-      if (condensedClickable) {
-        node.card.classList.add("watcher-condensed-clickable");
-        node.card.setAttribute("tabindex", "0");
-        node.card.setAttribute("role", "button");
-        if (entry.role === "user") {
-          node.card.setAttribute("aria-expanded", expanded ? "true" : "false");
-        } else {
-          node.card.setAttribute("aria-label", "Collapse section");
-        }
-        node.card.dataset.condensedToggle = "1";
-      } else if (node.card.dataset.condensedToggle === "1") {
-        node.card.classList.remove("watcher-condensed-clickable");
-        node.card.removeAttribute("tabindex");
-        node.card.removeAttribute("role");
-        node.card.removeAttribute("aria-expanded");
-        node.card.removeAttribute("aria-label");
-        delete node.card.dataset.condensedToggle;
-      }
-    }
-
-    refreshViewMode() {
-      if (this.container) {
-        this.container.classList.toggle("watcher-condensed-user-mode", this.isCondensedUserMode());
-      }
-
+    refreshVisibility() {
       for (const node of this.entryNodeById.values()) {
         if (!node || !node.entry) {
           continue;
         }
 
-        this.applyViewModeToNode(node, node.entry);
+        this.updateTaskToggleState(node, node.entry);
+        this.applyEntryVisibility(node, node.entry);
       }
     }
 
@@ -583,9 +402,8 @@
       this.autoScrollPinned = true;
       this.visibleActionEntryId = null;
       this.liveAssistantEntriesByStreamKey.clear();
-      this.condensedExpandedEntryId = null;
-      this.condensedExpandedTaskId = null;
-      this.refreshViewMode();
+      this.viewMode = "default";
+      this.refreshVisibility();
       this.dispatchTimelineEvent("timeline-cleared");
     }
 
@@ -655,17 +473,8 @@
       return false;
     }
 
-    applyTaskVisibility(node, entry) {
-      if (!node || !node.card) {
-        return;
-      }
-
-      const shouldHideForTask = this.isCondensedUserMode() ? false : this.isEntryHiddenForCollapsedTask(entry);
-      node.card.classList.toggle("watcher-task-collapsed-hidden", shouldHideForTask);
-    }
-
     updateTaskToggleState(node, entry) {
-      if (!node || !node.taskToggle || !entry || !entry.taskId || (entry.taskBoundary !== "start" && entry.taskBoundary !== "end")) {
+      if (!node || !node.taskToggle || !entry || !entry.taskId || entry.taskBoundary !== "start") {
         return;
       }
 
@@ -673,18 +482,7 @@
       node.taskToggle.textContent = collapsed ? "[+]" : "[-]";
       node.card.classList.toggle("watcher-task-collapsed", collapsed);
       node.card.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      node.card.setAttribute("aria-label", collapsed ? "Expand task block" : "Collapse task block");
-    }
-
-    refreshTaskVisualState() {
-      for (const node of this.entryNodeById.values()) {
-        if (!node || !node.entry) {
-          continue;
-        }
-
-        this.applyTaskVisibility(node, node.entry);
-        this.updateTaskToggleState(node, node.entry);
-      }
+      node.card.setAttribute("aria-label", collapsed ? "Expand task section" : "Collapse task section");
     }
 
     toggleTaskCollapsed(taskId) {
@@ -698,7 +496,7 @@
         this.collapsedTaskIds.add(taskId);
       }
 
-      this.refreshTaskVisualState();
+      this.refreshVisibility();
     }
 
     enqueueSystem(text, title = this.systemTitle, options = {}) {
@@ -1955,10 +1753,6 @@
         }
 
         if (removedEntry) {
-          if (this.parseEntryId(removedEntry.id) === this.condensedExpandedEntryId) {
-            this.condensedExpandedEntryId = null;
-            this.condensedExpandedTaskId = null;
-          }
           this.dispatchTimelineEvent("timeline-entry-removed", {
             entry: this.toEntrySnapshot(removedEntry),
             reason: "trimmed"
@@ -2043,7 +1837,7 @@
         row.dataset.entryId = String(entry.id);
 
         let taskToggle = null;
-        if ((entry.taskBoundary === "start" || entry.taskBoundary === "end") && entry.taskId) {
+        if (entry.taskBoundary === "start" && entry.taskId) {
           taskToggle = document.createElement("span");
           taskToggle.className = "watcher-task-toggle";
           taskToggle.setAttribute("aria-hidden", "true");
@@ -2093,10 +1887,8 @@
         this.renderCount += 1;
         const node = { card: row, body: text, time, compact: true, taskToggle, entry };
         this.entryNodeById.set(entry.id, node);
-        this.wireCondensedEntryInteraction(node, entry);
         this.updateTaskToggleState(node, entry);
-        this.applyTaskVisibility(node, entry);
-        this.applyViewModeToNode(node, entry);
+        this.applyEntryVisibility(node, entry);
         this.trimIfNeeded();
         this.dispatchTimelineEvent("timeline-entry-appended", {
           entry: this.toEntrySnapshot(entry)
@@ -2134,9 +1926,8 @@
           entry
         };
         this.entryNodeById.set(entry.id, node);
-        this.wireCondensedEntryInteraction(node, entry);
-        this.applyTaskVisibility(node, entry);
-        this.applyViewModeToNode(node, entry);
+        this.updateTaskToggleState(node, entry);
+        this.applyEntryVisibility(node, entry);
         this.trimIfNeeded();
         this.dispatchTimelineEvent("timeline-entry-appended", {
           entry: this.toEntrySnapshot(entry)
@@ -2197,9 +1988,8 @@
         entry
       };
       this.entryNodeById.set(entry.id, node);
-      this.wireCondensedEntryInteraction(node, entry);
-      this.applyTaskVisibility(node, entry);
-      this.applyViewModeToNode(node, entry);
+      this.updateTaskToggleState(node, entry);
+      this.applyEntryVisibility(node, entry);
       this.trimIfNeeded();
       this.dispatchTimelineEvent("timeline-entry-appended", {
         entry: this.toEntrySnapshot(entry)
@@ -2220,9 +2010,8 @@
           this.renderCount += 1;
           const node = { card: fallback, body: fallback, time: null, compact: true, taskToggle: null, entry };
           this.entryNodeById.set(entry.id, node);
-          this.wireCondensedEntryInteraction(node, entry);
-          this.applyTaskVisibility(node, entry);
-          this.applyViewModeToNode(node, entry);
+          this.updateTaskToggleState(node, entry);
+          this.applyEntryVisibility(node, entry);
           this.dispatchTimelineEvent("timeline-entry-appended", {
             entry: this.toEntrySnapshot(entry)
           });
@@ -2245,8 +2034,7 @@
         node.body.textContent = this.getEntryBodyText(entry);
         node.time.textContent = this.formatTime(entry.timestamp);
         this.updateTaskToggleState(node, entry);
-        this.applyTaskVisibility(node, entry);
-        this.applyViewModeToNode(node, entry);
+        this.applyEntryVisibility(node, entry);
         this.dispatchTimelineEvent("timeline-entry-updated", {
           entry: this.toEntrySnapshot(entry)
         });
@@ -2281,8 +2069,8 @@
       if (node.time) {
         node.time.textContent = this.formatTime(entry.timestamp);
       }
-      this.applyTaskVisibility(node, entry);
-      this.applyViewModeToNode(node, entry);
+      this.updateTaskToggleState(node, entry);
+      this.applyEntryVisibility(node, entry);
       this.dispatchTimelineEvent("timeline-entry-updated", {
         entry: this.toEntrySnapshot(entry)
       });

@@ -60,7 +60,7 @@ let pendingClientLogLines = [];
 let turnActivityTickTimer = null;
 let turnStartedAtBySession = new Map(); // sessionId -> epoch ms when running turn started
 let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
-let jumpCondensedMode = false;
+let jumpCollapseMode = false;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -231,22 +231,18 @@ function scrollMessagesToBottom(smooth = false) {
   updateTimelineTruncationNotice();
 }
 
-function setJumpCondensedMode(enabled) {
+function setJumpCollapseMode(enabled) {
   const hasState = !!getActiveSessionState();
   const next = !!enabled && hasState;
-  jumpCondensedMode = next;
+  jumpCollapseMode = next;
 
   if (timeline && typeof timeline.setViewMode === "function") {
-    timeline.setViewMode(next ? "condensed-user" : "default");
-  }
-
-  if (chatPanel) {
-    chatPanel.classList.toggle("jump-condensed-mode", next);
+    timeline.setViewMode(next ? "user-anchors" : "default");
   }
 
   if (jumpToBtn) {
     jumpToBtn.setAttribute("aria-expanded", next ? "true" : "false");
-    jumpToBtn.title = next ? "Exit jump mode" : "Jump to user message";
+    jumpToBtn.title = next ? "Show all messages" : "Show only user messages";
     jumpToBtn.setAttribute("aria-label", jumpToBtn.title);
   }
 
@@ -1766,7 +1762,7 @@ function updateConversationMetaVisibility() {
     jumpToBtn.disabled = !hasState;
   }
   if (!hasState) {
-    setJumpCondensedMode(false);
+    setJumpCollapseMode(false);
   }
 }
 
@@ -3293,7 +3289,7 @@ function setActiveSession(sessionId, options = {}) {
   const previousState = getActiveSessionState();
   if (changed) {
     rememberPromptDraftForState(previousState);
-    setJumpCondensedMode(false);
+    setJumpCollapseMode(false);
   }
 
   activeSessionId = sessionId;
@@ -3349,7 +3345,7 @@ function setActiveSession(sessionId, options = {}) {
 function clearActiveSession() {
   const previousState = getActiveSessionState();
   rememberPromptDraftForState(previousState);
-  setJumpCondensedMode(false);
+  setJumpCollapseMode(false);
 
   activeSessionId = null;
   refreshSessionMeta();
@@ -4821,7 +4817,7 @@ if (scrollToBottomBtn) {
 
 if (jumpToBtn) {
   jumpToBtn.addEventListener("click", () => {
-    setJumpCondensedMode(!jumpCondensedMode);
+    setJumpCollapseMode(!jumpCollapseMode);
   });
 }
 
@@ -5145,9 +5141,9 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
-  if (jumpCondensedMode) {
+  if (jumpCollapseMode) {
     event.preventDefault();
-    setJumpCondensedMode(false);
+    setJumpCollapseMode(false);
     return;
   }
 
