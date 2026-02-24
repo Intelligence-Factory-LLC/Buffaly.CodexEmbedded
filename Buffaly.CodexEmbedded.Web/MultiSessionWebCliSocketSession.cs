@@ -604,15 +604,60 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
-		if (_orchestrator.TryGetTurnState(sessionId, out var isTurnInFlight) && isTurnInFlight)
-		{
-			var steer = await _orchestrator.SteerTurnAsync(sessionId, normalizedText, images, cancellationToken);
-			if (!steer.Success)
+			if (_orchestrator.TryGetTurnState(sessionId, out var isTurnInFlight) && isTurnInFlight)
 			{
-				await SendEventAsync("error", new { message = steer.ErrorMessage ?? "Failed to steer active turn." }, cancellationToken);
+				if (_orchestrator.TryGetTurnSteerability(sessionId, out var canSteer) && !canSteer)
+				{
+					await QueueTurnAsync(
+						sessionId,
+						normalizedText,
+						normalizedCwd,
+						normalizedModel,
+						normalizedEffort,
+						hasModelOverride,
+						hasEffortOverride,
+						images,
+						cancellationToken);
+					await SendEventAsync("status", new { sessionId, message = "Turn appears stale; prompt queued until recovery completes." }, cancellationToken);
+					return;
+				}
+
+				var steer = await _orchestrator.SteerTurnAsync(sessionId, normalizedText, images, cancellationToken);
+				if (!steer.Success)
+				{
+					if (steer.Fallback == SessionOrchestrator.TurnSubmitFallback.StartTurn)
+					{
+						_orchestrator.StartTurn(
+							sessionId,
+							normalizedText,
+							normalizedCwd,
+							normalizedModel,
+							normalizedEffort,
+							hasModelOverride,
+							hasEffortOverride,
+							images);
+						return;
+					}
+
+					if (steer.Fallback == SessionOrchestrator.TurnSubmitFallback.QueueTurn)
+					{
+						await QueueTurnAsync(
+							sessionId,
+							normalizedText,
+							normalizedCwd,
+							normalizedModel,
+							normalizedEffort,
+							hasModelOverride,
+							hasEffortOverride,
+							images,
+							cancellationToken);
+						return;
+					}
+
+					await SendEventAsync("error", new { message = steer.ErrorMessage ?? "Failed to steer active turn." }, cancellationToken);
+				}
+				return;
 			}
-			return;
-		}
 
 		_orchestrator.StartTurn(
 			sessionId,

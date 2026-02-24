@@ -19,7 +19,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private readonly Dictionary<string, RateLimitDispatchState> _rateLimitDispatchBySession = new(StringComparer.Ordinal);
 	private static readonly TimeSpan RateLimitCoalesceDelay = TimeSpan.FromMilliseconds(350);
 	private static readonly TimeSpan StaleTurnRecoveryFromLogsMinAge = TimeSpan.FromSeconds(30);
+	private static readonly TimeSpan StaleTurnRecoveryWithQueuedTurnMinAge = TimeSpan.FromSeconds(8);
 	private static readonly TimeSpan StaleTurnRecoveryWithActiveTurnIdMaxAge = TimeSpan.FromMinutes(5);
+	private static readonly TimeSpan StaleTurnRecoveryWithQueuedTurnActiveTurnIdMaxAge = TimeSpan.FromSeconds(45);
 
 	public event Action? SessionsChanged;
 	public event Action<string, object>? Broadcast;
@@ -356,7 +358,16 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				continue;
 			}
 
-			if (session.TryRecoverStaleTurnFromLogConsensus(StaleTurnRecoveryFromLogsMinAge, out var staleReason))
+			var minimumInFlightAge = session.HasQueuedTurns()
+				? StaleTurnRecoveryWithQueuedTurnMinAge
+				: StaleTurnRecoveryFromLogsMinAge;
+			var activeTurnIdMaxAge = session.HasQueuedTurns()
+				? StaleTurnRecoveryWithQueuedTurnActiveTurnIdMaxAge
+				: StaleTurnRecoveryWithActiveTurnIdMaxAge;
+			if (session.TryRecoverStaleTurnFromLogConsensus(
+				minimumInFlightAge,
+				activeTurnIdMaxAge,
+				out var staleReason))
 			{
 				session.Log.Write($"[turn_recovery] cleared stale active turn from log consensus ({staleReason})");
 				Broadcast?.Invoke(
@@ -721,6 +732,32 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 	}
 
+	public bool TryGetTurnSteerability(string sessionId, out bool canSteer)
+	{
+		canSteer = false;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			return false;
+		}
+
+		lock (_sync)
+		{
+			if (!_sessions.TryGetValue(sessionId, out var s))
+			{
+				return false;
+			}
+
+			if (!s.IsTurnInFlight || s.IsTurnInFlightRecoveredFromLogs)
+			{
+				canSteer = false;
+				return true;
+			}
+
+			canSteer = !string.IsNullOrWhiteSpace(s.ResolveActiveTurnId());
+			return true;
+		}
+	}
+
 	public bool TrySetSessionModel(string sessionId, string? model, string? effort)
 	{
 		if (string.IsNullOrWhiteSpace(sessionId))
@@ -1076,24 +1113,27 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var session = TryGetSession(sessionId);
 		if (session is null)
 		{
-			return new SteerTurnResult(false, $"Unknown session: {sessionId}");
+			return new SteerTurnResult(false, $"Unknown session: {sessionId}", TurnSubmitFallback.None);
 		}
 
 		var safeImages = images?.ToList() ?? new List<CodexUserImageInput>();
 		if (string.IsNullOrWhiteSpace(normalizedText) && safeImages.Count == 0)
 		{
-			return new SteerTurnResult(false, "Prompt text or at least one image is required.");
+			return new SteerTurnResult(false, "Prompt text or at least one image is required.", TurnSubmitFallback.None);
 		}
 
 		if (!session.IsTurnInFlight)
 		{
-			return new SteerTurnResult(false, "No running turn is available to steer. Resend as a new message.");
+			return new SteerTurnResult(false, "No running turn is available to steer. Resend as a new message.", TurnSubmitFallback.StartTurn);
 		}
 
 		var expectedTurnId = session.ResolveActiveTurnId();
 		if (string.IsNullOrWhiteSpace(expectedTurnId))
 		{
-			return new SteerTurnResult(false, "Unable to steer because the active turn id is unavailable. Edit and resend.");
+			var fallback = session.IsTurnInFlightRecoveredFromLogs
+				? TurnSubmitFallback.QueueTurn
+				: TurnSubmitFallback.None;
+			return new SteerTurnResult(false, "Unable to steer because the active turn id is unavailable. Prompt was not sent.", fallback);
 		}
 
 		try
@@ -1101,23 +1141,23 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			await session.Session.SteerTurnAsync(expectedTurnId, normalizedText, safeImages, cancellationToken);
 			session.Log.Write($"[turn_steer] expectedTurnId={expectedTurnId} text={BuildQueuedTurnPreview(normalizedText, safeImages.Count)}");
 			Broadcast?.Invoke("status", new { sessionId, message = "Steer message sent to active turn." });
-			return new SteerTurnResult(true, null);
-		}
-		catch (Exception ex)
-		{
+				return new SteerTurnResult(true, null, TurnSubmitFallback.None);
+			}
+			catch (Exception ex)
+			{
 			if (IsSteerPreconditionMismatch(ex, out var detailed))
 			{
 				var message = string.IsNullOrWhiteSpace(detailed)
 					? "Steer was rejected because the active turn changed. Edit and resend your message."
 					: $"Steer was rejected because the active turn changed ({detailed}). Edit and resend your message.";
 				session.Log.Write($"[turn_steer] precondition mismatch expectedTurnId={expectedTurnId} detail={detailed ?? "(none)"}");
-				return new SteerTurnResult(false, message);
-			}
+					return new SteerTurnResult(false, message, TurnSubmitFallback.QueueTurn);
+				}
 
-			var simplified = SimplifyRpcErrorMessage(ex.Message) ?? ex.Message;
-			session.Log.Write($"[turn_steer] failed expectedTurnId={expectedTurnId} error={simplified}");
-			return new SteerTurnResult(false, $"Failed to steer active turn: {simplified}");
-		}
+				var simplified = SimplifyRpcErrorMessage(ex.Message) ?? ex.Message;
+				session.Log.Write($"[turn_steer] failed expectedTurnId={expectedTurnId} error={simplified}");
+				return new SteerTurnResult(false, $"Failed to steer active turn: {simplified}", TurnSubmitFallback.None);
+			}
 	}
 
 	private void LaunchTurnExecution(
@@ -2851,7 +2891,15 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	internal sealed record SteerTurnResult(
 		bool Success,
-		string? ErrorMessage);
+		string? ErrorMessage,
+		TurnSubmitFallback Fallback);
+
+	internal enum TurnSubmitFallback
+	{
+		None,
+		StartTurn,
+		QueueTurn
+	}
 
 	private sealed record TurnExecutionRequest(
 		string Text,
@@ -3354,7 +3402,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return true;
 		}
 
-		public bool TryRecoverStaleTurnFromLogConsensus(TimeSpan minimumInFlightAge, out string reason)
+		public bool TryRecoverStaleTurnFromLogConsensus(
+			TimeSpan minimumInFlightAge,
+			TimeSpan activeTurnIdMaxAge,
+			out string reason)
 		{
 			reason = string.Empty;
 			CancellationTokenSource? activeTurnCts = null;
@@ -3375,13 +3426,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					return false;
 				}
 
-				if (Session.TryGetActiveTurnId(out var activeFromClient) && !string.IsNullOrWhiteSpace(activeFromClient))
-				{
-					_activeTurnId = activeFromClient;
-					if (age < StaleTurnRecoveryWithActiveTurnIdMaxAge)
+					if (Session.TryGetActiveTurnId(out var activeFromClient) && !string.IsNullOrWhiteSpace(activeFromClient))
 					{
-						reason = "active_turn_id_present";
-						return false;
+						_activeTurnId = activeFromClient;
+						if (age < activeTurnIdMaxAge)
+						{
+							reason = "active_turn_id_present";
+							return false;
 					}
 				}
 
