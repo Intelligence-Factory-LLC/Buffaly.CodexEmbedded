@@ -43,25 +43,37 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	public IReadOnlyList<SessionSnapshot> GetSessionSnapshots()
 	{
-		Dictionary<string, int> turnCountByThread;
+		List<ManagedSession> loadedSessions;
+		lock (_sync)
+		{
+			loadedSessions = _sessions.Values.ToList();
+		}
+
+		EnsureTurnCacheForSessions(loadedSessions, maxEntries: 6000);
+
+		Dictionary<string, (int TurnCountInMemory, bool IsTurnInFlightInferredFromLogs)> turnStatsByThread;
 		lock (_turnCacheSync)
 		{
-			turnCountByThread = _turnCacheByThread.ToDictionary(
+			turnStatsByThread = _turnCacheByThread.ToDictionary(
 				x => x.Key,
-				x => x.Value.Turns.Count,
+				x => (
+					TurnCountInMemory: x.Value.Turns.Count,
+					IsTurnInFlightInferredFromLogs: x.Value.LastInferredTurnInFlightFromLogs),
 				StringComparer.Ordinal);
 		}
 
-		lock (_sync)
-		{
-			return _sessions.Values
-				.Select(s =>
-				{
-					turnCountByThread.TryGetValue(s.Session.ThreadId, out var turnCountInMemory);
-					return s.ToSnapshot(turnCountInMemory);
-				})
-				.ToList();
-		}
+		return loadedSessions
+			.Select(s =>
+			{
+				turnStatsByThread.TryGetValue(s.Session.ThreadId, out var stats);
+				var inferredFromLogs = stats.IsTurnInFlightInferredFromLogs;
+				var codexInFlight = s.IsTurnInFlight;
+				return s.ToSnapshot(
+					turnCountInMemory: stats.TurnCountInMemory,
+					isTurnInFlightInferredFromLogs: inferredFromLogs,
+					isTurnInFlightLogOnly: inferredFromLogs && !codexInFlight);
+			})
+			.ToList();
 	}
 
 	public int GetTurnCountInMemory()
@@ -199,6 +211,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var projected = _timelineProjection.Project(threadId, watch, initial: true);
 		var inFlight = IsTurnInFlightForThread(threadId);
 		var rebuiltTurns = BuildConsolidatedTurns(threadId, projected.Entries, inFlight);
+		var inferredTurnInFlightFromLogs = InferTurnInFlightFromLogs(projected.Entries, rebuiltTurns);
 
 		lock (_turnCacheSync)
 		{
@@ -226,9 +239,123 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					Sandbox: projected.Permission.Sandbox);
 			state.ReasoningSummary = projected.ReasoningSummary;
 			state.LastIsTurnInFlight = inFlight;
+			state.LastInferredTurnInFlightFromLogs = inferredTurnInFlightFromLogs;
 			state.Turns = rebuiltTurns;
 			state.Version += 1;
 		}
+	}
+
+	private void EnsureTurnCacheForSessions(IReadOnlyList<ManagedSession> sessions, int maxEntries)
+	{
+		if (sessions.Count == 0)
+		{
+			return;
+		}
+
+		var uniqueThreadIds = sessions
+			.Select(x => x.Session.ThreadId)
+			.Where(x => !string.IsNullOrWhiteSpace(x))
+			.Distinct(StringComparer.Ordinal)
+			.ToArray();
+		if (uniqueThreadIds.Length == 0)
+		{
+			return;
+		}
+
+		var catalogByThread = CodexSessionCatalog.ListSessions(_defaults.CodexHomePath, limit: 0)
+			.Where(x => !string.IsNullOrWhiteSpace(x.ThreadId) && !string.IsNullOrWhiteSpace(x.SessionFilePath))
+			.GroupBy(x => x.ThreadId, StringComparer.Ordinal)
+			.ToDictionary(
+				x => x.Key,
+				x => x
+					.OrderByDescending(item => item.UpdatedAtUtc ?? DateTimeOffset.MinValue)
+					.First(),
+				StringComparer.Ordinal);
+
+		foreach (var threadId in uniqueThreadIds)
+		{
+			if (!catalogByThread.TryGetValue(threadId, out var session) || string.IsNullOrWhiteSpace(session.SessionFilePath))
+			{
+				continue;
+			}
+
+			var sessionFilePath = Path.GetFullPath(session.SessionFilePath);
+			if (!File.Exists(sessionFilePath))
+			{
+				continue;
+			}
+
+			try
+			{
+				var info = new FileInfo(sessionFilePath);
+				var rebuild = false;
+				lock (_turnCacheSync)
+				{
+					if (!_turnCacheByThread.TryGetValue(threadId, out var existing))
+					{
+						rebuild = true;
+					}
+					else
+					{
+						rebuild =
+							!string.Equals(existing.SessionFilePath, sessionFilePath, StringComparison.Ordinal) ||
+							existing.FileLength != info.Length ||
+							existing.FileLastWriteUtc != info.LastWriteTimeUtc ||
+							existing.MaxEntries != maxEntries;
+					}
+				}
+
+				if (rebuild)
+				{
+					RebuildThreadTurnCache(threadId, sessionFilePath, maxEntries, info.Length, info.LastWriteTimeUtc);
+				}
+			}
+			catch
+			{
+			}
+		}
+	}
+
+	private static bool InferTurnInFlightFromLogs(
+		IReadOnlyList<TimelineProjectedEntry> entries,
+		IReadOnlyList<ConsolidatedTurnSnapshot> turns)
+	{
+		var openTaskDepth = 0;
+		foreach (var entry in entries)
+		{
+			if (entry is null)
+			{
+				continue;
+			}
+
+			var rawType = entry.RawType ?? string.Empty;
+			var boundary = entry.TaskBoundary ?? string.Empty;
+			if (string.Equals(boundary, "start", StringComparison.Ordinal) ||
+				string.Equals(rawType, "task_started", StringComparison.Ordinal))
+			{
+				openTaskDepth += 1;
+				continue;
+			}
+
+			if (string.Equals(boundary, "end", StringComparison.Ordinal) ||
+				string.Equals(rawType, "task_complete", StringComparison.Ordinal))
+			{
+				openTaskDepth = Math.Max(0, openTaskDepth - 1);
+			}
+		}
+
+		if (openTaskDepth > 0)
+		{
+			return true;
+		}
+
+		if (turns.Count == 0)
+		{
+			return false;
+		}
+
+		var lastTurn = turns[^1];
+		return lastTurn.AssistantFinal is null && lastTurn.Intermediate.Count > 0;
 	}
 
 	private bool IsTurnInFlightForThread(string threadId)
@@ -2585,6 +2712,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		public long Version { get; set; }
 		public bool Truncated { get; set; }
 		public bool LastIsTurnInFlight { get; set; }
+		public bool LastInferredTurnInFlightFromLogs { get; set; }
 		public string ReasoningSummary { get; set; } = string.Empty;
 		public TurnContextUsageSnapshot? ContextUsage { get; set; }
 		public TurnPermissionInfoSnapshot? Permission { get; set; }
@@ -2639,7 +2767,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		PendingApprovalSnapshot? PendingApproval,
 		int QueuedTurnCount,
 		IReadOnlyList<QueuedTurnSummarySnapshot> QueuedTurns,
-		int TurnCountInMemory);
+		int TurnCountInMemory,
+		bool IsTurnInFlightInferredFromLogs,
+		bool IsTurnInFlightLogOnly);
 
 	internal sealed record QueuedTurnSummarySnapshot(
 		string QueueItemId,
@@ -2774,7 +2904,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
-		public SessionSnapshot ToSnapshot(int turnCountInMemory)
+		public SessionSnapshot ToSnapshot(
+			int turnCountInMemory,
+			bool isTurnInFlightInferredFromLogs,
+			bool isTurnInFlightLogOnly)
 		{
 			var queuedTurns = GetQueuedTurnSummaries();
 			return new SessionSnapshot(
@@ -2789,7 +2922,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				PendingApproval: GetPendingApproval(),
 				QueuedTurnCount: queuedTurns.Count,
 				QueuedTurns: queuedTurns,
-				TurnCountInMemory: turnCountInMemory);
+				TurnCountInMemory: turnCountInMemory,
+				IsTurnInFlightInferredFromLogs: isTurnInFlightInferredFromLogs,
+				IsTurnInFlightLogOnly: isTurnInFlightLogOnly);
 		}
 
 		public void SetModel(string? model)

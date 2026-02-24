@@ -442,6 +442,8 @@ app.MapGet("/api/server/state/current", (
 				Model: snapshot.Model,
 				ReasoningEffort: snapshot.ReasoningEffort,
 				IsTurnInFlight: snapshot.IsTurnInFlight,
+				IsTurnInFlightInferredFromLogs: snapshot.IsTurnInFlightInferredFromLogs,
+				IsTurnInFlightLogOnly: snapshot.IsTurnInFlightLogOnly,
 				State: sessionState,
 				QueuedTurnCount: snapshot.QueuedTurnCount,
 				TurnCountInMemory: snapshot.TurnCountInMemory,
@@ -477,6 +479,8 @@ app.MapGet("/api/server/state/current", (
 				normalizedCwd = group.Key,
 				sessionCount = orderedSessions.Length,
 				turnsInFlight = orderedSessions.Count(item => item.IsTurnInFlight),
+				turnsInFlightInferredFromLogs = orderedSessions.Count(item => item.IsTurnInFlightInferredFromLogs),
+				turnsInFlightLogOnly = orderedSessions.Count(item => item.IsTurnInFlightLogOnly),
 				pendingApprovals = orderedSessions.Count(item => item.PendingApproval is not null),
 				queuedMessages = orderedSessions.Sum(item => item.QueuedTurnCount),
 				turnsInMemory = orderedSessions.Sum(item => item.TurnCountInMemory),
@@ -488,6 +492,8 @@ app.MapGet("/api/server/state/current", (
 					model = item.Model,
 					reasoningEffort = item.ReasoningEffort,
 					isTurnInFlight = item.IsTurnInFlight,
+					isTurnInFlightInferredFromLogs = item.IsTurnInFlightInferredFromLogs,
+					isTurnInFlightLogOnly = item.IsTurnInFlightLogOnly,
 					state = item.State,
 					queuedTurnCount = item.QueuedTurnCount,
 					turnCountInMemory = item.TurnCountInMemory,
@@ -502,6 +508,8 @@ app.MapGet("/api/server/state/current", (
 	var runtime = runtimeTracker.GetSnapshot(capturedAtUtc);
 	var codexHomePath = CodexHomePaths.ResolveCodexHomePath(defaults.CodexHomePath);
 	var turnsInFlight = snapshots.Count(row => row.IsTurnInFlight);
+	var turnsInFlightInferredFromLogs = snapshots.Count(row => row.IsTurnInFlightInferredFromLogs);
+	var turnsInFlightLogOnly = snapshots.Count(row => row.IsTurnInFlightLogOnly);
 	var pendingApprovals = snapshots.Count(row => row.PendingApproval is not null);
 	var queuedMessages = snapshots.Sum(row => row.QueuedTurnCount);
 	var turnsInMemory = snapshots.Sum(row => row.TurnCountInMemory);
@@ -529,6 +537,8 @@ app.MapGet("/api/server/state/current", (
 			activeProjects = projects.Length,
 			activeSessions = snapshots.Count,
 			turnsInFlight,
+			turnsInFlightInferredFromLogs,
+			turnsInFlightLogOnly,
 			pendingApprovals,
 			queuedMessages,
 			turnsInMemory
@@ -544,6 +554,8 @@ app.MapGet("/api/server/state/current", (
 			model = row.Model,
 			reasoningEffort = row.ReasoningEffort,
 			isTurnInFlight = row.IsTurnInFlight,
+			isTurnInFlightInferredFromLogs = row.IsTurnInFlightInferredFromLogs,
+			isTurnInFlightLogOnly = row.IsTurnInFlightLogOnly,
 			state = row.State,
 			queuedTurnCount = row.QueuedTurnCount,
 			turnCountInMemory = row.TurnCountInMemory,
@@ -2197,6 +2209,8 @@ internal static class ServerStateSnapshotBuilder
 		string? Model,
 		string? ReasoningEffort,
 		bool IsTurnInFlight,
+		bool IsTurnInFlightInferredFromLogs,
+		bool IsTurnInFlightLogOnly,
 		string State,
 		int QueuedTurnCount,
 		int TurnCountInMemory,

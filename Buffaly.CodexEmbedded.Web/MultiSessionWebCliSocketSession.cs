@@ -514,6 +514,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				approvalPolicy = s.ApprovalPolicy,
 				sandboxPolicy = s.SandboxPolicy,
 				isTurnInFlight = s.IsTurnInFlight,
+				isTurnInFlightInferredFromLogs = s.IsTurnInFlightInferredFromLogs,
+				isTurnInFlightLogOnly = s.IsTurnInFlightLogOnly,
 				pendingApproval = s.PendingApproval is { } approval
 					? new
 					{

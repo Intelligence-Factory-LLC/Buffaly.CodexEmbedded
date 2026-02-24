@@ -227,6 +227,8 @@ function renderMeta(snapshot) {
     createMetaChip("Active Projects", formatNumber(Number(totals.activeProjects || 0))),
     createMetaChip("Active Sessions", formatNumber(Number(totals.activeSessions || 0))),
     createMetaChip("Turns In Flight", formatNumber(Number(totals.turnsInFlight || 0))),
+    createMetaChip("Turns Log Inferred", formatNumber(Number(totals.turnsInFlightInferredFromLogs || 0))),
+    createMetaChip("Turns Log-Only", formatNumber(Number(totals.turnsInFlightLogOnly || 0))),
     createMetaChip("Pending Approvals", formatNumber(Number(totals.pendingApprovals || 0))),
     createMetaChip("Queued Messages", formatNumber(Number(totals.queuedMessages || 0))),
     createMetaChip("Turns In Memory", formatNumber(Number(totals.turnsInMemory || 0))),
@@ -327,7 +329,7 @@ function renderSessionsTable(snapshot) {
   if (sessions.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 11;
+    cell.colSpan = 13;
     cell.className = "server-table-empty";
     cell.textContent = "No active sessions are loaded in the server orchestrator.";
     row.appendChild(cell);
@@ -367,6 +369,12 @@ function renderSessionsTable(snapshot) {
     const inFlightCell = document.createElement("td");
     inFlightCell.textContent = session.isTurnInFlight === true ? "true" : "false";
 
+    const inFlightInferredFromLogsCell = document.createElement("td");
+    inFlightInferredFromLogsCell.textContent = session.isTurnInFlightInferredFromLogs === true ? "true" : "false";
+
+    const inFlightLogOnlyCell = document.createElement("td");
+    inFlightLogOnlyCell.textContent = session.isTurnInFlightLogOnly === true ? "true" : "false";
+
     const queuedCell = document.createElement("td");
     queuedCell.textContent = formatNumber(Number(session.queuedTurnCount || 0));
 
@@ -385,6 +393,8 @@ function renderSessionsTable(snapshot) {
       modelCell,
       effortCell,
       inFlightCell,
+      inFlightInferredFromLogsCell,
+      inFlightLogOnlyCell,
       queuedCell,
       turnsInMemoryCell,
       approvalCell
