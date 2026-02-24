@@ -19,6 +19,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private readonly Dictionary<string, RateLimitDispatchState> _rateLimitDispatchBySession = new(StringComparer.Ordinal);
 	private static readonly TimeSpan RateLimitCoalesceDelay = TimeSpan.FromMilliseconds(350);
 	private static readonly TimeSpan StaleTurnRecoveryFromLogsMinAge = TimeSpan.FromSeconds(30);
+	private static readonly TimeSpan StaleTurnRecoveryWithActiveTurnIdMaxAge = TimeSpan.FromMinutes(5);
 
 	public event Action? SessionsChanged;
 	public event Action<string, object>? Broadcast;
@@ -3377,12 +3378,16 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				if (Session.TryGetActiveTurnId(out var activeFromClient) && !string.IsNullOrWhiteSpace(activeFromClient))
 				{
 					_activeTurnId = activeFromClient;
-					reason = "active_turn_id_present";
-					return false;
+					if (age < StaleTurnRecoveryWithActiveTurnIdMaxAge)
+					{
+						reason = "active_turn_id_present";
+						return false;
+					}
 				}
 
 				// No active turn id and logs infer idle for a sustained window.
-				// Treat this as stale in-flight state and force-clear so queue/send can recover.
+				// After a sustained idle consensus window, treat in-flight as stale and force-clear
+				// so queue/send can recover even if a stale activeTurnId remains in the client state.
 				activeTurnCts = _activeTurnCts;
 				_activeTurnCts = null;
 				_activeTurnId = null;
