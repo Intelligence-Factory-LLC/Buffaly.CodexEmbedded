@@ -461,7 +461,9 @@
       header.append(title, time);
       card.appendChild(header);
 
+      const entryId = Number.isFinite(entry.id) ? Math.floor(entry.id) : this.nextEntryId++;
       const normalizedEntry = {
+        id: entryId,
         role: entry.role || roleClass,
         title: entry.title || "System",
         text: entry.text || "",
@@ -470,9 +472,11 @@
         images: Array.isArray(entry.images) ? entry.images : []
       };
       const bodyText = this.getEntryBodyText(normalizedEntry);
-      this.createBodyNodeForEntry(card, normalizedEntry, bodyText);
+      const bodyNode = this.createBodyNodeForEntry(card, normalizedEntry, bodyText);
+      const body = bodyNode.body;
 
       const images = Array.isArray(entry.images) ? entry.images : [];
+      let imagesWrap = null;
       if (images.length > 0) {
         const wrap = document.createElement("div");
         wrap.className = "watcher-entry-images";
@@ -488,7 +492,26 @@
           wrap.appendChild(imageWrap);
         }
         card.appendChild(wrap);
+        imagesWrap = wrap;
       }
+
+      let copyActionButton = null;
+      try {
+        copyActionButton = this.createEntryActions(card, normalizedEntry);
+      } catch (error) {
+        copyActionButton = null;
+      }
+
+      this.entryNodeById.set(normalizedEntry.id, {
+        card,
+        body,
+        time,
+        compact: false,
+        imagesWrap,
+        detailsWrap: bodyNode.detailsWrap,
+        copyActionButton,
+        entry: normalizedEntry
+      });
 
       return { card, toggle };
     }
