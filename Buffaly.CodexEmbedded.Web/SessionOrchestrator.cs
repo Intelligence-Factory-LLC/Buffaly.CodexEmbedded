@@ -1136,28 +1136,28 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return new SteerTurnResult(false, "Unable to steer because the active turn id is unavailable. Prompt was not sent.", fallback);
 		}
 
-			try
+		try
+		{
+			await session.Session.SteerTurnAsync(expectedTurnId, normalizedText, safeImages, cancellationToken);
+			session.Log.Write($"[turn_steer] expectedTurnId={expectedTurnId} text={BuildQueuedTurnPreview(normalizedText, safeImages.Count)}");
+			Broadcast?.Invoke("status", new { sessionId, message = "Steer message sent to active turn." });
+			return new SteerTurnResult(true, null, TurnSubmitFallback.None);
+		}
+		catch (Exception ex)
+		{
+			if (IsSteerPreconditionMismatch(ex, out var detailed))
 			{
-				await session.Session.SteerTurnAsync(expectedTurnId, normalizedText, safeImages, cancellationToken);
-				session.Log.Write($"[turn_steer] expectedTurnId={expectedTurnId} text={BuildQueuedTurnPreview(normalizedText, safeImages.Count)}");
-				Broadcast?.Invoke("status", new { sessionId, message = "Steer message sent to active turn." });
-				return new SteerTurnResult(true, null, TurnSubmitFallback.None);
+				var message = string.IsNullOrWhiteSpace(detailed)
+					? "Steer was rejected because the active turn changed. Edit and resend your message."
+					: $"Steer was rejected because the active turn changed ({detailed}). Edit and resend your message.";
+				session.Log.Write($"[turn_steer] precondition mismatch expectedTurnId={expectedTurnId} detail={detailed ?? "(none)"}");
+				return new SteerTurnResult(false, message, TurnSubmitFallback.QueueTurn);
 			}
-			catch (Exception ex)
-			{
-				if (IsSteerPreconditionMismatch(ex, out var detailed))
-				{
-					var message = string.IsNullOrWhiteSpace(detailed)
-						? "Steer was rejected because the active turn changed. Edit and resend your message."
-						: $"Steer was rejected because the active turn changed ({detailed}). Edit and resend your message.";
-					session.Log.Write($"[turn_steer] precondition mismatch expectedTurnId={expectedTurnId} detail={detailed ?? "(none)"}");
-					return new SteerTurnResult(false, message, TurnSubmitFallback.QueueTurn);
-				}
 
-				var simplified = SimplifyRpcErrorMessage(ex.Message) ?? ex.Message;
-				session.Log.Write($"[turn_steer] failed expectedTurnId={expectedTurnId} error={simplified}");
-				return new SteerTurnResult(false, $"Failed to steer active turn: {simplified}", TurnSubmitFallback.None);
-			}
+			var simplified = SimplifyRpcErrorMessage(ex.Message) ?? ex.Message;
+			session.Log.Write($"[turn_steer] failed expectedTurnId={expectedTurnId} error={simplified}");
+			return new SteerTurnResult(false, $"Failed to steer active turn: {simplified}", TurnSubmitFallback.None);
+		}
 	}
 
 	private void LaunchTurnExecution(
