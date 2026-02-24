@@ -393,6 +393,41 @@
     }
 
     createTurnEntryNode(entry, options = {}) {
+      const isCompactRow = entry.compact === true
+        || entry.rawType === "task_started"
+        || entry.rawType === "task_complete"
+        || entry.rawType === "inline_notice";
+      if (isCompactRow) {
+        const row = document.createElement("div");
+        row.className = "watcher-inline-entry";
+        if (entry.rawType === "inline_notice") {
+          row.classList.add("watcher-inline-note");
+        }
+        if (entry.rawType === "task_started" || entry.rawType === "task_complete") {
+          row.classList.add("watcher-inline-task");
+        }
+        if (options.intermediate === true) {
+          row.classList.add("watcher-turn-intermediate");
+        }
+
+        const title = document.createElement("span");
+        title.className = "watcher-inline-title";
+        title.textContent = entry.title || entry.role || "System";
+
+        const text = document.createElement("span");
+        text.className = "watcher-inline-text";
+        text.textContent = this.getEntryBodyText(entry);
+
+        const time = document.createElement("span");
+        time.className = "watcher-inline-time";
+        time.textContent = this.formatTime(entry.timestamp);
+
+        row.appendChild(title);
+        row.appendChild(text);
+        row.appendChild(time);
+        return { card: row, toggle: null };
+      }
+
       const card = document.createElement("div");
       const roleClass = options.roleClassOverride || entry.role || "system";
       card.className = `watcher-entry ${roleClass}`;
@@ -426,10 +461,16 @@
       header.append(title, time);
       card.appendChild(header);
 
-      const body = document.createElement("pre");
-      body.className = "watcher-entry-text";
-      body.textContent = this.truncateText(entry.text || "");
-      card.appendChild(body);
+      const normalizedEntry = {
+        role: entry.role || roleClass,
+        title: entry.title || "System",
+        text: entry.text || "",
+        rawType: entry.rawType || "",
+        compact: entry.compact === true,
+        images: Array.isArray(entry.images) ? entry.images : []
+      };
+      const bodyText = this.getEntryBodyText(normalizedEntry);
+      this.createBodyNodeForEntry(card, normalizedEntry, bodyText);
 
       const images = Array.isArray(entry.images) ? entry.images : [];
       if (images.length > 0) {
