@@ -67,11 +67,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				turnStatsByThread.TryGetValue(s.Session.ThreadId, out var stats);
 				var inferredFromLogs = stats.IsTurnInFlightInferredFromLogs;
-				var codexInFlight = s.IsTurnInFlight;
 				return s.ToSnapshot(
 					turnCountInMemory: stats.TurnCountInMemory,
 					isTurnInFlightInferredFromLogs: inferredFromLogs,
-					isTurnInFlightLogOnly: inferredFromLogs && !codexInFlight);
+					isTurnInFlightLogOnly: s.IsTurnInFlightRecoveredFromLogs);
 			})
 			.ToList();
 	}
@@ -312,6 +311,41 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 			catch
 			{
+			}
+		}
+
+		var inferredByThread = new Dictionary<string, bool>(StringComparer.Ordinal);
+		lock (_turnCacheSync)
+		{
+			foreach (var threadId in uniqueThreadIds)
+			{
+				if (_turnCacheByThread.TryGetValue(threadId, out var state))
+				{
+					inferredByThread[threadId] = state.LastInferredTurnInFlightFromLogs;
+				}
+			}
+		}
+
+		foreach (var session in sessions)
+		{
+			var threadId = session.Session.ThreadId;
+			if (string.IsNullOrWhiteSpace(threadId) || !inferredByThread.TryGetValue(threadId, out var inferred))
+			{
+				continue;
+			}
+
+			if (inferred)
+			{
+				if (!session.IsTurnInFlight && session.TryMarkTurnStartedFromCoreSignal(turnId: null))
+				{
+					session.Log.Write("[turn_recovery] inferred active turn from log timeline");
+				}
+				continue;
+			}
+
+			if (session.IsTurnInFlightRecoveredFromLogs && session.TryMarkTurnCompletedFromCoreSignal())
+			{
+				session.Log.Write("[turn_recovery] cleared recovered active turn from log timeline");
 			}
 		}
 	}
@@ -2878,6 +2912,17 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				lock (_turnSync)
 				{
 					return _turnInFlight;
+				}
+			}
+		}
+
+		public bool IsTurnInFlightRecoveredFromLogs
+		{
+			get
+			{
+				lock (_turnSync)
+				{
+					return _turnInFlight && !_turnSlotHeld && _activeTurnCts is null;
 				}
 			}
 		}
