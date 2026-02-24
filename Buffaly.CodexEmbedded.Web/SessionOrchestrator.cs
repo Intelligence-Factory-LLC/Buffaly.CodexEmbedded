@@ -18,6 +18,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private readonly Dictionary<string, string> _lastThreadNameByThread = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, RateLimitDispatchState> _rateLimitDispatchBySession = new(StringComparer.Ordinal);
 	private static readonly TimeSpan RateLimitCoalesceDelay = TimeSpan.FromMilliseconds(350);
+	private static readonly TimeSpan StaleTurnRecoveryFromLogsMinAge = TimeSpan.FromSeconds(30);
 
 	public event Action? SessionsChanged;
 	public event Action<string, object>? Broadcast;
@@ -343,9 +344,30 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				continue;
 			}
 
-			if (session.IsTurnInFlightRecoveredFromLogs && session.TryMarkTurnCompletedFromCoreSignal())
+			if (session.IsTurnInFlightRecoveredFromLogs &&
+				TryPublishTurnComplete(
+					session.SessionId,
+					session,
+					status: "recovered",
+					errorMessage: "Recovered log-inferred turn completion."))
 			{
 				session.Log.Write("[turn_recovery] cleared recovered active turn from log timeline");
+				continue;
+			}
+
+			if (session.TryRecoverStaleTurnFromLogConsensus(StaleTurnRecoveryFromLogsMinAge, out var staleReason))
+			{
+				session.Log.Write($"[turn_recovery] cleared stale active turn from log consensus ({staleReason})");
+				Broadcast?.Invoke(
+					"turn_complete",
+					new
+					{
+						sessionId = session.SessionId,
+						status = "recovered",
+						errorMessage = $"Recovered stale active turn from log consensus ({staleReason})."
+					});
+				SessionsChanged?.Invoke();
+				EnsureQueueDispatcher(session.SessionId, session);
 			}
 		}
 	}
@@ -2885,6 +2907,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		private string? _activeTurnId;
 		private bool _turnInFlight;
 		private bool _turnSlotHeld;
+		private DateTimeOffset _turnInFlightChangedUtc = DateTimeOffset.UtcNow;
 		private bool _queueDispatchRunning;
 		private PendingApprovalSnapshot? _pendingApproval;
 
@@ -3267,6 +3290,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				}
 
 				_turnInFlight = true;
+				_turnInFlightChangedUtc = DateTimeOffset.UtcNow;
 				return true;
 			}
 		}
@@ -3285,6 +3309,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				}
 
 				_turnInFlight = true;
+				_turnInFlightChangedUtc = DateTimeOffset.UtcNow;
 				if (!string.IsNullOrWhiteSpace(turnId))
 				{
 					_activeTurnId = turnId;
@@ -3306,6 +3331,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				_activeTurnCts = null;
 				_activeTurnId = null;
 				_turnInFlight = false;
+				_turnInFlightChangedUtc = DateTimeOffset.UtcNow;
 				if (_turnSlotHeld)
 				{
 					_turnSlotHeld = false;
@@ -3324,6 +3350,74 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				}
 			}
 
+			return true;
+		}
+
+		public bool TryRecoverStaleTurnFromLogConsensus(TimeSpan minimumInFlightAge, out string reason)
+		{
+			reason = string.Empty;
+			CancellationTokenSource? activeTurnCts = null;
+			var shouldRelease = false;
+
+			lock (_turnSync)
+			{
+				if (!_turnInFlight)
+				{
+					reason = "not_in_flight";
+					return false;
+				}
+
+				var age = DateTimeOffset.UtcNow - _turnInFlightChangedUtc;
+				if (age < minimumInFlightAge)
+				{
+					reason = $"age_{Math.Max(0, (int)age.TotalSeconds)}s";
+					return false;
+				}
+
+				if (Session.TryGetActiveTurnId(out var activeFromClient) && !string.IsNullOrWhiteSpace(activeFromClient))
+				{
+					_activeTurnId = activeFromClient;
+					reason = "active_turn_id_present";
+					return false;
+				}
+
+				// No active turn id and logs infer idle for a sustained window.
+				// Treat this as stale in-flight state and force-clear so queue/send can recover.
+				activeTurnCts = _activeTurnCts;
+				_activeTurnCts = null;
+				_activeTurnId = null;
+				_turnInFlight = false;
+				_turnInFlightChangedUtc = DateTimeOffset.UtcNow;
+				if (_turnSlotHeld)
+				{
+					_turnSlotHeld = false;
+					shouldRelease = true;
+				}
+			}
+
+			if (activeTurnCts is not null)
+			{
+				try
+				{
+					activeTurnCts.Cancel();
+				}
+				catch
+				{
+				}
+			}
+
+			if (shouldRelease)
+			{
+				try
+				{
+					_turnGate.Release();
+				}
+				catch
+				{
+				}
+			}
+
+			reason = "log_consensus_idle";
 			return true;
 		}
 
