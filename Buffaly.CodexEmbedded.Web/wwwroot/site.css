@@ -2130,9 +2130,51 @@ html[data-theme="dark"] .prompt-queue-item:hover {
 }
 
 html[data-theme="dark"] .sidebar-nav-link.active {
+	background: #1f3556;
+	border-color: #60a5fa;
+	color: #dbeafe;
+}
+
+html[data-theme="dark"] .project-header {
+	background: #0f172a;
+	border-bottom-color: #334155;
+}
+
+html[data-theme="dark"] .project-group + .project-group {
+	border-top-color: #334155;
+}
+
+html[data-theme="dark"] .project-count {
 	background: #1e293b;
-	border-color: #3b82f6;
+	border-color: #60a5fa;
+	color: #dbeafe;
+}
+
+html[data-theme="dark"] .session-row + .session-row {
+	border-top-color: #273549;
+}
+
+html[data-theme="dark"] .session-row.active {
+	background: #1f3556;
+	box-shadow: inset 4px 0 0 #60a5fa;
+}
+
+html[data-theme="dark"] .session-row.active .session-title {
+	color: #f8fafc;
+}
+
+html[data-theme="dark"] .session-row.active .session-subtitle {
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .more-sessions-btn {
 	color: #93c5fd;
+	border-top-color: #334155;
+}
+
+html[data-theme="dark"] .more-sessions-btn:hover {
+	background: #1e293b;
+	color: #dbeafe;
 }
 
 html[data-theme="dark"] .session-subtitle,
