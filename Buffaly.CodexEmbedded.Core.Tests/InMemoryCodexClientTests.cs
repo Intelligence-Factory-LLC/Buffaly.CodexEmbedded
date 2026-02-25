@@ -191,22 +191,68 @@ public sealed class InMemoryCodexClientTests
 		}
 	}
 
+	[TestMethod]
+	public async Task Initialize_SendsExperimentalApiCapability()
+	{
+		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+		bool observedExperimentalApi = false;
+
+		await using var transport = new InMemoryJsonlTransport();
+		var server = new FakeAppServer(
+			transport,
+			onInitialize: initializeParams =>
+			{
+				if (initializeParams.ValueKind != JsonValueKind.Object)
+				{
+					return;
+				}
+
+				if (!initializeParams.TryGetProperty("capabilities", out var capabilities) ||
+					capabilities.ValueKind != JsonValueKind.Object)
+				{
+					return;
+				}
+
+				observedExperimentalApi =
+					capabilities.TryGetProperty("experimentalApi", out var experimentalApiElement) &&
+					experimentalApiElement.ValueKind == JsonValueKind.True;
+			});
+		var serverTask = server.RunAsync(cts.Token);
+
+		await using var client = await CodexClient.ConnectAsync(transport, cts.Token);
+		await client.InitializeAsync(cts.Token);
+
+		Assert.IsTrue(observedExperimentalApi, "initialize.capabilities.experimentalApi=true was not sent.");
+
+		cts.Cancel();
+		try
+		{
+			await serverTask;
+		}
+		catch
+		{
+		}
+	}
+
 	private sealed class FakeAppServer
 	{
 		private readonly InMemoryJsonlTransport _transport;
 		private readonly CompletionSignalMode _completionSignalMode;
 		private readonly Action<JsonElement>? _onTurnStart;
+		private readonly Action<JsonElement>? _onInitialize;
 		private int _turnCount;
 		private const string ThreadId = "thread-1";
 
 		public FakeAppServer(
 			InMemoryJsonlTransport transport,
 			CompletionSignalMode completionSignalMode = CompletionSignalMode.TurnCompleted,
-			Action<JsonElement>? onTurnStart = null)
+			Action<JsonElement>? onTurnStart = null,
+			Action<JsonElement>? onInitialize = null)
 		{
 			_transport = transport;
 			_completionSignalMode = completionSignalMode;
 			_onTurnStart = onTurnStart;
+			_onInitialize = onInitialize;
 		}
 
 		public async Task RunAsync(CancellationToken cancellationToken)
@@ -221,6 +267,10 @@ public sealed class InMemoryCodexClientTests
 				switch (method)
 				{
 					case "initialize":
+						if (root.TryGetProperty("params", out var initializeParams))
+						{
+							_onInitialize?.Invoke(initializeParams);
+						}
 						await WriteStdoutAsync(new { id = CloneId(id), result = new { userAgent = "fake/0.1.0" } }, cancellationToken);
 						break;
 					case "thread/start":

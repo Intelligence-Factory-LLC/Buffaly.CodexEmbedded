@@ -103,6 +103,10 @@ public sealed class CodexClient : IAsyncDisposable
 						name = "codex_app_server_core",
 						title = "Codex App-Server Core",
 						version = "0.1.0"
+					},
+					capabilities = new
+					{
+						experimentalApi = true
 					}
 				},
 				cancellationToken);

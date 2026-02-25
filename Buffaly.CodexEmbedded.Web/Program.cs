@@ -1237,6 +1237,10 @@ internal sealed class WebCliSocketSession : IAsyncDisposable
 					name = "codex_web_cli",
 					title = "Codex Web CLI",
 					version = "0.1.0"
+				},
+				capabilities = new
+				{
+					experimentalApi = true
 				}
 			}, startupToken);
 			await WriteLogAsync($"[startup] initialize response after {startupStopwatch.ElapsedMilliseconds}ms", cancellationToken);

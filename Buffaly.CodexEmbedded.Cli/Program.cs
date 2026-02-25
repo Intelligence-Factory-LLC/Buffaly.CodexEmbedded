@@ -1027,6 +1027,10 @@ internal sealed class CodexHarness : IAsyncDisposable
 				["name"] = "codex_app_server_harness",
 				["title"] = "Codex App-Server Harness",
 				["version"] = "0.1.0"
+			},
+			["capabilities"] = new Dictionary<string, object?>
+			{
+				["experimentalApi"] = true
 			}
 		};
 
