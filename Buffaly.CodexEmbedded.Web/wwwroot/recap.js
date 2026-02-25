@@ -20,6 +20,9 @@ const recapThreadValue = document.getElementById("recapThreadValue");
 const recapTimelineTitle = document.getElementById("recapTimelineTitle");
 const recapTimelineStatus = document.getElementById("recapTimelineStatus");
 const recapTimeline = document.getElementById("recapTimeline");
+const recapApprovalPanel = document.getElementById("recapApprovalPanel");
+const recapApprovalSummary = document.getElementById("recapApprovalSummary");
+const recapApprovalDetails = document.getElementById("recapApprovalDetails");
 
 const timeline = new window.CodexSessionTimeline({
   container: recapTimeline,
@@ -33,6 +36,10 @@ let recapSessionId = "";
 let recapThreadId = "";
 let waitingForAnswer = false;
 let lastAssistantText = "";
+let timelineCursor = null;
+let timelinePollTimer = null;
+let timelinePollInFlight = false;
+let pendingApproval = null;
 
 function setStatus(text) {
   if (recapStatus) {
@@ -65,6 +72,12 @@ function updateSessionMeta() {
   }
   if (recapThreadValue) {
     recapThreadValue.textContent = recapThreadId || "(none)";
+  }
+}
+
+function setApprovalVisible(show) {
+  if (recapApprovalPanel) {
+    recapApprovalPanel.classList.toggle("hidden", !show);
   }
 }
 
@@ -101,8 +114,11 @@ function handleSocketMessage(data) {
   if (type === "session_created" || type === "session_attached") {
     recapSessionId = payload.sessionId || recapSessionId;
     recapThreadId = payload.threadId || recapThreadId;
+    timelineCursor = null;
     updateSessionMeta();
     setStatus(`Recap session ready (${recapSessionId}).`);
+    void loadTimeline(true);
+    ensureTimelinePolling();
     return;
   }
 
@@ -142,6 +158,44 @@ function handleSocketMessage(data) {
     return;
   }
 
+  if (type === "approval_request") {
+    if (!payload.sessionId || payload.sessionId !== recapSessionId) {
+      return;
+    }
+
+    pendingApproval = {
+      sessionId: payload.sessionId,
+      approvalId: payload.approvalId || ""
+    };
+    if (recapApprovalSummary) {
+      recapApprovalSummary.textContent = payload.summary || "Approval requested";
+    }
+    if (recapApprovalDetails) {
+      const lines = [];
+      if (payload.reason) lines.push(`Reason: ${payload.reason}`);
+      if (payload.cwd) lines.push(`CWD: ${payload.cwd}`);
+      if (Array.isArray(payload.actions) && payload.actions.length > 0) {
+        lines.push(`Actions: ${payload.actions.join(", ")}`);
+      }
+      recapApprovalDetails.textContent = lines.join("\n");
+    }
+    setApprovalVisible(true);
+    setStatus("Approval requested for recap session.");
+    return;
+  }
+
+  if (type === "approval_resolved") {
+    if (!payload.sessionId || payload.sessionId !== recapSessionId) {
+      return;
+    }
+
+    pendingApproval = null;
+    setApprovalVisible(false);
+    const decision = payload.decision || "unknown";
+    setStatus(`Approval resolved (${decision}).`);
+    return;
+  }
+
   if (type === "error") {
     if (!payload.sessionId || payload.sessionId === recapSessionId) {
       waitingForAnswer = false;
@@ -169,11 +223,13 @@ function connectSocket() {
 
   socket.addEventListener("close", () => {
     socketConnected = false;
+    stopTimelinePolling();
     setStatus("Websocket disconnected.");
   });
 
   socket.addEventListener("error", () => {
     socketConnected = false;
+    stopTimelinePolling();
     setStatus("Websocket error.");
   });
 }
@@ -217,6 +273,9 @@ function startRecapSession() {
 
   recapSessionId = "";
   recapThreadId = "";
+  timelineCursor = null;
+  pendingApproval = null;
+  setApprovalVisible(false);
   updateSessionMeta();
 
   const sent = sendFrame("session_create", {
@@ -261,23 +320,36 @@ function askRecap() {
   }
 }
 
-async function loadTimeline() {
+async function loadTimeline(forceInitial = false) {
   if (!recapThreadId) {
-    setStatus("No recap thread available yet.");
+    if (recapTimelineStatus) {
+      recapTimelineStatus.textContent = "No recap thread available yet.";
+    }
     return;
   }
 
   if (recapTimelineTitle) {
     recapTimelineTitle.textContent = `Timeline: ${recapThreadId}`;
   }
-  if (recapTimelineStatus) {
+  if (forceInitial) {
+    timelineCursor = null;
+  }
+  if (recapTimelineStatus && timelineCursor === null) {
     recapTimelineStatus.textContent = "Loading timeline...";
   }
 
   try {
+    if (timelinePollInFlight) {
+      return;
+    }
+    timelinePollInFlight = true;
+
     const url = new URL("api/turns/watch", document.baseURI);
     url.searchParams.set("threadId", recapThreadId);
-    url.searchParams.set("initial", "true");
+    url.searchParams.set("initial", timelineCursor === null ? "true" : "false");
+    if (timelineCursor !== null) {
+      url.searchParams.set("cursor", String(timelineCursor));
+    }
     url.searchParams.set("maxEntries", "12000");
 
     const response = await fetch(url, { cache: "no-store" });
@@ -287,19 +359,46 @@ async function loadTimeline() {
     }
 
     const data = await response.json();
-    if (timeline && typeof timeline.setServerTurns === "function") {
-      timeline.setServerTurns(Array.isArray(data.turns) ? data.turns : []);
+    if (timeline && typeof timeline.setServerTurns === "function" && Array.isArray(data.turns) && data.turns.length > 0) {
+      timeline.setServerTurns(data.turns);
     } else if (timeline && typeof timeline.clear === "function") {
-      timeline.clear();
+      if (timelineCursor === null && data.reset) {
+        timeline.clear();
+      }
     }
 
+    timelineCursor = Number.isFinite(Number(data.nextCursor)) ? Number(data.nextCursor) : timelineCursor;
     recapTimelineStatus.textContent = `Loaded ${Number(data.turnCountInMemory || 0)} turns.`;
   } catch (error) {
     if (timeline && typeof timeline.clear === "function") {
       timeline.clear();
     }
     recapTimelineStatus.textContent = trimText(String(error), 300);
+  } finally {
+    timelinePollInFlight = false;
   }
+}
+
+function ensureTimelinePolling() {
+  if (timelinePollTimer) {
+    return;
+  }
+
+  timelinePollTimer = window.setInterval(() => {
+    if (!recapThreadId) {
+      return;
+    }
+    void loadTimeline();
+  }, 2500);
+}
+
+function stopTimelinePolling() {
+  if (!timelinePollTimer) {
+    return;
+  }
+
+  window.clearInterval(timelinePollTimer);
+  timelinePollTimer = null;
 }
 
 function isMobileViewport() {
@@ -393,7 +492,7 @@ function wireEvents() {
 
   if (recapOpenTimelineBtn) {
     recapOpenTimelineBtn.addEventListener("click", () => {
-      loadTimeline();
+      void loadTimeline(true);
     });
   }
 
@@ -444,6 +543,29 @@ function wireEvents() {
 
     updateNavigationButtons();
   });
+
+  if (recapApprovalPanel) {
+    recapApprovalPanel.querySelectorAll("button[data-decision]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!pendingApproval || !pendingApproval.sessionId) {
+          setStatus("No pending approval to respond to.");
+          return;
+        }
+
+        const decision = button.getAttribute("data-decision") || "";
+        if (!decision) {
+          return;
+        }
+
+        sendFrame("approval_response", {
+          sessionId: pendingApproval.sessionId,
+          approvalId: pendingApproval.approvalId || "",
+          decision
+        });
+        setStatus(`Sent approval decision: ${decision}`);
+      });
+    });
+  }
 }
 
 async function initializePage() {

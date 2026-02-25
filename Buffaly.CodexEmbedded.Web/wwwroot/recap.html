@@ -65,6 +65,16 @@
 					<button id="recapOpenTimelineBtn" type="button">Open Timeline</button>
 				</div>
 				<div id="recapStatus" class="logs-status">Connecting...</div>
+				<div id="recapApprovalPanel" class="approval-panel hidden">
+					<div id="recapApprovalSummary" class="approval-summary">Approval requested</div>
+					<div id="recapApprovalDetails" class="approval-details"></div>
+					<div class="approval-actions">
+						<button type="button" data-decision="accept">Accept once</button>
+						<button type="button" data-decision="acceptForSession">Accept for session</button>
+						<button type="button" data-decision="decline">Decline</button>
+						<button type="button" data-decision="cancel">Cancel</button>
+					</div>
+				</div>
 				<div class="recap-answer" id="recapMeta">
 					<div><strong>Session:</strong> <span id="recapSessionValue">(none)</span></div>
 					<div><strong>Thread:</strong> <span id="recapThreadValue">(none)</span></div>
@@ -87,6 +97,6 @@
 	</div>
 	<script src="theme.js?v=20260225-settings1"></script>
 	<script src="sessionTimeline.js?v=20260224-turnfmt1"></script>
-	<script src="recap.js?v=20260225-recap4"></script>
+	<script src="recap.js?v=20260225-recap5"></script>
 </body>
 </html>
