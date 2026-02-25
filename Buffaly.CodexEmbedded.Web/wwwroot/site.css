@@ -1664,6 +1664,18 @@ body {
 	line-height: 1.35;
 }
 
+.recap-report {
+	padding: 0.55rem 0.6rem;
+	border: 1px solid #dbe5f1;
+	border-radius: 8px;
+	background: #f8fafc;
+	color: #0f172a;
+	white-space: pre-wrap;
+	font-size: 0.78rem;
+	line-height: 1.35;
+	margin-bottom: 0.55rem;
+}
+
 .recap-grid {
 	flex: 1;
 	min-height: 0;
@@ -2492,6 +2504,7 @@ html[data-theme="dark"] .sidebar-nav,
 html[data-theme="dark"] .sidebar-create-row,
 html[data-theme="dark"] .logs-help-text,
 html[data-theme="dark"] .recap-answer,
+html[data-theme="dark"] .recap-report,
 html[data-theme="dark"] .recap-controls,
 html[data-theme="dark"] .server-section-title,
 html[data-theme="dark"] .timeline-truncation-note {
@@ -2651,6 +2664,7 @@ html[data-theme="dark"] .server-meta-chip {
 
 html[data-theme="dark"] .watcher-entry-text,
 html[data-theme="dark"] .watcher-inline-text,
+html[data-theme="dark"] .recap-report,
 html[data-theme="dark"] .recap-v,
 html[data-theme="dark"] .approval-details {
 	color: #e2e8f0;
@@ -3001,6 +3015,7 @@ html[data-theme="dark"] .server-table td {
 	}
 
 	.recap-answer,
+	.recap-report,
 	.recap-section-title {
 		font-size: 0.78rem;
 	}

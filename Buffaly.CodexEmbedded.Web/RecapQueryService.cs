@@ -26,13 +26,17 @@ internal sealed class RecapQueryService
 		var context = LoadContext(localDateRaw, timezoneId, maxSessions);
 		var sessions = BuildSessionSummaries(context);
 		var summary = BuildDaySummary(context, sessions);
+		var projects = BuildProjectSummaries(context, sessions);
+		var reportMarkdown = BuildProjectReportMarkdown(context.LocalDate, context.TimezoneId, summary, projects);
 		return new RecapDayResponse(
 			LocalDate: context.LocalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
 			Timezone: context.TimezoneId,
 			WindowStartUtc: context.WindowStartUtc.ToString("O"),
 			WindowEndUtc: context.WindowEndUtc.ToString("O"),
 			Summary: summary,
-			Sessions: sessions);
+			Sessions: sessions,
+			Projects: projects,
+			ReportMarkdown: reportMarkdown);
 	}
 
 	public RecapQueryResponse QueryDay(RecapQueryRequest request)
@@ -40,10 +44,12 @@ internal sealed class RecapQueryService
 		var context = LoadContext(request.LocalDate, request.Timezone, request.MaxSessions);
 		var sessions = BuildSessionSummaries(context);
 		var summary = BuildDaySummary(context, sessions);
+		var projects = BuildProjectSummaries(context, sessions);
+		var reportMarkdown = BuildProjectReportMarkdown(context.LocalDate, context.TimezoneId, summary, projects);
 		var normalizedQuery = NormalizeText(request.Query);
 		if (string.IsNullOrWhiteSpace(normalizedQuery))
 		{
-			var recapAnswer = BuildDayAnswer(summary, sessions);
+			var recapAnswer = BuildDayAnswer(summary, sessions, projects);
 			return new RecapQueryResponse(
 				LocalDate: context.LocalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
 				Timezone: context.TimezoneId,
@@ -53,17 +59,24 @@ internal sealed class RecapQueryService
 				Answer: recapAnswer,
 				Summary: summary,
 				Threads: Array.Empty<RecapThreadMatchSummary>(),
-				Matches: Array.Empty<RecapMatchItem>());
+				Matches: Array.Empty<RecapMatchItem>(),
+				Projects: projects,
+				ReportMarkdown: reportMarkdown);
 		}
 
 		var queryTokens = TokenizeQuery(normalizedQuery);
-		var scoredMatches = ScoreMatches(context, normalizedQuery, queryTokens)
-			.OrderByDescending(x => x.Score)
-			.ThenByDescending(x => x.Event.TimestampUtc)
-			.Take(Math.Clamp(request.MaxResults, 1, 200))
-			.ToList();
+		var intent = DetectQueryIntent(normalizedQuery);
+		var scoredMatches = intent.ReportOnly
+			? new List<ScoredRecapEvent>()
+			: ScoreMatches(context, normalizedQuery, queryTokens)
+				.OrderByDescending(x => x.Score)
+				.ThenByDescending(x => x.Event.TimestampUtc)
+				.Take(Math.Clamp(request.MaxResults, 1, 200))
+				.ToList();
 		var threadSummaries = BuildThreadMatchSummaries(context, scoredMatches);
-		var answer = BuildQueryAnswer(context.LocalDate, normalizedQuery, scoredMatches, threadSummaries);
+		var answer = intent.ReportOnly
+			? BuildReportAnswer(context.LocalDate, projects, summary)
+			: BuildQueryAnswer(context.LocalDate, normalizedQuery, scoredMatches, threadSummaries, context);
 		var matches = scoredMatches.Select(x =>
 		{
 			var threadMeta = context.ThreadById.TryGetValue(x.Event.ThreadId, out var existing)
@@ -91,7 +104,56 @@ internal sealed class RecapQueryService
 			Answer: answer,
 			Summary: summary,
 			Threads: threadSummaries,
-			Matches: matches);
+			Matches: matches,
+			Projects: projects,
+			ReportMarkdown: reportMarkdown);
+	}
+
+	public RecapSessionSearchResponse FindSessions(RecapSessionSearchRequest request)
+	{
+		var context = LoadContext(request.LocalDate, request.Timezone, request.MaxSessions);
+		var sessions = BuildSessionSummaries(context);
+		var summary = BuildDaySummary(context, sessions);
+		var projects = BuildProjectSummaries(context, sessions);
+		var normalizedQuery = NormalizeText(request.Query);
+		var queryTokens = TokenizeQuery(normalizedQuery);
+		var maxResults = Math.Clamp(request.MaxResults, 1, 200);
+		var scoredSessions = ScoreSessionMatches(context, sessions, normalizedQuery, queryTokens)
+			.OrderByDescending(x => x.Score)
+			.ThenByDescending(x => x.LastEventUtc ?? DateTimeOffset.MinValue)
+			.ThenByDescending(x => x.Session.EventCount)
+			.Take(maxResults)
+			.ToArray();
+		var results = scoredSessions
+			.Select(x =>
+			{
+				var projectKey = NormalizeProjectKey(x.Session.Cwd);
+				return new RecapSessionSearchResult(
+					ThreadId: x.Session.ThreadId,
+					ThreadName: x.Session.ThreadName,
+					Cwd: x.Session.Cwd,
+					Model: x.Session.Model,
+					SessionFilePath: x.Session.SessionFilePath,
+					ProjectKey: projectKey,
+					ProjectName: GetProjectName(projectKey),
+					EventCount: x.Session.EventCount,
+					LastEventUtc: x.Session.LastEventUtc,
+					Score: x.Score,
+					SampleMatches: x.SampleMatches);
+			})
+			.ToArray();
+		var answer = BuildSessionSearchAnswer(context.LocalDate, normalizedQuery, results, summary);
+
+		return new RecapSessionSearchResponse(
+			LocalDate: context.LocalDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+			Timezone: context.TimezoneId,
+			WindowStartUtc: context.WindowStartUtc.ToString("O"),
+			WindowEndUtc: context.WindowEndUtc.ToString("O"),
+			Query: normalizedQuery,
+			Answer: answer,
+			Summary: summary,
+			Projects: projects,
+			Results: results);
 	}
 
 	private LoadedRecapContext LoadContext(string? localDateRaw, string? timezoneId, int maxSessions)
@@ -236,6 +298,90 @@ internal sealed class RecapQueryService
 			.ToArray();
 	}
 
+	private static IReadOnlyList<RecapProjectSummary> BuildProjectSummaries(
+		LoadedRecapContext context,
+		IReadOnlyList<RecapSessionSummary> sessions)
+	{
+		var eventsByThreadId = context.Events
+			.GroupBy(x => x.ThreadId, StringComparer.Ordinal)
+			.ToDictionary(x => x.Key, x => x.ToArray(), StringComparer.Ordinal);
+
+		return sessions
+			.GroupBy(x => NormalizeProjectKey(x.Cwd), StringComparer.OrdinalIgnoreCase)
+			.Select(group =>
+			{
+				var projectSessions = group
+					.OrderByDescending(x => x.EventCount)
+					.ThenByDescending(x => x.LastEventUtc, StringComparer.Ordinal)
+					.ThenBy(x => x.ThreadId, StringComparer.Ordinal)
+					.ToArray();
+				var projectEvents = new List<RecapEvent>();
+				foreach (var session in projectSessions)
+				{
+					if (eventsByThreadId.TryGetValue(session.ThreadId, out var threadEvents))
+					{
+						projectEvents.AddRange(threadEvents);
+					}
+				}
+
+				projectEvents.Sort((left, right) => right.TimestampUtc.CompareTo(left.TimestampUtc));
+				var topTopics = projectEvents
+					.Where(x => string.Equals(x.EventType, RecapEventTypes.UserPrompt, StringComparison.Ordinal))
+					.SelectMany(x => TokenizeQuery(x.Text))
+					.Where(x => x.Length >= 3)
+					.GroupBy(x => x, StringComparer.OrdinalIgnoreCase)
+					.Select(x => new RecapBucketItem(x.Key, x.Count()))
+					.OrderByDescending(x => x.Count)
+					.ThenBy(x => x.Value, StringComparer.OrdinalIgnoreCase)
+					.Take(8)
+					.ToArray();
+				var topCommands = projectEvents
+					.Where(x => !string.IsNullOrWhiteSpace(x.Command))
+					.Select(x => ExtractCommandHead(x.Command))
+					.Where(x => !string.IsNullOrWhiteSpace(x))
+					.GroupBy(x => x, StringComparer.OrdinalIgnoreCase)
+					.Select(x => new RecapBucketItem(x.Key, x.Count()))
+					.OrderByDescending(x => x.Count)
+					.ThenBy(x => x.Value, StringComparer.OrdinalIgnoreCase)
+					.Take(6)
+					.ToArray();
+				var highlights = projectSessions
+					.SelectMany(x => x.PromptSamples.Concat(x.CommandSamples))
+					.Where(x => !string.IsNullOrWhiteSpace(x))
+					.Select(x => TruncateForDisplay(x, 180))
+					.Distinct(StringComparer.OrdinalIgnoreCase)
+					.Take(6)
+					.ToArray();
+				var compactSessions = projectSessions
+					.Take(8)
+					.Select(x => new RecapProjectSessionSummary(
+						ThreadId: x.ThreadId,
+						ThreadName: x.ThreadName,
+						EventCount: x.EventCount,
+						LastEventUtc: x.LastEventUtc))
+					.ToArray();
+				return new RecapProjectSummary(
+					ProjectKey: group.Key,
+					ProjectName: GetProjectName(group.Key),
+					ProjectPath: group.Key,
+					SessionCount: projectSessions.Length,
+					EventCount: projectEvents.Count,
+					UserPromptCount: projectEvents.Count(x => string.Equals(x.EventType, RecapEventTypes.UserPrompt, StringComparison.Ordinal)),
+					AssistantMessageCount: projectEvents.Count(x => string.Equals(x.EventType, RecapEventTypes.AssistantMessage, StringComparison.Ordinal)),
+					ToolCallCount: projectEvents.Count(x => string.Equals(x.EventType, RecapEventTypes.ToolCall, StringComparison.Ordinal)),
+					FirstEventUtc: projectEvents.Count > 0 ? projectEvents[^1].TimestampUtc.ToString("O") : null,
+					LastEventUtc: projectEvents.Count > 0 ? projectEvents[0].TimestampUtc.ToString("O") : null,
+					TopTopics: topTopics,
+					TopCommands: topCommands,
+					Highlights: highlights,
+					Sessions: compactSessions);
+			})
+			.OrderByDescending(x => x.EventCount)
+			.ThenByDescending(x => x.SessionCount)
+			.ThenBy(x => x.ProjectKey, StringComparer.OrdinalIgnoreCase)
+			.ToArray();
+	}
+
 	private static IReadOnlyList<RecapThreadMatchSummary> BuildThreadMatchSummaries(LoadedRecapContext context, IReadOnlyList<ScoredRecapEvent> matches)
 	{
 		return matches
@@ -275,6 +421,119 @@ internal sealed class RecapQueryService
 			.ThenByDescending(x => x.MatchCount)
 			.ThenByDescending(x => x.LastMatchUtc, StringComparer.Ordinal)
 			.ToArray();
+	}
+
+	private static IReadOnlyList<ScoredRecapSession> ScoreSessionMatches(
+		LoadedRecapContext context,
+		IReadOnlyList<RecapSessionSummary> sessions,
+		string normalizedQuery,
+		IReadOnlyList<string> queryTokens)
+	{
+		var queryLower = normalizedQuery.ToLowerInvariant();
+		var tokens = queryTokens.Count > 0 ? queryTokens : Array.Empty<string>();
+		var output = new List<ScoredRecapSession>(sessions.Count);
+		var eventsByThreadId = context.Events
+			.GroupBy(x => x.ThreadId, StringComparer.Ordinal)
+			.ToDictionary(x => x.Key, x => x.ToArray(), StringComparer.Ordinal);
+		foreach (var session in sessions)
+		{
+			var metadata = string.Join(
+				"\n",
+				new[] { session.ThreadId, session.ThreadName, session.Cwd, session.Model, session.SessionFilePath }
+					.Where(x => !string.IsNullOrWhiteSpace(x)))
+				.ToLowerInvariant();
+			var score = 0;
+			var sampleMatches = new List<string>();
+			if (string.IsNullOrWhiteSpace(normalizedQuery))
+			{
+				score += session.EventCount > 0 ? 1 : 0;
+			}
+			else
+			{
+				if (!string.IsNullOrWhiteSpace(metadata) && metadata.Contains(queryLower, StringComparison.Ordinal))
+				{
+					score += 16;
+				}
+
+				foreach (var token in tokens)
+				{
+					if (!string.IsNullOrWhiteSpace(metadata) && metadata.Contains(token, StringComparison.Ordinal))
+					{
+						score += 6;
+					}
+				}
+			}
+
+			var lastEventUtc = session.LastEventUtc is not null &&
+				DateTimeOffset.TryParse(session.LastEventUtc, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsedLast)
+				? parsedLast.ToUniversalTime()
+				: (DateTimeOffset?)null;
+			if (eventsByThreadId.TryGetValue(session.ThreadId, out var threadEvents))
+			{
+				foreach (var ev in threadEvents)
+				{
+					var eventText = string.Join(
+						"\n",
+						new[] { ev.Text, ev.Command }
+							.Where(x => !string.IsNullOrWhiteSpace(x)))
+						.ToLowerInvariant();
+					if (string.IsNullOrWhiteSpace(normalizedQuery))
+					{
+						if (!string.IsNullOrWhiteSpace(ev.Text))
+						{
+							sampleMatches.Add(TruncateForDisplay(ev.Text, 180));
+						}
+						continue;
+					}
+
+					if (string.IsNullOrWhiteSpace(eventText))
+					{
+						continue;
+					}
+
+					if (eventText.Contains(queryLower, StringComparison.Ordinal))
+					{
+						score += 8;
+						sampleMatches.Add(TruncateForDisplay(ev.Command ?? ev.Text, 180));
+					}
+					else
+					{
+						foreach (var token in tokens)
+						{
+							if (!eventText.Contains(token, StringComparison.Ordinal))
+							{
+								continue;
+							}
+
+							score += 2;
+							if (!string.IsNullOrWhiteSpace(ev.Command) || !string.IsNullOrWhiteSpace(ev.Text))
+							{
+								sampleMatches.Add(TruncateForDisplay(ev.Command ?? ev.Text, 180));
+							}
+						}
+					}
+				}
+			}
+
+			score += Math.Clamp(session.EventCount / 25, 0, 5);
+			if (!string.IsNullOrWhiteSpace(normalizedQuery) && score <= 0)
+			{
+				continue;
+			}
+
+			var dedupedSamples = sampleMatches
+				.Where(x => !string.IsNullOrWhiteSpace(x))
+				.Distinct(StringComparer.OrdinalIgnoreCase)
+				.Take(5)
+				.ToArray();
+			output.Add(new ScoredRecapSession(
+				Session: session,
+				Score: score,
+				LastEventUtc: lastEventUtc,
+				SampleMatches: dedupedSamples));
+		}
+
+		return output;
 	}
 
 	private static IReadOnlyList<ScoredRecapEvent> ScoreMatches(
@@ -377,7 +636,10 @@ internal sealed class RecapQueryService
 			.ToArray();
 	}
 
-	private static string BuildDayAnswer(RecapDaySummary summary, IReadOnlyList<RecapSessionSummary> sessions)
+	private static string BuildDayAnswer(
+		RecapDaySummary summary,
+		IReadOnlyList<RecapSessionSummary> sessions,
+		IReadOnlyList<RecapProjectSummary> projects)
 	{
 		var topSessionNames = sessions
 			.Take(3)
@@ -387,16 +649,41 @@ internal sealed class RecapQueryService
 		var topSessionsText = topSessionNames.Length > 0
 			? $"Top active sessions: {string.Join(", ", topSessionNames)}."
 			: "No active sessions were detected.";
+		var topProjects = projects
+			.Take(3)
+			.Select(x => x.ProjectName)
+			.Where(x => !string.IsNullOrWhiteSpace(x))
+			.ToArray();
+		var topProjectsText = topProjects.Length > 0
+			? $"Projects touched: {string.Join(", ", topProjects)}."
+			: "No project grouping could be inferred.";
 		return $"Captured {summary.EventCount} events across {summary.ActiveThreadCount} sessions. " +
 			$"User prompts: {summary.UserPromptCount}, assistant messages: {summary.AssistantMessageCount}, tool calls: {summary.ToolCallCount}. " +
-			topSessionsText;
+			$"{topProjectsText} {topSessionsText}";
+	}
+
+	private static string BuildReportAnswer(DateOnly localDate, IReadOnlyList<RecapProjectSummary> projects, RecapDaySummary summary)
+	{
+		var dayText = localDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+		if (projects.Count <= 0)
+		{
+			return $"No project activity was detected for {dayText}.";
+		}
+
+		var topProjects = projects
+			.Take(3)
+			.Select(x => $"{x.ProjectName} ({x.EventCount} events)")
+			.ToArray();
+		return $"Generated a project recap for {dayText}: {summary.EventCount} events across {projects.Count} projects. " +
+			$"Most active projects: {string.Join(", ", topProjects)}.";
 	}
 
 	private static string BuildQueryAnswer(
 		DateOnly localDate,
 		string query,
 		IReadOnlyList<ScoredRecapEvent> matches,
-		IReadOnlyList<RecapThreadMatchSummary> threadSummaries)
+		IReadOnlyList<RecapThreadMatchSummary> threadSummaries,
+		LoadedRecapContext context)
 	{
 		var dayText = localDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 		if (matches.Count <= 0)
@@ -404,6 +691,12 @@ internal sealed class RecapQueryService
 			return $"No recap matches were found for '{query}' on {dayText}.";
 		}
 
+		var strongest = matches[0];
+		var strongestThread = context.ThreadById.TryGetValue(strongest.Event.ThreadId, out var existingStrongestThread)
+			? existingStrongestThread
+			: RecapThreadMeta.Empty(strongest.Event.ThreadId);
+		var strongestProjectName = GetProjectName(NormalizeProjectKey(strongestThread.Cwd));
+		var strongestSnippet = TruncateForDisplay(!string.IsNullOrWhiteSpace(strongest.Event.Command) ? strongest.Event.Command : strongest.Event.Text, 190);
 		var topThreads = threadSummaries
 			.Take(3)
 			.Select(x => string.IsNullOrWhiteSpace(x.ThreadName) ? x.ThreadId : x.ThreadName)
@@ -411,7 +704,125 @@ internal sealed class RecapQueryService
 			.ToArray();
 		var threadText = topThreads.Length > 0 ? string.Join(", ", topThreads) : "unknown sessions";
 		return $"Found {matches.Count} matching events in {threadSummaries.Count} sessions on {dayText}. " +
-			$"Strongest matches are in: {threadText}.";
+			$"Strongest matches are in: {threadText}. " +
+			$"Top hit project: {strongestProjectName}. Example: {strongestSnippet}";
+	}
+
+	private static string BuildSessionSearchAnswer(
+		DateOnly localDate,
+		string query,
+		IReadOnlyList<RecapSessionSearchResult> results,
+		RecapDaySummary summary)
+	{
+		var dayText = localDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+		if (results.Count <= 0)
+		{
+			if (string.IsNullOrWhiteSpace(query))
+			{
+				return $"No sessions were found for {dayText}.";
+			}
+
+			return $"No sessions matched '{query}' on {dayText}.";
+		}
+
+		var top = results[0];
+		var topName = string.IsNullOrWhiteSpace(top.ThreadName) ? top.ThreadId : top.ThreadName;
+		if (string.IsNullOrWhiteSpace(query))
+		{
+			return $"Showing {results.Count} active sessions for {dayText}. " +
+				$"Most active: {topName} in {top.ProjectName}. " +
+				$"Total captured events: {summary.EventCount}.";
+		}
+
+		return $"Found {results.Count} sessions matching '{query}' on {dayText}. " +
+			$"Best match: {topName} in {top.ProjectName}.";
+	}
+
+	private static string BuildProjectReportMarkdown(
+		DateOnly localDate,
+		string timezoneId,
+		RecapDaySummary summary,
+		IReadOnlyList<RecapProjectSummary> projects)
+	{
+		var lines = new List<string>
+		{
+			$"Daily recap for {localDate:yyyy-MM-dd} ({timezoneId})",
+			$"- Total events: {summary.EventCount}",
+			$"- Active sessions: {summary.ActiveThreadCount}",
+			$"- Projects touched: {projects.Count}",
+			$"- User prompts: {summary.UserPromptCount}",
+			$"- Assistant messages: {summary.AssistantMessageCount}",
+			$"- Tool calls: {summary.ToolCallCount}"
+		};
+
+		if (projects.Count <= 0)
+		{
+			lines.Add("- No project activity was captured for this day.");
+			return string.Join('\n', lines);
+		}
+
+		foreach (var project in projects.Take(10))
+		{
+			lines.Add(string.Empty);
+			lines.Add($"Project: {project.ProjectName}");
+			lines.Add($"- Path: {project.ProjectPath}");
+			lines.Add($"- Activity: {project.EventCount} events across {project.SessionCount} sessions");
+			lines.Add($"- Prompts: {project.UserPromptCount}, assistant: {project.AssistantMessageCount}, tool calls: {project.ToolCallCount}");
+			if (project.TopTopics.Count > 0)
+			{
+				var topics = string.Join(", ", project.TopTopics.Take(5).Select(x => $"{x.Value} ({x.Count})"));
+				lines.Add($"- Topics: {topics}");
+			}
+			if (project.TopCommands.Count > 0)
+			{
+				var commands = string.Join(", ", project.TopCommands.Take(4).Select(x => $"{x.Value} ({x.Count})"));
+				lines.Add($"- Commands: {commands}");
+			}
+			if (project.Sessions.Count > 0)
+			{
+				var names = string.Join(", ", project.Sessions.Take(4).Select(x => string.IsNullOrWhiteSpace(x.ThreadName) ? x.ThreadId : x.ThreadName));
+				lines.Add($"- Sessions: {names}");
+			}
+			if (project.Highlights.Count > 0)
+			{
+				lines.Add($"- Highlights: {string.Join(" | ", project.Highlights.Take(3))}");
+			}
+		}
+
+		return string.Join('\n', lines);
+	}
+
+	private static QueryIntent DetectQueryIntent(string normalizedQuery)
+	{
+		var query = normalizedQuery.ToLowerInvariant();
+		var reportKeywords = new[]
+		{
+			"recap",
+			"report",
+			"summary",
+			"summarize",
+			"summarise",
+			"everything",
+			"worked on",
+			"what did i do",
+			"what we did",
+			"what did we do"
+		};
+		var targetedKeywords = new[]
+		{
+			"where",
+			"implement",
+			"implemented",
+			"file",
+			"session",
+			"thread",
+			"find",
+			"search"
+		};
+		var reportHint = reportKeywords.Any(query.Contains);
+		var targetedHint = targetedKeywords.Any(query.Contains);
+		return new QueryIntent(
+			ReportOnly: reportHint && !targetedHint);
 	}
 
 	private static void ReadSessionEvents(
@@ -951,6 +1362,32 @@ internal sealed class RecapQueryService
 		return NormalizeText(firstToken);
 	}
 
+	private static string NormalizeProjectKey(string? cwd)
+	{
+		var normalized = NormalizeText(cwd)
+			.Replace('\\', '/')
+			.TrimEnd('/');
+		return string.IsNullOrWhiteSpace(normalized) ? "(unknown project)" : normalized;
+	}
+
+	private static string GetProjectName(string projectKey)
+	{
+		if (string.IsNullOrWhiteSpace(projectKey) ||
+			string.Equals(projectKey, "(unknown project)", StringComparison.OrdinalIgnoreCase))
+		{
+			return "(unknown project)";
+		}
+
+		var normalized = projectKey.Replace('\\', '/').TrimEnd('/');
+		if (string.IsNullOrWhiteSpace(normalized))
+		{
+			return "(unknown project)";
+		}
+
+		var segments = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+		return segments.Length > 0 ? segments[^1] : normalized;
+	}
+
 	private static bool TryGetProperty(JsonElement root, string key, out JsonElement value)
 	{
 		if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty(key, out value))
@@ -1054,6 +1491,15 @@ internal sealed class RecapQueryService
 	private sealed record ScoredRecapEvent(
 		RecapEvent Event,
 		int Score);
+
+	private sealed record ScoredRecapSession(
+		RecapSessionSummary Session,
+		int Score,
+		DateTimeOffset? LastEventUtc,
+		IReadOnlyList<string> SampleMatches);
+
+	private sealed record QueryIntent(
+		bool ReportOnly);
 }
 
 internal sealed class RecapQueryRequest
@@ -1065,13 +1511,24 @@ internal sealed class RecapQueryRequest
 	public int MaxSessions { get; init; } = 400;
 }
 
+internal sealed class RecapSessionSearchRequest
+{
+	public string? Query { get; init; }
+	public string? LocalDate { get; init; }
+	public string? Timezone { get; init; }
+	public int MaxResults { get; init; } = 40;
+	public int MaxSessions { get; init; } = 800;
+}
+
 internal sealed record RecapDayResponse(
 	string LocalDate,
 	string Timezone,
 	string WindowStartUtc,
 	string WindowEndUtc,
 	RecapDaySummary Summary,
-	IReadOnlyList<RecapSessionSummary> Sessions);
+	IReadOnlyList<RecapSessionSummary> Sessions,
+	IReadOnlyList<RecapProjectSummary> Projects,
+	string ReportMarkdown);
 
 internal sealed record RecapQueryResponse(
 	string LocalDate,
@@ -1082,7 +1539,20 @@ internal sealed record RecapQueryResponse(
 	string Answer,
 	RecapDaySummary Summary,
 	IReadOnlyList<RecapThreadMatchSummary> Threads,
-	IReadOnlyList<RecapMatchItem> Matches);
+	IReadOnlyList<RecapMatchItem> Matches,
+	IReadOnlyList<RecapProjectSummary> Projects,
+	string ReportMarkdown);
+
+internal sealed record RecapSessionSearchResponse(
+	string LocalDate,
+	string Timezone,
+	string WindowStartUtc,
+	string WindowEndUtc,
+	string Query,
+	string Answer,
+	RecapDaySummary Summary,
+	IReadOnlyList<RecapProjectSummary> Projects,
+	IReadOnlyList<RecapSessionSearchResult> Results);
 
 internal sealed record RecapDaySummary(
 	int EventCount,
@@ -1109,6 +1579,28 @@ internal sealed record RecapSessionSummary(
 	IReadOnlyList<string> PromptSamples,
 	IReadOnlyList<string> CommandSamples);
 
+internal sealed record RecapProjectSummary(
+	string ProjectKey,
+	string ProjectName,
+	string ProjectPath,
+	int SessionCount,
+	int EventCount,
+	int UserPromptCount,
+	int AssistantMessageCount,
+	int ToolCallCount,
+	string? FirstEventUtc,
+	string? LastEventUtc,
+	IReadOnlyList<RecapBucketItem> TopTopics,
+	IReadOnlyList<RecapBucketItem> TopCommands,
+	IReadOnlyList<string> Highlights,
+	IReadOnlyList<RecapProjectSessionSummary> Sessions);
+
+internal sealed record RecapProjectSessionSummary(
+	string ThreadId,
+	string? ThreadName,
+	int EventCount,
+	string? LastEventUtc);
+
 internal sealed record RecapThreadMatchSummary(
 	string ThreadId,
 	string? ThreadName,
@@ -1131,6 +1623,19 @@ internal sealed record RecapMatchItem(
 	string Text,
 	string? Command,
 	int Score);
+
+internal sealed record RecapSessionSearchResult(
+	string ThreadId,
+	string? ThreadName,
+	string? Cwd,
+	string? Model,
+	string? SessionFilePath,
+	string ProjectKey,
+	string ProjectName,
+	int EventCount,
+	string? LastEventUtc,
+	int Score,
+	IReadOnlyList<string> SampleMatches);
 
 internal sealed record RecapBucketItem(
 	string Value,

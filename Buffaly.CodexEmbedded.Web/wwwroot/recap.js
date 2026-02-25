@@ -1,6 +1,7 @@
 const STORAGE_SIDEBAR_COLLAPSED_KEY = "codex.recap.sidebarCollapsed.v1";
-const MAX_SESSIONS = 600;
-const MAX_RESULTS = 80;
+const MAX_SESSIONS = 900;
+const MAX_RESULTS = 120;
+const MAX_FIND_RESULTS = 80;
 
 const layoutRoot = document.querySelector(".layout");
 const sessionSidebar = document.getElementById("sessionSidebar");
@@ -12,10 +13,16 @@ const recapDateInput = document.getElementById("recapDateInput");
 const recapRefreshBtn = document.getElementById("recapRefreshBtn");
 const recapQueryInput = document.getElementById("recapQueryInput");
 const recapAskBtn = document.getElementById("recapAskBtn");
+const recapFindInput = document.getElementById("recapFindInput");
+const recapFindBtn = document.getElementById("recapFindBtn");
+
 const recapStatus = document.getElementById("recapStatus");
 const recapAnswer = document.getElementById("recapAnswer");
 const recapSummary = document.getElementById("recapSummary");
+const recapReport = document.getElementById("recapReport");
+const recapProjects = document.getElementById("recapProjects");
 const recapSessions = document.getElementById("recapSessions");
+const recapFindResults = document.getElementById("recapFindResults");
 const recapThreads = document.getElementById("recapThreads");
 const recapMatches = document.getElementById("recapMatches");
 const recapTimelineTitle = document.getElementById("recapTimelineTitle");
@@ -54,11 +61,9 @@ function setStatus(message) {
 }
 
 function clearNode(node) {
-  if (!node) {
-    return;
+  if (node) {
+    node.textContent = "";
   }
-
-  node.textContent = "";
 }
 
 function appendLine(node, label, value) {
@@ -113,6 +118,16 @@ function formatTimestamp(utcValue) {
   return new Date(tick).toLocaleString();
 }
 
+function projectNameFromPath(pathValue) {
+  const path = typeof pathValue === "string" ? pathValue.replace(/\\/g, "/").replace(/\/+$/, "") : "";
+  if (!path || path === "(unknown project)") {
+    return "(unknown project)";
+  }
+
+  const parts = path.split("/").filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : path;
+}
+
 function renderSummary(payload) {
   clearNode(recapSummary);
   if (!payload || !payload.summary) {
@@ -128,7 +143,7 @@ function renderSummary(payload) {
   appendLine(wrap, "Tool calls", String(payload.summary.toolCallCount || 0));
 
   const topCommands = Array.isArray(payload.summary.topCommands)
-    ? payload.summary.topCommands.slice(0, 5).map((x) => `${x.value} (${x.count})`)
+    ? payload.summary.topCommands.slice(0, 6).map((x) => `${x.value} (${x.count})`)
     : [];
   if (topCommands.length > 0) {
     appendLine(wrap, "Top commands", topCommands.join(", "));
@@ -142,6 +157,63 @@ function renderSummary(payload) {
   }
 
   recapSummary.appendChild(wrap);
+}
+
+function renderReport(payload) {
+  if (!recapReport) {
+    return;
+  }
+
+  const reportText = payload && typeof payload.reportMarkdown === "string"
+    ? payload.reportMarkdown.trim()
+    : "";
+  recapReport.textContent = reportText || "No project report available.";
+}
+
+function renderProjects(payload) {
+  clearNode(recapProjects);
+  const projects = payload && Array.isArray(payload.projects) ? payload.projects : [];
+  if (projects.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sidebar-empty";
+    empty.textContent = "No project activity found for this day.";
+    recapProjects.appendChild(empty);
+    return;
+  }
+
+  for (const project of projects) {
+    const card = document.createElement("div");
+    card.className = "recap-card";
+
+    const title = document.createElement("div");
+    title.className = "recap-card-title";
+    title.textContent = project.projectName || projectNameFromPath(project.projectPath || "");
+    card.appendChild(title);
+
+    appendLine(card, "Path", project.projectPath || "");
+    appendLine(card, "Sessions", String(project.sessionCount || 0));
+    appendLine(card, "Events", String(project.eventCount || 0));
+    appendLine(card, "Prompts", String(project.userPromptCount || 0));
+    appendLine(card, "Tool calls", String(project.toolCallCount || 0));
+    appendLine(card, "Last", formatTimestamp(project.lastEventUtc));
+
+    if (Array.isArray(project.topTopics) && project.topTopics.length > 0) {
+      const topics = project.topTopics.slice(0, 4).map((x) => `${x.value} (${x.count})`).join(", ");
+      appendLine(card, "Topics", topics);
+    }
+
+    if (Array.isArray(project.sessions) && project.sessions.length > 0) {
+      const topSession = project.sessions[0];
+      const actions = document.createElement("div");
+      actions.className = "recap-actions";
+      actions.appendChild(createActionButton("Open Top Session Timeline", () => {
+        loadTimeline(topSession.threadId, topSession.threadName || topSession.threadId);
+      }));
+      card.appendChild(actions);
+    }
+
+    recapProjects.appendChild(card);
+  }
 }
 
 function renderSessionList(payload) {
@@ -165,6 +237,7 @@ function renderSessionList(payload) {
     card.appendChild(title);
 
     appendLine(card, "Thread", session.threadId || "");
+    appendLine(card, "Project", projectNameFromPath(session.cwd || ""));
     appendLine(card, "Events", String(session.eventCount || 0));
     appendLine(card, "Prompts", String(session.userPromptCount || 0));
     appendLine(card, "Tool calls", String(session.toolCallCount || 0));
@@ -182,6 +255,55 @@ function renderSessionList(payload) {
     card.appendChild(actions);
 
     recapSessions.appendChild(card);
+  }
+}
+
+function renderFindSessionResults(payload) {
+  clearNode(recapFindResults);
+  const results = payload && Array.isArray(payload.results) ? payload.results : [];
+  if (results.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sidebar-empty";
+    empty.textContent = "No session finder results.";
+    recapFindResults.appendChild(empty);
+    return;
+  }
+
+  for (const result of results) {
+    const card = document.createElement("div");
+    card.className = "recap-card recap-match-card";
+
+    const header = document.createElement("div");
+    header.className = "recap-match-header";
+
+    const title = document.createElement("div");
+    title.className = "recap-card-title";
+    title.textContent = result.threadName || result.threadId || "(unknown thread)";
+    header.appendChild(title);
+
+    const score = document.createElement("div");
+    score.className = "recap-score";
+    score.textContent = `score ${result.score || 0}`;
+    header.appendChild(score);
+    card.appendChild(header);
+
+    appendLine(card, "Thread", result.threadId || "");
+    appendLine(card, "Project", result.projectName || projectNameFromPath(result.cwd || ""));
+    appendLine(card, "Events", String(result.eventCount || 0));
+    appendLine(card, "Last", formatTimestamp(result.lastEventUtc));
+
+    if (Array.isArray(result.sampleMatches) && result.sampleMatches.length > 0) {
+      appendLine(card, "Sample", trimText(result.sampleMatches[0], 220));
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "recap-actions";
+    actions.appendChild(createActionButton("Open Timeline", () => {
+      loadTimeline(result.threadId, result.threadName || result.threadId);
+    }));
+    card.appendChild(actions);
+
+    recapFindResults.appendChild(card);
   }
 }
 
@@ -206,6 +328,7 @@ function renderThreadMatches(payload) {
     card.appendChild(title);
 
     appendLine(card, "Thread", thread.threadId || "");
+    appendLine(card, "Project", projectNameFromPath(thread.cwd || ""));
     appendLine(card, "Matches", String(thread.matchCount || 0));
     appendLine(card, "Top score", String(thread.topScore || 0));
     appendLine(card, "Last match", formatTimestamp(thread.lastMatchUtc));
@@ -252,13 +375,12 @@ function renderEventMatches(payload) {
     score.className = "recap-score";
     score.textContent = `score ${match.score || 0}`;
     header.appendChild(score);
-
     card.appendChild(header);
+
     appendLine(card, "When", formatTimestamp(match.timestampUtc));
     appendLine(card, "Type", match.eventType || "");
-
-    const matchText = trimText(match.command || match.text || "", 260);
-    appendLine(card, "Text", matchText);
+    appendLine(card, "Project", projectNameFromPath(match.cwd || ""));
+    appendLine(card, "Text", trimText(match.command || match.text || "", 260));
 
     const actions = document.createElement("div");
     actions.className = "recap-actions";
@@ -272,11 +394,9 @@ function renderEventMatches(payload) {
 }
 
 function renderAnswer(text) {
-  if (!recapAnswer) {
-    return;
+  if (recapAnswer) {
+    recapAnswer.textContent = trimText(text || "", 4000);
   }
-
-  recapAnswer.textContent = trimText(text || "", 2000);
 }
 
 async function requestDayRecap() {
@@ -284,10 +404,10 @@ async function requestDayRecap() {
   const timezone = browserTimezone();
   const url = new URL("api/recap/day", document.baseURI);
   url.searchParams.set("date", dateValue);
+  url.searchParams.set("maxSessions", String(MAX_SESSIONS));
   if (timezone) {
     url.searchParams.set("timezone", timezone);
   }
-  url.searchParams.set("maxSessions", String(MAX_SESSIONS));
 
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
@@ -303,12 +423,18 @@ async function loadDayRecap() {
   try {
     const payload = await requestDayRecap();
     currentDayPayload = payload;
+
     renderSummary(payload);
+    renderReport(payload);
+    renderProjects(payload);
     renderSessionList(payload);
-    renderAnswer(`Daily recap loaded for ${payload.localDate} (${payload.timezone}).`);
+    renderFindSessionResults({ results: [] });
     renderThreadMatches({ threads: [] });
     renderEventMatches({ matches: [] });
-    setStatus(`Loaded ${payload.summary?.eventCount || 0} events across ${payload.summary?.activeThreadCount || 0} sessions.`);
+    renderAnswer(payload.reportMarkdown || `Daily recap loaded for ${payload.localDate} (${payload.timezone}).`);
+
+    const projectCount = Array.isArray(payload.projects) ? payload.projects.length : 0;
+    setStatus(`Loaded ${payload.summary?.eventCount || 0} events across ${payload.summary?.activeThreadCount || 0} sessions in ${projectCount} projects.`);
 
     if (!activeTimelineThreadId && Array.isArray(payload.sessions) && payload.sessions.length > 0) {
       const first = payload.sessions[0];
@@ -356,16 +482,15 @@ async function runQuery() {
   try {
     const payload = await requestQuery();
     renderAnswer(payload.answer || "");
-    renderSummary({ summary: payload.summary });
+    renderSummary(payload);
+    renderReport(payload);
+    renderProjects(payload);
     renderThreadMatches(payload);
     renderEventMatches(payload);
 
-    const sessionProxyPayload = {
-      sessions: currentDayPayload && Array.isArray(currentDayPayload.sessions)
-        ? currentDayPayload.sessions
-        : []
-    };
-    renderSessionList(sessionProxyPayload);
+    if (currentDayPayload && Array.isArray(currentDayPayload.sessions)) {
+      renderSessionList(currentDayPayload);
+    }
 
     setStatus(`Query returned ${Array.isArray(payload.matches) ? payload.matches.length : 0} matching events.`);
 
@@ -381,6 +506,53 @@ async function runQuery() {
   }
 }
 
+async function requestSessionFinder() {
+  const queryText = recapFindInput ? (recapFindInput.value || "").trim() : "";
+  const dateValue = recapDateInput && recapDateInput.value ? recapDateInput.value : toLocalDateValue(new Date());
+  const timezone = browserTimezone();
+  const url = new URL("api/recap/find-sessions", document.baseURI);
+  url.searchParams.set("query", queryText);
+  url.searchParams.set("date", dateValue);
+  url.searchParams.set("maxResults", String(MAX_FIND_RESULTS));
+  url.searchParams.set("maxSessions", String(MAX_SESSIONS));
+  if (timezone) {
+    url.searchParams.set("timezone", timezone);
+  }
+
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`session finder failed (${response.status}): ${detail}`);
+  }
+
+  return await response.json();
+}
+
+async function runSessionFinder() {
+  setStatus("Finding sessions...");
+  try {
+    const payload = await requestSessionFinder();
+    renderFindSessionResults(payload);
+    renderAnswer(payload.answer || "");
+    if (payload && Array.isArray(payload.projects)) {
+      renderProjects(payload);
+    }
+
+    const resultCount = Array.isArray(payload.results) ? payload.results.length : 0;
+    setStatus(`Session finder returned ${resultCount} sessions.`);
+
+    if (resultCount > 0) {
+      const top = payload.results[0];
+      if (top && top.threadId) {
+        loadTimeline(top.threadId, top.threadName || top.threadId);
+      }
+    }
+  } catch (error) {
+    setStatus("Session finder failed.");
+    renderAnswer(String(error));
+  }
+}
+
 async function loadTimeline(threadId, displayName) {
   if (!threadId) {
     return;
@@ -390,7 +562,6 @@ async function loadTimeline(threadId, displayName) {
   if (recapTimelineTitle) {
     recapTimelineTitle.textContent = `Timeline: ${displayName || threadId}`;
   }
-
   if (recapTimelineStatus) {
     recapTimelineStatus.textContent = "Loading timeline...";
   }
@@ -410,7 +581,7 @@ async function loadTimeline(threadId, displayName) {
     const data = await response.json();
     if (timeline && typeof timeline.setServerTurns === "function") {
       timeline.setServerTurns(Array.isArray(data.turns) ? data.turns : []);
-    } else {
+    } else if (timeline && typeof timeline.clear === "function") {
       timeline.clear();
     }
 
@@ -513,11 +684,26 @@ function wireEvents() {
     });
   }
 
+  if (recapFindBtn) {
+    recapFindBtn.addEventListener("click", () => {
+      runSessionFinder();
+    });
+  }
+
   if (recapQueryInput) {
     recapQueryInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
         runQuery();
+      }
+    });
+  }
+
+  if (recapFindInput) {
+    recapFindInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        runSessionFinder();
       }
     });
   }

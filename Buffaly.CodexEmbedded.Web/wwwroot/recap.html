@@ -6,7 +6,7 @@
 	<title>Codex Recap</title>
 	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-	<link rel="stylesheet" href="site.css?v=20260225-recap1">
+	<link rel="stylesheet" href="site.css?v=20260225-recap2">
 </head>
 <body>
 	<div class="layout">
@@ -63,6 +63,8 @@
 					<button id="recapRefreshBtn" type="button">Recap Day</button>
 					<input id="recapQueryInput" type="text" placeholder="Ask: where did we implement queue handling?">
 					<button id="recapAskBtn" type="button">Ask</button>
+					<input id="recapFindInput" type="text" placeholder="Find session: timeline bug or auth middleware">
+					<button id="recapFindBtn" type="button">Find Session</button>
 				</div>
 				<div id="recapStatus" class="logs-status">Loading recap...</div>
 				<div id="recapAnswer" class="recap-answer"></div>
@@ -70,8 +72,14 @@
 					<div class="recap-column">
 						<div class="recap-section-title">Summary</div>
 						<div id="recapSummary" class="recap-list"></div>
+						<div class="recap-section-title">Project Report</div>
+						<div id="recapReport" class="recap-report"></div>
+						<div class="recap-section-title">Projects</div>
+						<div id="recapProjects" class="recap-list"></div>
 						<div class="recap-section-title">Sessions</div>
 						<div id="recapSessions" class="recap-list"></div>
+						<div class="recap-section-title">Session Finder</div>
+						<div id="recapFindResults" class="recap-list"></div>
 						<div class="recap-section-title">Matching Sessions</div>
 						<div id="recapThreads" class="recap-list"></div>
 						<div class="recap-section-title">Matching Events</div>
@@ -89,6 +97,6 @@
 	</div>
 	<script src="theme.js?v=20260225-settings1"></script>
 	<script src="sessionTimeline.js?v=20260224-turnfmt1"></script>
-	<script src="recap.js?v=20260225-recap1"></script>
+	<script src="recap.js?v=20260225-recap2"></script>
 </body>
 </html>

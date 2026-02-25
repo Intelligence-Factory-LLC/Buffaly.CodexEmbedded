@@ -374,6 +374,25 @@ app.MapGet("/api/recap/day", (HttpRequest request, RecapQueryService recapQueryS
 	return Results.Ok(recap);
 });
 
+app.MapGet("/api/recap/find-sessions", (HttpRequest request, RecapQueryService recapQueryService) =>
+{
+	var query = request.Query["query"].ToString();
+	var localDate = request.Query["date"].ToString();
+	var timezone = request.Query["timezone"].ToString();
+	var maxResults = QueryValueParser.GetPositiveInt(request.Query["maxResults"], fallback: 40, max: 200);
+	var maxSessions = QueryValueParser.GetPositiveInt(request.Query["maxSessions"], fallback: 800, max: 3000);
+	var searchRequest = new RecapSessionSearchRequest
+	{
+		Query = string.IsNullOrWhiteSpace(query) ? string.Empty : query.Trim(),
+		LocalDate = string.IsNullOrWhiteSpace(localDate) ? null : localDate.Trim(),
+		Timezone = string.IsNullOrWhiteSpace(timezone) ? null : timezone.Trim(),
+		MaxResults = maxResults,
+		MaxSessions = maxSessions
+	};
+	var result = recapQueryService.FindSessions(searchRequest);
+	return Results.Ok(result);
+});
+
 app.MapPost("/api/recap/query", (RecapQueryRequest? body, RecapQueryService recapQueryService) =>
 {
 	var safeBody = body ?? new RecapQueryRequest();
