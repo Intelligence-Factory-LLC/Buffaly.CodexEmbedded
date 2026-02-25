@@ -59,6 +59,7 @@ let turnActivityTickTimer = null;
 let turnStartedAtBySession = new Map(); // sessionId -> epoch ms when running turn started
 let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
 let jumpCollapseMode = false;
+let conversationMetaMenuOpen = false;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -124,6 +125,9 @@ const stopSessionBtn = document.getElementById("stopSessionBtn");
 const sessionSelect = document.getElementById("sessionSelect");
 const conversationTitle = document.getElementById("conversationTitle");
 const sessionMeta = document.getElementById("sessionMeta");
+const conversationModelSummary = document.getElementById("conversationModelSummary");
+const conversationMetaMenuBtn = document.getElementById("conversationMetaMenuBtn");
+const conversationMetaMenu = document.getElementById("conversationMetaMenu");
 const sessionMetaDetailsBtn = document.getElementById("sessionMetaDetailsBtn");
 const sessionMetaSummaryItem = document.getElementById("sessionMetaSummaryItem");
 const sessionMetaSummaryValue = document.getElementById("sessionMetaSummaryValue");
@@ -1742,14 +1746,55 @@ function updateConversationMetaVisibility() {
   }
 
   sessionMeta.classList.toggle("hidden", !hasState);
-  sessionMetaModelItem.classList.toggle("hidden", !hasState);
-  permissionLevelIndicator?.classList.toggle("hidden", !hasState);
+  if (conversationMetaMenuBtn) {
+    conversationMetaMenuBtn.disabled = !hasState;
+  }
   if (jumpToBtn) {
     jumpToBtn.disabled = !hasState;
   }
   if (!hasState) {
+    setConversationMetaMenuOpen(false);
     setJumpCollapseMode(false);
   }
+}
+
+function setConversationMetaMenuOpen(isOpen) {
+  if (!conversationMetaMenu || !conversationMetaMenuBtn) {
+    conversationMetaMenuOpen = false;
+    return;
+  }
+
+  const hasState = !!getActiveSessionState();
+  const open = !!isOpen && hasState;
+  conversationMetaMenuOpen = open;
+  conversationMetaMenu.classList.toggle("hidden", !open);
+  conversationMetaMenuBtn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function updateConversationModelSummary() {
+  if (!conversationModelSummary) {
+    return;
+  }
+
+  const state = getActiveSessionState();
+  if (!state) {
+    conversationModelSummary.textContent = "Model: default | reasoning: default";
+    conversationModelSummary.title = "";
+    return;
+  }
+
+  const modelValue = normalizeModelValue(
+    conversationModelSelect?.value || state.model || ""
+  );
+  const reasoningValue = normalizeReasoningEffort(
+    conversationReasoningSelect?.value || state.reasoningEffort || ""
+  );
+
+  const modelLabel = modelValue || "default";
+  const reasoningLabel = reasoningValue || "default";
+  const summary = `Model: ${modelLabel} | reasoning: ${reasoningLabel}`;
+  conversationModelSummary.textContent = summary;
+  conversationModelSummary.title = summary;
 }
 
 function setSidebarExtrasExpanded(isExpanded, options = {}) {
@@ -3081,6 +3126,7 @@ function syncConversationModelOptions(preferredValue = null) {
   }
 
   syncingConversationModelSelect = false;
+  updateConversationModelSummary();
 }
 
 function populateReasoningEffortSelect() {
@@ -3120,6 +3166,7 @@ function syncConversationReasoningOptions(preferredValue = null) {
   const hasTarget = Array.from(conversationReasoningSelect.options).some((x) => x.value === targetValue);
   conversationReasoningSelect.value = hasTarget ? targetValue : "";
   syncingConversationModelSelect = false;
+  updateConversationModelSummary();
 }
 
 function refreshSessionMeta() {
@@ -3141,6 +3188,7 @@ function refreshSessionMeta() {
     syncConversationModelOptions(modelSelect.value || "");
     syncConversationReasoningOptions("");
     sessionMeta.title = "";
+    updateConversationModelSummary();
     updateContextLeftIndicator();
     updatePermissionLevelIndicator();
     updateConversationMetaVisibility();
@@ -3173,6 +3221,7 @@ function refreshSessionMeta() {
   sessionMetaModelItem.dataset.available = "1";
   sessionMetaModelItem.classList.remove("hidden");
   sessionMeta.title = "";
+  updateConversationModelSummary();
   updateContextLeftIndicator();
   updatePermissionLevelIndicator();
   updateConversationMetaVisibility();
@@ -4622,6 +4671,26 @@ if (conversationReasoningSelect) {
   });
 }
 
+if (conversationMetaMenuBtn) {
+  conversationMetaMenuBtn.addEventListener("click", (event) => {
+    event.preventDefault();
+    setConversationMetaMenuOpen(!conversationMetaMenuOpen);
+  });
+}
+
+document.addEventListener("click", (event) => {
+  if (!conversationMetaMenuOpen || !sessionMeta) {
+    return;
+  }
+
+  const target = event.target;
+  if (target instanceof Node && sessionMeta.contains(target)) {
+    return;
+  }
+
+  setConversationMetaMenuOpen(false);
+});
+
 modelCommandSelect.addEventListener("change", () => {
   if (modelCommandSelect.value === "__custom__") {
     modelCommandCustomInput.classList.remove("hidden");
@@ -5128,6 +5197,12 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
+  if (conversationMetaMenuOpen) {
+    event.preventDefault();
+    setConversationMetaMenuOpen(false);
+    return;
+  }
+
   if (jumpCollapseMode) {
     event.preventDefault();
     setJumpCollapseMode(false);
@@ -5159,6 +5234,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 window.addEventListener("resize", () => {
+  setConversationMetaMenuOpen(false);
   if (!isMobileViewport()) {
     setMobileProjectsOpen(false);
   }
