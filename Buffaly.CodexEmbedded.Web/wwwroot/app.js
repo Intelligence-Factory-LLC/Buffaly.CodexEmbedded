@@ -4057,7 +4057,19 @@ function handleServerEvent(frame) {
     case "session_catalog": {
       sessionCatalogLoadedOnce = true;
       const list = Array.isArray(payload.sessions) ? payload.sessions : [];
-      const nextProcessingByThread = new Map(processingByThread);
+      const nextProcessingByThread = new Map();
+      for (const [sessionId, state] of sessions.entries()) {
+        if (!sessionId || !state || !state.threadId) {
+          continue;
+        }
+
+        if (isTurnInFlight(sessionId)) {
+          const normalizedThreadId = normalizeThreadId(state.threadId);
+          if (normalizedThreadId) {
+            nextProcessingByThread.set(normalizedThreadId, true);
+          }
+        }
+      }
       let persistedPreferenceUpdated = false;
       sessionCatalog = list
         .filter((s) => s && s.threadId)
@@ -4196,9 +4208,12 @@ function handleServerEvent(frame) {
       const sessionId = payload.sessionId || null;
       if (sessionId) {
         touchSessionActivity(sessionId);
-        setTurnInFlight(sessionId, true);
+        // Do not force in-flight on cancel request acknowledgements.
+        // Cancel can be emitted after a recovered/complete event, and forcing true
+        // reintroduces stale spinner/reasoning UI until the next poll.
+        send("session_list");
       }
-      appendLog(`[turn] cancel requested for session=${sessionId || "unknown"}`);
+      appendLog(`[turn] cancel requested for session=${sessionId || "unknown"} interruptSent=${payload.interruptSent === true ? "true" : "false"}`);
       return;
     }
 
