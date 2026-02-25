@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Codex Recap</title>
+	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
+	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+	<link rel="stylesheet" href="site.css?v=20260225-recap1">
+</head>
+<body>
+	<div class="layout">
+		<button id="mobileProjectsBtn" class="toolbar-mobile-projects-btn" type="button" title="Show navigation" aria-label="Show navigation" aria-expanded="false">
+			<i class="bi bi-layout-sidebar-inset-reverse" aria-hidden="true"></i>
+			<span>Menu</span>
+		</button>
+		<main class="main codex-main">
+			<aside id="sessionSidebar" class="panel session-sidebar">
+				<div class="sidebar-shell-header">
+					<a class="sidebar-logo-btn" href="https://buffa.ly/?utm_source=codexembedded&utm_medium=recap_logo&utm_campaign=sidebar" target="_blank" rel="noopener" title="Made by the Buffaly team - learn more" aria-label="Made by the Buffaly team - learn more">
+						<img class="sidebar-logo-image" src="images/bf_logo_fav_Large.png" alt="">
+					</a>
+					<button id="sidebarToggleBtn" type="button" class="sidebar-collapse-btn sidebar-shell-toggle-btn" title="Hide navigation" aria-label="Hide navigation">
+						<i class="bi bi-layout-sidebar-inset-reverse" aria-hidden="true"></i>
+					</button>
+				</div>
+				<nav class="sidebar-nav" aria-label="Main navigation">
+					<a class="sidebar-nav-link" href="./">
+						<i class="bi bi-chat-square-text" aria-hidden="true"></i>
+						<span>Codex</span>
+					</a>
+					<a class="sidebar-nav-link" href="logs">
+						<i class="bi bi-journal-text" aria-hidden="true"></i>
+						<span>Logs</span>
+					</a>
+					<a class="sidebar-nav-link" href="watcher">
+						<i class="bi bi-eye" aria-hidden="true"></i>
+						<span>Watcher</span>
+					</a>
+					<a class="sidebar-nav-link active" href="recap" aria-current="page">
+						<i class="bi bi-clock-history" aria-hidden="true"></i>
+						<span>Recap</span>
+					</a>
+					<a class="sidebar-nav-link" href="server">
+						<i class="bi bi-cpu" aria-hidden="true"></i>
+						<span>Server</span>
+					</a>
+					<a class="sidebar-nav-link" href="settings">
+						<i class="bi bi-sliders" aria-hidden="true"></i>
+						<span>Settings</span>
+					</a>
+				</nav>
+				<div class="sidebar-divider" aria-hidden="true"></div>
+				<div class="recap-sidebar-note">
+					Recap mode indexes your Codex day from stored thread history and session logs.
+				</div>
+			</aside>
+			<section class="panel chat-panel recap-panel">
+				<div class="panel-title">Daily Recap + Research</div>
+				<div class="recap-controls">
+					<label for="recapDateInput">Date</label>
+					<input id="recapDateInput" type="date">
+					<button id="recapRefreshBtn" type="button">Recap Day</button>
+					<input id="recapQueryInput" type="text" placeholder="Ask: where did we implement queue handling?">
+					<button id="recapAskBtn" type="button">Ask</button>
+				</div>
+				<div id="recapStatus" class="logs-status">Loading recap...</div>
+				<div id="recapAnswer" class="recap-answer"></div>
+				<div class="recap-grid">
+					<div class="recap-column">
+						<div class="recap-section-title">Summary</div>
+						<div id="recapSummary" class="recap-list"></div>
+						<div class="recap-section-title">Sessions</div>
+						<div id="recapSessions" class="recap-list"></div>
+						<div class="recap-section-title">Matching Sessions</div>
+						<div id="recapThreads" class="recap-list"></div>
+						<div class="recap-section-title">Matching Events</div>
+						<div id="recapMatches" class="recap-list"></div>
+					</div>
+					<div class="recap-column recap-timeline-column">
+						<div id="recapTimelineTitle" class="recap-section-title">Timeline</div>
+						<div id="recapTimelineStatus" class="logs-status">Select a session to load conversation timeline.</div>
+						<div id="recapTimeline" class="watcher-timeline"></div>
+					</div>
+				</div>
+			</section>
+		</main>
+		<button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close navigation"></button>
+	</div>
+	<script src="theme.js?v=20260225-settings1"></script>
+	<script src="sessionTimeline.js?v=20260224-turnfmt1"></script>
+	<script src="recap.js?v=20260225-recap1"></script>
+</body>
+</html>

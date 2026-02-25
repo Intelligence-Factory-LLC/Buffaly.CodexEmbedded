@@ -24,6 +24,7 @@ builder.Services.AddSingleton(defaults);
 builder.Services.AddSingleton<SessionOrchestrator>();
 builder.Services.AddSingleton<ServerRuntimeStateTracker>();
 builder.Services.AddSingleton<TimelineProjectionService>();
+builder.Services.AddSingleton<RecapQueryService>();
 
 var app = builder.Build();
 app.UseDefaultFiles();
@@ -82,6 +83,26 @@ app.MapGet("/watcher", async context =>
 
 	context.Response.ContentType = "text/html; charset=utf-8";
 	await context.Response.SendFileAsync(watcherPagePath);
+});
+
+app.MapGet("/recap", async context =>
+{
+	var webRoot = app.Environment.WebRootPath;
+	if (string.IsNullOrWhiteSpace(webRoot))
+	{
+		context.Response.StatusCode = StatusCodes.Status404NotFound;
+		return;
+	}
+
+	var recapPagePath = Path.Combine(webRoot, "recap.html");
+	if (!File.Exists(recapPagePath))
+	{
+		context.Response.StatusCode = StatusCodes.Status404NotFound;
+		return;
+	}
+
+	context.Response.ContentType = "text/html; charset=utf-8";
+	await context.Response.SendFileAsync(recapPagePath);
 });
 
 app.MapGet("/server", async context =>
@@ -339,6 +360,33 @@ app.MapGet("/api/turns/watch", (HttpRequest request, SessionOrchestrator orchest
 			title: "Failed to build turn timeline.",
 			detail: ex.Message);
 	}
+});
+
+app.MapGet("/api/recap/day", (HttpRequest request, RecapQueryService recapQueryService) =>
+{
+	var localDate = request.Query["date"].ToString();
+	var timezone = request.Query["timezone"].ToString();
+	var maxSessions = QueryValueParser.GetPositiveInt(request.Query["maxSessions"], fallback: 400, max: 3000);
+	var recap = recapQueryService.GetDaySummary(
+		string.IsNullOrWhiteSpace(localDate) ? null : localDate.Trim(),
+		string.IsNullOrWhiteSpace(timezone) ? null : timezone.Trim(),
+		maxSessions);
+	return Results.Ok(recap);
+});
+
+app.MapPost("/api/recap/query", (RecapQueryRequest? body, RecapQueryService recapQueryService) =>
+{
+	var safeBody = body ?? new RecapQueryRequest();
+	var requestModel = new RecapQueryRequest
+	{
+		Query = string.IsNullOrWhiteSpace(safeBody.Query) ? string.Empty : safeBody.Query.Trim(),
+		LocalDate = string.IsNullOrWhiteSpace(safeBody.LocalDate) ? null : safeBody.LocalDate.Trim(),
+		Timezone = string.IsNullOrWhiteSpace(safeBody.Timezone) ? null : safeBody.Timezone.Trim(),
+		MaxResults = Math.Clamp(safeBody.MaxResults, 1, 200),
+		MaxSessions = Math.Clamp(safeBody.MaxSessions, 1, 3000)
+	};
+	var recap = recapQueryService.QueryDay(requestModel);
+	return Results.Ok(recap);
 });
 
 app.MapGet("/api/logs/realtime/current", (HttpRequest request, WebRuntimeDefaults defaults) =>

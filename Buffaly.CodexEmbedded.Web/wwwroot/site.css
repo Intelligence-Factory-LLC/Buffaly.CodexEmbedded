@@ -1480,6 +1480,197 @@ body {
 	font-size: 0.86rem;
 }
 
+.recap-sidebar-note {
+	padding: 0.6rem 0.7rem;
+	color: #334155;
+	font-size: 0.84rem;
+	line-height: 1.35;
+}
+
+.recap-panel {
+	overflow: hidden;
+}
+
+.recap-controls {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.45rem;
+	padding: 0.55rem 0.75rem;
+	border-bottom: 1px solid #e5e7eb;
+	background: #f8fafc;
+}
+
+.recap-controls label {
+	font-size: 0.8rem;
+	font-weight: 700;
+	color: #334155;
+}
+
+.recap-controls input,
+.recap-controls button {
+	font: inherit;
+}
+
+.recap-controls input[type="date"] {
+	padding: 0.32rem 0.45rem;
+	border: 1px solid #cbd5e1;
+	border-radius: 6px;
+	background: #ffffff;
+	color: #0f172a;
+}
+
+.recap-controls input[type="text"] {
+	flex: 1 1 320px;
+	min-width: 180px;
+	padding: 0.36rem 0.5rem;
+	border: 1px solid #cbd5e1;
+	border-radius: 6px;
+	background: #ffffff;
+	color: #0f172a;
+}
+
+.recap-controls button {
+	padding: 0.35rem 0.58rem;
+	border: 1px solid #cbd5e1;
+	border-radius: 6px;
+	background: #ffffff;
+	color: #1e293b;
+	cursor: pointer;
+}
+
+.recap-controls button:hover {
+	background: #eff6ff;
+	border-color: #93c5fd;
+	color: #1e3a8a;
+}
+
+.recap-answer {
+	padding: 0.55rem 0.8rem;
+	border-bottom: 1px solid #e5e7eb;
+	background: #f8fafc;
+	color: #0f172a;
+	font-size: 0.85rem;
+	line-height: 1.35;
+}
+
+.recap-grid {
+	flex: 1;
+	min-height: 0;
+	display: grid;
+	grid-template-columns: minmax(280px, 440px) 1fr;
+	gap: 0;
+}
+
+.recap-column {
+	min-height: 0;
+	overflow: auto;
+	padding: 0.55rem;
+}
+
+.recap-timeline-column {
+	border-left: 1px solid #e5e7eb;
+	display: flex;
+	flex-direction: column;
+}
+
+.recap-timeline-column .watcher-timeline {
+	flex: 1;
+	min-height: 240px;
+}
+
+.recap-section-title {
+	font-size: 0.82rem;
+	font-weight: 700;
+	color: #334155;
+	margin: 0.15rem 0 0.45rem;
+}
+
+.recap-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.45rem;
+	margin-bottom: 0.55rem;
+}
+
+.recap-card {
+	border: 1px solid #dbe5f1;
+	border-radius: 8px;
+	background: #f8fafc;
+	padding: 0.45rem 0.5rem;
+}
+
+.recap-card-title {
+	font-size: 0.84rem;
+	font-weight: 700;
+	color: #0f172a;
+	margin-bottom: 0.25rem;
+	word-break: break-word;
+}
+
+.recap-kv {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.32rem;
+	font-size: 0.78rem;
+	line-height: 1.25;
+	padding: 0.05rem 0;
+}
+
+.recap-k {
+	color: #64748b;
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+.recap-v {
+	color: #1e293b;
+	word-break: break-word;
+}
+
+.recap-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	margin-top: 0.35rem;
+}
+
+.recap-action-btn {
+	padding: 0.28rem 0.5rem;
+	border: 1px solid #93c5fd;
+	border-radius: 999px;
+	background: #eff6ff;
+	color: #1e3a8a;
+	font-size: 0.74rem;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.recap-action-btn:hover {
+	background: #dbeafe;
+}
+
+.recap-match-card {
+	cursor: default;
+}
+
+.recap-match-header {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	justify-content: space-between;
+}
+
+.recap-score {
+	font-size: 0.7rem;
+	font-weight: 700;
+	padding: 0.1rem 0.35rem;
+	border-radius: 999px;
+	background: #dcfce7;
+	color: #166534;
+	white-space: nowrap;
+}
+
 .server-refresh-btn {
 	display: inline-flex;
 	align-items: center;
@@ -2149,6 +2340,8 @@ html[data-theme="dark"] .sidebar-shell-header,
 html[data-theme="dark"] .sidebar-nav,
 html[data-theme="dark"] .sidebar-create-row,
 html[data-theme="dark"] .logs-help-text,
+html[data-theme="dark"] .recap-answer,
+html[data-theme="dark"] .recap-controls,
 html[data-theme="dark"] .server-section-title,
 html[data-theme="dark"] .timeline-truncation-note {
 	background: #0f172a;
@@ -2174,6 +2367,7 @@ html[data-theme="dark"] .project-name,
 html[data-theme="dark"] .session-title,
 html[data-theme="dark"] .conversation-title-text,
 html[data-theme="dark"] .conversation-model-summary,
+html[data-theme="dark"] .recap-card-title,
 html[data-theme="dark"] .watcher-entry-title,
 html[data-theme="dark"] .watcher-inline-title,
 html[data-theme="dark"] .server-meta-value,
@@ -2272,6 +2466,8 @@ html[data-theme="dark"] .more-sessions-btn:hover {
 html[data-theme="dark"] .session-subtitle,
 html[data-theme="dark"] .project-path,
 html[data-theme="dark"] .logs-status,
+html[data-theme="dark"] .recap-sidebar-note,
+html[data-theme="dark"] .recap-k,
 html[data-theme="dark"] .watcher-entry-time,
 html[data-theme="dark"] .watcher-inline-time,
 html[data-theme="dark"] .server-meta-label,
@@ -2292,6 +2488,7 @@ html[data-theme="dark"] .watcher-timeline {
 
 html[data-theme="dark"] .watcher-entry,
 html[data-theme="dark"] .watcher-inline-entry,
+html[data-theme="dark"] .recap-card,
 html[data-theme="dark"] .watcher-agents-collapsible,
 html[data-theme="dark"] .watcher-env-collapsible,
 html[data-theme="dark"] .prompt-queue,
@@ -2303,8 +2500,43 @@ html[data-theme="dark"] .server-meta-chip {
 
 html[data-theme="dark"] .watcher-entry-text,
 html[data-theme="dark"] .watcher-inline-text,
+html[data-theme="dark"] .recap-v,
 html[data-theme="dark"] .approval-details {
 	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .recap-controls input[type="date"],
+html[data-theme="dark"] .recap-controls input[type="text"],
+html[data-theme="dark"] .recap-controls button {
+	background: #0f172a;
+	border-color: #475569;
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .recap-controls button:hover {
+	background: #1f2937;
+	border-color: #60a5fa;
+	color: #dbeafe;
+}
+
+html[data-theme="dark"] .recap-action-btn {
+	background: #1f3556;
+	border-color: #60a5fa;
+	color: #dbeafe;
+}
+
+html[data-theme="dark"] .recap-action-btn:hover {
+	background: #1d4ed8;
+}
+
+html[data-theme="dark"] .recap-score {
+	background: #14532d;
+	color: #bbf7d0;
+}
+
+html[data-theme="dark"] .recap-timeline-column {
+	border-left-color: #334155;
+	border-top-color: #334155;
 }
 
 html[data-theme="dark"] .prompt-form {
@@ -2518,6 +2750,33 @@ html[data-theme="dark"] .server-table td {
 
 	.panel-title {
 		padding: 0.5rem 0.58rem;
+	}
+
+	.recap-controls {
+		padding: 0.45rem 0.5rem;
+		gap: 0.35rem;
+	}
+
+	.recap-controls input[type="text"] {
+		flex: 1 1 100%;
+	}
+
+	.recap-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.recap-column {
+		padding: 0.45rem;
+	}
+
+	.recap-timeline-column {
+		border-left: 0;
+		border-top: 1px solid #e2e8f0;
+	}
+
+	.recap-answer,
+	.recap-section-title {
+		font-size: 0.78rem;
 	}
 
 	.conversation-title-row {
