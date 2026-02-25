@@ -2,8 +2,8 @@
   const DEFAULT_MAX_RENDERED_ENTRIES = 1500;
   const DEFAULT_MAX_TEXT_CHARS = 5000;
   const ANSI_ESCAPE_REGEX = /\u001b\[[0-9;]*[A-Za-z]/g;
-  const TOOL_PREVIEW_HEAD_LINES = 12;
-  const TOOL_PREVIEW_TAIL_LINES = 8;
+  const TOOL_PREVIEW_HEAD_LINES = 8;
+  const TOOL_PREVIEW_TAIL_LINES = 5;
   const TOOL_PREVIEW_MIN_HIDDEN_LINES = 3;
 
   class CodexSessionTimeline {
