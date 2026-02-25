@@ -2,6 +2,9 @@
   const DEFAULT_MAX_RENDERED_ENTRIES = 1500;
   const DEFAULT_MAX_TEXT_CHARS = 5000;
   const ANSI_ESCAPE_REGEX = /\u001b\[[0-9;]*[A-Za-z]/g;
+  const TOOL_PREVIEW_HEAD_LINES = 12;
+  const TOOL_PREVIEW_TAIL_LINES = 8;
+  const TOOL_PREVIEW_MIN_HIDDEN_LINES = 3;
 
   class CodexSessionTimeline {
     constructor(options) {
@@ -39,6 +42,7 @@
       this.turns = [];
       this.turnNodeById = new Map();
       this.turnCollapsedById = new Map();
+      this.expandedToolEntryIds = new Set();
 
       this.container.addEventListener("scroll", () => {
         this.autoScrollPinned = this.isNearBottom();
@@ -232,6 +236,7 @@
       this.visibleActionEntryId = null;
       this.container.textContent = "";
       this.turnNodeById.clear();
+      this.expandedToolEntryIds.clear();
 
       for (const turn of safeTurns) {
         this.appendTurnNode(turn);
@@ -309,6 +314,7 @@
         : [];
       return {
         role,
+        kind: typeof rawEntry.kind === "string" ? rawEntry.kind : "",
         title,
         text,
         timestamp: rawEntry.timestamp || null,
@@ -465,6 +471,7 @@
       const normalizedEntry = {
         id: entryId,
         role: entry.role || roleClass,
+        kind: entry.kind || "",
         title: entry.title || "System",
         text: entry.text || "",
         rawType: entry.rawType || "",
@@ -765,6 +772,18 @@
       };
     }
 
+    isToolEntry(entry) {
+      if (!entry || typeof entry !== "object") {
+        return false;
+      }
+
+      if (entry.kind === "tool") {
+        return true;
+      }
+
+      return entry.role === "tool";
+    }
+
     clear() {
       this.pendingEntries = [];
       this.pendingUpdatedEntries.clear();
@@ -774,6 +793,7 @@
       this.turns = [];
       this.turnNodeById.clear();
       this.turnCollapsedById.clear();
+      this.expandedToolEntryIds.clear();
       this.entryNodeById.clear();
       this.toolEntriesByCallId.clear();
       this.pendingOptimisticUserKeys = [];
@@ -1018,6 +1038,7 @@
       return {
         id: entryId,
         role,
+        kind: typeof rawEntry.kind === "string" ? rawEntry.kind : "",
         title,
         text,
         timestamp: rawEntry.timestamp || null,
@@ -1571,6 +1592,104 @@
       return this.isNarrowViewport() && entry && entry.role === "tool";
     }
 
+    buildToolBodySegments(bodyText) {
+      const normalized = this.normalizeText(bodyText || "");
+      if (!normalized) {
+        return null;
+      }
+
+      const lines = normalized.split("\n");
+      const minimumTotalLines = TOOL_PREVIEW_HEAD_LINES + TOOL_PREVIEW_TAIL_LINES + TOOL_PREVIEW_MIN_HIDDEN_LINES;
+      if (lines.length < minimumTotalLines) {
+        return null;
+      }
+
+      const hiddenStart = Math.min(TOOL_PREVIEW_HEAD_LINES, lines.length);
+      const hiddenEnd = Math.max(hiddenStart, lines.length - TOOL_PREVIEW_TAIL_LINES);
+      const hiddenCount = hiddenEnd - hiddenStart;
+      if (hiddenCount < TOOL_PREVIEW_MIN_HIDDEN_LINES) {
+        return null;
+      }
+
+      return {
+        headText: lines.slice(0, hiddenStart).join("\n"),
+        hiddenText: lines.slice(hiddenStart, hiddenEnd).join("\n"),
+        tailText: lines.slice(hiddenEnd).join("\n"),
+        hiddenCount
+      };
+    }
+
+    renderToolBodyContent(bodyWrap, entry, bodyText) {
+      if (!bodyWrap) {
+        return;
+      }
+
+      const normalizedBodyText = this.normalizeText(bodyText || "");
+      const entryId = Number.isFinite(entry?.id) ? Math.floor(entry.id) : null;
+      bodyWrap.textContent = "";
+
+      if (!normalizedBodyText) {
+        bodyWrap.dataset.bodyKind = "tool";
+        if (entryId !== null) {
+          this.expandedToolEntryIds.delete(entryId);
+        }
+        return;
+      }
+
+      const segments = this.buildToolBodySegments(normalizedBodyText);
+      if (!segments || entryId === null) {
+        const fullBody = document.createElement("pre");
+        fullBody.className = "watcher-entry-text";
+        fullBody.textContent = normalizedBodyText;
+        bodyWrap.appendChild(fullBody);
+        bodyWrap.dataset.bodyKind = "tool";
+        if (entryId !== null) {
+          this.expandedToolEntryIds.delete(entryId);
+        }
+        return;
+      }
+
+      bodyWrap.dataset.bodyKind = "tool-fold";
+
+      const head = document.createElement("pre");
+      head.className = "watcher-entry-text watcher-tool-body-block";
+      head.textContent = segments.headText;
+      bodyWrap.appendChild(head);
+
+      const hidden = document.createElement("pre");
+      hidden.className = "watcher-entry-text watcher-tool-body-block watcher-tool-body-hidden";
+      hidden.textContent = segments.hiddenText;
+      const expanded = this.expandedToolEntryIds.has(entryId);
+      hidden.classList.toggle("hidden", !expanded);
+      bodyWrap.appendChild(hidden);
+
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "watcher-tool-hidden-toggle";
+      toggle.textContent = expanded
+        ? `Hide ${segments.hiddenCount} hidden lines`
+        : `... +${segments.hiddenCount} lines (click to expand)`;
+      toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+      toggle.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        if (this.expandedToolEntryIds.has(entryId)) {
+          this.expandedToolEntryIds.delete(entryId);
+        } else {
+          this.expandedToolEntryIds.add(entryId);
+        }
+
+        this.renderToolBodyContent(bodyWrap, entry, normalizedBodyText);
+      });
+      bodyWrap.appendChild(toggle);
+
+      const tail = document.createElement("pre");
+      tail.className = "watcher-entry-text watcher-tool-body-block";
+      tail.textContent = segments.tailText;
+      bodyWrap.appendChild(tail);
+    }
+
     hasActiveTextSelection() {
       if (typeof window === "undefined" || typeof window.getSelection !== "function") {
         return false;
@@ -1755,6 +1874,14 @@
     createBodyNodeForEntry(card, entry, bodyText) {
       if (!bodyText) {
         return { body: null, detailsWrap: null };
+      }
+
+      if (this.isToolEntry(entry)) {
+        const bodyWrap = document.createElement("div");
+        bodyWrap.className = "watcher-tool-body";
+        this.renderToolBodyContent(bodyWrap, entry, bodyText);
+        card.appendChild(bodyWrap);
+        return { body: bodyWrap, detailsWrap: null };
       }
 
       if (this.shouldUseAgentsCollapsedBody(entry, bodyText)) {
@@ -2063,6 +2190,17 @@
         return completed;
       }
 
+      if (eventType === "plan_delta" || eventType === "item/plan/delta" || eventType === "codex/event/plan_delta") {
+        return null;
+      }
+
+      if (eventType === "plan_update" || eventType === "plan_updated" || eventType === "turn/plan/updated") {
+        const rawPlan = payload.plan || payload.text || payload.summary || payload.message || "Plan updated";
+        const entry = this.createEntry("system", "Plan Updated", this.truncateText(String(rawPlan), 240), timestamp, eventType);
+        entry.compact = true;
+        return entry;
+      }
+
       const message = payload.message || payload.summary || "";
       if (!message) {
         return null;
@@ -2132,6 +2270,7 @@
         if (Number.isFinite(oldestId)) {
           this.entryNodeById.delete(oldestId);
           this.removeToolMappingsForEntryId(oldestId);
+          this.expandedToolEntryIds.delete(oldestId);
           if (this.visibleActionEntryId === oldestId) {
             this.visibleActionEntryId = null;
           }
@@ -2434,7 +2573,9 @@
         node.body = bodyNode.body;
         node.detailsWrap = bodyNode.detailsWrap;
       } else if (node.body) {
-        if (shouldCollapse && !node.detailsWrap) {
+        if (node.body.dataset?.bodyKind === "tool" || node.body.dataset?.bodyKind === "tool-fold") {
+          this.renderToolBodyContent(node.body, entry, bodyText);
+        } else if (shouldCollapse && !node.detailsWrap) {
           const bodyNode = this.createBodyNodeForEntry(node.card, entry, bodyText);
           if (bodyNode.body) {
             const parent = node.body.parentElement;
@@ -2446,8 +2587,9 @@
             node.body = bodyNode.body;
             node.detailsWrap = bodyNode.detailsWrap;
           }
+        } else {
+          node.body.textContent = bodyText;
         }
-        node.body.textContent = bodyText;
       }
 
       this.updateEntryImages(node, entry.images || []);

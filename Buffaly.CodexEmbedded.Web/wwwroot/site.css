@@ -604,6 +604,12 @@ body {
 	box-shadow: 0 0 0 1px #dcfce7;
 }
 
+.session-badge.awaiting-approval {
+	background: #fecaca;
+	color: #991b1b;
+	font-weight: 700;
+}
+
 .session-processing-icon {
 	font-size: 0.74rem;
 	line-height: 1;
@@ -1040,6 +1046,74 @@ body {
 	text-overflow: ellipsis;
 }
 
+.plan-panel {
+	margin: 0.2rem 0.75rem 0.5rem;
+	padding: 0.5rem 0.6rem 0.55rem;
+	border: 1px solid #dbeafe;
+	border-left: 4px solid #60a5fa;
+	border-radius: 12px;
+	background: linear-gradient(180deg, #f8fbff 0%, #f1f7ff 100%);
+	color: #1e293b;
+}
+
+.plan-panel-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.4rem;
+	font-size: 0.76rem;
+	font-weight: 700;
+}
+
+.plan-panel-title {
+	color: #1d4ed8;
+}
+
+.plan-panel-status {
+	padding: 0.16rem 0.42rem;
+	border: 1px solid #bfdbfe;
+	border-radius: 999px;
+	background: #eff6ff;
+	color: #1e40af;
+	font-size: 0.68rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.02em;
+}
+
+.plan-panel-status.streaming {
+	border-color: #93c5fd;
+	background: #dbeafe;
+	color: #1d4ed8;
+}
+
+.plan-panel-status.completed {
+	border-color: #86efac;
+	background: #f0fdf4;
+	color: #166534;
+}
+
+.plan-panel-status.error {
+	border-color: #fca5a5;
+	background: #fff1f2;
+	color: #be123c;
+}
+
+.plan-panel-body {
+	margin: 0.45rem 0 0;
+	padding: 0.45rem 0.5rem;
+	border: 1px solid #dbeafe;
+	border-radius: 8px;
+	background: #ffffff;
+	color: #0f172a;
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.78rem;
+	line-height: 1.32;
+	white-space: pre-wrap;
+	max-height: 220px;
+	overflow: auto;
+}
+
 @keyframes turn-activity-shimmer {
 	from {
 		transform: translateX(-110%);
@@ -1090,6 +1164,16 @@ body {
 }
 
 .new-project-modal-note {
+	font-size: 0.86rem;
+	line-height: 1.35;
+	color: #334155;
+	background: #f8fafc;
+	border: 1px solid #e2e8f0;
+	border-radius: 8px;
+	padding: 0.5rem 0.58rem;
+}
+
+.new-session-modal-note {
 	font-size: 0.86rem;
 	line-height: 1.35;
 	color: #334155;
@@ -1348,6 +1432,32 @@ body {
 	justify-content: center;
 	border-radius: 999px !important;
 	margin-right: 0;
+}
+
+.prompt-plan-btn {
+	background: #ffffff !important;
+	color: #334155 !important;
+	border: 1px solid #d1d5db !important;
+	width: 2.25rem;
+	height: 2.25rem;
+	padding: 0 !important;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 999px !important;
+}
+
+.prompt-plan-btn:hover {
+	background: #f8fafc !important;
+	color: #0f172a !important;
+}
+
+.prompt-plan-btn.is-active,
+.prompt-plan-btn[aria-pressed="true"] {
+	background: #e8f1ff !important;
+	color: #1d4ed8 !important;
+	border-color: #93c5fd !important;
+	box-shadow: 0 8px 16px rgba(29, 78, 216, 0.16);
 }
 
 .prompt-queue-btn {
@@ -2002,6 +2112,47 @@ body {
 	font-family: Consolas, "Courier New", monospace;
 }
 
+.watcher-tool-body {
+	margin-top: 0.05rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.18rem;
+}
+
+.watcher-tool-body-block {
+	margin: 0;
+}
+
+.watcher-tool-body-hidden {
+	padding-left: 0.55rem;
+	border-left: 2px dashed #cbd5e1;
+}
+
+.watcher-tool-hidden-toggle {
+	align-self: flex-start;
+	border: 1px solid #cbd5e1;
+	border-radius: 999px;
+	background: #f8fafc;
+	color: #1e3a8a;
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.73rem;
+	font-weight: 700;
+	line-height: 1;
+	padding: 0.24rem 0.5rem;
+	cursor: pointer;
+}
+
+.watcher-tool-hidden-toggle:hover {
+	background: #eff6ff;
+	border-color: #93c5fd;
+	color: #1d4ed8;
+}
+
+.watcher-tool-hidden-toggle:focus-visible {
+	outline: 2px solid #60a5fa;
+	outline-offset: 1px;
+}
+
 .watcher-entry-collapsible {
 	margin-top: 0.18rem;
 }
@@ -2503,6 +2654,22 @@ html[data-theme="dark"] .watcher-inline-text,
 html[data-theme="dark"] .recap-v,
 html[data-theme="dark"] .approval-details {
 	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .watcher-tool-body-hidden {
+	border-left-color: #475569;
+}
+
+html[data-theme="dark"] .watcher-tool-hidden-toggle {
+	background: #0f172a;
+	border-color: #475569;
+	color: #bfdbfe;
+}
+
+html[data-theme="dark"] .watcher-tool-hidden-toggle:hover {
+	background: #1e293b;
+	border-color: #60a5fa;
+	color: #dbeafe;
 }
 
 html[data-theme="dark"] .recap-controls input[type="date"],
