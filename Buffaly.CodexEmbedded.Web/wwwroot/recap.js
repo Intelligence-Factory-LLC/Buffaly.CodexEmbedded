@@ -1,6 +1,6 @@
 const STORAGE_SIDEBAR_COLLAPSED_KEY = "codex.recap.sidebarCollapsed.v1";
 const STORAGE_RECAP_ROOT_KEY = "codex.recap.root.v1";
-const RECAP_APPROVAL_POLICY = "untrusted";
+const RECAP_APPROVAL_POLICY = "never";
 const RECAP_SANDBOX = "read-only";
 
 const layoutRoot = document.querySelector(".layout");
