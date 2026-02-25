@@ -285,6 +285,21 @@ body {
 	font: inherit;
 }
 
+.sidebar-nav-toggle {
+	justify-content: flex-start;
+}
+
+.sidebar-nav-toggle-icon {
+	font-size: 0.78rem;
+}
+
+.sidebar-nav-group {
+	display: flex;
+	flex-direction: column;
+	gap: 0.15rem;
+	padding-left: 0.85rem;
+}
+
 .sidebar-divider {
 	height: 1px;
 	margin: 0 0.55rem;
@@ -622,6 +637,10 @@ body {
 
 .layout.sidebar-collapsed .sidebar-nav-link span {
 	display: none;
+}
+
+.layout.sidebar-collapsed .sidebar-nav-group {
+	padding-left: 0;
 }
 
 .layout.sidebar-collapsed .session-sidebar {
@@ -1084,6 +1103,73 @@ body {
 
 .about-muted {
 	color: #475569;
+}
+
+.settings-sidebar-note {
+	padding: 0.6rem 0.7rem;
+	font-size: 0.8rem;
+	color: #64748b;
+}
+
+.settings-panel {
+	overflow: auto;
+}
+
+.settings-body {
+	padding: 0.9rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.8rem;
+}
+
+.settings-section {
+	max-width: 560px;
+	padding: 0.9rem;
+	border: 1px solid #d1d5db;
+	border-radius: 10px;
+	background: #f8fafc;
+}
+
+.settings-section-title {
+	margin: 0;
+	font-size: 1.02rem;
+	color: #0f172a;
+}
+
+.settings-section-copy {
+	margin: 0.35rem 0 0;
+	color: #475569;
+	font-size: 0.88rem;
+}
+
+.settings-toggle-row {
+	margin-top: 0.8rem;
+	display: inline-flex;
+	align-items: center;
+	gap: 0.55rem;
+	padding: 0.5rem 0.65rem;
+	border-radius: 8px;
+	border: 1px solid #cbd5e1;
+	background: #ffffff;
+	cursor: pointer;
+}
+
+.settings-toggle-label {
+	font-weight: 600;
+	color: #0f172a;
+}
+
+.settings-toggle-input {
+	width: 1.1rem;
+	height: 1.1rem;
+	accent-color: #2563eb;
+	cursor: pointer;
+}
+
+.settings-mode-value {
+	margin-top: 0.45rem;
+	color: #475569;
+	font-size: 0.82rem;
 }
 
 .prompt-form textarea {
@@ -1973,6 +2059,169 @@ body {
 	display: none;
 }
 
+html[data-theme="dark"] {
+	color-scheme: dark;
+}
+
+html[data-theme="dark"],
+html[data-theme="dark"] body {
+	background: #0b1220;
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .panel,
+html[data-theme="dark"] .project-list,
+html[data-theme="dark"] .project-group,
+html[data-theme="dark"] .project-header,
+html[data-theme="dark"] .project-sessions,
+html[data-theme="dark"] .session-item,
+html[data-theme="dark"] .session-row,
+html[data-theme="dark"] .command-modal-card,
+html[data-theme="dark"] .settings-section,
+html[data-theme="dark"] .server-table-wrap,
+html[data-theme="dark"] .server-meta {
+	background: #111827;
+	border-color: #334155;
+}
+
+html[data-theme="dark"] .sidebar-shell-header,
+html[data-theme="dark"] .sidebar-nav,
+html[data-theme="dark"] .sidebar-create-row,
+html[data-theme="dark"] .logs-help-text,
+html[data-theme="dark"] .server-section-title,
+html[data-theme="dark"] .timeline-truncation-note {
+	background: #0f172a;
+	border-color: #334155;
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .sidebar-logo-btn,
+html[data-theme="dark"] .icon-btn,
+html[data-theme="dark"] .sidebar-collapse-btn,
+html[data-theme="dark"] .conversation-meta-item,
+html[data-theme="dark"] .conversation-jump-btn,
+html[data-theme="dark"] .project-count,
+html[data-theme="dark"] .settings-toggle-row {
+	background: #111827;
+	border-color: #475569;
+	color: #dbeafe;
+}
+
+html[data-theme="dark"] .sidebar-nav-link,
+html[data-theme="dark"] .new-project-btn,
+html[data-theme="dark"] .session-title,
+html[data-theme="dark"] .conversation-title-text,
+html[data-theme="dark"] .watcher-entry-title,
+html[data-theme="dark"] .watcher-inline-title,
+html[data-theme="dark"] .server-meta-value,
+html[data-theme="dark"] .settings-section-title,
+html[data-theme="dark"] .settings-toggle-label,
+html[data-theme="dark"] .about-line,
+html[data-theme="dark"] .about-list {
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .sidebar-nav-link:hover,
+html[data-theme="dark"] .new-project-btn:hover,
+html[data-theme="dark"] .session-row:hover,
+html[data-theme="dark"] .prompt-queue-item:hover {
+	background: #1e293b;
+	color: #dbeafe;
+}
+
+html[data-theme="dark"] .sidebar-nav-link.active {
+	background: #1e293b;
+	border-color: #3b82f6;
+	color: #93c5fd;
+}
+
+html[data-theme="dark"] .session-subtitle,
+html[data-theme="dark"] .project-path,
+html[data-theme="dark"] .logs-status,
+html[data-theme="dark"] .watcher-entry-time,
+html[data-theme="dark"] .watcher-inline-time,
+html[data-theme="dark"] .server-meta-label,
+html[data-theme="dark"] .settings-section-copy,
+html[data-theme="dark"] .settings-sidebar-note,
+html[data-theme="dark"] .settings-mode-value,
+html[data-theme="dark"] .about-muted {
+	color: #94a3b8;
+}
+
+html[data-theme="dark"] .watcher-timeline {
+	background: #0f172a;
+}
+
+html[data-theme="dark"] .watcher-entry,
+html[data-theme="dark"] .watcher-inline-entry,
+html[data-theme="dark"] .watcher-agents-collapsible,
+html[data-theme="dark"] .watcher-env-collapsible,
+html[data-theme="dark"] .prompt-queue,
+html[data-theme="dark"] .new-project-modal-note,
+html[data-theme="dark"] .server-meta-chip {
+	background: #111827;
+	border-color: #334155;
+}
+
+html[data-theme="dark"] .watcher-entry-text,
+html[data-theme="dark"] .watcher-inline-text,
+html[data-theme="dark"] .approval-details {
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .prompt-form {
+	border-top-color: #334155;
+}
+
+html[data-theme="dark"] .prompt-form textarea,
+html[data-theme="dark"] .command-modal-body select,
+html[data-theme="dark"] .command-modal-body input,
+html[data-theme="dark"] .conversation-meta-model select,
+html[data-theme="dark"] .approval-actions button,
+html[data-theme="dark"] .prompt-queue-item {
+	background: #0f172a;
+	border-color: #475569;
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .prompt-form textarea.drag-over {
+	background: #0f2f2c;
+	border-color: #14b8a6;
+}
+
+html[data-theme="dark"] .chat-panel.session-loading::before {
+	background: rgba(15, 23, 42, 0.62);
+}
+
+html[data-theme="dark"] .prompt-form,
+html[data-theme="dark"] .panel-title,
+html[data-theme="dark"] .approval-panel,
+html[data-theme="dark"] .server-section,
+html[data-theme="dark"] .logs-status,
+html[data-theme="dark"] .security-warning-banner,
+html[data-theme="dark"] .sidebar-divider {
+	border-color: #334155;
+}
+
+html[data-theme="dark"] .panel-title {
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .log-output {
+	background: #020617;
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .server-table thead th {
+	background: #0f172a;
+	color: #93c5fd;
+}
+
+html[data-theme="dark"] .server-table th,
+html[data-theme="dark"] .server-table td {
+	border-bottom-color: #334155;
+}
+
 @media (max-width: 900px) {
 	.layout {
 		position: relative;
@@ -2083,6 +2332,10 @@ body {
 
 	.layout.sidebar-collapsed .sidebar-nav-link span {
 		display: inline;
+	}
+
+	.layout.sidebar-collapsed .sidebar-nav-group {
+		padding-left: 0.85rem;
 	}
 
 	.panel-title {

@@ -3,7 +3,7 @@
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>Codex Watcher</title>
+	<title>Codex Settings</title>
 	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 	<link rel="stylesheet" href="site.css?v=20260225-settings1">
@@ -17,7 +17,7 @@
 		<main class="main codex-main">
 			<aside id="sessionSidebar" class="panel session-sidebar">
 				<div class="sidebar-shell-header">
-					<a class="sidebar-logo-btn" href="https://buffa.ly/?utm_source=codexembedded&utm_medium=watcher_logo&utm_campaign=sidebar" target="_blank" rel="noopener" title="Made by the Buffaly team - learn more" aria-label="Made by the Buffaly team - learn more">
+					<a class="sidebar-logo-btn" href="https://buffa.ly/?utm_source=codexembedded&utm_medium=settings_logo&utm_campaign=sidebar" target="_blank" rel="noopener" title="Made by the Buffaly team - learn more" aria-label="Made by the Buffaly team - learn more">
 						<img class="sidebar-logo-image" src="images/bf_logo_fav_Large.png" alt="">
 					</a>
 					<button id="sidebarToggleBtn" type="button" class="sidebar-collapse-btn sidebar-shell-toggle-btn" title="Hide projects" aria-label="Hide projects">
@@ -33,7 +33,7 @@
 						<i class="bi bi-journal-text" aria-hidden="true"></i>
 						<span>Logs</span>
 					</a>
-					<a class="sidebar-nav-link active" href="watcher" aria-current="page">
+					<a class="sidebar-nav-link" href="watcher">
 						<i class="bi bi-eye" aria-hidden="true"></i>
 						<span>Watcher</span>
 					</a>
@@ -41,27 +41,32 @@
 						<i class="bi bi-cpu" aria-hidden="true"></i>
 						<span>Server</span>
 					</a>
-					<a class="sidebar-nav-link" href="settings">
+					<a class="sidebar-nav-link active" href="settings" aria-current="page">
 						<i class="bi bi-sliders" aria-hidden="true"></i>
 						<span>Settings</span>
 					</a>
 				</nav>
 				<div class="sidebar-divider" aria-hidden="true"></div>
-				<div id="projectList" class="project-list"></div>
+				<div class="settings-sidebar-note">User preferences</div>
 			</aside>
-			<section class="panel chat-panel">
-				<div class="panel-title">Session Watcher</div>
-				<div class="logs-help-text">
-					This page monitors session log files from disk only. It does not connect to the app server websocket.
+			<section class="panel chat-panel settings-panel">
+				<div class="panel-title">Settings</div>
+				<div class="settings-body">
+					<section class="settings-section">
+						<h2 class="settings-section-title">Appearance</h2>
+						<p class="settings-section-copy">Use dark mode for the interface.</p>
+						<label class="settings-toggle-row" for="themeModeToggle">
+							<span class="settings-toggle-label">Dark mode</span>
+							<input id="themeModeToggle" class="settings-toggle-input" type="checkbox" role="switch" aria-label="Enable dark mode">
+						</label>
+						<div id="themeModeValue" class="settings-mode-value">Light mode enabled</div>
+					</section>
 				</div>
-				<div id="watcherStatus" class="logs-status">Loading recent sessions...</div>
-				<div id="watcherTimeline" class="watcher-timeline"></div>
 			</section>
 		</main>
 		<button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close projects"></button>
 	</div>
 	<script src="theme.js?v=20260225-settings1"></script>
-	<script src="sessionTimeline.js?v=20260224-turnfmt1"></script>
-	<script src="watcher.js?v=20260222-watcherselector1"></script>
+	<script src="settings.js?v=20260225-settings1"></script>
 </body>
 </html>

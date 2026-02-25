@@ -71,6 +71,7 @@ const STORAGE_PROJECT_META_KEY = "codex-web-project-meta";
 const STORAGE_COLLAPSED_PROJECTS_KEY = "codex-web-collapsed-projects";
 const STORAGE_ARCHIVED_THREADS_KEY = "codex-web-archived-threads";
 const STORAGE_SIDEBAR_COLLAPSED_KEY = "codex-web-sidebar-collapsed";
+const STORAGE_SIDEBAR_EXTRAS_EXPANDED_KEY = "codex-web-sidebar-extras-expanded";
 const STORAGE_CUSTOM_PROJECTS_KEY = "codex-web-custom-projects";
 const MAX_QUEUE_PREVIEW = 3;
 const MAX_QUEUE_TEXT_CHARS = 90;
@@ -107,6 +108,8 @@ const mobileProjectsBtn = document.getElementById("mobileProjectsBtn");
 const sidebarBackdrop = document.getElementById("sidebarBackdrop");
 const securityWarningBanner = document.getElementById("securityWarningBanner");
 const aboutBtn = document.getElementById("aboutBtn");
+const sidebarExtrasToggleBtn = document.getElementById("sidebarExtrasToggleBtn");
+const sidebarExtrasGroup = document.getElementById("sidebarExtrasGroup");
 const aboutModal = document.getElementById("aboutModal");
 const aboutModalCloseBtn = document.getElementById("aboutModalCloseBtn");
 const aboutProjectLine = document.getElementById("aboutProjectLine");
@@ -1746,6 +1749,31 @@ function updateConversationMetaVisibility() {
   }
   if (!hasState) {
     setJumpCollapseMode(false);
+  }
+}
+
+function setSidebarExtrasExpanded(isExpanded, options = {}) {
+  const expanded = !!isExpanded;
+  const persist = options.persist !== false;
+
+  if (sidebarExtrasGroup) {
+    sidebarExtrasGroup.classList.toggle("hidden", !expanded);
+  }
+
+  if (sidebarExtrasToggleBtn) {
+    const label = expanded ? "Collapse navigation options" : "Expand navigation options";
+    sidebarExtrasToggleBtn.title = label;
+    sidebarExtrasToggleBtn.setAttribute("aria-label", label);
+    sidebarExtrasToggleBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+
+    const icon = sidebarExtrasToggleBtn.querySelector("i");
+    if (icon) {
+      icon.className = expanded ? "bi bi-chevron-down sidebar-nav-toggle-icon" : "bi bi-chevron-right sidebar-nav-toggle-icon";
+    }
+  }
+
+  if (persist) {
+    localStorage.setItem(STORAGE_SIDEBAR_EXTRAS_EXPANDED_KEY, expanded ? "1" : "0");
   }
 }
 
@@ -3649,7 +3677,9 @@ function applySavedUiSettings() {
   }
 
   const sidebarCollapsed = localStorage.getItem(STORAGE_SIDEBAR_COLLAPSED_KEY) === "1";
+  const sidebarExtrasExpanded = localStorage.getItem(STORAGE_SIDEBAR_EXTRAS_EXPANDED_KEY) === "1";
   applySidebarCollapsed(sidebarCollapsed);
+  setSidebarExtrasExpanded(sidebarExtrasExpanded, { persist: false });
   setMobileProjectsOpen(false);
   restorePromptDraftForActiveSession();
 }
@@ -4667,6 +4697,13 @@ if (newProjectModal) {
 if (aboutBtn) {
   aboutBtn.addEventListener("click", () => {
     openAboutModal();
+  });
+}
+
+if (sidebarExtrasToggleBtn) {
+  sidebarExtrasToggleBtn.addEventListener("click", () => {
+    const expanded = sidebarExtrasToggleBtn.getAttribute("aria-expanded") === "true";
+    setSidebarExtrasExpanded(!expanded);
   });
 }
 

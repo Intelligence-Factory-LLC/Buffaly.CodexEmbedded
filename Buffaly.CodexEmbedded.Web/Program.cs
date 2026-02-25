@@ -104,6 +104,26 @@ app.MapGet("/server", async context =>
 	await context.Response.SendFileAsync(serverPagePath);
 });
 
+app.MapGet("/settings", async context =>
+{
+	var webRoot = app.Environment.WebRootPath;
+	if (string.IsNullOrWhiteSpace(webRoot))
+	{
+		context.Response.StatusCode = StatusCodes.Status404NotFound;
+		return;
+	}
+
+	var settingsPagePath = Path.Combine(webRoot, "settings.html");
+	if (!File.Exists(settingsPagePath))
+	{
+		context.Response.StatusCode = StatusCodes.Status404NotFound;
+		return;
+	}
+
+	context.Response.ContentType = "text/html; charset=utf-8";
+	await context.Response.SendFileAsync(settingsPagePath);
+});
+
 app.MapGet("/api/logs/sessions", (HttpRequest request, WebRuntimeDefaults defaults) =>
 {
 	var limit = QueryValueParser.GetPositiveInt(request.Query["limit"], fallback: 20, max: 100);
