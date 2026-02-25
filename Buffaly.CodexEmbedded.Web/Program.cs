@@ -540,13 +540,28 @@ app.MapPost("/api/transcribe", async (
 		return Results.BadRequest(new { message = "Expected multipart form upload with field 'file'." });
 	}
 
-	var form = await context.Request.ReadFormAsync(context.RequestAborted);
-	if (form.Files.Count == 0)
+	IFormCollection form;
+	try
+	{
+		form = await context.Request.ReadFormAsync(context.RequestAborted);
+	}
+	catch (InvalidDataException ex)
+	{
+		Logs.DebugLog.WriteEvent("Transcribe", $"Invalid multipart form payload: {ex.Message}");
+		return Results.BadRequest(new { message = "Invalid audio upload payload. Retry recording and try again." });
+	}
+	catch (IOException ex)
+	{
+		Logs.DebugLog.WriteEvent("Transcribe", $"Failed reading upload payload: {ex.Message}");
+		return Results.BadRequest(new { message = "Failed reading uploaded audio. Retry and try again." });
+	}
+
+	var file = form.Files.GetFile("file") ?? (form.Files.Count > 0 ? form.Files[0] : null);
+	if (file is null)
 	{
 		return Results.BadRequest(new { message = "No audio file was uploaded." });
 	}
 
-	var file = form.Files[0];
 	if (file.Length <= 0)
 	{
 		return Results.BadRequest(new { message = "Audio file is empty." });
@@ -557,10 +572,16 @@ app.MapPost("/api/transcribe", async (
 	}
 
 	byte[] audioBytes;
-	using (var memoryStream = new MemoryStream())
+	try
 	{
+		using var memoryStream = new MemoryStream();
 		await file.CopyToAsync(memoryStream, context.RequestAborted);
 		audioBytes = memoryStream.ToArray();
+	}
+	catch (IOException ex)
+	{
+		Logs.DebugLog.WriteEvent("Transcribe", $"Failed copying upload payload: {ex.Message}");
+		return Results.BadRequest(new { message = "Uploaded audio could not be processed. Retry recording and try again." });
 	}
 
 	try
@@ -581,6 +602,10 @@ app.MapPost("/api/transcribe", async (
 			statusCode: StatusCodes.Status502BadGateway,
 			title: "Transcription request failed.",
 			detail: "OpenAI transcription request failed.");
+	}
+	catch (OperationCanceledException)
+	{
+		return Results.BadRequest(new { message = "Transcription request was canceled." });
 	}
 	catch (Exception ex)
 	{
