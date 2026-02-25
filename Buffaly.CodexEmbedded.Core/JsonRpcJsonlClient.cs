@@ -175,11 +175,15 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 						{
 							if (OnServerRequest is not null)
 							{
+								var methodName = methodElement.GetString()!;
+								var idClone = idElement.Clone();
+								var rootClone = root.Clone();
+
 								_ = Task.Run(async () =>
 								{
 									try
 									{
-										await OnServerRequest(methodElement.GetString()!, idElement, root, cancellationToken);
+										await OnServerRequest(methodName, idClone, rootClone, cancellationToken);
 									}
 									catch (Exception ex)
 									{

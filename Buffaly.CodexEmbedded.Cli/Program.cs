@@ -476,6 +476,7 @@ internal sealed class CodexCoreHarness : IAsyncDisposable
 				return new { decision };
 			}
 			case "item/tool/requestUserInput":
+			case "item/tool/request_user_input":
 				return new { answers = new Dictionary<string, object>() };
 			case "item/tool/call":
 				return new
@@ -1251,6 +1252,7 @@ internal sealed class CodexHarness : IAsyncDisposable
 				return;
 			}
 			case "item/tool/requestUserInput":
+			case "item/tool/request_user_input":
 			{
 				var answers = await CollectToolUserInputAnswersAsync(paramsElement, cancellationToken);
 				await SendRpcResultAsync(idElement, new Dictionary<string, object?> { ["answers"] = answers }, cancellationToken);

@@ -844,6 +844,7 @@ public sealed class CodexClient : IAsyncDisposable
 			"item/commandExecution/requestApproval" => new { decision = "decline" },
 			"item/fileChange/requestApproval" => new { decision = "decline" },
 			"item/tool/requestUserInput" => new { answers = new Dictionary<string, object>() },
+			"item/tool/request_user_input" => new { answers = new Dictionary<string, object>() },
 			"item/tool/call" => new
 			{
 				success = false,

@@ -589,6 +589,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var sessionLogPath = Path.Combine(_defaults.LogRootPath, $"session-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{sessionId}.log");
 		var sessionLog = new LocalLogWriter(sessionLogPath);
 		var pendingApprovals = new ConcurrentDictionary<string, TaskCompletionSource<string>>(StringComparer.Ordinal);
+		var pendingToolUserInputs = new ConcurrentDictionary<string, TaskCompletionSource<Dictionary<string, object?>>>(StringComparer.Ordinal);
 
 		CodexClient client;
 		CodexSession session;
@@ -601,7 +602,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				CodexHomePath = _defaults.CodexHomePath,
 				ServerRequestHandler = async (req, ct) =>
 				{
-					return await HandleServerRequestAsync(sessionId, sessionLog, pendingApprovals, req, ct);
+					return await HandleServerRequestAsync(sessionId, sessionLog, pendingApprovals, pendingToolUserInputs, req, ct);
 				}
 			};
 
@@ -634,6 +635,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			effort,
 			sessionLog,
 			pendingApprovals,
+			pendingToolUserInputs,
 			ApprovalPolicy: session.ApprovalPolicy ?? approvalPolicy,
 			SandboxPolicy: session.SandboxMode ?? sandboxMode);
 		lock (_sync)
@@ -689,6 +691,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var sessionLogPath = Path.Combine(_defaults.LogRootPath, $"session-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{sessionId}.log");
 		var sessionLog = new LocalLogWriter(sessionLogPath);
 		var pendingApprovals = new ConcurrentDictionary<string, TaskCompletionSource<string>>(StringComparer.Ordinal);
+		var pendingToolUserInputs = new ConcurrentDictionary<string, TaskCompletionSource<Dictionary<string, object?>>>(StringComparer.Ordinal);
 
 		CodexClient client;
 		CodexSession session;
@@ -701,7 +704,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				CodexHomePath = _defaults.CodexHomePath,
 				ServerRequestHandler = async (req, ct) =>
 				{
-					return await HandleServerRequestAsync(sessionId, sessionLog, pendingApprovals, req, ct);
+					return await HandleServerRequestAsync(sessionId, sessionLog, pendingApprovals, pendingToolUserInputs, req, ct);
 				}
 			};
 
@@ -735,6 +738,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			effort,
 			sessionLog,
 			pendingApprovals,
+			pendingToolUserInputs,
 			ApprovalPolicy: session.ApprovalPolicy ?? approvalPolicy,
 			SandboxPolicy: session.SandboxMode ?? sandboxMode);
 		lock (_sync)
@@ -941,6 +945,40 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			session.ClearPendingApproval(pendingId);
 			SessionsChanged?.Invoke();
 			Broadcast?.Invoke("approval_resolved", new { sessionId, approvalId = pendingId, decision });
+			return true;
+		}
+
+		return false;
+	}
+
+	public bool TryResolveToolUserInput(string sessionId, string? requestId, IReadOnlyDictionary<string, string> answersByQuestionId)
+	{
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			return false;
+		}
+
+		ManagedSession? session;
+		lock (_sync)
+		{
+			_sessions.TryGetValue(sessionId, out session);
+		}
+		if (session is null)
+		{
+			return false;
+		}
+
+		var pendingId = string.IsNullOrWhiteSpace(requestId) ? session.PendingToolUserInputId : requestId.Trim();
+		if (string.IsNullOrWhiteSpace(pendingId))
+		{
+			return false;
+		}
+
+		if (session.PendingToolUserInputs.TryRemove(pendingId, out var tcs))
+		{
+			var answers = BuildToolUserInputAnswersPayload(answersByQuestionId);
+			tcs.TrySetResult(answers);
+			SessionsChanged?.Invoke();
 			return true;
 		}
 
@@ -1499,115 +1537,155 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return (false, false, "Unknown session.");
 		}
 
-		if (!session.IsTurnInFlight)
-		{
-			Broadcast?.Invoke("status", new { sessionId, message = "No running turn to cancel." });
-			return (false, false, null);
-		}
+		var activeMode = session.GetActiveCollaborationMode();
+		var isPlanTurn = string.Equals(activeMode, "plan", StringComparison.Ordinal);
+		var hadTurnInFlightAtRequest = session.IsTurnInFlight;
+		var interruptSent = false;
+		string? fallbackReason = null;
+		var forcedResetApplied = false;
+		var clearedQueuedTurnCount = 0;
 
-			var interruptSent = false;
-			string? fallbackReason = null;
-			var recoveredForcedClear = false;
-
-		try
+		if (hadTurnInFlightAtRequest)
 		{
-			interruptSent = await session.Session.InterruptTurnAsync(waitForTurnStart: TimeSpan.FromSeconds(2), cancellationToken);
-		}
-		catch (Exception ex)
-		{
-			Logs.LogError(ex);
-			fallbackReason = ex.Message;
-		}
-
-		var localCanceled = false;
-			if (!interruptSent)
+			try
 			{
-				localCanceled = session.CancelActiveTurn();
-				if (!localCanceled &&
-					session.TryRecoverStaleTurnFromLogConsensus(TimeSpan.Zero, TimeSpan.Zero, out var recoveredReason))
-				{
-					localCanceled = true;
-					recoveredForcedClear = true;
-					fallbackReason = null;
-					session.Log.Write($"[turn_cancel] forced clear of in-flight turn ({recoveredReason})");
-					Broadcast?.Invoke(
-						"turn_complete",
-						new
-						{
-							sessionId,
-							status = "interrupted",
-							errorMessage = $"Canceled in-flight turn via forced local clear ({recoveredReason}).",
-							isPlanTurn = string.Equals(session.GetActiveCollaborationMode(), "plan", StringComparison.Ordinal),
-							collaborationMode = session.GetActiveCollaborationMode()
-						});
-					SessionsChanged?.Invoke();
-					EnsureQueueDispatcher(sessionId, session);
-				}
-				if (!localCanceled && string.IsNullOrWhiteSpace(fallbackReason))
-				{
-					fallbackReason = "No active turn token.";
+				interruptSent = await session.Session.InterruptTurnAsync(waitForTurnStart: TimeSpan.FromSeconds(2), cancellationToken);
+			}
+			catch (Exception ex)
+			{
+				Logs.LogError(ex);
+				fallbackReason = ex.Message;
 			}
 		}
 
-		if (!interruptSent && !localCanceled)
+		var localCanceled = session.CancelActiveTurn();
+		var forcedResetResult = session.ForceResetTurnState(clearQueuedTurns: true);
+		forcedResetApplied = forcedResetResult.HadTurnInFlight;
+		clearedQueuedTurnCount = forcedResetResult.ClearedQueuedTurnCount;
+		localCanceled = localCanceled || forcedResetResult.HadActiveTurnToken || forcedResetResult.HadTurnInFlight;
+
+		if (!interruptSent && !localCanceled && clearedQueuedTurnCount == 0)
 		{
 			Broadcast?.Invoke("status", new { sessionId, message = "No running turn to cancel." });
 			return (false, false, fallbackReason);
 		}
 
-			if (interruptSent)
-			{
-				session.Log.Write("[turn_cancel] requested by user; sent turn/interrupt");
-			}
-			else if (recoveredForcedClear)
-			{
-				session.Log.Write("[turn_cancel] requested by user; forced clear of in-flight turn state");
-			}
-			else
-			{
-				session.Log.Write($"[turn_cancel] requested by user; interrupt unavailable, canceled local wait ({fallbackReason ?? "no details"})");
-		}
-
-			Broadcast?.Invoke("turn_cancel_requested", new { sessionId, interruptSent });
+		if (forcedResetApplied)
+		{
+			var resetMessage = clearedQueuedTurnCount > 0
+				? $"Canceled in-flight turn and cleared {clearedQueuedTurnCount} queued prompt(s)."
+				: "Canceled in-flight turn via forced local clear.";
 			Broadcast?.Invoke(
-				"status",
+				"turn_complete",
 				new
 				{
 					sessionId,
-					message = interruptSent
-						? "Cancel requested (interrupt sent)."
-						: recoveredForcedClear
-							? "Cancel requested (forced state clear)."
-							: "Cancel requested (local fallback)."
+					status = "interrupted",
+					errorMessage = resetMessage,
+					isPlanTurn,
+					collaborationMode = activeMode
 				});
-			SessionsChanged?.Invoke();
+		}
+
+		if (interruptSent)
+		{
+			session.Log.Write("[turn_cancel] requested by user; sent turn/interrupt and force-reset local state");
+		}
+		else if (forcedResetApplied)
+		{
+			session.Log.Write("[turn_cancel] requested by user; forced clear of in-flight turn state");
+		}
+		else
+		{
+			session.Log.Write($"[turn_cancel] requested by user; fallback local clear ({fallbackReason ?? "no details"})");
+		}
+
+		Broadcast?.Invoke(
+			"turn_cancel_requested",
+			new
+			{
+				sessionId,
+				interruptSent,
+				hadTurnInFlight = hadTurnInFlightAtRequest,
+				forcedReset = forcedResetApplied,
+				clearedQueuedTurnCount
+			});
+		Broadcast?.Invoke(
+			"status",
+			new
+			{
+				sessionId,
+				message = forcedResetApplied
+					? clearedQueuedTurnCount > 0
+						? $"Cancel override applied. Cleared {clearedQueuedTurnCount} queued prompt(s)."
+						: "Cancel override applied."
+					: clearedQueuedTurnCount > 0
+						? $"Cleared {clearedQueuedTurnCount} queued prompt(s)."
+						: "Cancel requested."
+			});
+		SessionsChanged?.Invoke();
+		if (session.HasQueuedTurns())
+		{
+			EnsureQueueDispatcher(sessionId, session);
+		}
 
 		return (interruptSent, localCanceled, fallbackReason);
 	}
 
-	public async Task StopSessionAsync(string sessionId, CancellationToken cancellationToken)
+	public Task StopSessionAsync(string sessionId, CancellationToken cancellationToken)
 	{
+		_ = cancellationToken;
 		if (!TryRemoveSession(sessionId, out var session) || session is null)
 		{
-			return;
+			return Task.CompletedTask;
 		}
 
-		try
+		var stopMode = session.GetActiveCollaborationMode();
+		var stopIsPlanTurn = string.Equals(stopMode, "plan", StringComparison.Ordinal);
+		var stopReset = session.ForceResetTurnState(clearQueuedTurns: true);
+		session.CancelLifetime();
+
+		if (stopReset.HadTurnInFlight)
 		{
-			session.CancelLifetime();
-			await session.Client.DisposeAsync();
-		}
-		catch (Exception ex)
-		{
-			Logs.LogError(ex);
-		}
-		finally
-		{
-			try { session.Log.Dispose(); } catch { }
+			Broadcast?.Invoke(
+				"turn_complete",
+				new
+				{
+					sessionId,
+					status = "interrupted",
+					errorMessage = "Session stopped while a turn was in flight.",
+					isPlanTurn = stopIsPlanTurn,
+					collaborationMode = stopMode
+				});
 		}
 
 		SessionsChanged?.Invoke();
-		Broadcast?.Invoke("session_stopped", new { sessionId, message = "Session stopped." });
+		Broadcast?.Invoke(
+			"session_stopped",
+			new
+			{
+				sessionId,
+				message = "Session stopped.",
+				clearedQueuedTurnCount = stopReset.ClearedQueuedTurnCount
+			});
+
+		_ = Task.Run(async () =>
+		{
+			try
+			{
+				await session.Client.DisposeAsync();
+			}
+			catch (Exception ex)
+			{
+				Logs.LogError(ex);
+			}
+			finally
+			{
+				try { session.Log.Dispose(); } catch { }
+			}
+		});
+
+		return Task.CompletedTask;
 	}
 
 	private void EnsureQueueDispatcher(string sessionId, ManagedSession session)
@@ -1720,6 +1798,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string sessionId,
 		LocalLogWriter log,
 		ConcurrentDictionary<string, TaskCompletionSource<string>> approvals,
+		ConcurrentDictionary<string, TaskCompletionSource<Dictionary<string, object?>>> pendingToolUserInputs,
 		CodexServerRequest req,
 		CancellationToken cancellationToken)
 	{
@@ -1785,7 +1864,37 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				}
 			}
 			case "item/tool/requestUserInput":
-				return new { answers = new Dictionary<string, object>() };
+			case "item/tool/request_user_input":
+			{
+				var requestId = Guid.NewGuid().ToString("N");
+				var tcs = new TaskCompletionSource<Dictionary<string, object?>>(TaskCreationOptions.RunContinuationsAsynchronously);
+				pendingToolUserInputs[requestId] = tcs;
+				var questions = ParseToolUserInputQuestions(req.Params);
+				log.Write($"[tool_user_input_request] session={sessionId} requestId={requestId} questions={questions.Count}");
+				Broadcast?.Invoke("tool_user_input_request", new
+				{
+					sessionId,
+					requestId,
+					questions
+				});
+				SessionsChanged?.Invoke();
+				try
+				{
+					var answers = await tcs.Task.WaitAsync(cancellationToken);
+					log.Write($"[tool_user_input_response] session={sessionId} requestId={requestId} answers={answers.Count}");
+					return new { answers };
+				}
+				catch (OperationCanceledException)
+				{
+					return new { answers = new Dictionary<string, object?>() };
+				}
+				finally
+				{
+					pendingToolUserInputs.TryRemove(requestId, out _);
+					Broadcast?.Invoke("tool_user_input_resolved", new { sessionId, requestId });
+					SessionsChanged?.Invoke();
+				}
+			}
 			case "item/tool/call":
 				return new
 				{
@@ -2727,6 +2836,106 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		return new CoreThreadNameUpdatedSignal(threadId, threadName, source);
 	}
 
+	private static List<Dictionary<string, object?>> ParseToolUserInputQuestions(JsonElement paramsElement)
+	{
+		var questions = new List<Dictionary<string, object?>>();
+		if (paramsElement.ValueKind != JsonValueKind.Object ||
+			!paramsElement.TryGetProperty("questions", out var questionsElement) ||
+			questionsElement.ValueKind != JsonValueKind.Array)
+		{
+			return questions;
+		}
+
+		foreach (var questionElement in questionsElement.EnumerateArray())
+		{
+			if (questionElement.ValueKind != JsonValueKind.Object)
+			{
+				continue;
+			}
+
+			var id = TryGetAnyPathString(questionElement, new[] { "id" });
+			if (string.IsNullOrWhiteSpace(id))
+			{
+				continue;
+			}
+
+			var header = TryGetAnyPathString(questionElement, new[] { "header" }) ?? id;
+			var question = TryGetAnyPathString(questionElement, new[] { "question" }) ?? string.Empty;
+			var isSecret = questionElement.TryGetProperty("isSecret", out var isSecretElement) &&
+				isSecretElement.ValueKind == JsonValueKind.True;
+			var isOther = questionElement.TryGetProperty("isOther", out var isOtherElement) &&
+				isOtherElement.ValueKind == JsonValueKind.True;
+
+			var options = new List<Dictionary<string, string>>();
+			if (questionElement.TryGetProperty("options", out var optionsElement) &&
+				optionsElement.ValueKind == JsonValueKind.Array)
+			{
+				foreach (var optionElement in optionsElement.EnumerateArray())
+				{
+					if (optionElement.ValueKind != JsonValueKind.Object)
+					{
+						continue;
+					}
+
+					var label = TryGetAnyPathString(optionElement, new[] { "label" });
+					if (string.IsNullOrWhiteSpace(label))
+					{
+						continue;
+					}
+
+					var description = TryGetAnyPathString(optionElement, new[] { "description" }) ?? string.Empty;
+					options.Add(new Dictionary<string, string>(StringComparer.Ordinal)
+					{
+						["label"] = label,
+						["description"] = description
+					});
+				}
+			}
+
+			questions.Add(new Dictionary<string, object?>(StringComparer.Ordinal)
+			{
+				["id"] = id,
+				["header"] = header,
+				["question"] = question,
+				["isSecret"] = isSecret,
+				["isOther"] = isOther,
+				["options"] = options
+			});
+		}
+
+		return questions;
+	}
+
+	private static Dictionary<string, object?> BuildToolUserInputAnswersPayload(IReadOnlyDictionary<string, string> answersByQuestionId)
+	{
+		var payload = new Dictionary<string, object?>(StringComparer.Ordinal);
+		if (answersByQuestionId is null)
+		{
+			return payload;
+		}
+
+		foreach (var entry in answersByQuestionId)
+		{
+			if (string.IsNullOrWhiteSpace(entry.Key))
+			{
+				continue;
+			}
+
+			var answer = entry.Value?.Trim();
+			if (string.IsNullOrWhiteSpace(answer))
+			{
+				continue;
+			}
+
+			payload[entry.Key.Trim()] = new Dictionary<string, object?>(StringComparer.Ordinal)
+			{
+				["answers"] = new[] { answer }
+			};
+		}
+
+		return payload;
+	}
+
 	private static string? TryGetAnyPathString(JsonElement root, params string[][] paths)
 	{
 		foreach (var path in paths)
@@ -3355,6 +3564,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string? ReasoningEffort,
 		LocalLogWriter Log,
 		ConcurrentDictionary<string, TaskCompletionSource<string>> PendingApprovals,
+		ConcurrentDictionary<string, TaskCompletionSource<Dictionary<string, object?>>> PendingToolUserInputs,
 		string? ApprovalPolicy = null,
 		string? SandboxPolicy = null)
 	{
@@ -3378,6 +3588,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		private PendingApprovalSnapshot? _pendingApproval;
 
 		public string? PendingApprovalId => PendingApprovals.Keys.FirstOrDefault();
+		public string? PendingToolUserInputId => PendingToolUserInputs.Keys.FirstOrDefault();
 		public CancellationToken LifetimeToken => _lifetimeCts.Token;
 
 		public string? CurrentModel
@@ -3938,6 +4149,68 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 				_activeCollaborationMode = normalized;
 			}
+		}
+
+		public (bool HadTurnInFlight, bool HadActiveTurnToken, int ClearedQueuedTurnCount) ForceResetTurnState(bool clearQueuedTurns)
+		{
+			CancellationTokenSource? activeTurnCts = null;
+			var shouldRelease = false;
+			bool hadTurnInFlight;
+			bool hadActiveTurnToken;
+
+			lock (_turnSync)
+			{
+				hadTurnInFlight = _turnInFlight;
+				activeTurnCts = _activeTurnCts;
+				hadActiveTurnToken = activeTurnCts is not null;
+				_activeTurnCts = null;
+				_activeTurnId = null;
+				_activeCollaborationMode = null;
+				_turnInFlight = false;
+				_turnInFlightChangedUtc = DateTimeOffset.UtcNow;
+				if (_turnSlotHeld)
+				{
+					_turnSlotHeld = false;
+					shouldRelease = true;
+				}
+			}
+
+			if (activeTurnCts is not null)
+			{
+				try
+				{
+					activeTurnCts.Cancel();
+				}
+				catch
+				{
+				}
+			}
+
+			if (shouldRelease)
+			{
+				try
+				{
+					_turnGate.Release();
+				}
+				catch
+				{
+				}
+			}
+
+			var clearedQueuedTurnCount = 0;
+			if (clearQueuedTurns)
+			{
+				lock (_queueSync)
+				{
+					clearedQueuedTurnCount = _queuedTurns.Count;
+					if (clearedQueuedTurnCount > 0)
+					{
+						_queuedTurns.Clear();
+					}
+				}
+			}
+
+			return (hadTurnInFlight, hadActiveTurnToken, clearedQueuedTurnCount);
 		}
 
 		public bool CancelActiveTurn()

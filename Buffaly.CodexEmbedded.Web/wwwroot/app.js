@@ -12,6 +12,7 @@ let sessions = new Map(); // sessionId -> { threadId, cwd, model, reasoningEffor
 let sessionCatalog = []; // [{ threadId, threadName, updatedAtUtc, cwd, model, reasoningEffort, sessionFilePath }]
 let activeSessionId = null;
 let pendingApproval = null; // { sessionId, approvalId }
+let pendingToolUserInput = null; // { sessionId, requestId, questions }
 let turnInFlightBySession = new Map(); // sessionId -> boolean
 let lastSentPromptBySession = new Map(); // sessionId -> string
 let promptDraftByKey = new Map(); // "thread:<threadId>" | "__global__" -> text
@@ -184,6 +185,12 @@ const cwdInput = document.getElementById("cwdInput");
 const approvalPanel = document.getElementById("approvalPanel");
 const approvalSummary = document.getElementById("approvalSummary");
 const approvalDetails = document.getElementById("approvalDetails");
+const toolUserInputModal = document.getElementById("toolUserInputModal");
+const toolUserInputTitle = document.getElementById("toolUserInputTitle");
+const toolUserInputSubtitle = document.getElementById("toolUserInputSubtitle");
+const toolUserInputQuestions = document.getElementById("toolUserInputQuestions");
+const toolUserInputSubmitBtn = document.getElementById("toolUserInputSubmitBtn");
+const toolUserInputCancelBtn = document.getElementById("toolUserInputCancelBtn");
 const modelCommandModal = document.getElementById("modelCommandModal");
 const modelCommandSelect = document.getElementById("modelCommandSelect");
 const modelCommandCustomInput = document.getElementById("modelCommandCustomInput");
@@ -3225,6 +3232,357 @@ function setApprovalVisible(show) {
   approvalPanel.classList.toggle("hidden", !show);
 }
 
+function normalizeToolUserInputQuestions(rawQuestions) {
+  if (!Array.isArray(rawQuestions)) {
+    return [];
+  }
+
+  const output = [];
+  for (const question of rawQuestions) {
+    if (!question || typeof question !== "object") {
+      continue;
+    }
+
+    const id = typeof question.id === "string" ? question.id.trim() : "";
+    if (!id) {
+      continue;
+    }
+
+    const prompt = typeof question.question === "string" && question.question.trim()
+      ? question.question.trim()
+      : id;
+    const header = typeof question.header === "string" && question.header.trim()
+      ? question.header.trim()
+      : "";
+    const options = Array.isArray(question.options)
+      ? question.options
+          .filter((option) => option && typeof option === "object" && typeof option.label === "string" && option.label.trim().length > 0)
+          .map((option) => ({
+            label: option.label.trim(),
+            description: typeof option.description === "string" && option.description.trim() ? option.description.trim() : ""
+          }))
+      : [];
+
+    output.push({ id, header, prompt, options });
+  }
+
+  return output;
+}
+
+function setToolUserInputModalVisible(show) {
+  if (!toolUserInputModal) {
+    return;
+  }
+
+  toolUserInputModal.classList.toggle("hidden", !show);
+}
+
+function clearToolUserInputModal() {
+  if (toolUserInputTitle) {
+    toolUserInputTitle.textContent = "Input Needed";
+  }
+  if (toolUserInputSubtitle) {
+    toolUserInputSubtitle.textContent = "";
+  }
+  if (toolUserInputQuestions) {
+    toolUserInputQuestions.innerHTML = "";
+  }
+}
+
+function closeToolUserInputModal() {
+  setToolUserInputModalVisible(false);
+  clearToolUserInputModal();
+}
+
+function createToolUserInputQuestionNode(question, questionIndex) {
+  const block = document.createElement("section");
+  block.className = "tool-user-input-question";
+  block.dataset.questionId = question.id;
+
+  const header = document.createElement("div");
+  header.className = "tool-user-input-question-header";
+  header.textContent = question.header || `Question ${questionIndex + 1}`;
+  block.appendChild(header);
+
+  const prompt = document.createElement("div");
+  prompt.className = "tool-user-input-question-text";
+  prompt.textContent = question.prompt;
+  block.appendChild(prompt);
+
+  const options = document.createElement("div");
+  options.className = "tool-user-input-options";
+  const radioName = `tool_user_input_${question.id}`;
+
+  const renderOption = (value, description, checkedByDefault) => {
+    const row = document.createElement("label");
+    row.className = "tool-user-input-option";
+
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = radioName;
+    radio.value = value;
+    if (checkedByDefault) {
+      radio.checked = true;
+    }
+
+    const content = document.createElement("div");
+    const label = document.createElement("div");
+    label.className = "tool-user-input-option-label";
+    label.textContent = value;
+    content.appendChild(label);
+
+    if (description) {
+      const desc = document.createElement("div");
+      desc.className = "tool-user-input-option-description";
+      desc.textContent = description;
+      content.appendChild(desc);
+    }
+
+    row.append(radio, content);
+    options.appendChild(row);
+  };
+
+  if (question.options.length > 0) {
+    question.options.forEach((option, optionIndex) => {
+      renderOption(option.label, option.description, optionIndex === 0);
+    });
+  } else {
+    renderOption("Provide answer", "", true);
+  }
+
+  renderOption("__other__", "Enter a custom answer", false);
+
+  const otherInput = document.createElement("input");
+  otherInput.type = "text";
+  otherInput.className = "tool-user-input-other-input hidden";
+  otherInput.placeholder = "Custom answer";
+  otherInput.dataset.questionId = question.id;
+  options.appendChild(otherInput);
+
+  options.addEventListener("change", () => {
+    const selected = options.querySelector(`input[name="${radioName}"]:checked`);
+    const useOther = !!selected && selected.value === "__other__";
+    otherInput.classList.toggle("hidden", !useOther);
+    if (useOther) {
+      otherInput.focus();
+    }
+  });
+
+  block.appendChild(options);
+  return block;
+}
+
+function renderToolUserInputModal() {
+  if (!pendingToolUserInput || !toolUserInputModal || !toolUserInputQuestions || !toolUserInputSubtitle) {
+    return;
+  }
+
+  clearToolUserInputModal();
+  const questions = pendingToolUserInput.questions || [];
+  if (toolUserInputSubtitle) {
+    toolUserInputSubtitle.textContent = questions.length > 0
+      ? `Answer ${questions.length} question${questions.length === 1 ? "" : "s"} to continue this turn.`
+      : "No question payload was provided. Submit to continue.";
+  }
+
+  questions.forEach((question, questionIndex) => {
+    toolUserInputQuestions.appendChild(createToolUserInputQuestionNode(question, questionIndex));
+  });
+
+  setToolUserInputModalVisible(true);
+  if (toolUserInputSubmitBtn) {
+    toolUserInputSubmitBtn.focus();
+  }
+}
+
+function collectToolUserInputAnswers() {
+  const answers = {};
+  if (!pendingToolUserInput || !toolUserInputQuestions) {
+    return answers;
+  }
+
+  for (const question of pendingToolUserInput.questions || []) {
+    const questionId = typeof question.id === "string" ? question.id.trim() : "";
+    if (!questionId) {
+      continue;
+    }
+
+    const selected = toolUserInputQuestions.querySelector(`input[name="tool_user_input_${questionId}"]:checked`);
+    if (!selected) {
+      continue;
+    }
+
+    let answerText = selected.value;
+    if (answerText === "__other__") {
+      const otherInput = toolUserInputQuestions.querySelector(`input.tool-user-input-other-input[data-question-id="${questionId}"]`);
+      if (otherInput && typeof otherInput.value === "string" && otherInput.value.trim()) {
+        answerText = otherInput.value.trim();
+      } else {
+        continue;
+      }
+    }
+
+    if (answerText && answerText !== "__other__") {
+      answers[questionId] = answerText;
+    }
+  }
+
+  return answers;
+}
+
+function normalizeToolUserInputPromptAnswer(question, rawValue) {
+  if (!question || typeof rawValue !== "string") {
+    return "";
+  }
+
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const options = Array.isArray(question.options) ? question.options : [];
+  const numericMatch = trimmed.match(/^(\d+)$/);
+  if (numericMatch) {
+    const optionIndex = Number.parseInt(numericMatch[1], 10) - 1;
+    if (Number.isInteger(optionIndex) && optionIndex >= 0 && optionIndex < options.length) {
+      const selected = options[optionIndex];
+      if (selected && typeof selected.label === "string" && selected.label.trim()) {
+        return selected.label.trim();
+      }
+    }
+  }
+
+  for (const option of options) {
+    if (!option || typeof option.label !== "string") {
+      continue;
+    }
+
+    const label = option.label.trim();
+    if (!label) {
+      continue;
+    }
+
+    if (label.localeCompare(trimmed, undefined, { sensitivity: "accent" }) === 0) {
+      return label;
+    }
+  }
+
+  return trimmed;
+}
+
+function collectToolUserInputAnswersFromPrompt(rawPrompt) {
+  const answers = {};
+  if (!pendingToolUserInput || typeof rawPrompt !== "string") {
+    return answers;
+  }
+
+  const normalizedPrompt = rawPrompt.trim();
+  if (!normalizedPrompt) {
+    return answers;
+  }
+
+  const questions = Array.isArray(pendingToolUserInput.questions) ? pendingToolUserInput.questions : [];
+  if (questions.length === 0) {
+    return answers;
+  }
+
+  if (questions.length === 1) {
+    const single = questions[0];
+    const answer = normalizeToolUserInputPromptAnswer(single, normalizedPrompt);
+    if (answer && single && typeof single.id === "string" && single.id.trim()) {
+      answers[single.id.trim()] = answer;
+    }
+    return answers;
+  }
+
+  const byId = new Map();
+  for (const question of questions) {
+    if (!question || typeof question.id !== "string") {
+      continue;
+    }
+
+    const normalizedId = question.id.trim().toLowerCase();
+    if (normalizedId) {
+      byId.set(normalizedId, question);
+    }
+  }
+
+  const lines = normalizedPrompt.split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+
+    const separatorIndex = line.indexOf(":") >= 0 ? line.indexOf(":") : line.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+
+    const idCandidate = line.slice(0, separatorIndex).trim().toLowerCase();
+    const valueCandidate = line.slice(separatorIndex + 1).trim();
+    if (!idCandidate || !valueCandidate) {
+      continue;
+    }
+
+    const matchedQuestion = byId.get(idCandidate);
+    if (!matchedQuestion || typeof matchedQuestion.id !== "string" || !matchedQuestion.id.trim()) {
+      continue;
+    }
+
+    const answer = normalizeToolUserInputPromptAnswer(matchedQuestion, valueCandidate);
+    if (!answer) {
+      continue;
+    }
+
+    answers[matchedQuestion.id.trim()] = answer;
+  }
+
+  return answers;
+}
+
+function submitPendingToolUserInputWithAnswers(answers, sourceLabel = "ui") {
+  if (!pendingToolUserInput) {
+    return false;
+  }
+
+  const normalizedAnswers = answers && typeof answers === "object" ? answers : {};
+  send("tool_user_input_response", {
+    sessionId: pendingToolUserInput.sessionId,
+    requestId: pendingToolUserInput.requestId,
+    answers: normalizedAnswers
+  });
+  appendLog(`[tool_input] submitted (${sourceLabel}) session=${pendingToolUserInput.sessionId} requestId=${pendingToolUserInput.requestId} answers=${Object.keys(normalizedAnswers).length}`);
+  pendingToolUserInput = null;
+  closeToolUserInputModal();
+  return true;
+}
+
+function submitPendingToolUserInput() {
+  if (!pendingToolUserInput) {
+    return;
+  }
+
+  const answers = collectToolUserInputAnswers();
+  submitPendingToolUserInputWithAnswers(answers, "modal");
+}
+
+function cancelPendingToolUserInput() {
+  if (!pendingToolUserInput) {
+    closeToolUserInputModal();
+    return;
+  }
+
+  send("tool_user_input_response", {
+    sessionId: pendingToolUserInput.sessionId,
+    requestId: pendingToolUserInput.requestId,
+    answers: {}
+  });
+  appendLog(`[tool_input] canceled session=${pendingToolUserInput.sessionId} requestId=${pendingToolUserInput.requestId}`);
+  pendingToolUserInput = null;
+  closeToolUserInputModal();
+}
+
 function ensureSessionState(sessionId) {
   if (!sessions.has(sessionId)) {
     const now = Date.now();
@@ -3493,6 +3851,36 @@ function setTurnInFlight(sessionId, value) {
     if (sessionId === activeSessionId) {
       updatePromptActionState();
     }
+  }
+}
+
+function applyTurnOverrideReset(sessionId, options = {}) {
+  if (!sessionId) {
+    return;
+  }
+
+  const state = sessions.get(sessionId) || null;
+  if (state) {
+    const threadId = normalizeThreadId(state.threadId || "");
+    if (threadId) {
+      processingByThread.delete(threadId);
+    }
+    state.queuedTurns = [];
+    state.queuedTurnCount = 0;
+    if (state.isPlanTurn === true) {
+      finalizePlanTurn(sessionId, "interrupted", true);
+    }
+  }
+
+  setTurnInFlight(sessionId, false);
+  if (sessionId === activeSessionId) {
+    updatePromptActionState();
+    renderPromptQueue();
+    updatePlanPanel();
+  }
+
+  if (options.renderSidebar !== false) {
+    renderProjectSidebar();
   }
 }
 
@@ -4609,6 +4997,8 @@ function ensureSocket() {
     autoAttachAttempted = false;
     pendingApproval = null;
     setApprovalVisible(false);
+    pendingToolUserInput = null;
+    closeToolUserInputModal();
   });
   socket.addEventListener("error", () => {
     appendLog("[ws] error");
@@ -5186,6 +5576,10 @@ function handleServerEvent(frame) {
         turnStartedAtBySession.delete(sessionId);
         lastSentPromptBySession.delete(sessionId);
         rateLimitBySession.delete(sessionId);
+        if (pendingToolUserInput && pendingToolUserInput.sessionId === sessionId) {
+          pendingToolUserInput = null;
+          closeToolUserInputModal();
+        }
       }
       appendLog(`[session] stopped id=${sessionId || "unknown"}`);
       updateSessionSelect(payload.activeSessionId || null, { preferServerActive: true });
@@ -5262,13 +5656,13 @@ function handleServerEvent(frame) {
     case "turn_cancel_requested": {
       const sessionId = payload.sessionId || null;
       if (sessionId) {
-        touchSessionActivity(sessionId);
-        // Do not force in-flight on cancel request acknowledgements.
-        // Cancel can be emitted after a recovered/complete event, and forcing true
-        // reintroduces stale spinner/reasoning UI until the next poll.
+        if (payload.forcedReset === true || payload.hadTurnInFlight === true) {
+          applyTurnOverrideReset(sessionId, { renderSidebar: false });
+        }
         send("session_list");
       }
-      appendLog(`[turn] cancel requested for session=${sessionId || "unknown"} interruptSent=${payload.interruptSent === true ? "true" : "false"}`);
+      appendLog(
+        `[turn] cancel requested for session=${sessionId || "unknown"} interruptSent=${payload.interruptSent === true ? "true" : "false"} forcedReset=${payload.forcedReset === true ? "true" : "false"} clearedQueued=${Number.isFinite(payload.clearedQueuedTurnCount) ? payload.clearedQueuedTurnCount : 0}`);
       return;
     }
 
@@ -5521,6 +5915,43 @@ function handleServerEvent(frame) {
       return;
     }
 
+    case "tool_user_input_request": {
+      const sessionId = payload.sessionId || null;
+      const requestId = payload.requestId || null;
+      const questions = normalizeToolUserInputQuestions(payload.questions);
+      if (!sessionId || !requestId) {
+        appendLog("[tool_input] invalid request payload");
+        return;
+      }
+
+      if (sessionId && sessions.has(sessionId) && sessionId !== activeSessionId) {
+        setActiveSession(sessionId);
+      }
+
+      pendingToolUserInput = {
+        sessionId,
+        requestId,
+        questions
+      };
+      renderToolUserInputModal();
+      appendLog(`[tool_input] requested session=${sessionId} requestId=${requestId} questions=${questions.length}`);
+      return;
+    }
+
+    case "tool_user_input_resolved": {
+      const sessionId = payload.sessionId || null;
+      const requestId = payload.requestId || null;
+      if (pendingToolUserInput &&
+          pendingToolUserInput.sessionId === sessionId &&
+          pendingToolUserInput.requestId === requestId) {
+        pendingToolUserInput = null;
+        closeToolUserInputModal();
+      }
+
+      appendLog(`[tool_input] resolved session=${sessionId || "unknown"} requestId=${requestId || "unknown"}`);
+      return;
+    }
+
     case "models_list": {
       if (payload.error) {
         appendLog(`[models] error: ${payload.error}`);
@@ -5605,7 +6036,14 @@ if (attachSessionBtn) {
 
 stopSessionBtn.addEventListener("click", () => {
   if (!activeSessionId) return;
-  send("session_stop", { sessionId: activeSessionId });
+  const targetSessionId = activeSessionId;
+  if (!send("session_stop", { sessionId: targetSessionId })) {
+    appendLog("[session] failed to send stop request; websocket is closed");
+    return;
+  }
+
+  applyTurnOverrideReset(targetSessionId);
+  appendLog(`[session] stop requested id=${targetSessionId}`);
 });
 
 if (sessionSelect) {
@@ -5924,6 +6362,26 @@ if (aboutModal) {
   });
 }
 
+if (toolUserInputSubmitBtn) {
+  toolUserInputSubmitBtn.addEventListener("click", () => {
+    submitPendingToolUserInput();
+  });
+}
+
+if (toolUserInputCancelBtn) {
+  toolUserInputCancelBtn.addEventListener("click", () => {
+    cancelPendingToolUserInput();
+  });
+}
+
+if (toolUserInputModal) {
+  toolUserInputModal.addEventListener("click", (event) => {
+    if (event.target === toolUserInputModal) {
+      cancelPendingToolUserInput();
+    }
+  });
+}
+
 logVerbositySelect.addEventListener("change", async () => {
   localStorage.setItem(STORAGE_LOG_VERBOSITY_KEY, getCurrentLogVerbosity());
   try {
@@ -6187,17 +6645,17 @@ function cancelCurrentTurn() {
     return;
   }
 
-  if (!isTurnInFlight(activeSessionId)) {
-    appendLog(`[turn] no running turn to cancel for session=${activeSessionId}`);
-    return;
-  }
+  const targetSessionId = activeSessionId;
+  const hadInFlight = isTurnInFlight(targetSessionId);
 
-  if (!send("turn_cancel", { sessionId: activeSessionId })) {
+  if (!send("turn_cancel", { sessionId: targetSessionId })) {
     appendLog("[turn] failed to send cancel; websocket is closed");
     return;
   }
 
-  appendLog(`[turn] cancel requested for session=${activeSessionId}`);
+  applyTurnOverrideReset(targetSessionId);
+  appendLog(
+    `[turn] cancel override requested for session=${targetSessionId}${hadInFlight ? "" : " (local state did not show in-flight)"}`);
 }
 
 promptForm.addEventListener("submit", async (event) => {
@@ -6205,6 +6663,32 @@ promptForm.addEventListener("submit", async (event) => {
   const prompt = promptInput.value.trim();
   const images = pendingComposerImages.map((x) => ({ ...x }));
   const usePlanMode = planModeNextTurn === true;
+  if (pendingToolUserInput) {
+    if (!prompt) {
+      appendLog("[tool_input] answer required for pending request (use modal or type a response)");
+      return;
+    }
+
+    if (prompt.localeCompare("cancel", undefined, { sensitivity: "accent" }) === 0) {
+      cancelPendingToolUserInput();
+      promptInput.value = "";
+      clearCurrentPromptDraft();
+      clearComposerImages();
+      return;
+    }
+
+    const answersFromPrompt = collectToolUserInputAnswersFromPrompt(prompt);
+    if (!submitPendingToolUserInputWithAnswers(answersFromPrompt, "composer")) {
+      appendLog("[tool_input] failed to submit pending request from composer");
+      return;
+    }
+
+    promptInput.value = "";
+    clearCurrentPromptDraft();
+    clearComposerImages();
+    return;
+  }
+
   if (!prompt && images.length === 0) {
     return;
   }
@@ -6350,6 +6834,12 @@ document.addEventListener("keydown", (event) => {
   if (jumpCollapseMode) {
     event.preventDefault();
     setJumpCollapseMode(false);
+    return;
+  }
+
+  if (toolUserInputModal && !toolUserInputModal.classList.contains("hidden")) {
+    event.preventDefault();
+    cancelPendingToolUserInput();
     return;
   }
 

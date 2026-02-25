@@ -1583,6 +1583,7 @@ internal sealed class WebCliSocketSession : IAsyncDisposable
 				return;
 			}
 			case "item/tool/requestUserInput":
+			case "item/tool/request_user_input":
 			{
 				await SendRpcResultAsync(idElement, new { answers = new Dictionary<string, object?>() }, cancellationToken);
 				return;

@@ -332,6 +332,30 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						}
 					}
 					return;
+				case "tool_user_input_response":
+					{
+						var sessionId = TryGetString(root, "sessionId") ?? _activeSessionId;
+						if (string.IsNullOrWhiteSpace(sessionId))
+						{
+							await SendEventAsync("error", new { message = "No active session for tool user input response." }, cancellationToken);
+							return;
+						}
+
+						var requestId = TryGetString(root, "requestId");
+						var answersByQuestionId = TryGetToolUserInputAnswers(root);
+						if (!_orchestrator.TryResolveToolUserInput(sessionId, requestId, answersByQuestionId))
+						{
+							await SendEventAsync("error", new { message = "No pending tool user input request was found for this response." }, cancellationToken);
+							return;
+						}
+
+						await SendEventAsync("status", new
+						{
+							sessionId,
+							message = $"Submitted tool input answers ({answersByQuestionId.Count})."
+						}, cancellationToken);
+					}
+					return;
 				case "models_list":
 					await SendModelsListAsync(TryGetString(root, "sessionId"), cancellationToken);
 					return;
@@ -1310,6 +1334,60 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return null;
 		}
 		return value.ToString();
+	}
+
+	private static Dictionary<string, string> TryGetToolUserInputAnswers(JsonElement root)
+	{
+		var answersByQuestionId = new Dictionary<string, string>(StringComparer.Ordinal);
+		if (root.ValueKind != JsonValueKind.Object ||
+			!root.TryGetProperty("answers", out var answersElement) ||
+			answersElement.ValueKind != JsonValueKind.Object)
+		{
+			return answersByQuestionId;
+		}
+
+		foreach (var answerProperty in answersElement.EnumerateObject())
+		{
+			var questionId = answerProperty.Name?.Trim();
+			if (string.IsNullOrWhiteSpace(questionId))
+			{
+				continue;
+			}
+
+			string? answerText = null;
+			if (answerProperty.Value.ValueKind == JsonValueKind.String)
+			{
+				answerText = answerProperty.Value.GetString();
+			}
+			else if (answerProperty.Value.ValueKind == JsonValueKind.Object &&
+				answerProperty.Value.TryGetProperty("answers", out var nestedAnswers) &&
+				nestedAnswers.ValueKind == JsonValueKind.Array)
+			{
+				foreach (var candidate in nestedAnswers.EnumerateArray())
+				{
+					if (candidate.ValueKind == JsonValueKind.String)
+					{
+						answerText = candidate.GetString();
+						if (!string.IsNullOrWhiteSpace(answerText))
+						{
+							break;
+						}
+					}
+				}
+			}
+			else if (answerProperty.Value.ValueKind != JsonValueKind.Null &&
+				answerProperty.Value.ValueKind != JsonValueKind.Undefined)
+			{
+				answerText = answerProperty.Value.ToString();
+			}
+
+			if (!string.IsNullOrWhiteSpace(answerText))
+			{
+				answersByQuestionId[questionId] = answerText.Trim();
+			}
+		}
+
+		return answersByQuestionId;
 	}
 
 	private static IReadOnlyList<CodexUserImageInput> TryGetTurnImageInputs(JsonElement root)
