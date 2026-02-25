@@ -1458,7 +1458,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					message = interruptSent
 						? "Cancel requested (interrupt sent)."
 						: recoveredForcedClear
-							? "Cancel requested (forced recovered-state clear)."
+							? "Cancel requested (forced state clear)."
 							: "Cancel requested (local fallback)."
 				});
 			SessionsChanged?.Invoke();
