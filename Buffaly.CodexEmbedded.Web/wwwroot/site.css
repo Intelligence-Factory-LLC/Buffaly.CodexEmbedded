@@ -1691,9 +1691,71 @@ body {
 	box-shadow: 0 8px 18px rgba(185, 28, 28, 0.24);
 }
 
+.prompt-speech-btn.is-processing i {
+	animation: session-processing-spin 0.9s linear infinite;
+}
+
+.prompt-speech-btn.speaking {
+	background: #dc2626 !important;
+	color: #ffffff !important;
+	border-color: #dc2626 !important;
+	box-shadow: 0 8px 20px rgba(220, 38, 38, 0.28);
+}
+
 .prompt-speech-btn:disabled {
 	opacity: 0.66;
 	cursor: default;
+}
+
+.scribe-vis {
+	display: none;
+	align-items: center;
+	gap: 0.38rem;
+	margin-left: 0.35rem;
+	padding: 0.2rem 0.46rem;
+	border-radius: 999px;
+	background: rgba(15, 23, 42, 0.05);
+	border: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.scribe-vis.is-active {
+	display: inline-flex;
+}
+
+.scribe-dot {
+	width: 0.42rem;
+	height: 0.42rem;
+	border-radius: 999px;
+	background: #ef4444;
+	box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6);
+	animation: scribe-dot-pulse 1.25s infinite;
+}
+
+@keyframes scribe-dot-pulse {
+	0% {
+		box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6);
+	}
+	70% {
+		box-shadow: 0 0 0 7px rgba(239, 68, 68, 0);
+	}
+	100% {
+		box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+	}
+}
+
+.scribe-time {
+	min-width: 2.1rem;
+	text-align: right;
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.7rem;
+	font-weight: 700;
+	color: #14532d;
+}
+
+.scribe-wave {
+	width: 128px;
+	height: 18px;
+	display: block;
 }
 
 .prompt-plan-btn {
@@ -3138,6 +3200,21 @@ html[data-theme="dark"] .prompt-speech-btn.is-recording {
 	color: #ffffff !important;
 }
 
+html[data-theme="dark"] .prompt-speech-btn.speaking {
+	background: #b91c1c !important;
+	border-color: #f87171 !important;
+	color: #ffffff !important;
+}
+
+html[data-theme="dark"] .scribe-vis {
+	background: rgba(255, 255, 255, 0.06);
+	border-color: rgba(255, 255, 255, 0.14);
+}
+
+html[data-theme="dark"] .scribe-time {
+	color: #d1fae5;
+}
+
 html[data-theme="dark"] .prompt-plan-btn:hover {
 	background: #111827 !important;
 	color: #e2e8f0 !important;
@@ -3640,6 +3717,22 @@ html[data-theme="dark"] .server-table td {
 	.prompt-speech-btn {
 		width: 2rem;
 		height: 2rem;
+	}
+
+	.scribe-vis {
+		margin-left: 0.2rem;
+		padding: 0.15rem 0.32rem;
+		gap: 0.28rem;
+	}
+
+	.scribe-wave {
+		width: 86px;
+		height: 16px;
+	}
+
+	.scribe-time {
+		min-width: 1.85rem;
+		font-size: 0.65rem;
 	}
 
 	.prompt-plan-btn {
