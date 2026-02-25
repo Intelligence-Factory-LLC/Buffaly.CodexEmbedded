@@ -22,6 +22,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private static readonly TimeSpan StaleTurnRecoveryWithQueuedTurnMinAge = TimeSpan.FromSeconds(8);
 	private static readonly TimeSpan StaleTurnRecoveryWithActiveTurnIdMaxAge = TimeSpan.FromMinutes(5);
 	private static readonly TimeSpan StaleTurnRecoveryWithQueuedTurnActiveTurnIdMaxAge = TimeSpan.FromSeconds(45);
+	private static readonly TimeSpan InferredTurnRecoveryNoLogActivityMaxAge = TimeSpan.FromMinutes(5);
+	private static readonly TimeSpan InferredTurnRecoveryNoLogActivityWithQueuedTurnsMaxAge = TimeSpan.FromSeconds(90);
 
 	public event Action? SessionsChanged;
 	public event Action<string, object>? Broadcast;
@@ -318,31 +320,59 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
-		var inferredByThread = new Dictionary<string, bool>(StringComparer.Ordinal);
-		lock (_turnCacheSync)
-		{
-			foreach (var threadId in uniqueThreadIds)
+			var inferredByThread = new Dictionary<string, (bool Inferred, DateTime FileLastWriteUtc)>(StringComparer.Ordinal);
+			lock (_turnCacheSync)
 			{
-				if (_turnCacheByThread.TryGetValue(threadId, out var state))
+				foreach (var threadId in uniqueThreadIds)
 				{
-					inferredByThread[threadId] = state.LastInferredTurnInFlightFromLogs;
+					if (_turnCacheByThread.TryGetValue(threadId, out var state))
+					{
+						inferredByThread[threadId] = (state.LastInferredTurnInFlightFromLogs, state.FileLastWriteUtc);
+					}
 				}
 			}
-		}
 
 		foreach (var session in sessions)
 		{
 			var threadId = session.Session.ThreadId;
-			if (string.IsNullOrWhiteSpace(threadId) || !inferredByThread.TryGetValue(threadId, out var inferred))
-			{
-				continue;
-			}
-
-			if (inferred)
-			{
-				if (!session.IsTurnInFlight && session.TryMarkTurnStartedFromCoreSignal(turnId: null))
+				if (string.IsNullOrWhiteSpace(threadId) || !inferredByThread.TryGetValue(threadId, out var inferredState))
 				{
-					session.Log.Write("[turn_recovery] inferred active turn from log timeline");
+					continue;
+				}
+
+				var inferred = inferredState.Inferred;
+				if (inferred)
+				{
+					if (session.IsTurnInFlightRecoveredFromLogs && inferredState.FileLastWriteUtc > DateTime.MinValue)
+					{
+						var noLogActivity = DateTime.UtcNow - inferredState.FileLastWriteUtc;
+						var inferredRecoveryNoLogAge = session.HasQueuedTurns()
+							? InferredTurnRecoveryNoLogActivityWithQueuedTurnsMaxAge
+							: InferredTurnRecoveryNoLogActivityMaxAge;
+						if (noLogActivity >= inferredRecoveryNoLogAge &&
+							session.TryRecoverStaleTurnFromLogConsensus(
+								inferredRecoveryNoLogAge,
+								inferredRecoveryNoLogAge,
+								out var inferredStaleReason))
+						{
+							session.Log.Write($"[turn_recovery] cleared stale inferred active turn after {Math.Max(0, (int)noLogActivity.TotalSeconds)}s without log activity ({inferredStaleReason})");
+							Broadcast?.Invoke(
+								"turn_complete",
+								new
+								{
+									sessionId = session.SessionId,
+									status = "recovered",
+									errorMessage = $"Recovered stale inferred active turn after log inactivity ({inferredStaleReason})."
+								});
+							SessionsChanged?.Invoke();
+							EnsureQueueDispatcher(session.SessionId, session);
+							continue;
+						}
+					}
+
+					if (!session.IsTurnInFlight && session.TryMarkTurnStartedFromCoreSignal(turnId: null))
+					{
+						session.Log.Write("[turn_recovery] inferred active turn from log timeline");
 				}
 				continue;
 			}
@@ -1358,8 +1388,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return (false, false, null);
 		}
 
-		var interruptSent = false;
-		string? fallbackReason = null;
+			var interruptSent = false;
+			string? fallbackReason = null;
+			var recoveredForcedClear = false;
 
 		try
 		{
@@ -1372,12 +1403,31 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		var localCanceled = false;
-		if (!interruptSent)
-		{
-			localCanceled = session.CancelActiveTurn();
-			if (!localCanceled && string.IsNullOrWhiteSpace(fallbackReason))
+			if (!interruptSent)
 			{
-				fallbackReason = "No active turn token.";
+				localCanceled = session.CancelActiveTurn();
+				if (!localCanceled &&
+					session.IsTurnInFlightRecoveredFromLogs &&
+					session.TryRecoverStaleTurnFromLogConsensus(TimeSpan.Zero, TimeSpan.Zero, out var recoveredReason))
+				{
+					localCanceled = true;
+					recoveredForcedClear = true;
+					fallbackReason = null;
+					session.Log.Write($"[turn_cancel] forced clear of recovered turn ({recoveredReason})");
+					Broadcast?.Invoke(
+						"turn_complete",
+						new
+						{
+							sessionId,
+							status = "interrupted",
+							errorMessage = $"Canceled recovered log-inferred turn ({recoveredReason})."
+						});
+					SessionsChanged?.Invoke();
+					EnsureQueueDispatcher(sessionId, session);
+				}
+				if (!localCanceled && string.IsNullOrWhiteSpace(fallbackReason))
+				{
+					fallbackReason = "No active turn token.";
 			}
 		}
 
@@ -1387,20 +1437,32 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return (false, false, fallbackReason);
 		}
 
-		if (interruptSent)
-		{
-			session.Log.Write("[turn_cancel] requested by user; sent turn/interrupt");
-		}
-		else
-		{
-			session.Log.Write($"[turn_cancel] requested by user; interrupt unavailable, canceled local wait ({fallbackReason ?? "no details"})");
+			if (interruptSent)
+			{
+				session.Log.Write("[turn_cancel] requested by user; sent turn/interrupt");
+			}
+			else if (recoveredForcedClear)
+			{
+				session.Log.Write("[turn_cancel] requested by user; forced clear of recovered turn state");
+			}
+			else
+			{
+				session.Log.Write($"[turn_cancel] requested by user; interrupt unavailable, canceled local wait ({fallbackReason ?? "no details"})");
 		}
 
-		Broadcast?.Invoke("turn_cancel_requested", new { sessionId, interruptSent });
-		Broadcast?.Invoke(
-			"status",
-			new { sessionId, message = interruptSent ? "Cancel requested (interrupt sent)." : "Cancel requested (local fallback)." });
-		SessionsChanged?.Invoke();
+			Broadcast?.Invoke("turn_cancel_requested", new { sessionId, interruptSent });
+			Broadcast?.Invoke(
+				"status",
+				new
+				{
+					sessionId,
+					message = interruptSent
+						? "Cancel requested (interrupt sent)."
+						: recoveredForcedClear
+							? "Cancel requested (forced recovered-state clear)."
+							: "Cancel requested (local fallback)."
+				});
+			SessionsChanged?.Invoke();
 
 		return (interruptSent, localCanceled, fallbackReason);
 	}
