@@ -1359,7 +1359,16 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		TurnExecutionRequest request,
 		bool fromQueue)
 	{
-		var collaborationModeKind = WebCodexUtils.NormalizeCollaborationMode(request.CollaborationMode?.Mode);
+		var effectiveCollaborationMode = request.CollaborationMode;
+		var collaborationModeKind = WebCodexUtils.NormalizeCollaborationMode(effectiveCollaborationMode?.Mode);
+		if (string.IsNullOrWhiteSpace(collaborationModeKind))
+		{
+			collaborationModeKind = "default";
+			effectiveCollaborationMode = new CodexCollaborationMode
+			{
+				Mode = collaborationModeKind
+			};
+		}
 		var isPlanTurn = string.Equals(collaborationModeKind, "plan", StringComparison.Ordinal);
 		var lockTaken = false;
 		var completionPublished = false;
@@ -1431,7 +1440,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				ReasoningEffort = effectiveEffort,
 				ApprovalPolicy = effectiveApproval,
 				SandboxMode = effectiveSandbox,
-				CollaborationMode = request.CollaborationMode
+				CollaborationMode = effectiveCollaborationMode
 			};
 			var result = await session.Session.SendMessageAsync(
 				request.Text,
