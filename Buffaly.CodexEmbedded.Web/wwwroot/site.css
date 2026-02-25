@@ -2123,6 +2123,7 @@ html[data-theme="dark"] .settings-toggle-row {
 
 html[data-theme="dark"] .sidebar-nav-link,
 html[data-theme="dark"] .new-project-btn,
+html[data-theme="dark"] .project-name,
 html[data-theme="dark"] .session-title,
 html[data-theme="dark"] .conversation-title-text,
 html[data-theme="dark"] .watcher-entry-title,
@@ -2141,6 +2142,18 @@ html[data-theme="dark"] .session-row:hover,
 html[data-theme="dark"] .prompt-queue-item:hover {
 	background: #1e293b;
 	color: #dbeafe;
+}
+
+html[data-theme="dark"] .new-project-btn {
+	background: #0f172a !important;
+	border-color: #334155 !important;
+	color: #dbeafe !important;
+}
+
+html[data-theme="dark"] .new-project-btn:hover {
+	background: #1f3556 !important;
+	border-color: #60a5fa !important;
+	color: #f8fafc !important;
 }
 
 html[data-theme="dark"] .sidebar-nav-link.active {
@@ -2221,6 +2234,10 @@ html[data-theme="dark"] .about-muted {
 	color: #94a3b8;
 }
 
+html[data-theme="dark"] .project-path {
+	color: #b4c4d6;
+}
+
 html[data-theme="dark"] .watcher-timeline {
 	background: #0f172a;
 }
@@ -2289,6 +2306,10 @@ html[data-theme="dark"] .logs-status,
 html[data-theme="dark"] .security-warning-banner,
 html[data-theme="dark"] .sidebar-divider {
 	border-color: #334155;
+}
+
+html[data-theme="dark"] .sidebar-divider {
+	background: #334155;
 }
 
 html[data-theme="dark"] .panel-title {
