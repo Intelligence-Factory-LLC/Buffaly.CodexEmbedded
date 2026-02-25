@@ -343,7 +343,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				var inferred = inferredState.Inferred;
 				if (inferred)
 				{
-					if (session.IsTurnInFlightRecoveredFromLogs && inferredState.FileLastWriteUtc > DateTime.MinValue)
+					if (session.IsTurnInFlight && inferredState.FileLastWriteUtc > DateTime.MinValue)
 					{
 						var noLogActivity = DateTime.UtcNow - inferredState.FileLastWriteUtc;
 						var inferredRecoveryNoLogAge = session.HasQueuedTurns()
@@ -1407,20 +1407,19 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				localCanceled = session.CancelActiveTurn();
 				if (!localCanceled &&
-					session.IsTurnInFlightRecoveredFromLogs &&
 					session.TryRecoverStaleTurnFromLogConsensus(TimeSpan.Zero, TimeSpan.Zero, out var recoveredReason))
 				{
 					localCanceled = true;
 					recoveredForcedClear = true;
 					fallbackReason = null;
-					session.Log.Write($"[turn_cancel] forced clear of recovered turn ({recoveredReason})");
+					session.Log.Write($"[turn_cancel] forced clear of in-flight turn ({recoveredReason})");
 					Broadcast?.Invoke(
 						"turn_complete",
 						new
 						{
 							sessionId,
 							status = "interrupted",
-							errorMessage = $"Canceled recovered log-inferred turn ({recoveredReason})."
+							errorMessage = $"Canceled in-flight turn via forced local clear ({recoveredReason})."
 						});
 					SessionsChanged?.Invoke();
 					EnsureQueueDispatcher(sessionId, session);
@@ -1443,7 +1442,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 			else if (recoveredForcedClear)
 			{
-				session.Log.Write("[turn_cancel] requested by user; forced clear of recovered turn state");
+				session.Log.Write("[turn_cancel] requested by user; forced clear of in-flight turn state");
 			}
 			else
 			{
