@@ -26,7 +26,6 @@ builder.Services.AddSingleton(userSecretsOptions);
 builder.Services.AddSingleton<SessionOrchestrator>();
 builder.Services.AddSingleton<ServerRuntimeStateTracker>();
 builder.Services.AddSingleton<TimelineProjectionService>();
-builder.Services.AddSingleton<RecapQueryService>();
 builder.Services.AddSingleton<UserIdentityResolver>();
 builder.Services.AddSingleton<UserOpenAiKeyStore>();
 builder.Services.AddSingleton<OpenAiTranscriptionClient>();
@@ -367,52 +366,6 @@ app.MapGet("/api/turns/watch", (HttpRequest request, SessionOrchestrator orchest
 			title: "Failed to build turn timeline.",
 			detail: ex.Message);
 	}
-});
-
-app.MapGet("/api/recap/day", (HttpRequest request, RecapQueryService recapQueryService) =>
-{
-	var localDate = request.Query["date"].ToString();
-	var timezone = request.Query["timezone"].ToString();
-	var maxSessions = QueryValueParser.GetPositiveInt(request.Query["maxSessions"], fallback: 400, max: 3000);
-	var recap = recapQueryService.GetDaySummary(
-		string.IsNullOrWhiteSpace(localDate) ? null : localDate.Trim(),
-		string.IsNullOrWhiteSpace(timezone) ? null : timezone.Trim(),
-		maxSessions);
-	return Results.Ok(recap);
-});
-
-app.MapGet("/api/recap/find-sessions", (HttpRequest request, RecapQueryService recapQueryService) =>
-{
-	var query = request.Query["query"].ToString();
-	var localDate = request.Query["date"].ToString();
-	var timezone = request.Query["timezone"].ToString();
-	var maxResults = QueryValueParser.GetPositiveInt(request.Query["maxResults"], fallback: 40, max: 200);
-	var maxSessions = QueryValueParser.GetPositiveInt(request.Query["maxSessions"], fallback: 800, max: 3000);
-	var searchRequest = new RecapSessionSearchRequest
-	{
-		Query = string.IsNullOrWhiteSpace(query) ? string.Empty : query.Trim(),
-		LocalDate = string.IsNullOrWhiteSpace(localDate) ? null : localDate.Trim(),
-		Timezone = string.IsNullOrWhiteSpace(timezone) ? null : timezone.Trim(),
-		MaxResults = maxResults,
-		MaxSessions = maxSessions
-	};
-	var result = recapQueryService.FindSessions(searchRequest);
-	return Results.Ok(result);
-});
-
-app.MapPost("/api/recap/query", (RecapQueryRequest? body, RecapQueryService recapQueryService) =>
-{
-	var safeBody = body ?? new RecapQueryRequest();
-	var requestModel = new RecapQueryRequest
-	{
-		Query = string.IsNullOrWhiteSpace(safeBody.Query) ? string.Empty : safeBody.Query.Trim(),
-		LocalDate = string.IsNullOrWhiteSpace(safeBody.LocalDate) ? null : safeBody.LocalDate.Trim(),
-		Timezone = string.IsNullOrWhiteSpace(safeBody.Timezone) ? null : safeBody.Timezone.Trim(),
-		MaxResults = Math.Clamp(safeBody.MaxResults, 1, 200),
-		MaxSessions = Math.Clamp(safeBody.MaxSessions, 1, 3000)
-	};
-	var recap = recapQueryService.QueryDay(requestModel);
-	return Results.Ok(recap);
 });
 
 app.MapGet("/api/logs/realtime/current", (HttpRequest request, WebRuntimeDefaults defaults) =>

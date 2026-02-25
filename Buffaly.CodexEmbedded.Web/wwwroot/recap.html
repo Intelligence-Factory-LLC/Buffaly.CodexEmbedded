@@ -6,7 +6,7 @@
 	<title>Codex Recap</title>
 	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-	<link rel="stylesheet" href="site.css?v=20260225-recap2">
+	<link rel="stylesheet" href="site.css?v=20260225-recap3">
 </head>
 <body>
 	<div class="layout">
@@ -52,42 +52,32 @@
 				</nav>
 				<div class="sidebar-divider" aria-hidden="true"></div>
 				<div class="recap-sidebar-note">
-					Recap mode indexes your Codex day from stored thread history and session logs.
+					Recap uses a dedicated Codex session pointed at a chosen root path.
+					Default permissions are read focused: approval policy <code>untrusted</code> and sandbox <code>read-only</code>.
 				</div>
 			</aside>
 			<section class="panel chat-panel recap-panel">
-				<div class="panel-title">Daily Recap + Research</div>
+				<div class="panel-title">Recap Workspace</div>
 				<div class="recap-controls">
-					<label for="recapDateInput">Date</label>
-					<input id="recapDateInput" type="date">
-					<button id="recapRefreshBtn" type="button">Recap Day</button>
-					<input id="recapQueryInput" type="text" placeholder="Ask: where did we implement queue handling?">
-					<button id="recapAskBtn" type="button">Ask</button>
-					<input id="recapFindInput" type="text" placeholder="Find session: timeline bug or auth middleware">
-					<button id="recapFindBtn" type="button">Find Session</button>
+					<label for="recapRootInput">Root</label>
+					<input id="recapRootInput" type="text" placeholder="C:\Users\you\.codex">
+					<button id="recapStartBtn" type="button">Start Recap Session</button>
+					<button id="recapOpenTimelineBtn" type="button">Open Timeline</button>
 				</div>
-				<div id="recapStatus" class="logs-status">Loading recap...</div>
-				<div id="recapAnswer" class="recap-answer"></div>
+				<div id="recapStatus" class="logs-status">Connecting...</div>
+				<div class="recap-answer" id="recapMeta">
+					<div><strong>Session:</strong> <span id="recapSessionValue">(none)</span></div>
+					<div><strong>Thread:</strong> <span id="recapThreadValue">(none)</span></div>
+				</div>
+				<div id="recapOutput" class="recap-report">Ask open-ended questions once the recap session is started.</div>
+				<div class="recap-controls">
+					<input id="recapPromptInput" type="text" placeholder="What did I work on today? Organize by project and bullets.">
+					<button id="recapAskBtn" type="button">Ask</button>
+				</div>
 				<div class="recap-grid">
-					<div class="recap-column">
-						<div class="recap-section-title">Summary</div>
-						<div id="recapSummary" class="recap-list"></div>
-						<div class="recap-section-title">Project Report</div>
-						<div id="recapReport" class="recap-report"></div>
-						<div class="recap-section-title">Projects</div>
-						<div id="recapProjects" class="recap-list"></div>
-						<div class="recap-section-title">Sessions</div>
-						<div id="recapSessions" class="recap-list"></div>
-						<div class="recap-section-title">Session Finder</div>
-						<div id="recapFindResults" class="recap-list"></div>
-						<div class="recap-section-title">Matching Sessions</div>
-						<div id="recapThreads" class="recap-list"></div>
-						<div class="recap-section-title">Matching Events</div>
-						<div id="recapMatches" class="recap-list"></div>
-					</div>
-					<div class="recap-column recap-timeline-column">
+					<div class="recap-column recap-timeline-column" style="border-left: 0;">
 						<div id="recapTimelineTitle" class="recap-section-title">Timeline</div>
-						<div id="recapTimelineStatus" class="logs-status">Select a session to load conversation timeline.</div>
+						<div id="recapTimelineStatus" class="logs-status">Timeline is available after a recap session starts.</div>
 						<div id="recapTimeline" class="watcher-timeline"></div>
 					</div>
 				</div>
@@ -97,6 +87,6 @@
 	</div>
 	<script src="theme.js?v=20260225-settings1"></script>
 	<script src="sessionTimeline.js?v=20260224-turnfmt1"></script>
-	<script src="recap.js?v=20260225-recap2"></script>
+	<script src="recap.js?v=20260225-recap3"></script>
 </body>
 </html>
