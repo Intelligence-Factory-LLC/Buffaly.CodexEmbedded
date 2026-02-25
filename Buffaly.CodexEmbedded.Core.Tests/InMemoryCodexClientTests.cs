@@ -113,17 +113,100 @@ public sealed class InMemoryCodexClientTests
 		}
 	}
 
+	[TestMethod]
+	public async Task SendMessage_WithPlanCollaborationMode_SerializesTurnStartCollaborationPayload()
+	{
+		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+		string? observedMode = null;
+		bool observedSettingsObject = false;
+		string? observedReasoningEffort = null;
+
+		await using var transport = new InMemoryJsonlTransport();
+		var server = new FakeAppServer(
+			transport,
+			onTurnStart: turnStartParams =>
+			{
+				if (turnStartParams.ValueKind != JsonValueKind.Object)
+				{
+					return;
+				}
+
+				if (!turnStartParams.TryGetProperty("collaborationMode", out var collaborationMode) ||
+					collaborationMode.ValueKind != JsonValueKind.Object)
+				{
+					return;
+				}
+
+				if (collaborationMode.TryGetProperty("mode", out var modeElement) &&
+					modeElement.ValueKind == JsonValueKind.String)
+				{
+					observedMode = modeElement.GetString();
+				}
+
+				if (collaborationMode.TryGetProperty("settings", out var settingsElement) &&
+					settingsElement.ValueKind == JsonValueKind.Object)
+				{
+					observedSettingsObject = true;
+					if (settingsElement.TryGetProperty("reasoning_effort", out var effortElement) &&
+						effortElement.ValueKind == JsonValueKind.String)
+					{
+						observedReasoningEffort = effortElement.GetString();
+					}
+				}
+			});
+		var serverTask = server.RunAsync(cts.Token);
+
+		await using var client = await CodexClient.ConnectAsync(transport, cts.Token);
+		var session = await client.CreateSessionAsync(new CodexSessionCreateOptions
+		{
+			Cwd = "C:\\tmp",
+			Model = "fake-model"
+		}, cts.Token);
+
+		var result = await session.SendMessageAsync(
+			"Plan this change only.",
+			options: new CodexTurnOptions
+			{
+				ReasoningEffort = "medium",
+				CollaborationMode = new CodexCollaborationMode
+				{
+					Mode = "plan"
+				}
+			},
+			cancellationToken: cts.Token);
+
+		Assert.AreEqual("completed", result.Status);
+		Assert.AreEqual("plan", observedMode);
+		Assert.IsTrue(observedSettingsObject, "collaborationMode.settings was not emitted.");
+		Assert.AreEqual("medium", observedReasoningEffort);
+
+		cts.Cancel();
+		try
+		{
+			await serverTask;
+		}
+		catch
+		{
+		}
+	}
+
 	private sealed class FakeAppServer
 	{
 		private readonly InMemoryJsonlTransport _transport;
 		private readonly CompletionSignalMode _completionSignalMode;
+		private readonly Action<JsonElement>? _onTurnStart;
 		private int _turnCount;
 		private const string ThreadId = "thread-1";
 
-		public FakeAppServer(InMemoryJsonlTransport transport, CompletionSignalMode completionSignalMode = CompletionSignalMode.TurnCompleted)
+		public FakeAppServer(
+			InMemoryJsonlTransport transport,
+			CompletionSignalMode completionSignalMode = CompletionSignalMode.TurnCompleted,
+			Action<JsonElement>? onTurnStart = null)
 		{
 			_transport = transport;
 			_completionSignalMode = completionSignalMode;
+			_onTurnStart = onTurnStart;
 		}
 
 		public async Task RunAsync(CancellationToken cancellationToken)
@@ -149,6 +232,10 @@ public sealed class InMemoryCodexClientTests
 					case "turn/start":
 						_turnCount++;
 						var turnId = $"turn-{_turnCount}";
+						if (root.TryGetProperty("params", out var turnStartParams))
+						{
+							_onTurnStart?.Invoke(turnStartParams);
+						}
 						await WriteStdoutAsync(new
 						{
 							id = CloneId(id),

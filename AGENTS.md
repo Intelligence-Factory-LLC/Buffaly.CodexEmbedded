@@ -39,6 +39,7 @@ Primary goals are stable Codex protocol integration, reliable session and thread
 - Keep commits focused and use clear commit messages that describe the scope of grouped updates.
 - Do not mix unrelated refactors in the same checkpoint commit.
 - If a feature touches UI and websocket protocol, complete both sides before checkpointing.
+- If other agents have unrelated changes in the working tree, ignore them and do not stage or commit them unless the user explicitly asks.
 
 ## Done Criteria
 - Relevant JS files pass `node --check`.

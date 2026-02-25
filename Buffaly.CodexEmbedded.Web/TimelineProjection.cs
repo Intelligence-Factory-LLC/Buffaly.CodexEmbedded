@@ -360,6 +360,21 @@ internal sealed class TimelineProjectionService
 			return;
 		}
 
+		if (IsPlanDeltaEventType(eventType))
+		{
+			return;
+		}
+
+		if (IsPlanUpdatedEventType(eventType))
+		{
+			var planText = ExtractPlanText(payload);
+			var message = string.IsNullOrWhiteSpace(planText) ? "Plan updated" : Truncate(planText, 240);
+			var entry = state.CreateEntry("system", "Plan Updated", message, timestamp, eventType, compact: true);
+			state.AttachTaskContext(entry);
+			Emit(state, entries, entry);
+			return;
+		}
+
 		if (string.Equals(eventType, "agent_message", StringComparison.Ordinal) ||
 			string.Equals(eventType, "agent_reasoning", StringComparison.Ordinal) ||
 			string.Equals(eventType, "user_message", StringComparison.Ordinal))
@@ -374,6 +389,28 @@ internal sealed class TimelineProjectionService
 			state.AttachTaskContext(entry);
 			Emit(state, entries, entry);
 		}
+	}
+
+	private static bool IsPlanDeltaEventType(string eventType)
+	{
+		return string.Equals(eventType, "plan_delta", StringComparison.Ordinal) ||
+			string.Equals(eventType, "item/plan/delta", StringComparison.Ordinal) ||
+			string.Equals(eventType, "codex/event/plan_delta", StringComparison.Ordinal);
+	}
+
+	private static bool IsPlanUpdatedEventType(string eventType)
+	{
+		return string.Equals(eventType, "plan_update", StringComparison.Ordinal) ||
+			string.Equals(eventType, "plan_updated", StringComparison.Ordinal) ||
+			string.Equals(eventType, "turn/plan/updated", StringComparison.Ordinal);
+	}
+
+	private static string? ExtractPlanText(JsonElement payload)
+	{
+		return TryGetString(payload, "plan")
+			?? TryGetString(payload, "text")
+			?? TryGetString(payload, "summary")
+			?? TryGetString(payload, "message");
 	}
 
 	private static void UpdateContextUsage(TimelineProjectionState state, JsonElement payload, string sourceTag)

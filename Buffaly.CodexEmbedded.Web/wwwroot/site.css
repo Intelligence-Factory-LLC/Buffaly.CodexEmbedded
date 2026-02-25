@@ -2762,6 +2762,65 @@ html[data-theme="dark"] .prompt-form .prompt-send-btn.solo-send:hover {
 	background: #1d4ed8;
 }
 
+html[data-theme="dark"] .prompt-plan-btn {
+	background: #0f172a !important;
+	border-color: #475569 !important;
+	color: #cbd5e1 !important;
+}
+
+html[data-theme="dark"] .prompt-plan-btn:hover {
+	background: #111827 !important;
+	color: #e2e8f0 !important;
+}
+
+html[data-theme="dark"] .prompt-plan-btn.is-active,
+html[data-theme="dark"] .prompt-plan-btn[aria-pressed="true"] {
+	background: #0b2447 !important;
+	color: #93c5fd !important;
+	border-color: #60a5fa !important;
+}
+
+html[data-theme="dark"] .plan-panel {
+	background: linear-gradient(180deg, #0b1324 0%, #111827 100%);
+	border-color: #1e3a8a;
+	border-left-color: #3b82f6;
+	color: #dbeafe;
+}
+
+html[data-theme="dark"] .plan-panel-title {
+	color: #93c5fd;
+}
+
+html[data-theme="dark"] .plan-panel-status {
+	background: #1e293b;
+	border-color: #334155;
+	color: #bfdbfe;
+}
+
+html[data-theme="dark"] .plan-panel-status.streaming {
+	background: #0b2447;
+	border-color: #1d4ed8;
+	color: #93c5fd;
+}
+
+html[data-theme="dark"] .plan-panel-status.completed {
+	background: #052e16;
+	border-color: #166534;
+	color: #86efac;
+}
+
+html[data-theme="dark"] .plan-panel-status.error {
+	background: #3f0d18;
+	border-color: #881337;
+	color: #fda4af;
+}
+
+html[data-theme="dark"] .plan-panel-body {
+	background: #0f172a;
+	border-color: #1e3a8a;
+	color: #e2e8f0;
+}
+
 html[data-theme="dark"] .chat-panel.session-loading::before {
 	background: rgba(15, 23, 42, 0.62);
 }
@@ -3180,6 +3239,11 @@ html[data-theme="dark"] .server-table td {
 		margin-right: 0;
 	}
 
+	.prompt-plan-btn {
+		width: 2rem;
+		height: 2rem;
+	}
+
 	.prompt-queue-btn,
 	.prompt-cancel-btn {
 		min-width: 0;
@@ -3208,5 +3272,15 @@ html[data-theme="dark"] .server-table td {
 		height: 2rem;
 		min-width: 2rem;
 		padding: 0 !important;
+	}
+
+	.plan-panel {
+		margin: 0.2rem 0.45rem 0.4rem;
+		padding: 0.4rem 0.48rem 0.45rem;
+	}
+
+	.plan-panel-body {
+		font-size: 0.72rem;
+		max-height: 180px;
 	}
 }

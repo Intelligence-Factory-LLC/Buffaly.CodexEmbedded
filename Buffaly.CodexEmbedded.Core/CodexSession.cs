@@ -8,13 +8,23 @@ public sealed class CodexSession
 	public string ThreadId { get; }
 	public string? Cwd { get; }
 	public string? Model { get; }
+	public string? ApprovalPolicy { get; }
+	public string? SandboxMode { get; }
 
-	internal CodexSession(CodexClient client, string threadId, string? cwd, string? model)
+	internal CodexSession(
+		CodexClient client,
+		string threadId,
+		string? cwd,
+		string? model,
+		string? approvalPolicy,
+		string? sandboxMode)
 	{
 		_client = client;
 		ThreadId = threadId;
 		Cwd = cwd;
 		Model = model;
+		ApprovalPolicy = approvalPolicy;
+		SandboxMode = sandboxMode;
 	}
 
 	public async Task<CodexTurnResult> SendMessageAsync(
@@ -42,6 +52,14 @@ public sealed class CodexSession
 			if (string.IsNullOrWhiteSpace(effectiveOptions.Cwd))
 			{
 				effectiveOptions = effectiveOptions with { Cwd = Cwd };
+			}
+			if (string.IsNullOrWhiteSpace(effectiveOptions.ApprovalPolicy))
+			{
+				effectiveOptions = effectiveOptions with { ApprovalPolicy = ApprovalPolicy };
+			}
+			if (string.IsNullOrWhiteSpace(effectiveOptions.SandboxMode))
+			{
+				effectiveOptions = effectiveOptions with { SandboxMode = SandboxMode };
 			}
 
 			return await _client.SendMessageAsync(ThreadId, text, effectiveOptions, images, progress, cancellationToken);

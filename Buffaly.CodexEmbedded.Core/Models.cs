@@ -19,6 +19,8 @@ public sealed record CodexSessionCreateOptions
 {
 	public string? Cwd { get; init; }
 	public string? Model { get; init; }
+	public string? ApprovalPolicy { get; init; }
+	public string? SandboxMode { get; init; }
 }
 
 public sealed record CodexSessionAttachOptions
@@ -26,6 +28,8 @@ public sealed record CodexSessionAttachOptions
 	public required string ThreadId { get; init; }
 	public string? Cwd { get; init; }
 	public string? Model { get; init; }
+	public string? ApprovalPolicy { get; init; }
+	public string? SandboxMode { get; init; }
 }
 
 public sealed record CodexTurnOptions
@@ -33,6 +37,22 @@ public sealed record CodexTurnOptions
 	public string? Model { get; init; }
 	public string? Cwd { get; init; }
 	public string? ReasoningEffort { get; init; }
+	public string? ApprovalPolicy { get; init; }
+	public string? SandboxMode { get; init; }
+	public CodexCollaborationMode? CollaborationMode { get; init; }
+}
+
+public sealed record CodexCollaborationMode
+{
+	public string? Mode { get; init; }
+	public CodexCollaborationSettings? Settings { get; init; }
+}
+
+public sealed record CodexCollaborationSettings
+{
+	public string? Model { get; init; }
+	public string? ReasoningEffort { get; init; }
+	public string? DeveloperInstructions { get; init; }
 }
 
 public sealed record CodexDelta(string ThreadId, string TurnId, string Text);

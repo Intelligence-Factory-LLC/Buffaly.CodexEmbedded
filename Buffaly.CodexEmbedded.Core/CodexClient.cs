@@ -118,35 +118,73 @@ public sealed class CodexClient : IAsyncDisposable
 	public async Task<CodexSession> CreateSessionAsync(CodexSessionCreateOptions options, CancellationToken cancellationToken = default)
 	{
 		await InitializeAsync(cancellationToken);
+		var normalizedApprovalPolicy = NormalizeApprovalPolicy(options.ApprovalPolicy);
+		var normalizedSandboxMode = NormalizeSandboxMode(options.SandboxMode);
+		var threadStartParams = new Dictionary<string, object?>();
+		if (!string.IsNullOrWhiteSpace(options.Cwd))
+		{
+			threadStartParams["cwd"] = options.Cwd;
+		}
+		if (!string.IsNullOrWhiteSpace(options.Model))
+		{
+			threadStartParams["model"] = options.Model;
+		}
+		if (!string.IsNullOrWhiteSpace(normalizedApprovalPolicy))
+		{
+			threadStartParams["approvalPolicy"] = normalizedApprovalPolicy;
+		}
+		if (!string.IsNullOrWhiteSpace(normalizedSandboxMode))
+		{
+			threadStartParams["sandbox"] = normalizedSandboxMode;
+		}
 
 		var result = await _rpc.SendRequestAsync(
 			method: "thread/start",
-			@params: new
-			{
-				cwd = options.Cwd,
-				model = options.Model
-			},
+			@params: threadStartParams,
 			cancellationToken);
 
 		var threadId = JsonPath.GetRequiredString(result, "thread", "id");
-		return new CodexSession(this, threadId, options.Cwd, options.Model);
+		var resolvedApprovalPolicy = NormalizeApprovalPolicy(JsonPath.TryGetString(result, "approvalPolicy")) ?? normalizedApprovalPolicy;
+		var resolvedSandboxMode = ReadSandboxModeFromResponse(result) ?? normalizedSandboxMode;
+		return new CodexSession(this, threadId, options.Cwd, options.Model, resolvedApprovalPolicy, resolvedSandboxMode);
 	}
 
 	public async Task<CodexSession> AttachToSessionAsync(CodexSessionAttachOptions options, CancellationToken cancellationToken = default)
 	{
 		await InitializeAsync(cancellationToken);
+		var normalizedApprovalPolicy = NormalizeApprovalPolicy(options.ApprovalPolicy);
+		var normalizedSandboxMode = NormalizeSandboxMode(options.SandboxMode);
+		var threadResumeParams = new Dictionary<string, object?>
+		{
+			["threadId"] = options.ThreadId
+		};
+		if (!string.IsNullOrWhiteSpace(options.Cwd))
+		{
+			threadResumeParams["cwd"] = options.Cwd;
+		}
+		if (!string.IsNullOrWhiteSpace(options.Model))
+		{
+			threadResumeParams["model"] = options.Model;
+		}
+		if (!string.IsNullOrWhiteSpace(normalizedApprovalPolicy))
+		{
+			threadResumeParams["approvalPolicy"] = normalizedApprovalPolicy;
+		}
+		if (!string.IsNullOrWhiteSpace(normalizedSandboxMode))
+		{
+			threadResumeParams["sandbox"] = normalizedSandboxMode;
+		}
 
 		// Prefer thread/resume; callers expect this to fail loudly if unsupported.
 		var result = await _rpc.SendRequestAsync(
 			method: "thread/resume",
-			@params: new
-			{
-				threadId = options.ThreadId
-			},
+			@params: threadResumeParams,
 			cancellationToken);
 
 		var threadId = JsonPath.GetRequiredString(result, "thread", "id");
-		return new CodexSession(this, threadId, options.Cwd, options.Model);
+		var resolvedApprovalPolicy = NormalizeApprovalPolicy(JsonPath.TryGetString(result, "approvalPolicy")) ?? normalizedApprovalPolicy;
+		var resolvedSandboxMode = ReadSandboxModeFromResponse(result) ?? normalizedSandboxMode;
+		return new CodexSession(this, threadId, options.Cwd, options.Model, resolvedApprovalPolicy, resolvedSandboxMode);
 	}
 
 	public async Task<bool> InterruptTurnAsync(string threadId, TimeSpan? waitForTurnStart = null, CancellationToken cancellationToken = default)
@@ -291,17 +329,44 @@ public sealed class CodexClient : IAsyncDisposable
 		{
 			throw new ArgumentException("Either message text or at least one image is required.");
 		}
+		var normalizedApprovalPolicy = NormalizeApprovalPolicy(options?.ApprovalPolicy);
+		var normalizedSandboxMode = NormalizeSandboxMode(options?.SandboxMode);
+		var turnStartParams = new Dictionary<string, object?>
+		{
+			["threadId"] = threadId,
+			["input"] = input
+		};
+		if (!string.IsNullOrWhiteSpace(options?.Model))
+		{
+			turnStartParams["model"] = options.Model;
+		}
+		if (!string.IsNullOrWhiteSpace(options?.ReasoningEffort))
+		{
+			turnStartParams["effort"] = options.ReasoningEffort;
+		}
+		if (!string.IsNullOrWhiteSpace(options?.Cwd))
+		{
+			turnStartParams["cwd"] = options.Cwd;
+		}
+		if (!string.IsNullOrWhiteSpace(normalizedApprovalPolicy))
+		{
+			turnStartParams["approvalPolicy"] = normalizedApprovalPolicy;
+		}
+
+		var sandboxPolicy = BuildTurnSandboxPolicy(normalizedSandboxMode);
+		if (sandboxPolicy is not null)
+		{
+			turnStartParams["sandboxPolicy"] = sandboxPolicy;
+		}
+		var collaborationMode = BuildTurnCollaborationModePayload(options);
+		if (collaborationMode is not null)
+		{
+			turnStartParams["collaborationMode"] = collaborationMode;
+		}
 
 		var turnStartResult = await _rpc.SendRequestAsync(
 			method: "turn/start",
-			@params: new
-			{
-				threadId,
-				model = options?.Model,
-				effort = options?.ReasoningEffort,
-				cwd = options?.Cwd,
-				input
-			},
+			@params: turnStartParams,
 			cancellationToken);
 
 		var turnId = JsonPath.GetRequiredString(turnStartResult, "turn", "id");
@@ -390,6 +455,172 @@ public sealed class CodexClient : IAsyncDisposable
 		}
 
 		return input.ToArray();
+	}
+
+	private static object? BuildTurnSandboxPolicy(string? sandboxMode)
+	{
+		var normalized = NormalizeSandboxMode(sandboxMode);
+		return normalized switch
+		{
+			"read-only" => new Dictionary<string, object?>
+			{
+				["type"] = "readOnly"
+			},
+			"workspace-write" => new Dictionary<string, object?>
+			{
+				["type"] = "workspaceWrite"
+			},
+			"danger-full-access" => new Dictionary<string, object?>
+			{
+				["type"] = "dangerFullAccess"
+			},
+			_ => null
+		};
+	}
+
+	private static object? BuildTurnCollaborationModePayload(CodexTurnOptions? options)
+	{
+		var mode = NormalizeCollaborationMode(options?.CollaborationMode?.Mode);
+		if (string.IsNullOrWhiteSpace(mode))
+		{
+			return null;
+		}
+
+		var settings = BuildTurnCollaborationSettingsPayload(options, options?.CollaborationMode?.Settings);
+		return new Dictionary<string, object?>
+		{
+			["mode"] = mode,
+			["settings"] = settings
+		};
+	}
+
+	private static object BuildTurnCollaborationSettingsPayload(CodexTurnOptions? options, CodexCollaborationSettings? overrideSettings)
+	{
+		var model = !string.IsNullOrWhiteSpace(overrideSettings?.Model)
+			? overrideSettings!.Model
+			: options?.Model;
+		var reasoningEffort = !string.IsNullOrWhiteSpace(overrideSettings?.ReasoningEffort)
+			? overrideSettings!.ReasoningEffort
+			: options?.ReasoningEffort;
+		var developerInstructions = overrideSettings?.DeveloperInstructions;
+		var settings = new Dictionary<string, object?>();
+		if (!string.IsNullOrWhiteSpace(model))
+		{
+			settings["model"] = model;
+		}
+		if (!string.IsNullOrWhiteSpace(reasoningEffort))
+		{
+			settings["reasoning_effort"] = reasoningEffort;
+		}
+		if (developerInstructions is not null)
+		{
+			settings["developer_instructions"] = developerInstructions;
+		}
+
+		return settings;
+	}
+
+	private static string? ReadSandboxModeFromResponse(JsonElement root)
+	{
+		if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("sandbox", out var sandbox))
+		{
+			return null;
+		}
+
+		if (sandbox.ValueKind == JsonValueKind.String)
+		{
+			return NormalizeSandboxMode(sandbox.GetString());
+		}
+
+		if (sandbox.ValueKind == JsonValueKind.Object)
+		{
+			if (sandbox.TryGetProperty("type", out var typeElement))
+			{
+				return NormalizeSandboxMode(typeElement.ToString());
+			}
+
+			if (sandbox.TryGetProperty("mode", out var modeElement))
+			{
+				return NormalizeSandboxMode(modeElement.ToString());
+			}
+
+			if (sandbox.TryGetProperty("kind", out var kindElement))
+			{
+				return NormalizeSandboxMode(kindElement.ToString());
+			}
+
+			foreach (var property in sandbox.EnumerateObject())
+			{
+				if (property.Value.ValueKind != JsonValueKind.Object)
+				{
+					continue;
+				}
+
+				return NormalizeSandboxMode(property.Name);
+			}
+		}
+
+		return null;
+	}
+
+	private static string? NormalizeApprovalPolicy(string? value)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return null;
+		}
+
+		var normalized = value.Trim().ToLowerInvariant();
+		return normalized switch
+		{
+			"untrusted" => "untrusted",
+			"on-failure" => "on-failure",
+			"onfailure" => "on-failure",
+			"on-request" => "on-request",
+			"onrequest" => "on-request",
+			"never" => "never",
+			_ => null
+		};
+	}
+
+	private static string? NormalizeSandboxMode(string? value)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return null;
+		}
+
+		var normalized = value.Trim().ToLowerInvariant().Replace("_", "-");
+		return normalized switch
+		{
+			"read-only" => "read-only",
+			"readonly" => "read-only",
+			"read only" => "read-only",
+			"workspace-write" => "workspace-write",
+			"workspacewrite" => "workspace-write",
+			"workspace write" => "workspace-write",
+			"danger-full-access" => "danger-full-access",
+			"dangerfullaccess" => "danger-full-access",
+			"danger full access" => "danger-full-access",
+			"dangerfull" => "danger-full-access",
+			_ => null
+		};
+	}
+
+	private static string? NormalizeCollaborationMode(string? value)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return null;
+		}
+
+		var normalized = value.Trim().ToLowerInvariant();
+		return normalized switch
+		{
+			"plan" => "plan",
+			"default" => "default",
+			_ => null
+		};
 	}
 
 	private void HandleNotification(string method, JsonElement message)

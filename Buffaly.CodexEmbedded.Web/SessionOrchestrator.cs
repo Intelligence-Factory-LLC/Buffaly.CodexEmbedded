@@ -573,12 +573,16 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string sessionId,
 		string? model,
 		string? effort,
+		string? approvalPolicy,
+		string? sandboxMode,
 		string? cwd,
 		string? codexPath,
 		CancellationToken cancellationToken)
 	{
 		model = string.IsNullOrWhiteSpace(model) ? _defaults.DefaultModel : model.Trim();
 		effort = WebCodexUtils.NormalizeReasoningEffort(effort);
+		approvalPolicy = WebCodexUtils.NormalizeApprovalPolicy(approvalPolicy);
+		sandboxMode = WebCodexUtils.NormalizeSandboxMode(sandboxMode);
 		cwd = string.IsNullOrWhiteSpace(cwd) ? _defaults.DefaultCwd : cwd.Trim();
 		codexPath = string.IsNullOrWhiteSpace(codexPath) ? _defaults.CodexPath : codexPath.Trim();
 
@@ -610,7 +614,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			session = await client.CreateSessionAsync(new CodexSessionCreateOptions
 			{
 				Cwd = cwd,
-				Model = model
+				Model = model,
+				ApprovalPolicy = approvalPolicy,
+				SandboxMode = sandboxMode
 			}, cancellationToken);
 		}
 		catch
@@ -619,7 +625,17 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			throw;
 		}
 
-		var managed = new ManagedSession(sessionId, client, session, cwd, model, effort, sessionLog, pendingApprovals);
+		var managed = new ManagedSession(
+			sessionId,
+			client,
+			session,
+			cwd,
+			model,
+			effort,
+			sessionLog,
+			pendingApprovals,
+			ApprovalPolicy: session.ApprovalPolicy ?? approvalPolicy,
+			SandboxPolicy: session.SandboxMode ?? sandboxMode);
 		lock (_sync)
 		{
 			_sessions[sessionId] = managed;
@@ -640,6 +656,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			threadId: session.ThreadId,
 			model: model,
 			reasoningEffort: effort,
+			approvalPolicy: managed.CurrentApprovalPolicy,
+			sandboxPolicy: managed.CurrentSandboxPolicy,
 			cwd: cwd,
 			logPath: sessionLogPath,
 			attached: false);
@@ -650,6 +668,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string threadId,
 		string? model,
 		string? effort,
+		string? approvalPolicy,
+		string? sandboxMode,
 		string? cwd,
 		string? codexPath,
 		CancellationToken cancellationToken)
@@ -661,6 +681,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		model = string.IsNullOrWhiteSpace(model) ? _defaults.DefaultModel : model.Trim();
 		effort = WebCodexUtils.NormalizeReasoningEffort(effort);
+		approvalPolicy = WebCodexUtils.NormalizeApprovalPolicy(approvalPolicy);
+		sandboxMode = WebCodexUtils.NormalizeSandboxMode(sandboxMode);
 		cwd = string.IsNullOrWhiteSpace(cwd) ? _defaults.DefaultCwd : cwd.Trim();
 		codexPath = string.IsNullOrWhiteSpace(codexPath) ? _defaults.CodexPath : codexPath.Trim();
 
@@ -693,7 +715,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				ThreadId = threadId,
 				Cwd = cwd,
-				Model = model
+				Model = model,
+				ApprovalPolicy = approvalPolicy,
+				SandboxMode = sandboxMode
 			}, cancellationToken);
 		}
 		catch
@@ -702,7 +726,17 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			throw;
 		}
 
-		var managed = new ManagedSession(sessionId, client, session, cwd, model, effort, sessionLog, pendingApprovals);
+		var managed = new ManagedSession(
+			sessionId,
+			client,
+			session,
+			cwd,
+			model,
+			effort,
+			sessionLog,
+			pendingApprovals,
+			ApprovalPolicy: session.ApprovalPolicy ?? approvalPolicy,
+			SandboxPolicy: session.SandboxMode ?? sandboxMode);
 		lock (_sync)
 		{
 			_sessions[sessionId] = managed;
@@ -723,6 +757,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			threadId: session.ThreadId,
 			model: model,
 			reasoningEffort: effort,
+			approvalPolicy: managed.CurrentApprovalPolicy,
+			sandboxPolicy: managed.CurrentSandboxPolicy,
 			cwd: cwd,
 			logPath: sessionLogPath,
 			attached: true);
@@ -810,6 +846,39 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				s.SetReasoningEffort(effort);
 			}
+			return true;
+		}
+	}
+
+	public bool TrySetSessionPermissions(
+		string sessionId,
+		string? approvalPolicy,
+		string? sandboxPolicy,
+		bool hasApprovalOverride,
+		bool hasSandboxOverride)
+	{
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			return false;
+		}
+
+		lock (_sync)
+		{
+			if (!_sessions.TryGetValue(sessionId, out var s))
+			{
+				return false;
+			}
+
+			if (hasApprovalOverride)
+			{
+				s.SetApprovalPolicy(approvalPolicy);
+			}
+
+			if (hasSandboxOverride)
+			{
+				s.SetSandboxPolicy(sandboxPolicy);
+			}
+
 			return true;
 		}
 	}
@@ -962,8 +1031,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string? normalizedCwd,
 		string? normalizedModel,
 		string? normalizedEffort,
+		string? normalizedApprovalPolicy,
+		string? normalizedSandboxPolicy,
+		CodexCollaborationMode? normalizedCollaborationMode,
 		bool hasModelOverride,
 		bool hasEffortOverride,
+		bool hasApprovalOverride,
+		bool hasSandboxOverride,
 		IReadOnlyList<CodexUserImageInput>? images)
 	{
 		var session = TryGetSession(sessionId);
@@ -981,11 +1055,20 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		{
 			session.SetReasoningEffort(normalizedEffort);
 		}
+		if (hasApprovalOverride)
+		{
+			session.SetApprovalPolicy(normalizedApprovalPolicy);
+		}
+		if (hasSandboxOverride)
+		{
+			session.SetSandboxPolicy(normalizedSandboxPolicy);
+		}
 
 		var request = new TurnExecutionRequest(
 			Text: normalizedText,
 			Cwd: normalizedCwd,
 			Images: images is null ? Array.Empty<CodexUserImageInput>() : images.ToArray(),
+			CollaborationMode: normalizedCollaborationMode,
 			QueueItemId: null);
 		LaunchTurnExecution(sessionId, session, request, fromQueue: false);
 	}
@@ -996,8 +1079,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string? normalizedCwd,
 		string? normalizedModel,
 		string? normalizedEffort,
+		string? normalizedApprovalPolicy,
+		string? normalizedSandboxPolicy,
+		CodexCollaborationMode? normalizedCollaborationMode,
 		bool hasModelOverride,
 		bool hasEffortOverride,
+		bool hasApprovalOverride,
+		bool hasSandboxOverride,
 		IReadOnlyList<CodexUserImageInput>? images)
 	{
 		StartTurn(
@@ -1006,8 +1094,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			normalizedCwd,
 			normalizedModel,
 			normalizedEffort,
+			normalizedApprovalPolicy,
+			normalizedSandboxPolicy,
+			normalizedCollaborationMode,
 			hasModelOverride,
 			hasEffortOverride,
+			hasApprovalOverride,
+			hasSandboxOverride,
 			images);
 	}
 
@@ -1017,8 +1110,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string? normalizedCwd,
 		string? normalizedModel,
 		string? normalizedEffort,
+		string? normalizedApprovalPolicy,
+		string? normalizedSandboxPolicy,
+		CodexCollaborationMode? normalizedCollaborationMode,
 		bool hasModelOverride,
 		bool hasEffortOverride,
+		bool hasApprovalOverride,
+		bool hasSandboxOverride,
 		IReadOnlyList<CodexUserImageInput>? images,
 		out string? queueItemId,
 		out string? errorMessage)
@@ -1047,6 +1145,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		{
 			session.SetReasoningEffort(normalizedEffort);
 		}
+		if (hasApprovalOverride)
+		{
+			session.SetApprovalPolicy(normalizedApprovalPolicy);
+		}
+		if (hasSandboxOverride)
+		{
+			session.SetSandboxPolicy(normalizedSandboxPolicy);
+		}
 
 		var nextQueueItemId = Guid.NewGuid().ToString("N");
 		session.EnqueueQueuedTurn(new QueuedTurn(
@@ -1054,6 +1160,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			Text: normalizedText,
 			Cwd: normalizedCwd,
 			Images: safeImages,
+			CollaborationMode: normalizedCollaborationMode,
 			CreatedAtUtc: DateTimeOffset.UtcNow));
 		queueItemId = nextQueueItemId;
 
@@ -1214,6 +1321,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		TurnExecutionRequest request,
 		bool fromQueue)
 	{
+		var collaborationModeKind = WebCodexUtils.NormalizeCollaborationMode(request.CollaborationMode?.Mode);
+		var isPlanTurn = string.Equals(collaborationModeKind, "plan", StringComparison.Ordinal);
 		var lockTaken = false;
 		var completionPublished = false;
 		CancellationTokenSource? timeoutCts = null;
@@ -1232,7 +1341,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					{
 						sessionId,
 						status = "queueTimedOut",
-						errorMessage = $"Timed out waiting {waitSeconds}s for previous turn to release."
+						errorMessage = $"Timed out waiting {waitSeconds}s for previous turn to release.",
+						isPlanTurn,
+						collaborationMode = collaborationModeKind
 					});
 				Broadcast?.Invoke(
 					"status",
@@ -1250,9 +1361,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			timeoutCts.CancelAfter(TimeSpan.FromSeconds(_defaults.TurnTimeoutSeconds));
 			turnCts = CancellationTokenSource.CreateLinkedTokenSource(session.LifetimeToken, timeoutCts.Token);
 			var turnToken = turnCts.Token;
-			if (session.TryMarkTurnStarted(turnCts))
+			if (session.TryMarkTurnStarted(turnCts, collaborationModeKind))
 			{
-				Broadcast?.Invoke("turn_started", new { sessionId });
+				Broadcast?.Invoke("turn_started", new { sessionId, isPlanTurn, collaborationMode = collaborationModeKind });
 				SessionsChanged?.Invoke();
 			}
 			else
@@ -1268,15 +1379,21 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			Broadcast?.Invoke("status", new { sessionId, message = "Turn started." });
 			var effectiveModel = session.ResolveTurnModel(_defaults.DefaultModel);
 			var effectiveEffort = session.CurrentReasoningEffort;
+			var effectiveApproval = session.CurrentApprovalPolicy;
+			var effectiveSandbox = session.CurrentSandboxPolicy;
 			var imageCount = request.Images?.Count ?? 0;
-			session.Log.Write($"[prompt] {(string.IsNullOrWhiteSpace(request.Text) ? "(no text)" : request.Text)} images={imageCount} cwd={request.Cwd ?? session.Cwd ?? "(default)"} model={effectiveModel ?? "(default)"} effort={effectiveEffort ?? "(default)"}");
+			session.Log.Write(
+				$"[prompt] {(string.IsNullOrWhiteSpace(request.Text) ? "(no text)" : request.Text)} images={imageCount} cwd={request.Cwd ?? session.Cwd ?? "(default)"} model={effectiveModel ?? "(default)"} effort={effectiveEffort ?? "(default)"} approval={effectiveApproval ?? "(default)"} sandbox={effectiveSandbox ?? "(default)"} collaboration={collaborationModeKind ?? "(default)"}");
 			Broadcast?.Invoke("assistant_response_started", new { sessionId });
 
 			var turnOptions = new CodexTurnOptions
 			{
 				Cwd = request.Cwd,
 				Model = effectiveModel,
-				ReasoningEffort = effectiveEffort
+				ReasoningEffort = effectiveEffort,
+				ApprovalPolicy = effectiveApproval,
+				SandboxMode = effectiveSandbox,
+				CollaborationMode = request.CollaborationMode
 			};
 			var result = await session.Session.SendMessageAsync(
 				request.Text,
@@ -1419,7 +1536,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 						{
 							sessionId,
 							status = "interrupted",
-							errorMessage = $"Canceled in-flight turn via forced local clear ({recoveredReason})."
+							errorMessage = $"Canceled in-flight turn via forced local clear ({recoveredReason}).",
+							isPlanTurn = string.Equals(session.GetActiveCollaborationMode(), "plan", StringComparison.Ordinal),
+							collaborationMode = session.GetActiveCollaborationMode()
 						});
 					SessionsChanged?.Invoke();
 					EnsureQueueDispatcher(sessionId, session);
@@ -1539,6 +1658,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				Text: queuedTurn.Text,
 				Cwd: queuedTurn.Cwd,
 				Images: queuedTurn.Images,
+				CollaborationMode: queuedTurn.CollaborationMode,
 				QueueItemId: queuedTurn.QueueItemId);
 
 			var outcome = await RunTurnExecutionAsync(sessionId, session, request, fromQueue: true);
@@ -1691,7 +1811,15 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					if (managed.TryMarkTurnStartedFromCoreSignal(signal.TurnId))
 					{
 						sessionLog.Write($"[turn_recovery] marked started from core signal ({signal.Source})");
-						Broadcast?.Invoke("turn_started", new { sessionId });
+						var collaborationMode = managed.GetActiveCollaborationMode();
+						Broadcast?.Invoke(
+							"turn_started",
+							new
+							{
+								sessionId,
+								isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal),
+								collaborationMode
+							});
 						SessionsChanged?.Invoke();
 					}
 				}
@@ -1733,6 +1861,15 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
+		if (TryParseCorePlanSignal(ev, out var planSignal))
+		{
+			var managed = TryGetSession(sessionId);
+			if (managed is not null)
+			{
+				HandlePlanSignal(sessionId, managed, planSignal);
+			}
+		}
+
 		CoreEvent?.Invoke(sessionId, ev);
 	}
 
@@ -1742,13 +1879,15 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string? status,
 		string? errorMessage)
 	{
+		var collaborationMode = session.GetActiveCollaborationMode();
+		var isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal);
 		if (!session.TryMarkTurnCompletedFromCoreSignal())
 		{
 			return false;
 		}
 
 		var normalizedStatus = string.IsNullOrWhiteSpace(status) ? "unknown" : status!;
-		Broadcast?.Invoke("turn_complete", new { sessionId, status = normalizedStatus, errorMessage });
+		Broadcast?.Invoke("turn_complete", new { sessionId, status = normalizedStatus, errorMessage, isPlanTurn, collaborationMode });
 		SessionsChanged?.Invoke();
 		EnsureQueueDispatcher(sessionId, session);
 		return true;
@@ -1867,6 +2006,49 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				threadId,
 				threadName = signal.ThreadName,
 				source = signal.Source
+			});
+	}
+
+	private void HandlePlanSignal(string sessionId, ManagedSession managed, CorePlanSignal signal)
+	{
+		if (!string.IsNullOrWhiteSpace(signal.CollaborationMode))
+		{
+			managed.TrySetActiveCollaborationModeIfInFlight(signal.CollaborationMode);
+		}
+		else
+		{
+			managed.TrySetActiveCollaborationModeIfInFlight("plan");
+		}
+
+		if (signal.Kind == CorePlanSignalKind.Delta)
+		{
+			if (string.IsNullOrWhiteSpace(signal.Text))
+			{
+				return;
+			}
+
+			Broadcast?.Invoke(
+				"plan_delta",
+				new
+				{
+					sessionId,
+					text = signal.Text,
+					source = signal.Source,
+					collaborationMode = "plan",
+					isPlanTurn = true
+				});
+			return;
+		}
+
+		Broadcast?.Invoke(
+			"plan_updated",
+			new
+			{
+				sessionId,
+				text = signal.Text,
+				source = signal.Source,
+				collaborationMode = "plan",
+				isPlanTurn = true
 			});
 	}
 
@@ -2023,6 +2205,157 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		{
 			return false;
 		}
+	}
+
+	private static bool TryParseCorePlanSignal(CodexCoreEvent ev, out CorePlanSignal signal)
+	{
+		signal = default;
+		if (ev is null || !string.Equals(ev.Type, "stdout_jsonl", StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		var line = ev.Message;
+		if (string.IsNullOrWhiteSpace(line))
+		{
+			return false;
+		}
+
+		if (line.IndexOf("plan", StringComparison.OrdinalIgnoreCase) < 0)
+		{
+			return false;
+		}
+
+		try
+		{
+			using var doc = JsonDocument.Parse(line);
+			var root = doc.RootElement;
+			if (root.ValueKind != JsonValueKind.Object)
+			{
+				return false;
+			}
+
+			if (root.TryGetProperty("method", out var methodElement) && methodElement.ValueKind == JsonValueKind.String)
+			{
+				var method = methodElement.GetString() ?? string.Empty;
+				var paramsElement = root.TryGetProperty("params", out var p) ? p : default;
+				if (TryParseCorePlanSignalFromMethod(method, paramsElement, out signal))
+				{
+					return true;
+				}
+			}
+
+			if (root.TryGetProperty("type", out var typeElement) &&
+				typeElement.ValueKind == JsonValueKind.String &&
+				string.Equals(typeElement.GetString(), "event_msg", StringComparison.Ordinal) &&
+				root.TryGetProperty("payload", out var payloadElement) &&
+				payloadElement.ValueKind == JsonValueKind.Object &&
+				payloadElement.TryGetProperty("type", out var payloadTypeElement) &&
+				payloadTypeElement.ValueKind == JsonValueKind.String)
+			{
+				var payloadType = payloadTypeElement.GetString() ?? string.Empty;
+				if (TryParseCorePlanSignalFromEventPayload(payloadType, payloadElement, out signal))
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	private static bool TryParseCorePlanSignalFromMethod(string method, JsonElement paramsElement, out CorePlanSignal signal)
+	{
+		signal = default;
+		if (string.Equals(method, "item/plan/delta", StringComparison.Ordinal) ||
+			string.Equals(method, "codex/event/plan_delta", StringComparison.Ordinal))
+		{
+			return TryBuildCorePlanDeltaSignal(paramsElement, method, out signal);
+		}
+
+		if (string.Equals(method, "turn/plan/updated", StringComparison.Ordinal))
+		{
+			return TryBuildCorePlanUpdatedSignal(paramsElement, method, out signal);
+		}
+
+		return false;
+	}
+
+	private static bool TryParseCorePlanSignalFromEventPayload(string payloadType, JsonElement payloadElement, out CorePlanSignal signal)
+	{
+		signal = default;
+		if (string.Equals(payloadType, "plan_delta", StringComparison.Ordinal) ||
+			string.Equals(payloadType, "planDelta", StringComparison.Ordinal))
+		{
+			return TryBuildCorePlanDeltaSignal(payloadElement, $"event_msg:{payloadType}", out signal);
+		}
+
+		if (string.Equals(payloadType, "plan_update", StringComparison.Ordinal) ||
+			string.Equals(payloadType, "plan_updated", StringComparison.Ordinal) ||
+			string.Equals(payloadType, "planUpdate", StringComparison.Ordinal) ||
+			string.Equals(payloadType, "planUpdated", StringComparison.Ordinal))
+		{
+			return TryBuildCorePlanUpdatedSignal(payloadElement, $"event_msg:{payloadType}", out signal);
+		}
+
+		return false;
+	}
+
+	private static bool TryBuildCorePlanDeltaSignal(JsonElement root, string source, out CorePlanSignal signal)
+	{
+		signal = default;
+		var text = TryGetAnyPathString(root,
+			new[] { "delta" },
+			new[] { "text" },
+			new[] { "msg", "delta" },
+			new[] { "msg", "text" },
+			new[] { "item", "delta" },
+			new[] { "item", "text" });
+		if (string.IsNullOrWhiteSpace(text))
+		{
+			return false;
+		}
+
+		var mode = WebCodexUtils.NormalizeCollaborationMode(
+			TryGetAnyPathString(root,
+				new[] { "collaboration_mode_kind" },
+				new[] { "collaborationModeKind" },
+				new[] { "mode" },
+				new[] { "msg", "collaboration_mode_kind" },
+				new[] { "msg", "collaborationModeKind" }));
+		signal = new CorePlanSignal(CorePlanSignalKind.Delta, text.Trim(), mode, source);
+		return true;
+	}
+
+	private static bool TryBuildCorePlanUpdatedSignal(JsonElement root, string source, out CorePlanSignal signal)
+	{
+		signal = default;
+		var text = TryGetAnyPathString(root,
+			new[] { "plan" },
+			new[] { "text" },
+			new[] { "summary" },
+			new[] { "msg", "plan" },
+			new[] { "msg", "text" },
+			new[] { "msg", "summary" });
+		var mode = WebCodexUtils.NormalizeCollaborationMode(
+			TryGetAnyPathString(root,
+				new[] { "collaboration_mode_kind" },
+				new[] { "collaborationModeKind" },
+				new[] { "mode" },
+				new[] { "msg", "collaboration_mode_kind" },
+				new[] { "msg", "collaborationModeKind" }));
+
+		if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(mode))
+		{
+			return false;
+		}
+
+		signal = new CorePlanSignal(CorePlanSignalKind.Updated, string.IsNullOrWhiteSpace(text) ? null : text.Trim(), mode, source);
+		return true;
 	}
 
 	private static CoreRateLimitsSignal? TryParseCoreRateLimitsSignalFromMethod(string method, JsonElement paramsElement)
@@ -2225,21 +2558,27 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var cwd = TryGetAnyPathString(root,
 			new[] { "cwd" },
 			new[] { "session", "cwd" });
-		var approvalPolicy = TryGetAnyPathString(root,
+		var approvalPolicyRaw = TryGetAnyPathString(root,
 			new[] { "approvalPolicy" },
 			new[] { "approval_policy" },
 			new[] { "approvalMode" },
 			new[] { "approval_mode" },
 			new[] { "session", "approvalPolicy" },
 			new[] { "session", "approval_policy" });
-		var sandboxPolicy = TryGetAnyPathString(root,
+		var sandboxPolicyRaw = TryGetAnyPathString(root,
 			new[] { "sandboxPolicy" },
+			new[] { "sandboxPolicy", "type" },
 			new[] { "sandbox_policy" },
 			new[] { "sandboxMode" },
 			new[] { "sandbox_mode" },
 			new[] { "sandbox" },
+			new[] { "sandbox", "type" },
 			new[] { "session", "sandboxPolicy" },
-			new[] { "session", "sandbox_policy" });
+			new[] { "session", "sandboxPolicy", "type" },
+			new[] { "session", "sandbox_policy" },
+			new[] { "session", "sandbox_policy", "type" });
+		var approvalPolicy = WebCodexUtils.NormalizeApprovalPolicy(approvalPolicyRaw);
+		var sandboxPolicy = WebCodexUtils.NormalizeSandboxMode(sandboxPolicyRaw);
 		var threadId = TryGetAnyPathString(root,
 			new[] { "threadId" },
 			new[] { "thread_id" },
@@ -2649,6 +2988,18 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string? ErrorMessage,
 		string Source);
 
+	private enum CorePlanSignalKind
+	{
+		Delta,
+		Updated
+	}
+
+	private readonly record struct CorePlanSignal(
+		CorePlanSignalKind Kind,
+		string? Text,
+		string? CollaborationMode,
+		string Source);
+
 	private readonly record struct CoreAuxSignals(
 		CoreRateLimitsSignal? RateLimitsSignal,
 		CoreSessionConfiguredSignal? SessionConfiguredSignal,
@@ -2786,6 +3137,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string threadId,
 		string? model,
 		string? reasoningEffort,
+		string? approvalPolicy,
+		string? sandboxPolicy,
 		string? cwd,
 		string logPath,
 		bool attached);
@@ -2966,6 +3319,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string Text,
 		string? Cwd,
 		IReadOnlyList<CodexUserImageInput> Images,
+		CodexCollaborationMode? CollaborationMode,
 		string? QueueItemId);
 
 	internal sealed record QueuedTurn(
@@ -2973,6 +3327,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string Text,
 		string? Cwd,
 		IReadOnlyList<CodexUserImageInput> Images,
+		CodexCollaborationMode? CollaborationMode,
 		DateTimeOffset CreatedAtUtc);
 
 	private enum TurnExecutionOutcome
@@ -3011,10 +3366,11 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		private readonly List<QueuedTurn> _queuedTurns = new();
 		private string? _model = string.IsNullOrWhiteSpace(Model) ? null : Model.Trim();
 		private string? _reasoningEffort = WebCodexUtils.NormalizeReasoningEffort(ReasoningEffort);
-		private string? _approvalPolicy = string.IsNullOrWhiteSpace(ApprovalPolicy) ? null : ApprovalPolicy.Trim();
-		private string? _sandboxPolicy = string.IsNullOrWhiteSpace(SandboxPolicy) ? null : SandboxPolicy.Trim();
+		private string? _approvalPolicy = WebCodexUtils.NormalizeApprovalPolicy(ApprovalPolicy);
+		private string? _sandboxPolicy = WebCodexUtils.NormalizeSandboxMode(SandboxPolicy);
 		private CancellationTokenSource? _activeTurnCts;
 		private string? _activeTurnId;
+		private string? _activeCollaborationMode;
 		private bool _turnInFlight;
 		private bool _turnSlotHeld;
 		private DateTimeOffset _turnInFlightChangedUtc = DateTimeOffset.UtcNow;
@@ -3090,6 +3446,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
+		public string? GetActiveCollaborationMode()
+		{
+			lock (_turnSync)
+			{
+				return _activeCollaborationMode;
+			}
+		}
+
 		public SessionSnapshot ToSnapshot(
 			int turnCountInMemory,
 			bool isTurnInFlightInferredFromLogs,
@@ -3126,6 +3490,22 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			lock (_turnSync)
 			{
 				_reasoningEffort = WebCodexUtils.NormalizeReasoningEffort(effort);
+			}
+		}
+
+		public void SetApprovalPolicy(string? approvalPolicy)
+		{
+			lock (_turnSync)
+			{
+				_approvalPolicy = WebCodexUtils.NormalizeApprovalPolicy(approvalPolicy);
+			}
+		}
+
+		public void SetSandboxPolicy(string? sandboxPolicy)
+		{
+			lock (_turnSync)
+			{
+				_sandboxPolicy = WebCodexUtils.NormalizeSandboxMode(sandboxPolicy);
 			}
 		}
 
@@ -3259,7 +3639,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 				if (approvalPolicy is not null)
 				{
-					var normalizedApproval = string.IsNullOrWhiteSpace(approvalPolicy) ? null : approvalPolicy.Trim();
+					var normalizedApproval = WebCodexUtils.NormalizeApprovalPolicy(approvalPolicy);
 					if (!string.Equals(_approvalPolicy, normalizedApproval, StringComparison.Ordinal))
 					{
 						_approvalPolicy = normalizedApproval;
@@ -3269,7 +3649,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 				if (sandboxPolicy is not null)
 				{
-					var normalizedSandbox = string.IsNullOrWhiteSpace(sandboxPolicy) ? null : sandboxPolicy.Trim();
+					var normalizedSandbox = WebCodexUtils.NormalizeSandboxMode(sandboxPolicy);
 					if (!string.Equals(_sandboxPolicy, normalizedSandbox, StringComparison.Ordinal))
 					{
 						_sandboxPolicy = normalizedSandbox;
@@ -3387,12 +3767,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
-		public bool TryMarkTurnStarted(CancellationTokenSource turnCts)
+		public bool TryMarkTurnStarted(CancellationTokenSource turnCts, string? collaborationMode)
 		{
 			lock (_turnSync)
 			{
 				_activeTurnCts = turnCts;
 				_activeTurnId = Session.TryGetActiveTurnId(out var activeFromClient) ? activeFromClient : _activeTurnId;
+				_activeCollaborationMode = WebCodexUtils.NormalizeCollaborationMode(collaborationMode);
 				_turnSlotHeld = true;
 				if (_turnInFlight)
 				{
@@ -3440,6 +3821,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 				_activeTurnCts = null;
 				_activeTurnId = null;
+				_activeCollaborationMode = null;
 				_turnInFlight = false;
 				_turnInFlightChangedUtc = DateTimeOffset.UtcNow;
 				if (_turnSlotHeld)
@@ -3503,6 +3885,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				activeTurnCts = _activeTurnCts;
 				_activeTurnCts = null;
 				_activeTurnId = null;
+				_activeCollaborationMode = null;
 				_turnInFlight = false;
 				_turnInFlightChangedUtc = DateTimeOffset.UtcNow;
 				if (_turnSlotHeld)
@@ -3536,6 +3919,25 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 			reason = "log_consensus_idle";
 			return true;
+		}
+
+		public void TrySetActiveCollaborationModeIfInFlight(string? mode)
+		{
+			var normalized = WebCodexUtils.NormalizeCollaborationMode(mode);
+			if (string.IsNullOrWhiteSpace(normalized))
+			{
+				return;
+			}
+
+			lock (_turnSync)
+			{
+				if (!_turnInFlight)
+				{
+					return;
+				}
+
+				_activeCollaborationMode = normalized;
+			}
 		}
 
 		public bool CancelActiveTurn()

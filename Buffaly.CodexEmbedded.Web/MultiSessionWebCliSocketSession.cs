@@ -158,7 +158,21 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					await StopSessionAsync(GetSessionIdOrActive(root), cancellationToken);
 					return;
 				case "prompt":
-					await StartTurnAsync(GetSessionIdOrActive(root), TryGetString(root, "text"), cwd: null, model: null, effort: null, hasModelOverride: false, hasEffortOverride: false, images: null, cancellationToken);
+					await StartTurnAsync(
+						GetSessionIdOrActive(root),
+						TryGetString(root, "text"),
+						cwd: null,
+						model: null,
+						effort: null,
+						approvalPolicy: null,
+						sandboxMode: null,
+						collaborationMode: null,
+						hasModelOverride: false,
+						hasEffortOverride: false,
+						hasApprovalOverride: false,
+						hasSandboxOverride: false,
+						images: null,
+						cancellationToken);
 					return;
 
 				// Multi-session protocol.
@@ -193,17 +207,63 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						root.TryGetProperty("effort", out _),
 						cancellationToken);
 					return;
+				case "session_set_permissions":
+					await SetSessionPermissionsAsync(
+						TryGetString(root, "sessionId"),
+						TryGetString(root, "approvalPolicy")
+							?? TryGetString(root, "approval_policy")
+							?? TryGetString(root, "approvalMode")
+							?? TryGetString(root, "approval_mode"),
+						TryGetString(root, "sandboxPolicy")
+							?? TryGetString(root, "sandbox_policy")
+							?? TryGetString(root, "sandboxMode")
+							?? TryGetString(root, "sandbox_mode")
+							?? TryGetString(root, "sandbox"),
+						root.TryGetProperty("approvalPolicy", out _) ||
+							root.TryGetProperty("approval_policy", out _) ||
+							root.TryGetProperty("approvalMode", out _) ||
+							root.TryGetProperty("approval_mode", out _),
+						root.TryGetProperty("sandboxPolicy", out _) ||
+							root.TryGetProperty("sandbox_policy", out _) ||
+							root.TryGetProperty("sandboxMode", out _) ||
+							root.TryGetProperty("sandbox_mode", out _) ||
+							root.TryGetProperty("sandbox", out _),
+						cancellationToken);
+					return;
 				case "turn_start":
 					var hasModelOverride = root.TryGetProperty("model", out _);
 					var hasEffortOverride = root.TryGetProperty("effort", out _);
+					var hasApprovalOverride =
+						root.TryGetProperty("approvalPolicy", out _) ||
+						root.TryGetProperty("approval_policy", out _) ||
+						root.TryGetProperty("approvalMode", out _) ||
+						root.TryGetProperty("approval_mode", out _);
+					var hasSandboxOverride =
+						root.TryGetProperty("sandboxPolicy", out _) ||
+						root.TryGetProperty("sandbox_policy", out _) ||
+						root.TryGetProperty("sandboxMode", out _) ||
+						root.TryGetProperty("sandbox_mode", out _) ||
+						root.TryGetProperty("sandbox", out _);
 					await StartTurnAsync(
 						TryGetString(root, "sessionId"),
 						TryGetString(root, "text"),
 						TryGetString(root, "cwd"),
 						TryGetString(root, "model"),
 						TryGetString(root, "effort"),
+						TryGetString(root, "approvalPolicy")
+							?? TryGetString(root, "approval_policy")
+							?? TryGetString(root, "approvalMode")
+							?? TryGetString(root, "approval_mode"),
+						TryGetString(root, "sandboxPolicy")
+							?? TryGetString(root, "sandbox_policy")
+							?? TryGetString(root, "sandboxMode")
+							?? TryGetString(root, "sandbox_mode")
+							?? TryGetString(root, "sandbox"),
+						TryGetCollaborationMode(root),
 						hasModelOverride,
 						hasEffortOverride,
+						hasApprovalOverride,
+						hasSandboxOverride,
 						TryGetTurnImageInputs(root),
 						cancellationToken);
 					return;
@@ -211,14 +271,37 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				{
 					var hasQueuedModelOverride = root.TryGetProperty("model", out _);
 					var hasQueuedEffortOverride = root.TryGetProperty("effort", out _);
+					var hasQueuedApprovalOverride =
+						root.TryGetProperty("approvalPolicy", out _) ||
+						root.TryGetProperty("approval_policy", out _) ||
+						root.TryGetProperty("approvalMode", out _) ||
+						root.TryGetProperty("approval_mode", out _);
+					var hasQueuedSandboxOverride =
+						root.TryGetProperty("sandboxPolicy", out _) ||
+						root.TryGetProperty("sandbox_policy", out _) ||
+						root.TryGetProperty("sandboxMode", out _) ||
+						root.TryGetProperty("sandbox_mode", out _) ||
+						root.TryGetProperty("sandbox", out _);
 					await QueueTurnAsync(
 						TryGetString(root, "sessionId"),
 						TryGetString(root, "text"),
 						TryGetString(root, "cwd"),
 						TryGetString(root, "model"),
 						TryGetString(root, "effort"),
+						TryGetString(root, "approvalPolicy")
+							?? TryGetString(root, "approval_policy")
+							?? TryGetString(root, "approvalMode")
+							?? TryGetString(root, "approval_mode"),
+						TryGetString(root, "sandboxPolicy")
+							?? TryGetString(root, "sandbox_policy")
+							?? TryGetString(root, "sandboxMode")
+							?? TryGetString(root, "sandbox_mode")
+							?? TryGetString(root, "sandbox"),
+						TryGetCollaborationMode(root),
 						hasQueuedModelOverride,
 						hasQueuedEffortOverride,
+						hasQueuedApprovalOverride,
+						hasQueuedSandboxOverride,
 						TryGetTurnImageInputs(root),
 						cancellationToken);
 					return;
@@ -293,16 +376,29 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var requestId = TryGetString(request, "requestId");
 		var model = TryGetString(request, "model") ?? _defaults.DefaultModel;
 		var effort = WebCodexUtils.NormalizeReasoningEffort(TryGetString(request, "effort"));
+		var approvalPolicy = WebCodexUtils.NormalizeApprovalPolicy(
+			TryGetString(request, "approvalPolicy")
+			?? TryGetString(request, "approval_policy")
+			?? TryGetString(request, "approvalMode")
+			?? TryGetString(request, "approval_mode"));
+		var sandboxMode = WebCodexUtils.NormalizeSandboxMode(
+			TryGetString(request, "sandboxPolicy")
+			?? TryGetString(request, "sandbox_policy")
+			?? TryGetString(request, "sandboxMode")
+			?? TryGetString(request, "sandbox_mode")
+			?? TryGetString(request, "sandbox"));
 		var cwd = TryGetString(request, "cwd") ?? _defaults.DefaultCwd;
 		var codexPath = TryGetString(request, "codexPath") ?? _defaults.CodexPath;
 
 		var sessionId = Guid.NewGuid().ToString("N");
-		await WriteConnectionLogAsync($"[session] creating id={sessionId} cwd={cwd} model={model ?? "(default)"} effort={effort ?? "(default)"}", cancellationToken);
+		await WriteConnectionLogAsync(
+			$"[session] creating id={sessionId} cwd={cwd} model={model ?? "(default)"} effort={effort ?? "(default)"} approval={approvalPolicy ?? "(default)"} sandbox={sandboxMode ?? "(default)"}",
+			cancellationToken);
 
 		SessionOrchestrator.SessionCreatedPayload created;
 		try
 		{
-			created = await _orchestrator.CreateSessionAsync(sessionId, model, effort, cwd, codexPath, cancellationToken);
+			created = await _orchestrator.CreateSessionAsync(sessionId, model, effort, approvalPolicy, sandboxMode, cwd, codexPath, cancellationToken);
 		}
 		catch (Exception ex)
 		{
@@ -324,6 +420,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			threadId = created.threadId,
 			model = created.model,
 			reasoningEffort = created.reasoningEffort,
+			approvalPolicy = created.approvalPolicy,
+			sandboxPolicy = created.sandboxPolicy,
 			cwd = created.cwd,
 			logPath = created.logPath
 		}, cancellationToken);
@@ -334,6 +432,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			threadId = created.threadId,
 			model = created.model,
 			reasoningEffort = created.reasoningEffort,
+			approvalPolicy = created.approvalPolicy,
+			sandboxPolicy = created.sandboxPolicy,
 			cwd = created.cwd,
 			logPath = created.logPath
 		}, cancellationToken);
@@ -353,6 +453,17 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		var model = TryGetString(request, "model") ?? _defaults.DefaultModel;
 		var effort = WebCodexUtils.NormalizeReasoningEffort(TryGetString(request, "effort"));
+		var approvalPolicy = WebCodexUtils.NormalizeApprovalPolicy(
+			TryGetString(request, "approvalPolicy")
+			?? TryGetString(request, "approval_policy")
+			?? TryGetString(request, "approvalMode")
+			?? TryGetString(request, "approval_mode"));
+		var sandboxMode = WebCodexUtils.NormalizeSandboxMode(
+			TryGetString(request, "sandboxPolicy")
+			?? TryGetString(request, "sandbox_policy")
+			?? TryGetString(request, "sandboxMode")
+			?? TryGetString(request, "sandbox_mode")
+			?? TryGetString(request, "sandbox"));
 		var cwd = TryGetString(request, "cwd") ?? _defaults.DefaultCwd;
 		var codexPath = TryGetString(request, "codexPath") ?? _defaults.CodexPath;
 
@@ -370,12 +481,14 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 
 		var sessionId = Guid.NewGuid().ToString("N");
-		await WriteConnectionLogAsync($"[session] attaching id={sessionId} threadId={threadId} cwd={cwd} model={model ?? "(default)"} effort={effort ?? "(default)"}", cancellationToken);
+		await WriteConnectionLogAsync(
+			$"[session] attaching id={sessionId} threadId={threadId} cwd={cwd} model={model ?? "(default)"} effort={effort ?? "(default)"} approval={approvalPolicy ?? "(default)"} sandbox={sandboxMode ?? "(default)"}",
+			cancellationToken);
 
 		SessionOrchestrator.SessionCreatedPayload attached;
 		try
 		{
-			attached = await _orchestrator.AttachSessionAsync(sessionId, threadId, model, effort, cwd, codexPath, cancellationToken);
+			attached = await _orchestrator.AttachSessionAsync(sessionId, threadId, model, effort, approvalPolicy, sandboxMode, cwd, codexPath, cancellationToken);
 		}
 		catch (Exception ex)
 		{
@@ -397,6 +510,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			threadId = attached.threadId,
 			model = attached.model,
 			reasoningEffort = attached.reasoningEffort,
+			approvalPolicy = attached.approvalPolicy,
+			sandboxPolicy = attached.sandboxPolicy,
 			cwd = attached.cwd,
 			attached = true,
 			logPath = attached.logPath
@@ -409,6 +524,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			threadId = attached.threadId,
 			model = attached.model,
 			reasoningEffort = attached.reasoningEffort,
+			approvalPolicy = attached.approvalPolicy,
+			sandboxPolicy = attached.sandboxPolicy,
 			cwd = attached.cwd,
 			logPath = attached.logPath
 		}, cancellationToken);
@@ -480,6 +597,48 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		await WriteConnectionLogAsync(
 			$"[session] model updated session={sessionId} thread={threadId} model={(normalizedModel ?? "(default)")} effort={(normalizedEffort ?? "(default)")}",
+			cancellationToken);
+		await SendSessionListAsync(cancellationToken);
+	}
+
+	private async Task SetSessionPermissionsAsync(
+		string? sessionId,
+		string? approvalPolicy,
+		string? sandboxMode,
+		bool hasApprovalOverride,
+		bool hasSandboxOverride,
+		CancellationToken cancellationToken)
+	{
+		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			await SendEventAsync("error", new { message = "No active session to set permissions for." }, cancellationToken);
+			return;
+		}
+
+		if (!_orchestrator.HasSession(sessionId))
+		{
+			await SendEventAsync("error", new { message = $"Unknown session: {sessionId}" }, cancellationToken);
+			return;
+		}
+
+		var normalizedApproval = hasApprovalOverride ? WebCodexUtils.NormalizeApprovalPolicy(approvalPolicy) : null;
+		var normalizedSandbox = hasSandboxOverride ? WebCodexUtils.NormalizeSandboxMode(sandboxMode) : null;
+		if (!_orchestrator.TrySetSessionPermissions(
+			sessionId,
+			normalizedApproval,
+			normalizedSandbox,
+			hasApprovalOverride,
+			hasSandboxOverride))
+		{
+			await SendEventAsync("error", new { message = $"Unknown session: {sessionId}" }, cancellationToken);
+			return;
+		}
+
+		var snapshot = _orchestrator.GetSessionSnapshots().FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
+		var threadId = snapshot?.ThreadId ?? "unknown";
+		await WriteConnectionLogAsync(
+			$"[session] permissions updated session={sessionId} thread={threadId} approval={(snapshot?.ApprovalPolicy ?? "(default)")} sandbox={(snapshot?.SandboxPolicy ?? "(default)")}",
 			cancellationToken);
 		await SendSessionListAsync(cancellationToken);
 	}
@@ -575,8 +734,13 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		string? cwd,
 		string? model,
 		string? effort,
+		string? approvalPolicy,
+		string? sandboxMode,
+		CodexCollaborationMode? collaborationMode,
 		bool hasModelOverride,
 		bool hasEffortOverride,
+		bool hasApprovalOverride,
+		bool hasSandboxOverride,
 		IReadOnlyList<CodexUserImageInput>? images,
 		CancellationToken cancellationToken)
 	{
@@ -591,6 +755,9 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var normalizedCwd = string.IsNullOrWhiteSpace(cwd) ? null : cwd.Trim();
 		var normalizedModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
 		var normalizedEffort = WebCodexUtils.NormalizeReasoningEffort(effort);
+		var normalizedApproval = WebCodexUtils.NormalizeApprovalPolicy(approvalPolicy);
+		var normalizedSandbox = WebCodexUtils.NormalizeSandboxMode(sandboxMode);
+		var normalizedCollaborationMode = NormalizeCollaborationMode(collaborationMode);
 		var imageCount = images?.Count ?? 0;
 		if (string.IsNullOrWhiteSpace(normalizedText) && imageCount <= 0)
 		{
@@ -606,6 +773,27 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		if (_orchestrator.TryGetTurnState(sessionId, out var isTurnInFlight) && isTurnInFlight)
 		{
+			if (string.Equals(normalizedCollaborationMode?.Mode, "plan", StringComparison.Ordinal))
+			{
+				await QueueTurnAsync(
+					sessionId,
+					normalizedText,
+					normalizedCwd,
+					normalizedModel,
+					normalizedEffort,
+					normalizedApproval,
+					normalizedSandbox,
+					normalizedCollaborationMode,
+					hasModelOverride,
+					hasEffortOverride,
+					hasApprovalOverride,
+					hasSandboxOverride,
+					images,
+					cancellationToken);
+				await SendEventAsync("status", new { sessionId, message = "Plan-mode prompt queued until current turn completes." }, cancellationToken);
+				return;
+			}
+
 			if (_orchestrator.TryGetTurnSteerability(sessionId, out var canSteer) && !canSteer)
 			{
 				await QueueTurnAsync(
@@ -614,8 +802,13 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					normalizedCwd,
 					normalizedModel,
 					normalizedEffort,
+					normalizedApproval,
+					normalizedSandbox,
+					normalizedCollaborationMode,
 					hasModelOverride,
 					hasEffortOverride,
+					hasApprovalOverride,
+					hasSandboxOverride,
 					images,
 					cancellationToken);
 				await SendEventAsync("status", new { sessionId, message = "Turn appears stale; prompt queued until recovery completes." }, cancellationToken);
@@ -633,8 +826,13 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						normalizedCwd,
 						normalizedModel,
 						normalizedEffort,
+						normalizedApproval,
+						normalizedSandbox,
+						normalizedCollaborationMode,
 						hasModelOverride,
 						hasEffortOverride,
+						hasApprovalOverride,
+						hasSandboxOverride,
 						images);
 					return;
 				}
@@ -647,8 +845,13 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						normalizedCwd,
 						normalizedModel,
 						normalizedEffort,
+						normalizedApproval,
+						normalizedSandbox,
+						normalizedCollaborationMode,
 						hasModelOverride,
 						hasEffortOverride,
+						hasApprovalOverride,
+						hasSandboxOverride,
 						images,
 						cancellationToken);
 					return;
@@ -665,8 +868,13 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			normalizedCwd,
 			normalizedModel,
 			normalizedEffort,
+			normalizedApproval,
+			normalizedSandbox,
+			normalizedCollaborationMode,
 			hasModelOverride,
 			hasEffortOverride,
+			hasApprovalOverride,
+			hasSandboxOverride,
 			images);
 	}
 
@@ -676,8 +884,13 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		string? cwd,
 		string? model,
 		string? effort,
+		string? approvalPolicy,
+		string? sandboxMode,
+		CodexCollaborationMode? collaborationMode,
 		bool hasModelOverride,
 		bool hasEffortOverride,
+		bool hasApprovalOverride,
+		bool hasSandboxOverride,
 		IReadOnlyList<CodexUserImageInput>? images,
 		CancellationToken cancellationToken)
 	{
@@ -692,6 +905,9 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var normalizedCwd = string.IsNullOrWhiteSpace(cwd) ? null : cwd.Trim();
 		var normalizedModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
 		var normalizedEffort = WebCodexUtils.NormalizeReasoningEffort(effort);
+		var normalizedApproval = WebCodexUtils.NormalizeApprovalPolicy(approvalPolicy);
+		var normalizedSandbox = WebCodexUtils.NormalizeSandboxMode(sandboxMode);
+		var normalizedCollaborationMode = NormalizeCollaborationMode(collaborationMode);
 		if (!_orchestrator.HasSession(sessionId))
 		{
 			await SendEventAsync("error", new { message = $"Unknown session: {sessionId}" }, cancellationToken);
@@ -704,8 +920,13 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			normalizedCwd,
 			normalizedModel,
 			normalizedEffort,
+			normalizedApproval,
+			normalizedSandbox,
+			normalizedCollaborationMode,
 			hasModelOverride,
 			hasEffortOverride,
+			hasApprovalOverride,
+			hasSandboxOverride,
 			images,
 			out var queueItemId,
 			out var error))
@@ -1134,6 +1355,87 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 
 		return output;
+	}
+
+	private static CodexCollaborationMode? TryGetCollaborationMode(JsonElement root)
+	{
+		if (root.ValueKind != JsonValueKind.Object)
+		{
+			return null;
+		}
+
+		if (!root.TryGetProperty("collaborationMode", out var collaborationElement) &&
+			!root.TryGetProperty("collaboration_mode", out collaborationElement))
+		{
+			return null;
+		}
+
+		if (collaborationElement.ValueKind != JsonValueKind.Object)
+		{
+			return null;
+		}
+
+		var mode = WebCodexUtils.NormalizeCollaborationMode(TryGetString(collaborationElement, "mode"));
+		if (string.IsNullOrWhiteSpace(mode))
+		{
+			return null;
+		}
+
+		var settings = TryGetCollaborationSettings(collaborationElement);
+		return new CodexCollaborationMode
+		{
+			Mode = mode,
+			Settings = settings
+		};
+	}
+
+	private static CodexCollaborationSettings? TryGetCollaborationSettings(JsonElement collaborationElement)
+	{
+		if (!collaborationElement.TryGetProperty("settings", out var settingsElement) ||
+			settingsElement.ValueKind != JsonValueKind.Object)
+		{
+			return null;
+		}
+
+		var model = TryGetString(settingsElement, "model");
+		var reasoningEffort = TryGetString(settingsElement, "reasoning_effort")
+			?? TryGetString(settingsElement, "reasoningEffort");
+		var developerInstructions = TryGetString(settingsElement, "developer_instructions")
+			?? TryGetString(settingsElement, "developerInstructions");
+
+		if (string.IsNullOrWhiteSpace(model) &&
+			string.IsNullOrWhiteSpace(reasoningEffort) &&
+			string.IsNullOrWhiteSpace(developerInstructions))
+		{
+			return null;
+		}
+
+		return new CodexCollaborationSettings
+		{
+			Model = string.IsNullOrWhiteSpace(model) ? null : model!.Trim(),
+			ReasoningEffort = WebCodexUtils.NormalizeReasoningEffort(reasoningEffort),
+			DeveloperInstructions = string.IsNullOrWhiteSpace(developerInstructions) ? null : developerInstructions
+		};
+	}
+
+	private static CodexCollaborationMode? NormalizeCollaborationMode(CodexCollaborationMode? collaborationMode)
+	{
+		if (collaborationMode is null)
+		{
+			return null;
+		}
+
+		var mode = WebCodexUtils.NormalizeCollaborationMode(collaborationMode.Mode);
+		if (string.IsNullOrWhiteSpace(mode))
+		{
+			return null;
+		}
+
+		return new CodexCollaborationMode
+		{
+			Mode = mode,
+			Settings = collaborationMode.Settings
+		};
 	}
 
 	private static string Sanitize(string value)

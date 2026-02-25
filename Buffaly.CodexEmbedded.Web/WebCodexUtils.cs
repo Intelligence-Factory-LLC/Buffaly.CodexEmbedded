@@ -84,5 +84,79 @@ internal static class WebCodexUtils
 			_ => null
 		};
 	}
-}
 
+	public static string? NormalizeApprovalPolicy(string? value, bool allowInherit = true)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return null;
+		}
+
+		var normalized = value.Trim().ToLowerInvariant().Replace("_", "-");
+		if (allowInherit && normalized == "inherit")
+		{
+			return null;
+		}
+
+		return normalized switch
+		{
+			"untrusted" => "untrusted",
+			"on-failure" => "on-failure",
+			"onfailure" => "on-failure",
+			"on-request" => "on-request",
+			"onrequest" => "on-request",
+			"never" => "never",
+			_ => null
+		};
+	}
+
+	public static string? NormalizeSandboxMode(string? value, bool allowInherit = true)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return null;
+		}
+
+		var normalized = value.Trim().ToLowerInvariant().Replace("_", "-");
+		if (allowInherit && normalized == "inherit")
+		{
+			return null;
+		}
+
+		return normalized switch
+		{
+			"read-only" => "read-only",
+			"readonly" => "read-only",
+			"read only" => "read-only",
+			"workspace-write" => "workspace-write",
+			"workspacewrite" => "workspace-write",
+			"workspace write" => "workspace-write",
+			"danger-full-access" => "danger-full-access",
+			"dangerfullaccess" => "danger-full-access",
+			"danger full access" => "danger-full-access",
+			"dangerfull" => "danger-full-access",
+			"none" => "none",
+			"no-sandbox" => "none",
+			"nosandbox" => "none",
+			"external-sandbox" => "external-sandbox",
+			"externalsandbox" => "external-sandbox",
+			_ => null
+		};
+	}
+
+	public static string? NormalizeCollaborationMode(string? value, bool allowDefault = true)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return null;
+		}
+
+		var normalized = value.Trim().ToLowerInvariant().Replace("_", "-");
+		return normalized switch
+		{
+			"plan" => "plan",
+			"default" when allowDefault => "default",
+			_ => null
+		};
+	}
+}

@@ -90,6 +90,25 @@
 								<label for="conversationReasoningSelect">Reasoning</label>
 								<select id="conversationReasoningSelect"></select>
 							</div>
+							<div class="conversation-meta-menu-row conversation-meta-approval-row">
+								<label for="conversationApprovalSelect">Approval</label>
+								<select id="conversationApprovalSelect">
+									<option value="">(inherit)</option>
+									<option value="untrusted">untrusted</option>
+									<option value="on-failure">on-failure</option>
+									<option value="on-request">on-request</option>
+									<option value="never">never</option>
+								</select>
+							</div>
+							<div class="conversation-meta-menu-row conversation-meta-sandbox-row">
+								<label for="conversationSandboxSelect">Sandbox</label>
+								<select id="conversationSandboxSelect">
+									<option value="">(inherit)</option>
+									<option value="read-only">read-only</option>
+									<option value="workspace-write">workspace-write</option>
+									<option value="danger-full-access">danger-full-access</option>
+								</select>
+							</div>
 							<div id="permissionLevelIndicator" class="conversation-meta-menu-permissions" title="Session permissions">Permissions: unavailable</div>
 							<button id="jumpToBtn" class="conversation-jump-btn conversation-jump-menu-btn" type="button" title="Click to expand all turn details" aria-label="Click to expand all turn details" aria-expanded="true">
 								<i class="bi bi-signpost-split" aria-hidden="true"></i>
@@ -109,6 +128,13 @@
 						<span id="turnActivityReasoning" class="turn-activity-reasoning">Waiting for reasoning update...</span>
 						<a id="turnActivityCancelLink" class="turn-activity-cancel-link" href="#">Cancel</a>
 					</div>
+				</div>
+				<div id="planPanel" class="plan-panel hidden" role="status" aria-live="polite">
+					<div class="plan-panel-header">
+						<span class="plan-panel-title">Plan</span>
+						<span id="planPanelStatus" class="plan-panel-status">Idle</span>
+					</div>
+					<pre id="planPanelBody" class="plan-panel-body">No plan generated for this turn.</pre>
 				</div>
 				<button id="scrollToBottomBtn" class="scroll-to-bottom-btn hidden" type="button" title="Jump to latest messages" aria-label="Jump to latest messages">
 					<i class="bi bi-arrow-down"></i>
@@ -132,6 +158,10 @@
 						<button id="imageUploadBtn" class="prompt-upload-btn" type="button" title="Attach image" aria-label="Attach image">
 							<i class="bi bi-plus-lg" aria-hidden="true"></i>
 							<span class="visually-hidden">Attach image</span>
+						</button>
+						<button id="planTurnToggleBtn" class="prompt-plan-btn" type="button" title="Enable plan mode for next turn" aria-label="Enable plan mode for next turn" aria-pressed="false">
+							<i class="bi bi-diagram-3" aria-hidden="true"></i>
+							<span class="visually-hidden">Plan mode</span>
 						</button>
 						<button id="queuePromptBtn" class="prompt-queue-btn hidden" type="button" title="Queue this instruction" aria-label="Queue this instruction">
 							<i class="bi bi-list-task" aria-hidden="true"></i>
@@ -181,6 +211,53 @@
 				<div class="command-modal-actions">
 					<button id="newProjectCreateBtn" type="button">Create Project</button>
 					<button id="newProjectCancelBtn" type="button">Cancel</button>
+				</div>
+			</div>
+		</div>
+
+		<div id="newSessionModal" class="command-modal hidden" role="dialog" aria-modal="true" aria-labelledby="newSessionModalTitle">
+			<div class="command-modal-card">
+				<div id="newSessionModalTitle" class="command-modal-title">Create Session</div>
+				<div class="command-modal-body">
+					<div class="new-session-modal-note">
+						Set session-level defaults. Advanced sandbox settings are not exposed here.
+					</div>
+					<label for="newSessionNameInput">Session Name (optional)</label>
+					<input id="newSessionNameInput" type="text" placeholder="Leave blank for default">
+					<label for="newSessionCwdInput">Working Directory</label>
+					<input id="newSessionCwdInput" type="text" placeholder="C:/dev/my-project">
+					<label for="newSessionModelSelect">Model</label>
+					<select id="newSessionModelSelect"></select>
+					<input id="newSessionModelCustomInput" type="text" placeholder="Custom model" class="hidden">
+					<label for="newSessionReasoningSelect">Reasoning</label>
+					<select id="newSessionReasoningSelect">
+						<option value="">(default)</option>
+						<option value="none">none</option>
+						<option value="minimal">minimal</option>
+						<option value="low">low</option>
+						<option value="medium">medium</option>
+						<option value="high">high</option>
+						<option value="xhigh">xhigh</option>
+					</select>
+					<label for="newSessionApprovalSelect">Approval Policy</label>
+					<select id="newSessionApprovalSelect">
+						<option value="">(inherit)</option>
+						<option value="untrusted">untrusted</option>
+						<option value="on-failure">on-failure</option>
+						<option value="on-request">on-request</option>
+						<option value="never">never</option>
+					</select>
+					<label for="newSessionSandboxSelect">Sandbox</label>
+					<select id="newSessionSandboxSelect">
+						<option value="">(inherit)</option>
+						<option value="read-only">read-only</option>
+						<option value="workspace-write">workspace-write</option>
+						<option value="danger-full-access">danger-full-access</option>
+					</select>
+				</div>
+				<div class="command-modal-actions">
+					<button id="newSessionCreateBtn" type="button">Create Session</button>
+					<button id="newSessionCancelBtn" type="button">Cancel</button>
 				</div>
 			</div>
 		</div>
@@ -237,6 +314,6 @@
 	</div>
 	<script src="theme.js?v=20260225-settings1"></script>
 	<script src="sessionTimeline.js?v=20260224-turnfmt1"></script>
-	<script src="app.js?v=20260225-settings4"></script>
+	<script src="app.js?v=20260225-settings5"></script>
 </body>
 </html>

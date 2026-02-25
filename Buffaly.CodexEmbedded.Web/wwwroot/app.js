@@ -8,7 +8,7 @@ const INDEX_TIMELINE_SOURCE = "logs"; // keep index timeline poll-based; backend
 let socket = null;
 let socketReadyPromise = null;
 
-let sessions = new Map(); // sessionId -> { threadId, cwd, model, reasoningEffort }
+let sessions = new Map(); // sessionId -> { threadId, cwd, model, reasoningEffort, approvalPolicy, sandboxPolicy }
 let sessionCatalog = []; // [{ threadId, threadName, updatedAtUtc, cwd, model, reasoningEffort, sessionFilePath }]
 let activeSessionId = null;
 let pendingApproval = null; // { sessionId, approvalId }
@@ -45,10 +45,13 @@ let contextUsageByThread = new Map(); // threadId -> { usedTokens, contextWindow
 let permissionLevelByThread = new Map(); // threadId -> { approval, sandbox }
 let preferredModelByThread = new Map(); // threadId -> model string ("" means default)
 let preferredReasoningByThread = new Map(); // threadId -> reasoning effort string ("" means default)
+let preferredPermissionByThread = new Map(); // threadId -> { approval, sandbox }
 let processingByThread = new Map(); // threadId -> boolean
 let completedUnreadThreadIds = new Set(); // threadId -> completion happened while not selected
 let pendingSessionModelSyncBySession = new Map(); // sessionId -> "model||effort" pending sync request key
 let lastConfirmedSessionModelSyncBySession = new Map(); // sessionId -> "model||effort" confirmed from server session state
+let pendingSessionPermissionSyncBySession = new Map(); // sessionId -> "approval||sandbox" pending sync request key
+let lastConfirmedSessionPermissionSyncBySession = new Map(); // sessionId -> "approval||sandbox" confirmed from server session state
 let timelineHasTruncatedHead = false;
 let timelineConnectionIssueShown = false;
 let runtimeSecurityConfig = null;
@@ -60,6 +63,7 @@ let turnStartedAtBySession = new Map(); // sessionId -> epoch ms when running tu
 let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
 let jumpCollapseMode = false;
 let conversationMetaMenuOpen = false;
+let planModeNextTurn = false;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -68,6 +72,7 @@ const STORAGE_LAST_SESSION_ID_KEY = "codex-web-last-session-id";
 const STORAGE_PROMPT_DRAFTS_KEY = "codex-web-prompt-drafts-v1";
 const STORAGE_THREAD_MODELS_KEY = "codex-web-thread-models-v1";
 const STORAGE_THREAD_REASONING_KEY = "codex-web-thread-reasoning-v1";
+const STORAGE_THREAD_PERMISSIONS_KEY = "codex-web-thread-permissions-v1";
 const STORAGE_PROJECT_META_KEY = "codex-web-project-meta";
 const STORAGE_COLLAPSED_PROJECTS_KEY = "codex-web-collapsed-projects";
 const STORAGE_ARCHIVED_THREADS_KEY = "codex-web-archived-threads";
@@ -83,6 +88,8 @@ const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
 const SESSION_LIST_SYNC_INTERVAL_MS = 10000;
 const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only.";
 const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
+const APPROVAL_POLICY_VALUES = ["untrusted", "on-failure", "on-request", "never"];
+const SANDBOX_MODE_VALUES = ["read-only", "workspace-write", "danger-full-access"];
 
 const layoutRoot = document.querySelector(".layout");
 const chatPanel = document.querySelector(".chat-panel");
@@ -98,12 +105,16 @@ const permissionLevelIndicator = document.getElementById("permissionLevelIndicat
 const composerImages = document.getElementById("composerImages");
 const imageUploadInput = document.getElementById("imageUploadInput");
 const imageUploadBtn = document.getElementById("imageUploadBtn");
+const planTurnToggleBtn = document.getElementById("planTurnToggleBtn");
 const queuePromptBtn = document.getElementById("queuePromptBtn");
 const cancelTurnBtn = document.getElementById("cancelTurnBtn");
 const turnActivityStrip = document.getElementById("turnActivityStrip");
 const turnActivityTimer = document.getElementById("turnActivityTimer");
 const turnActivityReasoning = document.getElementById("turnActivityReasoning");
 const turnActivityCancelLink = document.getElementById("turnActivityCancelLink");
+const planPanel = document.getElementById("planPanel");
+const planPanelStatus = document.getElementById("planPanelStatus");
+const planPanelBody = document.getElementById("planPanelBody");
 const sendPromptBtn = document.getElementById("sendPromptBtn");
 const mobileProjectsBtn = document.getElementById("mobileProjectsBtn");
 const sidebarBackdrop = document.getElementById("sidebarBackdrop");
@@ -141,6 +152,8 @@ const sessionMetaCwdValue = document.getElementById("sessionMetaCwdValue");
 const jumpToBtn = document.getElementById("jumpToBtn");
 const conversationModelSelect = document.getElementById("conversationModelSelect");
 const conversationReasoningSelect = document.getElementById("conversationReasoningSelect");
+const conversationApprovalSelect = document.getElementById("conversationApprovalSelect");
+const conversationSandboxSelect = document.getElementById("conversationSandboxSelect");
 const sessionSidebar = document.getElementById("sessionSidebar");
 const sidebarToggleBtn = document.getElementById("sidebarToggleBtn");
 const projectList = document.getElementById("projectList");
@@ -164,6 +177,16 @@ const newProjectCwdInput = document.getElementById("newProjectCwdInput");
 const newProjectFirstSessionInput = document.getElementById("newProjectFirstSessionInput");
 const newProjectCreateBtn = document.getElementById("newProjectCreateBtn");
 const newProjectCancelBtn = document.getElementById("newProjectCancelBtn");
+const newSessionModal = document.getElementById("newSessionModal");
+const newSessionNameInput = document.getElementById("newSessionNameInput");
+const newSessionCwdInput = document.getElementById("newSessionCwdInput");
+const newSessionModelSelect = document.getElementById("newSessionModelSelect");
+const newSessionModelCustomInput = document.getElementById("newSessionModelCustomInput");
+const newSessionReasoningSelect = document.getElementById("newSessionReasoningSelect");
+const newSessionApprovalSelect = document.getElementById("newSessionApprovalSelect");
+const newSessionSandboxSelect = document.getElementById("newSessionSandboxSelect");
+const newSessionCreateBtn = document.getElementById("newSessionCreateBtn");
+const newSessionCancelBtn = document.getElementById("newSessionCancelBtn");
 
 const timeline = new window.CodexSessionTimeline({
   container: chatMessages,
@@ -410,6 +433,187 @@ function updateTurnActivityStrip() {
   turnActivityStrip.classList.add("running");
 }
 
+function normalizeCollaborationMode(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized === "plan") {
+    return "plan";
+  }
+
+  if (normalized === "default") {
+    return "default";
+  }
+
+  return "";
+}
+
+function normalizePlanStatus(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "streaming" || normalized === "completed" || normalized === "error") {
+    return normalized;
+  }
+
+  return "idle";
+}
+
+function ensurePlanStateShape(state) {
+  if (!state || typeof state !== "object") {
+    return;
+  }
+
+  if (typeof state.planStatus !== "string") {
+    state.planStatus = "idle";
+  }
+  if (typeof state.planText !== "string") {
+    state.planText = "";
+  }
+  if (typeof state.isPlanTurn !== "boolean") {
+    state.isPlanTurn = false;
+  }
+  if (state.planUpdatedAt !== null && state.planUpdatedAt !== undefined && typeof state.planUpdatedAt !== "string") {
+    state.planUpdatedAt = null;
+  }
+}
+
+function setPlanModeNextTurn(enabled) {
+  planModeNextTurn = !!enabled;
+  if (!planTurnToggleBtn) {
+    return;
+  }
+
+  planTurnToggleBtn.classList.toggle("is-active", planModeNextTurn);
+  planTurnToggleBtn.setAttribute("aria-pressed", planModeNextTurn ? "true" : "false");
+  const title = planModeNextTurn
+    ? "Plan mode enabled for next turn"
+    : "Enable plan mode for next turn";
+  planTurnToggleBtn.title = title;
+  planTurnToggleBtn.setAttribute("aria-label", title);
+}
+
+function resetPlanModeNextTurn() {
+  setPlanModeNextTurn(false);
+}
+
+function getPlanStatusLabel(status) {
+  switch (normalizePlanStatus(status)) {
+    case "streaming":
+      return "Streaming";
+    case "completed":
+      return "Complete";
+    case "error":
+      return "Error";
+    default:
+      return "Idle";
+  }
+}
+
+function updatePlanPanel() {
+  if (!planPanel || !planPanelStatus || !planPanelBody) {
+    return;
+  }
+
+  const state = getActiveSessionState();
+  if (!state) {
+    planPanel.classList.add("hidden");
+    return;
+  }
+
+  ensurePlanStateShape(state);
+  const status = normalizePlanStatus(state.planStatus);
+  const hasText = typeof state.planText === "string" && state.planText.trim().length > 0;
+  const shouldShow = state.isPlanTurn === true || hasText || status === "streaming" || status === "error";
+  planPanel.classList.toggle("hidden", !shouldShow);
+  if (!shouldShow) {
+    return;
+  }
+
+  planPanelStatus.textContent = getPlanStatusLabel(status);
+  planPanelStatus.classList.remove("streaming", "completed", "error");
+  if (status !== "idle") {
+    planPanelStatus.classList.add(status);
+  }
+  planPanelBody.textContent = hasText ? state.planText : "No plan generated for this turn.";
+}
+
+function markPlanTurnStarted(sessionId, isPlanTurn) {
+  const state = ensureSessionState(sessionId);
+  ensurePlanStateShape(state);
+  state.isPlanTurn = !!isPlanTurn;
+  state.planStatus = isPlanTurn ? "streaming" : "idle";
+  state.planText = "";
+  state.planUpdatedAt = isPlanTurn ? new Date().toISOString() : null;
+  if (sessionId === activeSessionId) {
+    updatePlanPanel();
+  }
+}
+
+function appendPlanDeltaToSession(sessionId, text) {
+  if (!sessionId || typeof text !== "string" || text.length === 0) {
+    return;
+  }
+
+  const state = ensureSessionState(sessionId);
+  ensurePlanStateShape(state);
+  state.isPlanTurn = true;
+  state.planStatus = "streaming";
+  state.planText = `${state.planText || ""}${text}`;
+  state.planUpdatedAt = new Date().toISOString();
+  if (sessionId === activeSessionId) {
+    const shouldAutoScroll = planPanelBody
+      ? (planPanelBody.scrollTop + planPanelBody.clientHeight >= planPanelBody.scrollHeight - 12)
+      : false;
+    updatePlanPanel();
+    if (planPanelBody && shouldAutoScroll) {
+      planPanelBody.scrollTop = planPanelBody.scrollHeight;
+    }
+  }
+}
+
+function applyPlanUpdatedToSession(sessionId, text) {
+  if (!sessionId) {
+    return;
+  }
+
+  const state = ensureSessionState(sessionId);
+  ensurePlanStateShape(state);
+  state.isPlanTurn = true;
+  if (typeof text === "string" && text.trim().length > 0) {
+    state.planText = text;
+  }
+  state.planStatus = "completed";
+  state.planUpdatedAt = new Date().toISOString();
+  if (sessionId === activeSessionId) {
+    updatePlanPanel();
+  }
+}
+
+function finalizePlanTurn(sessionId, status, isPlanTurnFlag) {
+  if (!sessionId) {
+    return;
+  }
+
+  const state = ensureSessionState(sessionId);
+  ensurePlanStateShape(state);
+  if (isPlanTurnFlag !== true && state.isPlanTurn !== true) {
+    return;
+  }
+
+  state.isPlanTurn = isPlanTurnFlag === true || state.isPlanTurn === true;
+  const normalizedStatus = String(status || "").trim().toLowerCase();
+  state.planStatus = normalizedStatus === "completed" ? "completed" : "error";
+  state.planUpdatedAt = new Date().toISOString();
+  if (sessionId === activeSessionId) {
+    updatePlanPanel();
+  }
+}
+
 function updateContextLeftIndicator() {
   if (!contextLeftIndicator) {
     return;
@@ -429,7 +633,7 @@ function updateContextLeftIndicator() {
   contextLeftIndicator.title = `Used ${info.usedTokens.toLocaleString()} / ${info.contextWindow.toLocaleString()} tokens`;
 }
 
-function normalizePermissionPolicy(value) {
+function extractPermissionPolicyName(value) {
   if (value === null || value === undefined) {
     return "";
   }
@@ -455,6 +659,61 @@ function normalizePermissionPolicy(value) {
   return "";
 }
 
+function normalizeApprovalPolicy(value, options = {}) {
+  const allowInherit = options.allowInherit !== false;
+  const normalized = extractPermissionPolicyName(value).trim().toLowerCase().replace(/_/g, "-");
+  if (!normalized || (allowInherit && normalized === "inherit")) {
+    return "";
+  }
+
+  switch (normalized) {
+    case "untrusted":
+      return "untrusted";
+    case "on-failure":
+    case "onfailure":
+      return "on-failure";
+    case "on-request":
+    case "onrequest":
+      return "on-request";
+    case "never":
+      return "never";
+    default:
+      return "";
+  }
+}
+
+function normalizeSandboxMode(value, options = {}) {
+  const allowInherit = options.allowInherit !== false;
+  const normalized = extractPermissionPolicyName(value).trim().toLowerCase().replace(/_/g, "-");
+  if (!normalized || (allowInherit && normalized === "inherit")) {
+    return "";
+  }
+
+  switch (normalized) {
+    case "read-only":
+    case "readonly":
+    case "read only":
+      return "read-only";
+    case "workspace-write":
+    case "workspacewrite":
+    case "workspace write":
+      return "workspace-write";
+    case "danger-full-access":
+    case "dangerfullaccess":
+    case "danger full access":
+      return "danger-full-access";
+    case "none":
+    case "no-sandbox":
+    case "nosandbox":
+      return "none";
+    case "external-sandbox":
+    case "externalsandbox":
+      return "external-sandbox";
+    default:
+      return "";
+  }
+}
+
 function setPermissionLevelForThread(threadId, nextValue) {
   const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
   if (!normalizedThreadId || !nextValue || typeof nextValue !== "object") {
@@ -463,11 +722,34 @@ function setPermissionLevelForThread(threadId, nextValue) {
 
   const prior = permissionLevelByThread.get(normalizedThreadId) || { approval: "", sandbox: "" };
   const merged = {
-    approval: nextValue.approval || prior.approval || "",
-    sandbox: nextValue.sandbox || prior.sandbox || ""
+    approval: normalizeApprovalPolicy(nextValue.approval) || normalizeApprovalPolicy(prior.approval) || "",
+    sandbox: normalizeSandboxMode(nextValue.sandbox) || normalizeSandboxMode(prior.sandbox) || ""
   };
 
   permissionLevelByThread.set(normalizedThreadId, merged);
+  const activeThreadId = typeof getActiveSessionState()?.threadId === "string" ? getActiveSessionState().threadId.trim() : "";
+  if (activeThreadId === normalizedThreadId) {
+    updatePermissionLevelIndicator();
+  }
+}
+
+function replacePermissionLevelForThread(threadId, nextValue) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !nextValue || typeof nextValue !== "object") {
+    return;
+  }
+
+  const nextApproval = normalizeApprovalPolicy(nextValue.approval);
+  const nextSandbox = normalizeSandboxMode(nextValue.sandbox);
+  if (!nextApproval && !nextSandbox) {
+    permissionLevelByThread.delete(normalizedThreadId);
+  } else {
+    permissionLevelByThread.set(normalizedThreadId, {
+      approval: nextApproval,
+      sandbox: nextSandbox
+    });
+  }
+
   const activeThreadId = typeof getActiveSessionState()?.threadId === "string" ? getActiveSessionState().threadId.trim() : "";
   if (activeThreadId === normalizedThreadId) {
     updatePermissionLevelIndicator();
@@ -497,7 +779,7 @@ function updatePermissionLevelIndicator() {
 }
 
 function formatApprovalPolicyLabel(approval) {
-  const normalized = normalizePermissionPolicy(approval).toLowerCase();
+  const normalized = normalizeApprovalPolicy(approval);
   switch (normalized) {
     case "never":
       return "No approvals needed";
@@ -515,7 +797,7 @@ function formatApprovalPolicyLabel(approval) {
 }
 
 function formatSandboxPolicyLabel(sandbox) {
-  const normalized = normalizePermissionPolicy(sandbox).toLowerCase();
+  const normalized = normalizeSandboxMode(sandbox);
   switch (normalized) {
     case "workspace-write":
       return "Can edit workspace";
@@ -548,13 +830,40 @@ function readPermissionInfoFromPayload(payload) {
     ?? payload.sandbox
     ?? null;
 
-  const approval = normalizePermissionPolicy(approvalRaw);
-  const sandbox = normalizePermissionPolicy(sandboxRaw);
+  const approval = normalizeApprovalPolicy(approvalRaw);
+  const sandbox = normalizeSandboxMode(sandboxRaw);
   if (!approval && !sandbox) {
     return null;
   }
 
   return { approval, sandbox };
+}
+
+function hasApprovalPolicyField(payload) {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  return Object.prototype.hasOwnProperty.call(payload, "approvalPolicy")
+    || Object.prototype.hasOwnProperty.call(payload, "approval_policy")
+    || Object.prototype.hasOwnProperty.call(payload, "approvalMode")
+    || Object.prototype.hasOwnProperty.call(payload, "approval_mode");
+}
+
+function hasSandboxPolicyField(payload) {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  return Object.prototype.hasOwnProperty.call(payload, "sandboxPolicy")
+    || Object.prototype.hasOwnProperty.call(payload, "sandbox_policy")
+    || Object.prototype.hasOwnProperty.call(payload, "sandboxMode")
+    || Object.prototype.hasOwnProperty.call(payload, "sandbox_mode")
+    || Object.prototype.hasOwnProperty.call(payload, "sandbox");
+}
+
+function hasAnyPermissionField(payload) {
+  return hasApprovalPolicyField(payload) || hasSandboxPolicyField(payload);
 }
 
 function readTokenCountInfo(payload) {
@@ -893,8 +1202,8 @@ function applyTimelineWatchMetadata(threadId, data) {
 
   const permission = data.permission;
   if (permission && typeof permission === "object") {
-    const approval = normalizePermissionPolicy(permission.approval || "");
-    const sandbox = normalizePermissionPolicy(permission.sandbox || "");
+    const approval = normalizeApprovalPolicy(permission.approval || "");
+    const sandbox = normalizeSandboxMode(permission.sandbox || "");
     if (approval || sandbox) {
       setPermissionLevelForThread(normalizedThreadId, { approval, sandbox });
     }
@@ -1013,6 +1322,42 @@ function persistThreadReasoningState() {
   localStorage.setItem(STORAGE_THREAD_REASONING_KEY, JSON.stringify(payload));
 }
 
+function loadThreadPermissionState() {
+  preferredPermissionByThread = new Map();
+  const raw = safeJsonParse(localStorage.getItem(STORAGE_THREAD_PERMISSIONS_KEY), {});
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return;
+  }
+
+  for (const [threadId, permission] of Object.entries(raw)) {
+    const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+    if (!normalizedThreadId || !permission || typeof permission !== "object" || Array.isArray(permission)) {
+      continue;
+    }
+
+    const approval = normalizeApprovalPolicy(permission.approval || "");
+    const sandbox = normalizeSandboxMode(permission.sandbox || "");
+    preferredPermissionByThread.set(normalizedThreadId, { approval, sandbox });
+  }
+}
+
+function persistThreadPermissionState() {
+  const payload = {};
+  for (const [threadId, permission] of preferredPermissionByThread.entries()) {
+    const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+    if (!normalizedThreadId || !permission || typeof permission !== "object") {
+      continue;
+    }
+
+    payload[normalizedThreadId] = {
+      approval: normalizeApprovalPolicy(permission.approval || ""),
+      sandbox: normalizeSandboxMode(permission.sandbox || "")
+    };
+  }
+
+  localStorage.setItem(STORAGE_THREAD_PERMISSIONS_KEY, JSON.stringify(payload));
+}
+
 function getPreferredModelForThread(threadId) {
   const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
   if (!normalizedThreadId || !preferredModelByThread.has(normalizedThreadId)) {
@@ -1037,6 +1382,20 @@ function getPreferredReasoningForThread(threadId) {
   };
 }
 
+function getPreferredPermissionForThread(threadId) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !preferredPermissionByThread.has(normalizedThreadId)) {
+    return { found: false, approval: "", sandbox: "" };
+  }
+
+  const permission = preferredPermissionByThread.get(normalizedThreadId) || { approval: "", sandbox: "" };
+  return {
+    found: true,
+    approval: normalizeApprovalPolicy(permission.approval || ""),
+    sandbox: normalizeSandboxMode(permission.sandbox || "")
+  };
+}
+
 function setPreferredModelForThread(threadId, model, options = {}) {
   const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
   if (!normalizedThreadId) {
@@ -1058,6 +1417,21 @@ function setPreferredReasoningForThread(threadId, effort, options = {}) {
   preferredReasoningByThread.set(normalizedThreadId, normalizeReasoningEffort(effort));
   if (options.persist !== false) {
     persistThreadReasoningState();
+  }
+}
+
+function setPreferredPermissionForThread(threadId, permission, options = {}) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !permission || typeof permission !== "object") {
+    return;
+  }
+
+  preferredPermissionByThread.set(normalizedThreadId, {
+    approval: normalizeApprovalPolicy(permission.approval || ""),
+    sandbox: normalizeSandboxMode(permission.sandbox || "")
+  });
+  if (options.persist !== false) {
+    persistThreadPermissionState();
   }
 }
 
@@ -1094,6 +1468,27 @@ function ensureThreadReasoningPreference(threadId, effort, options = {}) {
   preferredReasoningByThread.set(normalizedThreadId, normalizedEffort);
   if (options.persist !== false) {
     persistThreadReasoningState();
+  }
+
+  return true;
+}
+
+function ensureThreadPermissionPreference(threadId, permission, options = {}) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !permission || typeof permission !== "object") {
+    return false;
+  }
+
+  if (preferredPermissionByThread.has(normalizedThreadId)) {
+    return false;
+  }
+
+  preferredPermissionByThread.set(normalizedThreadId, {
+    approval: normalizeApprovalPolicy(permission.approval || ""),
+    sandbox: normalizeSandboxMode(permission.sandbox || "")
+  });
+  if (options.persist !== false) {
+    persistThreadPermissionState();
   }
 
   return true;
@@ -1590,6 +1985,7 @@ function buildSidebarProjectGroups() {
       attachedSessionId,
       isAttached: !!attachedSessionId,
       isProcessing: attachedSessionId ? isTurnInFlight(attachedSessionId) : isThreadProcessing(entry.threadId),
+      hasPendingApproval: !!(attachedState && attachedState.pendingApproval && typeof attachedState.pendingApproval.approvalId === "string" && attachedState.pendingApproval.approvalId.trim()),
       isArchived: archivedThreadIds.has(entry.threadId),
       hasUnreadCompletion: hasThreadCompletionUnread(entry.threadId)
     });
@@ -1617,6 +2013,7 @@ function buildSidebarProjectGroups() {
       attachedSessionId: sessionId,
       isAttached: true,
       isProcessing: isTurnInFlight(sessionId),
+      hasPendingApproval: !!(state.pendingApproval && typeof state.pendingApproval.approvalId === "string" && state.pendingApproval.approvalId.trim()),
       isArchived: archivedThreadIds.has(state.threadId),
       hasUnreadCompletion: hasThreadCompletionUnread(state.threadId)
     });
@@ -1901,9 +2298,10 @@ function formatSessionSubtitle(entry) {
 async function createSessionForCwd(cwd, options = {}) {
   const normalizedCwd = normalizeProjectCwd(cwd || "");
   const hasProvidedName = Object.prototype.hasOwnProperty.call(options, "threadName");
+  const shouldPromptName = options.askName === true && !hasProvidedName;
   const rawName = hasProvidedName
     ? String(options.threadName || "")
-    : (options.askName === false ? "" : window.prompt("Session name (optional):", ""));
+    : (shouldPromptName ? window.prompt("Session name (optional):", "") : "");
   if (rawName === null) {
     return;
   }
@@ -1922,9 +2320,21 @@ async function createSessionForCwd(cwd, options = {}) {
     payload.cwd = normalizedCwd;
   }
 
-  const model = modelValueForCreate();
+  const model = normalizeModelValue(options.model ?? modelValueForCreate() ?? "");
   if (model) {
     payload.model = model;
+  }
+  const effort = normalizeReasoningEffort(options.effort ?? selectedReasoningValue() ?? "");
+  if (effort) {
+    payload.effort = effort;
+  }
+  const approvalPolicy = normalizeApprovalPolicy(options.approvalPolicy ?? selectedApprovalValue() ?? "");
+  if (approvalPolicy) {
+    payload.approvalPolicy = approvalPolicy;
+  }
+  const sandboxMode = normalizeSandboxMode(options.sandbox ?? options.sandboxMode ?? selectedSandboxValue() ?? "");
+  if (sandboxMode) {
+    payload.sandbox = sandboxMode;
   }
 
   const requestId = createRequestId();
@@ -1956,11 +2366,20 @@ async function attachSessionByThreadId(threadId, cwd) {
 
   const payload = { threadId };
   const preferred = getPreferredModelForThread(threadId);
+  const preferredPermission = getPreferredPermissionForThread(threadId);
   const model = preferred.found
     ? preferred.model
     : normalizeModelValue(getCatalogEntryByThreadId(threadId)?.model || modelValueForCreate() || "");
   if (model) {
     payload.model = model;
+  }
+  if (preferredPermission.found) {
+    if (preferredPermission.approval) {
+      payload.approvalPolicy = preferredPermission.approval;
+    }
+    if (preferredPermission.sandbox) {
+      payload.sandbox = preferredPermission.sandbox;
+    }
   }
 
   const normalizedCwd = normalizeProjectCwd(cwd || cwdInput.value.trim());
@@ -2055,6 +2474,141 @@ function promoteProjectToTop(projectKey) {
   }
 
   projectOrderInitialized = true;
+}
+
+function syncNewSessionModelOptions(seedModel = "") {
+  if (!newSessionModelSelect || !modelSelect) {
+    return;
+  }
+
+  const desired = normalizeModelValue(seedModel || newSessionModelSelect.value || modelValueForCreate() || "");
+  newSessionModelSelect.textContent = "";
+  for (const option of Array.from(modelSelect.options)) {
+    const next = document.createElement("option");
+    next.value = option.value;
+    next.textContent = option.textContent || option.value;
+    newSessionModelSelect.appendChild(next);
+  }
+
+  const hasDesired = desired && Array.from(newSessionModelSelect.options).some((option) => option.value === desired);
+  if (hasDesired) {
+    newSessionModelSelect.value = desired;
+    if (newSessionModelCustomInput) {
+      newSessionModelCustomInput.classList.add("hidden");
+    }
+    return;
+  }
+
+  if (desired) {
+    newSessionModelSelect.value = "__custom__";
+    if (newSessionModelCustomInput) {
+      newSessionModelCustomInput.classList.remove("hidden");
+      newSessionModelCustomInput.value = desired;
+    }
+    return;
+  }
+
+  newSessionModelSelect.value = "";
+  if (newSessionModelCustomInput) {
+    newSessionModelCustomInput.classList.add("hidden");
+    newSessionModelCustomInput.value = "";
+  }
+}
+
+function openNewSessionModal(cwd, options = {}) {
+  if (!newSessionModal || !newSessionCwdInput || !newSessionNameInput || !newSessionReasoningSelect || !newSessionApprovalSelect || !newSessionSandboxSelect) {
+    return;
+  }
+
+  const selectedGroup = buildSidebarProjectGroups().find((x) => x.key === selectedProjectKey) || null;
+  const seedCwd = normalizeProjectCwd(cwd || options.cwd || selectedGroup?.cwd || cwdInput.value.trim());
+  newSessionCwdInput.value = seedCwd;
+  newSessionNameInput.value = String(options.threadName || "");
+  syncNewSessionModelOptions(options.model || modelValueForCreate() || "");
+
+  const seedEffort = normalizeReasoningEffort(options.effort ?? selectedReasoningValue() ?? "");
+  newSessionReasoningSelect.value = Array.from(newSessionReasoningSelect.options).some((option) => option.value === seedEffort)
+    ? seedEffort
+    : "";
+
+  const seedApproval = normalizeApprovalPolicy(options.approvalPolicy ?? selectedApprovalValue() ?? "");
+  newSessionApprovalSelect.value = Array.from(newSessionApprovalSelect.options).some((option) => option.value === seedApproval)
+    ? seedApproval
+    : "";
+
+  const seedSandbox = normalizeSandboxMode(options.sandbox ?? options.sandboxMode ?? selectedSandboxValue() ?? "");
+  newSessionSandboxSelect.value = Array.from(newSessionSandboxSelect.options).some((option) => option.value === seedSandbox)
+    ? seedSandbox
+    : "";
+
+  newSessionModal.classList.remove("hidden");
+  newSessionNameInput.focus();
+  newSessionNameInput.select();
+}
+
+function closeNewSessionModal() {
+  if (!newSessionModal) {
+    return;
+  }
+
+  newSessionModal.classList.add("hidden");
+}
+
+function newSessionModelValue() {
+  if (!newSessionModelSelect) {
+    return "";
+  }
+
+  const selection = newSessionModelSelect.value || "";
+  if (selection === "__custom__") {
+    const custom = newSessionModelCustomInput ? String(newSessionModelCustomInput.value || "").trim() : "";
+    return custom || "";
+  }
+
+  return normalizeModelValue(selection);
+}
+
+async function submitNewSessionModal() {
+  if (!newSessionNameInput || !newSessionCwdInput || !newSessionReasoningSelect || !newSessionApprovalSelect || !newSessionSandboxSelect) {
+    return;
+  }
+
+  const threadName = String(newSessionNameInput.value || "").trim();
+  if (threadName.length > 200) {
+    appendLog("[session] name must be 200 characters or fewer");
+    newSessionNameInput.focus();
+    return;
+  }
+
+  const cwd = normalizeProjectCwd(newSessionCwdInput.value || "");
+  if (!cwd) {
+    appendLog("[session] working directory is required");
+    newSessionCwdInput.focus();
+    return;
+  }
+
+  const model = newSessionModelValue();
+  if (newSessionModelSelect && newSessionModelSelect.value === "__custom__" && !model) {
+    appendLog("[session] custom model cannot be empty");
+    if (newSessionModelCustomInput) {
+      newSessionModelCustomInput.focus();
+    }
+    return;
+  }
+
+  const effort = normalizeReasoningEffort(newSessionReasoningSelect.value || "");
+  const approvalPolicy = normalizeApprovalPolicy(newSessionApprovalSelect.value || "");
+  const sandboxMode = normalizeSandboxMode(newSessionSandboxSelect.value || "");
+
+  closeNewSessionModal();
+  await createSessionForCwd(cwd, {
+    askName: false,
+    threadName,
+    model,
+    effort,
+    approvalPolicy,
+    sandbox: sandboxMode
+  });
 }
 
 function openNewProjectModal() {
@@ -2238,7 +2792,7 @@ function renderProjectSidebar() {
     newSessionAction.appendChild(buildActionIcon("plus"));
     newSessionAction.addEventListener("click", (event) => {
       event.stopPropagation();
-      createSessionForCwd(group.cwd || cwdInput.value.trim());
+      openNewSessionModal(group.cwd || cwdInput.value.trim());
     });
     headerActions.appendChild(newSessionAction);
 
@@ -2329,6 +2883,14 @@ function renderProjectSidebar() {
         spinner.setAttribute("aria-hidden", "true");
         loading.appendChild(spinner);
         badges.appendChild(loading);
+      }
+      if (entry.hasPendingApproval) {
+        const awaitingApproval = document.createElement("span");
+        awaitingApproval.className = "session-badge awaiting-approval";
+        awaitingApproval.textContent = "Approval";
+        awaitingApproval.title = "Awaiting approval";
+        awaitingApproval.setAttribute("aria-label", "Awaiting approval");
+        badges.appendChild(awaitingApproval);
       }
       if (!entry.isProcessing && entry.hasUnreadCompletion) {
         const completed = document.createElement("span");
@@ -2534,6 +3096,12 @@ function ensureSessionState(sessionId) {
       cwd: null,
       model: null,
       reasoningEffort: null,
+      approvalPolicy: null,
+      sandboxPolicy: null,
+      isPlanTurn: false,
+      planStatus: "idle",
+      planText: "",
+      planUpdatedAt: null,
       pendingApproval: null,
       createdAtTick: now,
       lastActivityTick: now,
@@ -2862,7 +3430,7 @@ function renderPromptQueue() {
   promptQueue.classList.remove("hidden");
 }
 
-async function queuePrompt(sessionId, promptText, images = []) {
+async function queuePrompt(sessionId, promptText, images = [], options = {}) {
   if (!sessionId) {
     return false;
   }
@@ -2891,6 +3459,11 @@ async function queuePrompt(sessionId, promptText, images = []) {
   }
   if (turnEffort) {
     payload.effort = turnEffort;
+  }
+  if (options.planMode === true) {
+    payload.collaborationMode = {
+      mode: "plan"
+    };
   }
 
   if (!send("turn_queue_add", payload)) {
@@ -2992,6 +3565,11 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
   if (turnEffort) {
     payload.effort = turnEffort;
   }
+  if (options.planMode === true) {
+    payload.collaborationMode = {
+      mode: "plan"
+    };
+  }
   if (state && sessionId === activeSessionId && !turnCwd) {
     refreshSessionMeta();
     renderProjectSidebar();
@@ -3010,6 +3588,8 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
   if (options.fromQueue === true) {
     appendLog(`[turn] dequeued next prompt for session=${sessionId}`);
   }
+
+  markPlanTurnStarted(sessionId, options.planMode === true);
 
   return true;
 }
@@ -3187,11 +3767,13 @@ function refreshSessionMeta() {
     sessionMetaModelItem.classList.add("hidden");
     syncConversationModelOptions(modelSelect.value || "");
     syncConversationReasoningOptions("");
+    syncConversationPermissionOptions("", "");
     sessionMeta.title = "";
     updateConversationModelSummary();
     updateContextLeftIndicator();
     updatePermissionLevelIndicator();
     updateConversationMetaVisibility();
+    updatePlanPanel();
     return;
   }
 
@@ -3200,12 +3782,19 @@ function refreshSessionMeta() {
   const threadId = state.threadId || "";
   const preferred = getPreferredModelForThread(state.threadId);
   const preferredEffort = getPreferredReasoningForThread(state.threadId);
+  const preferredPermission = getPreferredPermissionForThread(state.threadId);
   const selectedModel = preferred.found
     ? preferred.model
     : normalizeModelValue(state.model || "");
   const selectedEffort = preferredEffort.found
     ? preferredEffort.effort
     : normalizeReasoningEffort(state.reasoningEffort || "");
+  const selectedApproval = preferredPermission.found
+    ? preferredPermission.approval
+    : normalizeApprovalPolicy(state.approvalPolicy || "");
+  const selectedSandbox = preferredPermission.found
+    ? preferredPermission.sandbox
+    : normalizeSandboxMode(state.sandboxPolicy || "");
   const titleValue = threadName || threadId || "Conversation";
   if (conversationTitle) {
     conversationTitle.textContent = titleValue;
@@ -3215,6 +3804,7 @@ function refreshSessionMeta() {
 
   syncConversationModelOptions(selectedModel);
   syncConversationReasoningOptions(selectedEffort);
+  syncConversationPermissionOptions(selectedApproval, selectedSandbox);
   if (timeline && typeof timeline.setSessionModel === "function") {
     timeline.setSessionModel(selectedModel);
   }
@@ -3225,6 +3815,7 @@ function refreshSessionMeta() {
   updateContextLeftIndicator();
   updatePermissionLevelIndicator();
   updateConversationMetaVisibility();
+  updatePlanPanel();
 }
 
 function restartTimelinePolling() {
@@ -3381,6 +3972,15 @@ function setActiveSession(sessionId, options = {}) {
     if (preferredEffort.found) {
       state.reasoningEffort = preferredEffort.effort || null;
     }
+    const preferredPermission = getPreferredPermissionForThread(state.threadId);
+    if (preferredPermission.found) {
+      state.approvalPolicy = preferredPermission.approval || null;
+      state.sandboxPolicy = preferredPermission.sandbox || null;
+      replacePermissionLevelForThread(state.threadId, {
+        approval: preferredPermission.approval,
+        sandbox: preferredPermission.sandbox
+      });
+    }
   }
   if (state?.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
     clearPendingSessionLoad();
@@ -3394,6 +3994,7 @@ function setActiveSession(sessionId, options = {}) {
   updateContextLeftIndicator();
   updatePermissionLevelIndicator();
   updatePromptActionState();
+  updatePlanPanel();
   renderPromptQueue();
   if (changed) {
     clearComposerImages();
@@ -3573,6 +4174,7 @@ function populateModelSelect(models) {
   }
 
   syncModelCommandOptionsFromToolbar();
+  syncNewSessionModelOptions(newSessionModelValue());
 }
 
 function syncModelCommandOptionsFromToolbar() {
@@ -3611,6 +4213,44 @@ function selectedReasoningValue() {
   return normalizeReasoningEffort(conversationReasoningSelect.value || "");
 }
 
+function selectedApprovalValue() {
+  if (!conversationApprovalSelect) {
+    return "";
+  }
+
+  return normalizeApprovalPolicy(conversationApprovalSelect.value || "");
+}
+
+function selectedSandboxValue() {
+  if (!conversationSandboxSelect) {
+    return "";
+  }
+
+  return normalizeSandboxMode(conversationSandboxSelect.value || "");
+}
+
+function syncConversationPermissionOptions(approval = null, sandbox = null) {
+  if (conversationApprovalSelect) {
+    const desiredApproval = approval === null
+      ? normalizeApprovalPolicy(conversationApprovalSelect.value || "")
+      : normalizeApprovalPolicy(approval);
+    const nextApproval = Array.from(conversationApprovalSelect.options).some((option) => option.value === desiredApproval)
+      ? desiredApproval
+      : "";
+    conversationApprovalSelect.value = nextApproval;
+  }
+
+  if (conversationSandboxSelect) {
+    const desiredSandbox = sandbox === null
+      ? normalizeSandboxMode(conversationSandboxSelect.value || "")
+      : normalizeSandboxMode(sandbox);
+    const nextSandbox = Array.from(conversationSandboxSelect.options).some((option) => option.value === desiredSandbox)
+      ? desiredSandbox
+      : "";
+    conversationSandboxSelect.value = nextSandbox;
+  }
+}
+
 function applySessionModelSettingsToActiveSession(selectedModel, selectedEffort = null) {
   const state = getActiveSessionState();
   if (!state || !state.threadId || !activeSessionId) {
@@ -3627,6 +4267,21 @@ function applySessionModelSettingsToActiveSession(selectedModel, selectedEffort 
   setPreferredModelForThread(state.threadId, normalizedModel);
   setPreferredReasoningForThread(state.threadId, normalizedEffort);
   trySendSessionModelSync(activeSessionId, normalizedModel, normalizedEffort);
+}
+
+function applySessionPermissionSettingsToActiveSession(selectedApproval, selectedSandbox) {
+  const state = getActiveSessionState();
+  if (!state || !state.threadId || !activeSessionId) {
+    return;
+  }
+
+  const normalizedApproval = normalizeApprovalPolicy(selectedApproval);
+  const normalizedSandbox = normalizeSandboxMode(selectedSandbox);
+  state.approvalPolicy = normalizedApproval || null;
+  state.sandboxPolicy = normalizedSandbox || null;
+  setPreferredPermissionForThread(state.threadId, { approval: normalizedApproval, sandbox: normalizedSandbox });
+  replacePermissionLevelForThread(state.threadId, { approval: normalizedApproval, sandbox: normalizedSandbox });
+  trySendSessionPermissionSync(activeSessionId, normalizedApproval, normalizedSandbox);
 }
 
 function applyModelSelection(value) {
@@ -3714,6 +4369,7 @@ function applySavedUiSettings() {
   loadPromptDraftState();
   loadThreadModelState();
   loadThreadReasoningState();
+  loadThreadPermissionState();
 
   const savedCwd = localStorage.getItem(STORAGE_CWD_KEY);
   if (savedCwd) {
@@ -3875,6 +4531,59 @@ function acknowledgeSessionModelSync(sessionId, model, effort) {
   }
 }
 
+function buildSessionPermissionSyncKey(approval, sandbox) {
+  const normalizedApproval = normalizeApprovalPolicy(approval);
+  const normalizedSandbox = normalizeSandboxMode(sandbox);
+  return `${normalizedApproval}||${normalizedSandbox}`;
+}
+
+function trySendSessionPermissionSync(sessionId, approval, sandbox) {
+  const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+  if (!normalizedSessionId) {
+    return false;
+  }
+
+  const key = buildSessionPermissionSyncKey(approval, sandbox);
+  if (lastConfirmedSessionPermissionSyncBySession.get(normalizedSessionId) === key) {
+    return false;
+  }
+  if (pendingSessionPermissionSyncBySession.get(normalizedSessionId) === key) {
+    return false;
+  }
+
+  const normalizedApproval = normalizeApprovalPolicy(approval);
+  const normalizedSandbox = normalizeSandboxMode(sandbox);
+  if (!send("session_set_permissions", {
+    sessionId: normalizedSessionId,
+    approvalPolicy: normalizedApproval,
+    sandbox: normalizedSandbox
+  })) {
+    return false;
+  }
+
+  pendingSessionPermissionSyncBySession.set(normalizedSessionId, key);
+  return true;
+}
+
+function acknowledgeSessionPermissionSync(sessionId, approval, sandbox) {
+  const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+  if (!normalizedSessionId) {
+    return;
+  }
+
+  const serverKey = buildSessionPermissionSyncKey(approval, sandbox);
+  lastConfirmedSessionPermissionSyncBySession.set(normalizedSessionId, serverKey);
+
+  const pending = pendingSessionPermissionSyncBySession.get(normalizedSessionId);
+  if (!pending) {
+    return;
+  }
+
+  if (pending === serverKey) {
+    pendingSessionPermissionSyncBySession.delete(normalizedSessionId);
+  }
+}
+
 function prunePendingSessionModelSync(validSessionIds) {
   const valid = new Set(Array.isArray(validSessionIds) ? validSessionIds.filter((x) => typeof x === "string" && x.trim()) : []);
   for (const sessionId of Array.from(pendingSessionModelSyncBySession.keys())) {
@@ -3885,6 +4594,20 @@ function prunePendingSessionModelSync(validSessionIds) {
   for (const sessionId of Array.from(lastConfirmedSessionModelSyncBySession.keys())) {
     if (!valid.has(sessionId)) {
       lastConfirmedSessionModelSyncBySession.delete(sessionId);
+    }
+  }
+}
+
+function prunePendingSessionPermissionSync(validSessionIds) {
+  const valid = new Set(Array.isArray(validSessionIds) ? validSessionIds.filter((x) => typeof x === "string" && x.trim()) : []);
+  for (const sessionId of Array.from(pendingSessionPermissionSyncBySession.keys())) {
+    if (!valid.has(sessionId)) {
+      pendingSessionPermissionSyncBySession.delete(sessionId);
+    }
+  }
+  for (const sessionId of Array.from(lastConfirmedSessionPermissionSyncBySession.keys())) {
+    if (!valid.has(sessionId)) {
+      lastConfirmedSessionPermissionSyncBySession.delete(sessionId);
     }
   }
 }
@@ -3921,9 +4644,11 @@ function handleServerEvent(frame) {
       const sessionId = payload.sessionId;
       if (!sessionId) return;
       const state = ensureSessionState(sessionId);
+      ensurePlanStateShape(state);
       state.threadId = payload.threadId || state.threadId;
       state.cwd = payload.cwd || state.cwd;
       let persistedPreferenceUpdated = false;
+      let persistedPermissionPreferenceUpdated = false;
       if (state.threadId) {
         const serverModel = normalizeModelValue(payload.model || "");
         const serverEffort = normalizeReasoningEffort(payload.reasoningEffort ?? payload.effort ?? "");
@@ -3947,6 +4672,39 @@ function handleServerEvent(frame) {
         } else if (payload.reasoningEffort !== undefined || payload.effort !== undefined) {
           persistedPreferenceUpdated = ensureThreadReasoningPreference(state.threadId, serverEffort, { persist: false }) || persistedPreferenceUpdated;
         }
+
+        const serverPermission = readPermissionInfoFromPayload(payload);
+        const preferredPermission = getPreferredPermissionForThread(state.threadId);
+        const hasPermissionFromPayload = hasAnyPermissionField(payload);
+        if (preferredPermission.found || hasPermissionFromPayload) {
+          const targetApproval = preferredPermission.found
+            ? preferredPermission.approval
+            : (serverPermission?.approval || "");
+          const targetSandbox = preferredPermission.found
+            ? preferredPermission.sandbox
+            : (serverPermission?.sandbox || "");
+          acknowledgeSessionPermissionSync(
+            sessionId,
+            serverPermission?.approval || "",
+            serverPermission?.sandbox || "");
+          state.approvalPolicy = targetApproval || null;
+          state.sandboxPolicy = targetSandbox || null;
+          replacePermissionLevelForThread(state.threadId, {
+            approval: state.approvalPolicy || "",
+            sandbox: state.sandboxPolicy || ""
+          });
+        }
+        if (!preferredPermission.found && hasPermissionFromPayload) {
+          persistedPermissionPreferenceUpdated =
+            ensureThreadPermissionPreference(
+              state.threadId,
+              {
+                approval: serverPermission?.approval || "",
+                sandbox: serverPermission?.sandbox || ""
+              },
+              { persist: false })
+            || persistedPermissionPreferenceUpdated;
+        }
       }
       let pendingCreate = null;
       const requestId = payload.requestId || null;
@@ -3959,12 +4717,6 @@ function handleServerEvent(frame) {
       }
       if (!state.createdAtTick) {
         state.createdAtTick = Date.now();
-      }
-      if (state.threadId) {
-        const permissionInfo = readPermissionInfoFromPayload(payload);
-        if (permissionInfo) {
-          setPermissionLevelForThread(state.threadId, permissionInfo);
-        }
       }
       if (state.threadId && normalizeProjectCwd(state.cwd || "")) {
         const entry = getCatalogEntryByThreadId(state.threadId);
@@ -3979,6 +4731,9 @@ function handleServerEvent(frame) {
         persistThreadModelState();
         persistThreadReasoningState();
       }
+      if (persistedPermissionPreferenceUpdated) {
+        persistThreadPermissionState();
+      }
       const attachedMode = payload.attached === true || type === "session_attached";
       if (!attachedMode) {
         touchSessionActivity(sessionId);
@@ -3992,7 +4747,7 @@ function handleServerEvent(frame) {
 
       if (pendingCreate && pendingCreate.threadName) {
         send("session_rename", { sessionId, threadName: pendingCreate.threadName });
-          send("session_catalog_list");
+        send("session_catalog_list");
       }
 
       if (state.threadId && pendingRenameOnAttach.has(state.threadId)) {
@@ -4014,10 +4769,29 @@ function handleServerEvent(frame) {
       const nextProcessingByThread = new Map();
       let matchedPendingThread = false;
       let persistedPreferenceUpdated = false;
+      let persistedPermissionPreferenceUpdated = false;
       for (const s of list) {
         const existing = sessions.get(s.sessionId);
         const st =
-          existing || { threadId: null, cwd: null, model: null, reasoningEffort: null, pendingApproval: null, queuedTurns: [], queuedTurnCount: 0, turnCountInMemory: 0, createdAtTick: Date.now(), lastActivityTick: 0 };
+          existing || {
+            threadId: null,
+            cwd: null,
+            model: null,
+            reasoningEffort: null,
+            approvalPolicy: null,
+            sandboxPolicy: null,
+            isPlanTurn: false,
+            planStatus: "idle",
+            planText: "",
+            planUpdatedAt: null,
+            pendingApproval: null,
+            queuedTurns: [],
+            queuedTurnCount: 0,
+            turnCountInMemory: 0,
+            createdAtTick: Date.now(),
+            lastActivityTick: 0
+          };
+        ensurePlanStateShape(st);
         st.threadId = s.threadId || st.threadId || null;
         st.cwd = s.cwd || st.cwd || null;
         const serverModel = normalizeModelValue(s.model);
@@ -4046,18 +4820,55 @@ function handleServerEvent(frame) {
           } else if (s.reasoningEffort !== undefined || s.effort !== undefined) {
             persistedPreferenceUpdated = ensureThreadReasoningPreference(st.threadId, serverEffort, { persist: false }) || persistedPreferenceUpdated;
           }
+
+          const serverPermission = readPermissionInfoFromPayload(s);
+          const preferredPermission = getPreferredPermissionForThread(st.threadId);
+          const hasPermissionFromPayload = hasAnyPermissionField(s);
+          if (preferredPermission.found || hasPermissionFromPayload) {
+            const targetApproval = preferredPermission.found
+              ? preferredPermission.approval
+              : (serverPermission?.approval || "");
+            const targetSandbox = preferredPermission.found
+              ? preferredPermission.sandbox
+              : (serverPermission?.sandbox || "");
+            acknowledgeSessionPermissionSync(
+              s.sessionId,
+              serverPermission?.approval || "",
+              serverPermission?.sandbox || "");
+            st.approvalPolicy = targetApproval || null;
+            st.sandboxPolicy = targetSandbox || null;
+            replacePermissionLevelForThread(st.threadId, {
+              approval: st.approvalPolicy || "",
+              sandbox: st.sandboxPolicy || ""
+            });
+          }
+          if (!preferredPermission.found && hasPermissionFromPayload) {
+            persistedPermissionPreferenceUpdated =
+              ensureThreadPermissionPreference(
+                st.threadId,
+                {
+                  approval: serverPermission?.approval || "",
+                  sandbox: serverPermission?.sandbox || ""
+                },
+                { persist: false })
+              || persistedPermissionPreferenceUpdated;
+          }
         } else {
           st.model = serverModel || st.model || null;
           st.reasoningEffort = serverEffort || st.reasoningEffort || null;
+          if (hasApprovalPolicyField(s)) {
+            st.approvalPolicy = normalizeApprovalPolicy(s.approvalPolicy ?? s.approval_policy ?? "") || null;
+          }
+          if (hasSandboxPolicyField(s)) {
+            st.sandboxPolicy = normalizeSandboxMode(s.sandboxPolicy ?? s.sandbox_policy ?? s.sandbox ?? "") || null;
+          }
+          acknowledgeSessionPermissionSync(
+            s.sessionId,
+            st.approvalPolicy || "",
+            st.sandboxPolicy || "");
         }
         st.createdAtTick = st.createdAtTick || Date.now();
         st.lastActivityTick = Number.isFinite(st.lastActivityTick) ? st.lastActivityTick : st.createdAtTick;
-        if (st.threadId) {
-          const permissionInfo = readPermissionInfoFromPayload(s);
-          if (permissionInfo) {
-            setPermissionLevelForThread(st.threadId, permissionInfo);
-          }
-        }
         if (pendingSessionLoadThreadId && st.threadId === pendingSessionLoadThreadId) {
           matchedPendingThread = true;
         }
@@ -4094,11 +4905,15 @@ function handleServerEvent(frame) {
         persistThreadModelState();
         persistThreadReasoningState();
       }
+      if (persistedPermissionPreferenceUpdated) {
+        persistThreadPermissionState();
+      }
       if (matchedPendingThread) {
         clearPendingSessionLoad();
       }
       sessions = next;
       prunePendingSessionModelSync(Array.from(next.keys()));
+      prunePendingSessionPermissionSync(Array.from(next.keys()));
       pruneTurnActivityState(Array.from(next.keys()));
       pruneRateLimitState(Array.from(next.keys()));
       applyProcessingByThread(nextProcessingByThread);
@@ -4211,6 +5026,8 @@ function handleServerEvent(frame) {
         sessions.delete(sessionId);
         pendingSessionModelSyncBySession.delete(sessionId);
         lastConfirmedSessionModelSyncBySession.delete(sessionId);
+        pendingSessionPermissionSyncBySession.delete(sessionId);
+        lastConfirmedSessionPermissionSyncBySession.delete(sessionId);
       }
       if (sessionId) {
         turnInFlightBySession.delete(sessionId);
@@ -4238,6 +5055,7 @@ function handleServerEvent(frame) {
     case "turn_complete": {
       const sessionId = payload.sessionId || null;
       const status = payload.status || "unknown";
+      const isPlanTurn = payload.isPlanTurn === true || normalizeCollaborationMode(payload.collaborationMode || "") === "plan";
       let sidebarStateChanged = false;
       if (sessionId) {
         touchSessionActivity(sessionId);
@@ -4254,6 +5072,7 @@ function handleServerEvent(frame) {
           }
         }
         setTurnInFlight(sessionId, false);
+        finalizePlanTurn(sessionId, status, isPlanTurn);
       }
       const errorMessage = payload.errorMessage || null;
       appendLog(`[turn] session=${payload.sessionId || "unknown"} status=${status}${errorMessage ? " error=" + errorMessage : ""}`);
@@ -4266,6 +5085,7 @@ function handleServerEvent(frame) {
 
     case "turn_started": {
       const sessionId = payload.sessionId || null;
+      const isPlanTurn = payload.isPlanTurn === true || normalizeCollaborationMode(payload.collaborationMode || "") === "plan";
       let sidebarStateChanged = false;
       if (sessionId) {
         touchSessionActivity(sessionId);
@@ -4279,6 +5099,7 @@ function handleServerEvent(frame) {
           sidebarStateChanged = completedUnreadThreadIds.delete(threadId) || sidebarStateChanged;
         }
         setTurnInFlight(sessionId, true);
+        markPlanTurnStarted(sessionId, isPlanTurn);
       }
       if (sidebarStateChanged) {
         renderProjectSidebar();
@@ -4333,6 +5154,28 @@ function handleServerEvent(frame) {
       return;
     }
 
+    case "plan_delta": {
+      const sessionId = payload.sessionId || null;
+      const text = typeof payload.text === "string" ? payload.text : "";
+      if (!sessionId || !text) {
+        return;
+      }
+
+      appendPlanDeltaToSession(sessionId, text);
+      return;
+    }
+
+    case "plan_updated": {
+      const sessionId = payload.sessionId || null;
+      if (!sessionId) {
+        return;
+      }
+
+      const text = typeof payload.text === "string" ? payload.text : "";
+      applyPlanUpdatedToSession(sessionId, text);
+      return;
+    }
+
     case "session_configured": {
       const sessionId = payload.sessionId || null;
       let sidebarStateChanged = false;
@@ -4378,10 +5221,28 @@ function handleServerEvent(frame) {
             acknowledgeSessionModelSync(sessionId, state.model || "", state.reasoningEffort || "");
           }
 
-          if (state.threadId) {
-            const permissionInfo = readPermissionInfoFromPayload(payload);
-            if (permissionInfo) {
-              setPermissionLevelForThread(state.threadId, permissionInfo);
+          const hasApprovalOverride = hasApprovalPolicyField(payload);
+          const hasSandboxOverride = hasSandboxPolicyField(payload);
+          if (hasApprovalOverride || hasSandboxOverride) {
+            const configuredPermission = readPermissionInfoFromPayload(payload);
+            const nextApproval = hasApprovalOverride
+              ? (configuredPermission?.approval || "")
+              : normalizeApprovalPolicy(state.approvalPolicy || "");
+            const nextSandbox = hasSandboxOverride
+              ? (configuredPermission?.sandbox || "")
+              : normalizeSandboxMode(state.sandboxPolicy || "");
+            if ((state.approvalPolicy || "") !== nextApproval || (state.sandboxPolicy || "") !== nextSandbox) {
+              sidebarStateChanged = true;
+              sessionConfigChanged = true;
+            }
+            state.approvalPolicy = nextApproval || null;
+            state.sandboxPolicy = nextSandbox || null;
+            acknowledgeSessionPermissionSync(sessionId, state.approvalPolicy || "", state.sandboxPolicy || "");
+            if (state.threadId) {
+              replacePermissionLevelForThread(state.threadId, {
+                approval: state.approvalPolicy || "",
+                sandbox: state.sandboxPolicy || ""
+              });
             }
           }
         }
@@ -4556,11 +5417,13 @@ function handleServerEvent(frame) {
   }
 }
 
-newSessionBtn.addEventListener("click", async () => {
-  const selectedGroup = buildSidebarProjectGroups().find((x) => x.key === selectedProjectKey) || null;
-  const preferredCwd = selectedGroup?.cwd || cwdInput.value.trim();
-  await createSessionForCwd(preferredCwd);
-});
+if (newSessionBtn) {
+  newSessionBtn.addEventListener("click", () => {
+    const selectedGroup = buildSidebarProjectGroups().find((x) => x.key === selectedProjectKey) || null;
+    const preferredCwd = selectedGroup?.cwd || cwdInput.value.trim();
+    openNewSessionModal(preferredCwd);
+  });
+}
 
 if (newProjectBtn) {
   newProjectBtn.addEventListener("click", () => {
@@ -4671,6 +5534,36 @@ if (conversationReasoningSelect) {
   });
 }
 
+if (conversationApprovalSelect) {
+  conversationApprovalSelect.addEventListener("change", () => {
+    if (!getActiveSessionState()) {
+      return;
+    }
+
+    const nextApproval = normalizeApprovalPolicy(conversationApprovalSelect.value || "");
+    const nextSandbox = selectedSandboxValue();
+    applySessionPermissionSettingsToActiveSession(nextApproval, nextSandbox);
+    refreshSessionMeta();
+    renderProjectSidebar();
+    appendLog(nextApproval ? `[permissions] approval set to '${nextApproval}'` : "[permissions] approval reverted to inherit");
+  });
+}
+
+if (conversationSandboxSelect) {
+  conversationSandboxSelect.addEventListener("change", () => {
+    if (!getActiveSessionState()) {
+      return;
+    }
+
+    const nextApproval = selectedApprovalValue();
+    const nextSandbox = normalizeSandboxMode(conversationSandboxSelect.value || "");
+    applySessionPermissionSettingsToActiveSession(nextApproval, nextSandbox);
+    refreshSessionMeta();
+    renderProjectSidebar();
+    appendLog(nextSandbox ? `[permissions] sandbox set to '${nextSandbox}'` : "[permissions] sandbox reverted to inherit");
+  });
+}
+
 if (conversationMetaMenuBtn) {
   conversationMetaMenuBtn.addEventListener("click", (event) => {
     event.preventDefault();
@@ -4762,6 +5655,70 @@ if (newProjectModal) {
   newProjectModal.addEventListener("click", (event) => {
     if (event.target === newProjectModal) {
       closeNewProjectModal();
+    }
+  });
+}
+
+if (newSessionCreateBtn) {
+  newSessionCreateBtn.addEventListener("click", () => {
+    submitNewSessionModal().catch((error) => appendLog(`[session] create failed: ${error}`));
+  });
+}
+
+if (newSessionCancelBtn) {
+  newSessionCancelBtn.addEventListener("click", () => {
+    closeNewSessionModal();
+  });
+}
+
+if (newSessionModelSelect) {
+  newSessionModelSelect.addEventListener("change", () => {
+    const selected = newSessionModelSelect.value || "";
+    if (selected === "__custom__") {
+      if (newSessionModelCustomInput) {
+        newSessionModelCustomInput.classList.remove("hidden");
+        newSessionModelCustomInput.focus();
+      }
+      return;
+    }
+
+    if (newSessionModelCustomInput) {
+      newSessionModelCustomInput.classList.add("hidden");
+    }
+  });
+}
+
+if (newSessionModelCustomInput) {
+  newSessionModelCustomInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitNewSessionModal().catch((error) => appendLog(`[session] create failed: ${error}`));
+    }
+  });
+}
+
+if (newSessionNameInput) {
+  newSessionNameInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitNewSessionModal().catch((error) => appendLog(`[session] create failed: ${error}`));
+    }
+  });
+}
+
+if (newSessionCwdInput) {
+  newSessionCwdInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submitNewSessionModal().catch((error) => appendLog(`[session] create failed: ${error}`));
+    }
+  });
+}
+
+if (newSessionModal) {
+  newSessionModal.addEventListener("click", (event) => {
+    if (event.target === newSessionModal) {
+      closeNewSessionModal();
     }
   });
 }
@@ -5014,6 +5971,7 @@ async function tryHandleSlashCommand(inputText) {
 async function queueCurrentComposerPrompt() {
   const prompt = promptInput.value.trim();
   const images = pendingComposerImages.map((x) => ({ ...x }));
+  const usePlanMode = planModeNextTurn === true;
   if (!prompt && images.length === 0) {
     return false;
   }
@@ -5035,7 +5993,7 @@ async function queueCurrentComposerPrompt() {
     return true;
   }
 
-  const queued = await queuePrompt(activeSessionId, prompt, images);
+  const queued = await queuePrompt(activeSessionId, prompt, images, { planMode: usePlanMode });
   if (!queued) {
     appendLog(`[queue] failed to queue prompt for session=${activeSessionId}`);
     return true;
@@ -5044,6 +6002,7 @@ async function queueCurrentComposerPrompt() {
   promptInput.value = "";
   clearCurrentPromptDraft();
   clearComposerImages();
+  resetPlanModeNextTurn();
   appendLog(`[turn] queued prompt for session=${activeSessionId}`);
   return true;
 }
@@ -5071,6 +6030,7 @@ promptForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const prompt = promptInput.value.trim();
   const images = pendingComposerImages.map((x) => ({ ...x }));
+  const usePlanMode = planModeNextTurn === true;
   if (!prompt && images.length === 0) {
     return;
   }
@@ -5093,7 +6053,7 @@ promptForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  const started = startTurn(activeSessionId, prompt, images);
+  const started = startTurn(activeSessionId, prompt, images, { planMode: usePlanMode });
   if (!started) {
     appendLog(`[turn] failed to send prompt for session=${activeSessionId}`);
     return;
@@ -5102,6 +6062,7 @@ promptForm.addEventListener("submit", async (event) => {
   promptInput.value = "";
   clearCurrentPromptDraft();
   clearComposerImages();
+  resetPlanModeNextTurn();
 });
 
 promptInput.addEventListener("keydown", (event) => {
@@ -5152,6 +6113,15 @@ if (queuePromptBtn) {
   queuePromptBtn.addEventListener("click", () => {
     queueCurrentComposerPrompt().catch((error) => appendLog(`[queue] failed: ${error}`));
     promptInput.focus();
+  });
+}
+
+if (planTurnToggleBtn) {
+  planTurnToggleBtn.addEventListener("click", () => {
+    setPlanModeNextTurn(!planModeNextTurn);
+    if (promptInput) {
+      promptInput.focus();
+    }
   });
 }
 
@@ -5209,6 +6179,12 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
+  if (newSessionModal && !newSessionModal.classList.contains("hidden")) {
+    event.preventDefault();
+    closeNewSessionModal();
+    return;
+  }
+
   if (newProjectModal && !newProjectModal.classList.contains("hidden")) {
     event.preventDefault();
     closeNewProjectModal();
@@ -5256,6 +6232,8 @@ updateTimelineTruncationNotice();
 updatePromptActionState();
 updateContextLeftIndicator();
 updatePermissionLevelIndicator();
+setPlanModeNextTurn(false);
+updatePlanPanel();
 updateMobileProjectsButton();
 updateConversationMetaVisibility();
 
