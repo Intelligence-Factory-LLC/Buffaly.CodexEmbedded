@@ -718,13 +718,16 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				isDefault = m.IsDefault,
 				description = m.Description
 			}).ToArray();
+			var configuredDefaultModel = string.IsNullOrWhiteSpace(_defaults.DefaultModel) ? null : _defaults.DefaultModel.Trim();
+			var listedDefaultModel = models.FirstOrDefault(m => m.IsDefault)?.Model;
+			var effectiveDefaultModel = configuredDefaultModel ?? listedDefaultModel;
 
-			await SendEventAsync("models_list", new { sessionId, models = payload, error = (string?)null }, cancellationToken);
+			await SendEventAsync("models_list", new { sessionId, models = payload, defaultModel = effectiveDefaultModel, error = (string?)null }, cancellationToken);
 		}
 		catch (Exception ex)
 		{
 			Logs.LogError(ex);
-			await SendEventAsync("models_list", new { sessionId, models = Array.Empty<object>(), error = ex.Message }, cancellationToken);
+			await SendEventAsync("models_list", new { sessionId, models = Array.Empty<object>(), defaultModel = (string?)null, error = ex.Message }, cancellationToken);
 		}
 	}
 

@@ -64,6 +64,7 @@ let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
 let jumpCollapseMode = false;
 let conversationMetaMenuOpen = false;
 let planModeNextTurn = false;
+let configuredDefaultModel = "";
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -90,6 +91,22 @@ const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands an
 const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 const APPROVAL_POLICY_VALUES = ["untrusted", "on-failure", "on-request", "never"];
 const SANDBOX_MODE_VALUES = ["read-only", "workspace-write", "danger-full-access"];
+const REASONING_EFFORT_HELP = {
+  "": "Default uses the model's configured reasoning level. OpenAI docs define minimal, low, medium, and high; this app also exposes none and xhigh from the Codex schema.",
+  none: "Below minimal. Best for very simple requests where latency matters most.",
+  minimal: "Very light reasoning. Good for short edits and straightforward coding requests.",
+  low: "Light reasoning. A good default when tasks need some planning but should stay quick.",
+  medium: "Balanced reasoning depth, latency, and token usage.",
+  high: "Deeper reasoning for multi-step or ambiguous tasks. Higher latency and token usage.",
+  xhigh: "Above high. Best for the hardest tasks; expect the slowest responses and highest token usage."
+};
+const APPROVAL_POLICY_HELP = {
+  "": "Inherit uses the default policy configured for this runtime/session.",
+  untrusted: "Only known-safe read commands auto-run. Anything else asks for approval.",
+  "on-failure": "Runs commands in sandbox first and asks only if a retry without sandbox is needed. Legacy in current Codex config docs.",
+  "on-request": "The model decides when to ask for approval before running a command.",
+  never: "Never asks for approval. Command failures return directly to the model."
+};
 
 const layoutRoot = document.querySelector(".layout");
 const chatPanel = document.querySelector(".chat-panel");
@@ -185,6 +202,10 @@ const newSessionModelCustomInput = document.getElementById("newSessionModelCusto
 const newSessionReasoningSelect = document.getElementById("newSessionReasoningSelect");
 const newSessionApprovalSelect = document.getElementById("newSessionApprovalSelect");
 const newSessionSandboxSelect = document.getElementById("newSessionSandboxSelect");
+const newSessionModelDefaultHint = document.getElementById("newSessionModelDefaultHint");
+const newSessionReasoningHelp = document.getElementById("newSessionReasoningHelp");
+const newSessionApprovalHelp = document.getElementById("newSessionApprovalHelp");
+const newSessionPermissionRisk = document.getElementById("newSessionPermissionRisk");
 const newSessionCreateBtn = document.getElementById("newSessionCreateBtn");
 const newSessionCancelBtn = document.getElementById("newSessionCancelBtn");
 
@@ -2476,12 +2497,15 @@ function promoteProjectToTop(projectKey) {
   projectOrderInitialized = true;
 }
 
-function syncNewSessionModelOptions(seedModel = "") {
+function syncNewSessionModelOptions(seedModel = null) {
   if (!newSessionModelSelect || !modelSelect) {
     return;
   }
 
-  const desired = normalizeModelValue(seedModel || newSessionModelSelect.value || modelValueForCreate() || "");
+  const hasExplicitSeed = seedModel !== null && seedModel !== undefined;
+  const desired = hasExplicitSeed
+    ? normalizeModelValue(seedModel)
+    : normalizeModelValue(newSessionModelSelect.value || modelValueForCreate() || "");
   newSessionModelSelect.textContent = "";
   for (const option of Array.from(modelSelect.options)) {
     const next = document.createElement("option");
@@ -2496,6 +2520,7 @@ function syncNewSessionModelOptions(seedModel = "") {
     if (newSessionModelCustomInput) {
       newSessionModelCustomInput.classList.add("hidden");
     }
+    updateNewSessionModelDefaultHint();
     return;
   }
 
@@ -2505,6 +2530,7 @@ function syncNewSessionModelOptions(seedModel = "") {
       newSessionModelCustomInput.classList.remove("hidden");
       newSessionModelCustomInput.value = desired;
     }
+    updateNewSessionModelDefaultHint();
     return;
   }
 
@@ -2513,6 +2539,112 @@ function syncNewSessionModelOptions(seedModel = "") {
     newSessionModelCustomInput.classList.add("hidden");
     newSessionModelCustomInput.value = "";
   }
+
+  updateNewSessionModelDefaultHint();
+}
+
+function updateNewSessionModelDefaultHint() {
+  if (!newSessionModelDefaultHint) {
+    return;
+  }
+
+  if (!configuredDefaultModel) {
+    newSessionModelDefaultHint.classList.add("hidden");
+    newSessionModelDefaultHint.textContent = "";
+    return;
+  }
+
+  newSessionModelDefaultHint.classList.remove("hidden");
+  newSessionModelDefaultHint.textContent = `Default model: ${configuredDefaultModel}`;
+}
+
+function getReasoningHelpText(value) {
+  const normalized = normalizeReasoningEffort(value);
+  return REASONING_EFFORT_HELP[normalized] || REASONING_EFFORT_HELP[""];
+}
+
+function updateNewSessionReasoningHelp() {
+  if (!newSessionReasoningHelp || !newSessionReasoningSelect) {
+    return;
+  }
+
+  newSessionReasoningHelp.textContent = getReasoningHelpText(newSessionReasoningSelect.value || "");
+}
+
+function getApprovalHelpText(value) {
+  const normalized = normalizeApprovalPolicy(value);
+  return APPROVAL_POLICY_HELP[normalized] || APPROVAL_POLICY_HELP[""];
+}
+
+function updateNewSessionApprovalHelp() {
+  if (!newSessionApprovalHelp || !newSessionApprovalSelect) {
+    return;
+  }
+
+  newSessionApprovalHelp.textContent = getApprovalHelpText(newSessionApprovalSelect.value || "");
+}
+
+function getPermissionRiskClass(approval, sandbox) {
+  const normalizedApproval = normalizeApprovalPolicy(approval);
+  const normalizedSandbox = normalizeSandboxMode(sandbox);
+
+  if (normalizedSandbox === "danger-full-access" || normalizedApproval === "never") {
+    return "risk-danger";
+  }
+
+  if (normalizedSandbox === "workspace-write" || normalizedApproval === "on-request" || normalizedApproval === "on-failure") {
+    return "risk-caution";
+  }
+
+  if (normalizedSandbox === "read-only" || normalizedApproval === "untrusted") {
+    return "risk-safe";
+  }
+
+  return "risk-neutral";
+}
+
+function getPermissionRiskSummary(approval, sandbox) {
+  const normalizedApproval = normalizeApprovalPolicy(approval);
+  const normalizedSandbox = normalizeSandboxMode(sandbox);
+  const approvalLabel = normalizedApproval || "inherit";
+  const sandboxLabel = normalizedSandbox || "inherit";
+  const approvalMeaning = getApprovalHelpText(normalizedApproval);
+
+  if (normalizedSandbox === "danger-full-access" || normalizedApproval === "never") {
+    return `High risk: approval=${approvalLabel}, sandbox=${sandboxLabel}. Commands can run with little or no containment. ${approvalMeaning}`;
+  }
+
+  if (normalizedSandbox === "workspace-write" || normalizedApproval === "on-request" || normalizedApproval === "on-failure") {
+    return `Moderate risk: approval=${approvalLabel}, sandbox=${sandboxLabel}. Suitable for active coding with guardrails. ${approvalMeaning}`;
+  }
+
+  if (normalizedSandbox === "read-only" || normalizedApproval === "untrusted") {
+    return `Low risk: approval=${approvalLabel}, sandbox=${sandboxLabel}. Best for safe inspection and planning. ${approvalMeaning}`;
+  }
+
+  return `Risk unknown: inheriting approval and sandbox from session defaults. ${approvalMeaning}`;
+}
+
+function updateNewSessionPermissionVisuals() {
+  if (!newSessionApprovalSelect || !newSessionSandboxSelect || !newSessionPermissionRisk) {
+    return;
+  }
+
+  const approval = normalizeApprovalPolicy(newSessionApprovalSelect.value || "");
+  const sandbox = normalizeSandboxMode(newSessionSandboxSelect.value || "");
+  const riskClass = getPermissionRiskClass(approval, sandbox);
+
+  const riskClasses = ["risk-neutral", "risk-safe", "risk-caution", "risk-danger"];
+  for (const className of riskClasses) {
+    newSessionPermissionRisk.classList.remove(className);
+    newSessionApprovalSelect.classList.remove(className);
+    newSessionSandboxSelect.classList.remove(className);
+  }
+
+  newSessionPermissionRisk.classList.add(riskClass);
+  newSessionApprovalSelect.classList.add(riskClass);
+  newSessionSandboxSelect.classList.add(riskClass);
+  newSessionPermissionRisk.textContent = getPermissionRiskSummary(approval, sandbox);
 }
 
 function openNewSessionModal(cwd, options = {}) {
@@ -2524,7 +2656,8 @@ function openNewSessionModal(cwd, options = {}) {
   const seedCwd = normalizeProjectCwd(cwd || options.cwd || selectedGroup?.cwd || cwdInput.value.trim());
   newSessionCwdInput.value = seedCwd;
   newSessionNameInput.value = String(options.threadName || "");
-  syncNewSessionModelOptions(options.model || modelValueForCreate() || "");
+  const hasModelOverride = Object.prototype.hasOwnProperty.call(options, "model");
+  syncNewSessionModelOptions(hasModelOverride ? options.model : "");
 
   const seedEffort = normalizeReasoningEffort(options.effort ?? selectedReasoningValue() ?? "");
   newSessionReasoningSelect.value = Array.from(newSessionReasoningSelect.options).some((option) => option.value === seedEffort)
@@ -2541,6 +2674,10 @@ function openNewSessionModal(cwd, options = {}) {
     ? seedSandbox
     : "";
 
+  updateNewSessionReasoningHelp();
+  updateNewSessionApprovalHelp();
+  updateNewSessionPermissionVisuals();
+  updateNewSessionModelDefaultHint();
   newSessionModal.classList.remove("hidden");
   newSessionNameInput.focus();
   newSessionNameInput.select();
@@ -4141,19 +4278,33 @@ function modelValueForCreate() {
   return selection.trim() ? selection.trim() : null;
 }
 
-function populateModelSelect(models) {
+function resolveDefaultModelName(models, fallbackDefaultModel = "") {
+  const preferred = normalizeModelValue(fallbackDefaultModel);
+  if (preferred) {
+    return preferred;
+  }
+
+  const listedDefault = Array.isArray(models)
+    ? normalizeModelValue((models.find((model) => model && model.isDefault)?.model) || "")
+    : "";
+  return listedDefault;
+}
+
+function populateModelSelect(models, fallbackDefaultModel = "") {
   const prior = modelSelect.value;
+  configuredDefaultModel = resolveDefaultModelName(models, fallbackDefaultModel);
   modelSelect.textContent = "";
 
   const optDefault = document.createElement("option");
   optDefault.value = "";
-  optDefault.textContent = "(default)";
+  optDefault.textContent = configuredDefaultModel ? `(default: ${configuredDefaultModel})` : "(default)";
   modelSelect.appendChild(optDefault);
 
   for (const m of models) {
     const opt = document.createElement("option");
     opt.value = m.model;
-    const defaultSuffix = m.isDefault ? " (default)" : "";
+    const isConfiguredDefault = configuredDefaultModel && normalizeModelValue(m.model) === configuredDefaultModel;
+    const defaultSuffix = isConfiguredDefault || m.isDefault ? " (default)" : "";
     opt.textContent = `${m.displayName || m.model}${defaultSuffix}`;
     modelSelect.appendChild(opt);
   }
@@ -4174,7 +4325,8 @@ function populateModelSelect(models) {
   }
 
   syncModelCommandOptionsFromToolbar();
-  syncNewSessionModelOptions(newSessionModelValue());
+  syncNewSessionModelOptions(newSessionModelValue() || "");
+  updateNewSessionModelDefaultHint();
 }
 
 function syncModelCommandOptionsFromToolbar() {
@@ -5375,7 +5527,8 @@ function handleServerEvent(frame) {
         return;
       }
       const models = Array.isArray(payload.models) ? payload.models : [];
-      populateModelSelect(models);
+      const defaultModel = normalizeModelValue(payload.defaultModel || "");
+      populateModelSelect(models, defaultModel);
       appendLog(`[models] loaded (${models.length})`);
       return;
     }
@@ -5679,12 +5832,33 @@ if (newSessionModelSelect) {
         newSessionModelCustomInput.classList.remove("hidden");
         newSessionModelCustomInput.focus();
       }
+      updateNewSessionModelDefaultHint();
       return;
     }
 
     if (newSessionModelCustomInput) {
       newSessionModelCustomInput.classList.add("hidden");
     }
+    updateNewSessionModelDefaultHint();
+  });
+}
+
+if (newSessionReasoningSelect) {
+  newSessionReasoningSelect.addEventListener("change", () => {
+    updateNewSessionReasoningHelp();
+  });
+}
+
+if (newSessionApprovalSelect) {
+  newSessionApprovalSelect.addEventListener("change", () => {
+    updateNewSessionApprovalHelp();
+    updateNewSessionPermissionVisuals();
+  });
+}
+
+if (newSessionSandboxSelect) {
+  newSessionSandboxSelect.addEventListener("change", () => {
+    updateNewSessionPermissionVisuals();
   });
 }
 

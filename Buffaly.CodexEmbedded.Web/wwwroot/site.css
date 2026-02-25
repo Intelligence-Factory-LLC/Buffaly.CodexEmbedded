@@ -1183,6 +1183,103 @@ body {
 	padding: 0.5rem 0.58rem;
 }
 
+.new-session-modal-card {
+	width: min(560px, 100%);
+	border-radius: 14px;
+	padding: 0.95rem;
+}
+
+.new-session-modal-card .command-modal-title {
+	font-size: 1.24rem;
+	margin-bottom: 0.72rem;
+}
+
+.new-session-modal-card .command-modal-body {
+	gap: 0.42rem;
+}
+
+.new-session-modal-card .command-modal-body label {
+	margin-top: 0.16rem;
+	font-size: 0.78rem;
+	font-weight: 700;
+	color: #334155;
+}
+
+.new-session-modal-card .command-modal-body select,
+.new-session-modal-card .command-modal-body input {
+	padding: 0.54rem 0.62rem;
+	border-radius: 8px;
+	transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+}
+
+.new-session-modal-card .command-modal-body select:focus-visible,
+.new-session-modal-card .command-modal-body input:focus-visible {
+	outline: 0;
+	border-color: #1d4ed8;
+	box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+}
+
+.new-session-field-help {
+	font-size: 0.76rem;
+	line-height: 1.35;
+	color: #475569;
+	border: 1px solid #e2e8f0;
+	background: #f8fafc;
+	border-radius: 8px;
+	padding: 0.4rem 0.52rem;
+}
+
+.new-session-permission-risk {
+	margin-top: 0.06rem;
+	font-size: 0.78rem;
+	line-height: 1.35;
+	font-weight: 600;
+	border: 1px solid #cbd5e1;
+	border-radius: 8px;
+	padding: 0.45rem 0.58rem;
+	background: #f8fafc;
+	color: #334155;
+}
+
+.new-session-modal-card select.risk-safe {
+	border-color: #16a34a;
+	background: #f0fdf4;
+}
+
+.new-session-modal-card select.risk-caution {
+	border-color: #f59e0b;
+	background: #fffbeb;
+}
+
+.new-session-modal-card select.risk-danger {
+	border-color: #ef4444;
+	background: #fef2f2;
+}
+
+.new-session-permission-risk.risk-neutral {
+	border-color: #cbd5e1;
+	background: #f8fafc;
+	color: #334155;
+}
+
+.new-session-permission-risk.risk-safe {
+	border-color: #86efac;
+	background: #f0fdf4;
+	color: #166534;
+}
+
+.new-session-permission-risk.risk-caution {
+	border-color: #fcd34d;
+	background: #fffbeb;
+	color: #92400e;
+}
+
+.new-session-permission-risk.risk-danger {
+	border-color: #fca5a5;
+	background: #fef2f2;
+	color: #b91c1c;
+}
+
 .command-modal-actions {
 	margin-top: 0.75rem;
 	display: flex;
@@ -2732,6 +2829,58 @@ html[data-theme="dark"] .prompt-queue-item {
 	background: #0f172a;
 	border-color: #475569;
 	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .new-session-modal-card .command-modal-body label {
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .new-session-field-help {
+	background: #0f172a;
+	border-color: #334155;
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .new-session-modal-card select.risk-safe {
+	border-color: #16a34a;
+	background: #132b1d;
+	color: #bbf7d0;
+}
+
+html[data-theme="dark"] .new-session-modal-card select.risk-caution {
+	border-color: #f59e0b;
+	background: #2f250f;
+	color: #fde68a;
+}
+
+html[data-theme="dark"] .new-session-modal-card select.risk-danger {
+	border-color: #f87171;
+	background: #33151a;
+	color: #fecaca;
+}
+
+html[data-theme="dark"] .new-session-permission-risk.risk-neutral {
+	background: #111827;
+	border-color: #334155;
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .new-session-permission-risk.risk-safe {
+	background: #132b1d;
+	border-color: #166534;
+	color: #bbf7d0;
+}
+
+html[data-theme="dark"] .new-session-permission-risk.risk-caution {
+	background: #2f250f;
+	border-color: #92400e;
+	color: #fde68a;
+}
+
+html[data-theme="dark"] .new-session-permission-risk.risk-danger {
+	background: #33151a;
+	border-color: #b91c1c;
+	color: #fecaca;
 }
 
 html[data-theme="dark"] .conversation-meta-menu {
