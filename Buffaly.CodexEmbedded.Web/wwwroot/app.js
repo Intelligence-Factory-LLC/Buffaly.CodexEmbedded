@@ -1778,7 +1778,7 @@ function updateConversationModelSummary() {
 
   const state = getActiveSessionState();
   if (!state) {
-    conversationModelSummary.textContent = "Model: default | reasoning: default";
+    conversationModelSummary.textContent = "default | default";
     conversationModelSummary.title = "";
     return;
   }
@@ -1792,7 +1792,7 @@ function updateConversationModelSummary() {
 
   const modelLabel = modelValue || "default";
   const reasoningLabel = reasoningValue || "default";
-  const summary = `Model: ${modelLabel} | reasoning: ${reasoningLabel}`;
+  const summary = `${modelLabel} | ${reasoningLabel}`;
   conversationModelSummary.textContent = summary;
   conversationModelSummary.title = summary;
 }

@@ -72,19 +72,17 @@
 				<div class="panel-title panel-title-row conversation-title-row">
 					<span id="conversationTitle" class="conversation-title-text">Conversation</span>
 					<div id="sessionMeta" class="conversation-meta">
-						<span id="conversationModelSummary" class="conversation-model-summary">Model: default | reasoning: default</span>
+						<span id="conversationModelSummary" class="conversation-model-summary">default | default</span>
 						<button id="conversationMetaMenuBtn" class="conversation-meta-menu-btn" type="button" title="Conversation settings" aria-label="Conversation settings" aria-haspopup="true" aria-expanded="false">
 							<i class="bi bi-sliders" aria-hidden="true"></i>
 							<span class="visually-hidden">Conversation settings</span>
 						</button>
 						<div id="conversationMetaMenu" class="conversation-meta-menu hidden">
 							<div id="sessionMetaModelItem" class="conversation-meta-menu-row conversation-meta-model conversation-meta-detail">
-								<label for="conversationModelSelect">Model</label>
-								<select id="conversationModelSelect"></select>
+								<select id="conversationModelSelect" aria-label="Model"></select>
 							</div>
 							<div class="conversation-meta-menu-row conversation-meta-reasoning-row">
-								<label for="conversationReasoningSelect">Reasoning</label>
-								<select id="conversationReasoningSelect"></select>
+								<select id="conversationReasoningSelect" aria-label="Level"></select>
 							</div>
 							<div id="permissionLevelIndicator" class="conversation-meta-menu-permissions" title="Session permissions">Permissions: unavailable</div>
 							<button id="jumpToBtn" class="conversation-jump-btn conversation-jump-menu-btn" type="button" title="Click to expand all turn details" aria-label="Click to expand all turn details" aria-expanded="true">
@@ -233,6 +231,6 @@
 	</div>
 	<script src="theme.js?v=20260225-settings1"></script>
 	<script src="sessionTimeline.js?v=20260224-turnfmt1"></script>
-	<script src="app.js?v=20260225-settings3"></script>
+	<script src="app.js?v=20260225-settings4"></script>
 </body>
 </html>
