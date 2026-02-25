@@ -66,6 +66,11 @@ let jumpCollapseMode = false;
 let conversationMetaMenuOpen = false;
 let planModeNextTurn = false;
 let configuredDefaultModel = "";
+let speechRecorder = null;
+let speechStream = null;
+let speechChunks = [];
+let speechRecording = false;
+let speechUploadInFlight = false;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -123,6 +128,7 @@ const permissionLevelIndicator = document.getElementById("permissionLevelIndicat
 const composerImages = document.getElementById("composerImages");
 const imageUploadInput = document.getElementById("imageUploadInput");
 const imageUploadBtn = document.getElementById("imageUploadBtn");
+const speechToTextBtn = document.getElementById("speechToTextBtn");
 const planTurnToggleBtn = document.getElementById("planTurnToggleBtn");
 const queuePromptBtn = document.getElementById("queuePromptBtn");
 const cancelTurnBtn = document.getElementById("cancelTurnBtn");
@@ -3795,6 +3801,222 @@ async function addComposerFiles(filesLike) {
   renderComposerImages();
 }
 
+function isSpeechToTextSupported() {
+  return typeof window.MediaRecorder === "function"
+    && !!navigator.mediaDevices
+    && typeof navigator.mediaDevices.getUserMedia === "function";
+}
+
+function setSpeechButtonState(state) {
+  if (!speechToTextBtn) {
+    return;
+  }
+
+  const icon = speechToTextBtn.querySelector("i");
+  speechToTextBtn.classList.toggle("is-recording", state === "recording");
+  speechToTextBtn.disabled = state === "busy" || state === "disabled";
+
+  if (icon) {
+    if (state === "recording") {
+      icon.className = "bi bi-stop-fill";
+    } else if (state === "busy") {
+      icon.className = "bi bi-arrow-repeat";
+    } else {
+      icon.className = "bi bi-mic-fill";
+    }
+  }
+
+  if (state === "recording") {
+    speechToTextBtn.title = "Stop recording and transcribe";
+    speechToTextBtn.setAttribute("aria-label", "Stop recording and transcribe");
+  } else if (state === "busy") {
+    speechToTextBtn.title = "Transcribing...";
+    speechToTextBtn.setAttribute("aria-label", "Transcribing...");
+  } else if (state === "disabled") {
+    speechToTextBtn.title = "Speech-to-text is unavailable in this browser";
+    speechToTextBtn.setAttribute("aria-label", "Speech-to-text is unavailable in this browser");
+  } else {
+    speechToTextBtn.title = "Record speech to text";
+    speechToTextBtn.setAttribute("aria-label", "Record speech to text");
+  }
+}
+
+function stopSpeechStreamTracks() {
+  if (!speechStream) {
+    return;
+  }
+
+  for (const track of speechStream.getTracks()) {
+    try {
+      track.stop();
+    } catch {
+    }
+  }
+
+  speechStream = null;
+}
+
+async function startSpeechCapture() {
+  if (speechRecording || speechUploadInFlight) {
+    return;
+  }
+  if (!isSpeechToTextSupported()) {
+    setSpeechButtonState("disabled");
+    appendLog("[voice] speech-to-text is not supported in this browser");
+    return;
+  }
+
+  const preferredMimeTypes = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4"
+  ];
+  let selectedMimeType = "";
+  for (const candidate of preferredMimeTypes) {
+    if (window.MediaRecorder.isTypeSupported(candidate)) {
+      selectedMimeType = candidate;
+      break;
+    }
+  }
+
+  try {
+    speechStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    speechChunks = [];
+    speechRecorder = selectedMimeType
+      ? new MediaRecorder(speechStream, { mimeType: selectedMimeType })
+      : new MediaRecorder(speechStream);
+    speechRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        speechChunks.push(event.data);
+      }
+    };
+    speechRecorder.start(250);
+    speechRecording = true;
+    setSpeechButtonState("recording");
+  } catch (error) {
+    speechRecording = false;
+    speechRecorder = null;
+    speechChunks = [];
+    stopSpeechStreamTracks();
+    setSpeechButtonState("idle");
+    appendLog(`[voice] unable to start microphone capture: ${error}`);
+  }
+}
+
+async function transcribeSpeechBlob(blob) {
+  const extension = blob.type.includes("wav")
+    ? "wav"
+    : (blob.type.includes("mp4") || blob.type.includes("m4a")) ? "m4a" : "webm";
+  const formData = new FormData();
+  formData.append("file", blob, `speech_${Date.now()}.${extension}`);
+  const response = await fetch(new URL("api/transcribe", document.baseURI), {
+    method: "POST",
+    body: formData
+  });
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`;
+    try {
+      const raw = (await response.text()).trim();
+      if (raw) {
+        detail = raw;
+      }
+    } catch {
+    }
+
+    throw new Error(detail);
+  }
+
+  return response.text();
+}
+
+function appendSpeechTranscript(text) {
+  if (!promptInput) {
+    return;
+  }
+
+  const normalized = String(text || "").trim();
+  if (!normalized) {
+    appendLog("[voice] transcription returned no text");
+    return;
+  }
+
+  const prior = promptInput.value || "";
+  const separator = prior && !/\s$/.test(prior) ? "\n" : "";
+  promptInput.value = `${prior}${separator}${normalized}`;
+  rememberPromptDraftForState(getActiveSessionState());
+  promptInput.focus();
+  promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
+  appendLog("[voice] transcription appended to prompt");
+}
+
+async function stopSpeechCaptureAndTranscribe() {
+  if (!speechRecorder || speechUploadInFlight) {
+    return;
+  }
+
+  speechUploadInFlight = true;
+  setSpeechButtonState("busy");
+
+  const recorder = speechRecorder;
+  const mimeType = recorder.mimeType || "audio/webm";
+  try {
+    const recordedBlob = await new Promise((resolve, reject) => {
+      const handleStop = () => {
+        recorder.removeEventListener("stop", handleStop);
+        recorder.removeEventListener("error", handleError);
+        resolve(new Blob(speechChunks, { type: mimeType }));
+      };
+      const handleError = (event) => {
+        recorder.removeEventListener("stop", handleStop);
+        recorder.removeEventListener("error", handleError);
+        const err = event && event.error ? event.error : new Error("MediaRecorder error");
+        reject(err);
+      };
+
+      recorder.addEventListener("stop", handleStop, { once: true });
+      recorder.addEventListener("error", handleError, { once: true });
+
+      if (recorder.state === "inactive") {
+        handleStop();
+        return;
+      }
+
+      recorder.stop();
+    });
+
+    const blob = recordedBlob;
+    if (!blob || blob.size <= 0) {
+      appendLog("[voice] recorded audio is empty");
+      return;
+    }
+
+    const transcript = await transcribeSpeechBlob(blob);
+    appendSpeechTranscript(transcript);
+  } catch (error) {
+    appendLog(`[voice] transcription failed: ${error}`);
+  } finally {
+    speechRecording = false;
+    speechUploadInFlight = false;
+    speechRecorder = null;
+    speechChunks = [];
+    stopSpeechStreamTracks();
+    setSpeechButtonState("idle");
+  }
+}
+
+async function toggleSpeechToTextCapture() {
+  if (speechUploadInFlight) {
+    return;
+  }
+
+  if (speechRecording) {
+    await stopSpeechCaptureAndTranscribe();
+    return;
+  }
+
+  await startSpeechCapture();
+}
+
 function getQueuedTurnsForSession(sessionId) {
   if (!sessionId) {
     return [];
@@ -6466,20 +6688,33 @@ if (jumpToBtn) {
   });
 }
 
-imageUploadBtn.addEventListener("click", () => {
-  imageUploadInput.click();
-});
+if (imageUploadBtn && imageUploadInput) {
+  imageUploadBtn.addEventListener("click", () => {
+    imageUploadInput.click();
+  });
 
-imageUploadInput.addEventListener("change", async () => {
-  const files = imageUploadInput.files;
-  if (!files || files.length === 0) {
-    return;
+  imageUploadInput.addEventListener("change", async () => {
+    const files = imageUploadInput.files;
+    if (!files || files.length === 0) {
+      return;
+    }
+
+    await addComposerFiles(files);
+    imageUploadInput.value = "";
+    promptInput.focus();
+  });
+}
+
+if (speechToTextBtn) {
+  if (!isSpeechToTextSupported()) {
+    setSpeechButtonState("disabled");
+  } else {
+    setSpeechButtonState("idle");
+    speechToTextBtn.addEventListener("click", () => {
+      toggleSpeechToTextCapture().catch((error) => appendLog(`[voice] capture failed: ${error}`));
+    });
   }
-
-  await addComposerFiles(files);
-  imageUploadInput.value = "";
-  promptInput.focus();
-});
+}
 
 promptInput.addEventListener("paste", async (event) => {
   const items = Array.from(event.clipboardData?.items || []);
@@ -6886,6 +7121,13 @@ window.addEventListener("resize", () => {
 
 window.addEventListener("beforeunload", () => {
   rememberPromptDraftForState(getActiveSessionState());
+  try {
+    if (speechRecorder && speechRecorder.state !== "inactive") {
+      speechRecorder.stop();
+    }
+  } catch {
+  }
+  stopSpeechStreamTracks();
 });
 
 applySavedUiSettings();

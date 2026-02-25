@@ -8,6 +8,11 @@ const sidebarBackdrop = document.getElementById("sidebarBackdrop");
 const themeModeToggle = document.getElementById("themeModeToggle");
 const themeModeValue = document.getElementById("themeModeValue");
 
+const openAiKeyInput = document.getElementById("openAiKeyInput");
+const openAiKeySaveBtn = document.getElementById("openAiKeySaveBtn");
+const openAiKeyClearBtn = document.getElementById("openAiKeyClearBtn");
+const openAiKeyStatus = document.getElementById("openAiKeyStatus");
+
 function isMobileViewport() {
   return window.matchMedia("(max-width: 900px)").matches;
 }
@@ -116,6 +121,134 @@ function refreshThemeModeUi() {
   }
 }
 
+function setKeyUiBusy(isBusy) {
+  if (openAiKeyInput) {
+    openAiKeyInput.disabled = isBusy;
+  }
+  if (openAiKeySaveBtn) {
+    openAiKeySaveBtn.disabled = isBusy;
+  }
+  if (openAiKeyClearBtn) {
+    openAiKeyClearBtn.disabled = isBusy;
+  }
+}
+
+function setKeyStatusText(text, status = "") {
+  if (!openAiKeyStatus) {
+    return;
+  }
+
+  openAiKeyStatus.textContent = text || "";
+  openAiKeyStatus.classList.toggle("error", status === "error");
+  openAiKeyStatus.classList.toggle("success", status === "success");
+}
+
+function formatUpdatedAt(value) {
+  if (!value || typeof value !== "string") {
+    return "";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+
+  return parsed.toLocaleString();
+}
+
+function renderKeyStatus(payload, prefix = "") {
+  const hasKey = payload && payload.hasKey === true;
+  if (!hasKey) {
+    setKeyStatusText(prefix ? `${prefix} No key saved.` : "No key saved.");
+    return;
+  }
+
+  const hint = typeof payload.maskedKeyHint === "string" ? payload.maskedKeyHint : "****";
+  const updated = formatUpdatedAt(payload.updatedAtUtc);
+  const details = updated ? ` Updated ${updated}.` : "";
+  const start = prefix ? `${prefix} ` : "";
+  setKeyStatusText(`${start}Saved key: ${hint}.${details}`, prefix ? "success" : "");
+}
+
+async function readJsonOrThrow(response) {
+  if (response.ok) {
+    return response.json();
+  }
+
+  let message = `HTTP ${response.status}`;
+  try {
+    const text = (await response.text()).trim();
+    if (text) {
+      message = text;
+    }
+  } catch {
+  }
+
+  throw new Error(message);
+}
+
+async function loadOpenAiKeyStatus() {
+  if (!openAiKeyStatus) {
+    return;
+  }
+
+  setKeyStatusText("Checking key status...");
+  try {
+    const response = await fetch(new URL("api/settings/openai-key/status", document.baseURI), { cache: "no-store" });
+    const payload = await readJsonOrThrow(response);
+    renderKeyStatus(payload);
+  } catch (error) {
+    setKeyStatusText(`Failed to load key status: ${error}`, "error");
+  }
+}
+
+async function saveOpenAiKey() {
+  if (!openAiKeyInput) {
+    return;
+  }
+
+  const apiKey = openAiKeyInput.value.trim();
+  if (!apiKey) {
+    setKeyStatusText("Enter an OpenAI key before saving.", "error");
+    openAiKeyInput.focus();
+    return;
+  }
+
+  setKeyUiBusy(true);
+  setKeyStatusText("Saving key...");
+  try {
+    const response = await fetch(new URL("api/settings/openai-key", document.baseURI), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey })
+    });
+    const payload = await readJsonOrThrow(response);
+    openAiKeyInput.value = "";
+    renderKeyStatus(payload, "Key saved.");
+  } catch (error) {
+    setKeyStatusText(`Failed to save key: ${error}`, "error");
+  } finally {
+    setKeyUiBusy(false);
+  }
+}
+
+async function clearOpenAiKey() {
+  setKeyUiBusy(true);
+  setKeyStatusText("Clearing key...");
+  try {
+    const response = await fetch(new URL("api/settings/openai-key", document.baseURI), { method: "DELETE" });
+    await readJsonOrThrow(response);
+    if (openAiKeyInput) {
+      openAiKeyInput.value = "";
+    }
+    setKeyStatusText("Key cleared.", "success");
+  } catch (error) {
+    setKeyStatusText(`Failed to clear key: ${error}`, "error");
+  } finally {
+    setKeyUiBusy(false);
+  }
+}
+
 if (sidebarToggleBtn) {
   sidebarToggleBtn.addEventListener("click", () => {
     if (isMobileViewport()) {
@@ -145,6 +278,27 @@ if (themeModeToggle) {
   });
 }
 
+if (openAiKeySaveBtn) {
+  openAiKeySaveBtn.addEventListener("click", () => {
+    saveOpenAiKey().catch((error) => setKeyStatusText(`Failed to save key: ${error}`, "error"));
+  });
+}
+
+if (openAiKeyClearBtn) {
+  openAiKeyClearBtn.addEventListener("click", () => {
+    clearOpenAiKey().catch((error) => setKeyStatusText(`Failed to clear key: ${error}`, "error"));
+  });
+}
+
+if (openAiKeyInput) {
+  openAiKeyInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      saveOpenAiKey().catch((error) => setKeyStatusText(`Failed to save key: ${error}`, "error"));
+    }
+  });
+}
+
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
     return;
@@ -167,3 +321,4 @@ const sidebarCollapsed = localStorage.getItem(STORAGE_SIDEBAR_COLLAPSED_KEY) ===
 applySidebarCollapsed(sidebarCollapsed);
 setMobileProjectsOpen(false);
 refreshThemeModeUi();
+loadOpenAiKeyStatus().catch((error) => setKeyStatusText(`Failed to load key status: ${error}`, "error"));

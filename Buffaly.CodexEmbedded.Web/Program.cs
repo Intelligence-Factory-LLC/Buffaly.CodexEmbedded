@@ -20,11 +20,18 @@ builder.Logging.AddConsole();
 builder.Logging.AddDebug();
 
 var defaults = WebRuntimeDefaults.Load(builder.Configuration);
+var userSecretsOptions = UserSecretsOptions.Load(builder.Configuration);
 builder.Services.AddSingleton(defaults);
+builder.Services.AddSingleton(userSecretsOptions);
 builder.Services.AddSingleton<SessionOrchestrator>();
 builder.Services.AddSingleton<ServerRuntimeStateTracker>();
 builder.Services.AddSingleton<TimelineProjectionService>();
 builder.Services.AddSingleton<RecapQueryService>();
+builder.Services.AddSingleton<UserIdentityResolver>();
+builder.Services.AddSingleton<UserOpenAiKeyStore>();
+builder.Services.AddSingleton<OpenAiTranscriptionClient>();
+builder.Services.AddDataProtection();
+builder.Services.AddHttpClient();
 
 var app = builder.Build();
 app.UseDefaultFiles();
@@ -485,6 +492,153 @@ app.MapGet("/api/security/config", (WebRuntimeDefaults defaults) =>
 	});
 });
 
+app.MapGet("/api/settings/openai-key/status", async (
+	HttpContext context,
+	WebRuntimeDefaults defaults,
+	UserIdentityResolver userIdentityResolver,
+	UserOpenAiKeyStore userOpenAiKeyStore) =>
+{
+	if (!IsHttpRequestAuthorized(context.Request, defaults))
+	{
+		return Results.Unauthorized();
+	}
+
+	var userId = userIdentityResolver.ResolveUserId(context);
+	var status = await userOpenAiKeyStore.GetStatusAsync(userId, context.RequestAborted);
+	return Results.Ok(new
+	{
+		hasKey = status.HasKey,
+		maskedKeyHint = status.MaskedKeyHint,
+		updatedAtUtc = status.UpdatedAtUtc
+	});
+});
+
+app.MapPut("/api/settings/openai-key", async (
+	HttpContext context,
+	OpenAiKeyUpdateRequest body,
+	WebRuntimeDefaults defaults,
+	UserIdentityResolver userIdentityResolver,
+	UserOpenAiKeyStore userOpenAiKeyStore) =>
+{
+	if (!IsHttpRequestAuthorized(context.Request, defaults))
+	{
+		return Results.Unauthorized();
+	}
+
+	var apiKey = body?.ApiKey?.Trim() ?? string.Empty;
+	if (string.IsNullOrWhiteSpace(apiKey))
+	{
+		return Results.BadRequest(new { message = "apiKey is required." });
+	}
+
+	var userId = userIdentityResolver.ResolveUserId(context);
+	await userOpenAiKeyStore.SaveAsync(userId, apiKey, context.RequestAborted);
+	var status = await userOpenAiKeyStore.GetStatusAsync(userId, context.RequestAborted);
+	return Results.Ok(new
+	{
+		hasKey = status.HasKey,
+		maskedKeyHint = status.MaskedKeyHint,
+		updatedAtUtc = status.UpdatedAtUtc
+	});
+});
+
+app.MapDelete("/api/settings/openai-key", async (
+	HttpContext context,
+	WebRuntimeDefaults defaults,
+	UserIdentityResolver userIdentityResolver,
+	UserOpenAiKeyStore userOpenAiKeyStore) =>
+{
+	if (!IsHttpRequestAuthorized(context.Request, defaults))
+	{
+		return Results.Unauthorized();
+	}
+
+	var userId = userIdentityResolver.ResolveUserId(context);
+	await userOpenAiKeyStore.DeleteAsync(userId, context.RequestAborted);
+	return Results.Ok(new
+	{
+		hasKey = false,
+		maskedKeyHint = (string?)null,
+		updatedAtUtc = (string?)null
+	});
+});
+
+app.MapPost("/api/transcribe", async (
+	HttpContext context,
+	WebRuntimeDefaults defaults,
+	UserIdentityResolver userIdentityResolver,
+	UserOpenAiKeyStore userOpenAiKeyStore,
+	OpenAiTranscriptionClient openAiTranscriptionClient) =>
+{
+	if (!IsHttpRequestAuthorized(context.Request, defaults))
+	{
+		return Results.Unauthorized();
+	}
+
+	var userId = userIdentityResolver.ResolveUserId(context);
+	var apiKey = await userOpenAiKeyStore.TryGetApiKeyAsync(userId, context.RequestAborted);
+	if (string.IsNullOrWhiteSpace(apiKey))
+	{
+		return Results.BadRequest(new { message = "OpenAI API key is not configured. Set it in Settings before using speech-to-text." });
+	}
+
+	if (!context.Request.HasFormContentType)
+	{
+		return Results.BadRequest(new { message = "Expected multipart form upload with field 'file'." });
+	}
+
+	var form = await context.Request.ReadFormAsync(context.RequestAborted);
+	if (form.Files.Count == 0)
+	{
+		return Results.BadRequest(new { message = "No audio file was uploaded." });
+	}
+
+	var file = form.Files[0];
+	if (file.Length <= 0)
+	{
+		return Results.BadRequest(new { message = "Audio file is empty." });
+	}
+	if (file.Length > (15 * 1024 * 1024))
+	{
+		return Results.BadRequest(new { message = "Audio file exceeds 15 MB limit." });
+	}
+
+	byte[] audioBytes;
+	using (var memoryStream = new MemoryStream())
+	{
+		await file.CopyToAsync(memoryStream, context.RequestAborted);
+		audioBytes = memoryStream.ToArray();
+	}
+
+	try
+	{
+		var transcript = await openAiTranscriptionClient.TranscribeAsync(
+			apiKey,
+			audioBytes,
+			file.FileName,
+			file.ContentType,
+			"whisper-1",
+			context.RequestAborted);
+		return Results.Text(transcript ?? string.Empty, "text/plain; charset=utf-8");
+	}
+	catch (OpenAiTranscriptionException ex)
+	{
+		Logs.DebugLog.WriteEvent("Transcribe", ex.Message);
+		return Results.Problem(
+			statusCode: StatusCodes.Status502BadGateway,
+			title: "Transcription request failed.",
+			detail: "OpenAI transcription request failed.");
+	}
+	catch (Exception ex)
+	{
+		Logs.LogError(ex);
+		return Results.Problem(
+			statusCode: StatusCodes.Status500InternalServerError,
+			title: "Transcription failed.",
+			detail: "Unable to transcribe uploaded audio.");
+	}
+});
+
 app.MapGet("/api/server/state/current", (
 	SessionOrchestrator orchestrator,
 	WebRuntimeDefaults defaults,
@@ -739,6 +893,16 @@ static bool IsExpectedWebSocketDisconnect(WebSocketException ex)
 	}
 
 	return false;
+}
+
+static bool IsHttpRequestAuthorized(HttpRequest request, WebRuntimeDefaults defaults)
+{
+	if (!defaults.WebSocketAuthRequired || string.IsNullOrWhiteSpace(defaults.WebSocketAuthToken))
+	{
+		return true;
+	}
+
+	return WebSocketAuthGuard.IsAuthorized(request, defaults.WebSocketAuthToken);
 }
 
 try
@@ -2364,3 +2528,5 @@ internal sealed class ServerRuntimeStateTracker
 		int TotalWebSocketConnectionsAccepted,
 		DateTimeOffset? LastWebSocketAcceptedUtc);
 }
+
+internal sealed record OpenAiKeyUpdateRequest(string? ApiKey);

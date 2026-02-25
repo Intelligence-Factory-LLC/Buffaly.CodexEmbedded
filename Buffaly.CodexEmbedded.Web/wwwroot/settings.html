@@ -65,12 +65,23 @@
 						</label>
 						<div id="themeModeValue" class="settings-mode-value">Light mode enabled</div>
 					</section>
+					<section class="settings-section">
+						<h2 class="settings-section-title">Voice and OpenAI</h2>
+						<p class="settings-section-copy">Set your OpenAI API key for speech-to-text. The key is stored encrypted on the server and never shown in full.</p>
+						<label class="settings-field-label" for="openAiKeyInput">OpenAI API key</label>
+						<input id="openAiKeyInput" class="settings-input" type="password" autocomplete="off" spellcheck="false" placeholder="sk-...">
+						<div class="settings-actions">
+							<button id="openAiKeySaveBtn" class="settings-action-btn primary" type="button">Save key</button>
+							<button id="openAiKeyClearBtn" class="settings-action-btn" type="button">Clear key</button>
+						</div>
+						<div id="openAiKeyStatus" class="settings-mode-value">Checking key status...</div>
+					</section>
 				</div>
 			</section>
 		</main>
 		<button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close projects"></button>
 	</div>
 	<script src="theme.js?v=20260225-settings1"></script>
-	<script src="settings.js?v=20260225-settings1"></script>
+	<script src="settings.js?v=20260225-voice1"></script>
 </body>
 </html>

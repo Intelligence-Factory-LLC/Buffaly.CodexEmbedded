@@ -1495,11 +1495,70 @@ body {
 	font-size: 0.82rem;
 }
 
+.settings-mode-value.error {
+	color: #b91c1c;
+}
+
+.settings-mode-value.success {
+	color: #166534;
+}
+
+.settings-field-label {
+	margin-top: 0.75rem;
+	display: block;
+	font-size: 0.8rem;
+	font-weight: 700;
+	color: #1e293b;
+}
+
+.settings-input {
+	margin-top: 0.35rem;
+	display: block;
+	width: 100%;
+	max-width: 430px;
+	padding: 0.48rem 0.58rem;
+	border: 1px solid #cbd5e1;
+	border-radius: 8px;
+	background: #ffffff;
+	color: #0f172a;
+	font: inherit;
+}
+
+.settings-actions {
+	margin-top: 0.62rem;
+	display: inline-flex;
+	align-items: center;
+	gap: 0.42rem;
+}
+
+.settings-action-btn {
+	padding: 0.42rem 0.72rem;
+	border: 1px solid #cbd5e1;
+	border-radius: 8px;
+	background: #ffffff;
+	color: #1e293b;
+	font: inherit;
+	font-size: 0.82rem;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.settings-action-btn.primary {
+	background: #0f766e;
+	border-color: #0f766e;
+	color: #ffffff;
+}
+
+.settings-action-btn:disabled {
+	opacity: 0.65;
+	cursor: default;
+}
+
 .prompt-form textarea {
 	display: block;
 	width: 100%;
 	min-width: 0;
-	padding: 0.75rem 9.85rem 2.95rem 0.9rem;
+	padding: 0.75rem 12.2rem 2.95rem 0.9rem;
 	border: 1px solid #d1d5db;
 	border-radius: 18px;
 	min-height: 7.2rem;
@@ -1610,6 +1669,31 @@ body {
 	justify-content: center;
 	border-radius: 999px !important;
 	margin-right: 0;
+}
+
+.prompt-speech-btn {
+	background: #ffffff !important;
+	color: #334155 !important;
+	border: 1px solid #d1d5db !important;
+	width: 2.25rem;
+	height: 2.25rem;
+	padding: 0 !important;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 999px !important;
+}
+
+.prompt-speech-btn.is-recording {
+	background: #b91c1c !important;
+	color: #ffffff !important;
+	border-color: #b91c1c !important;
+	box-shadow: 0 8px 18px rgba(185, 28, 28, 0.24);
+}
+
+.prompt-speech-btn:disabled {
+	opacity: 0.66;
+	cursor: default;
 }
 
 .prompt-plan-btn {
@@ -2820,6 +2904,36 @@ html[data-theme="dark"] .about-muted {
 	color: #94a3b8;
 }
 
+html[data-theme="dark"] .settings-field-label {
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .settings-input {
+	background: #0f172a;
+	border-color: #475569;
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .settings-action-btn {
+	background: #0f172a;
+	border-color: #475569;
+	color: #dbeafe;
+}
+
+html[data-theme="dark"] .settings-action-btn.primary {
+	background: #1d4ed8;
+	border-color: #60a5fa;
+	color: #ffffff;
+}
+
+html[data-theme="dark"] .settings-mode-value.error {
+	color: #fca5a5;
+}
+
+html[data-theme="dark"] .settings-mode-value.success {
+	color: #86efac;
+}
+
 html[data-theme="dark"] .project-path {
 	color: #b4c4d6;
 }
@@ -3010,6 +3124,18 @@ html[data-theme="dark"] .prompt-plan-btn {
 	background: #0f172a !important;
 	border-color: #475569 !important;
 	color: #cbd5e1 !important;
+}
+
+html[data-theme="dark"] .prompt-speech-btn {
+	background: #0f172a !important;
+	border-color: #475569 !important;
+	color: #cbd5e1 !important;
+}
+
+html[data-theme="dark"] .prompt-speech-btn.is-recording {
+	background: #991b1b !important;
+	border-color: #ef4444 !important;
+	color: #ffffff !important;
 }
 
 html[data-theme="dark"] .prompt-plan-btn:hover {
@@ -3464,7 +3590,7 @@ html[data-theme="dark"] .server-table td {
 		width: 100%;
 		min-height: 5.2rem;
 		max-height: 10rem;
-		padding: 0.5rem 8.4rem 2.55rem 0.62rem;
+		padding: 0.5rem 10.6rem 2.55rem 0.62rem;
 	}
 
 	.prompt-form textarea:focus {
@@ -3509,6 +3635,11 @@ html[data-theme="dark"] .server-table td {
 		width: 2rem;
 		height: 2rem;
 		margin-right: 0;
+	}
+
+	.prompt-speech-btn {
+		width: 2rem;
+		height: 2rem;
 	}
 
 	.prompt-plan-btn {
