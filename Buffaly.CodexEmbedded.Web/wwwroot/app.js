@@ -4,6 +4,17 @@ const LOG_FLUSH_INTERVAL_MS = 250;
 const MAX_RENDERED_CLIENT_LOG_LINES = 800;
 const ENABLE_CONSOLE_LOG_FALLBACK = false;
 const INDEX_TIMELINE_SOURCE = "logs"; // keep index timeline poll-based; backend now serves consolidated turns from logs
+const IS_RECAP_MODE = (window.location.pathname || "").replace(/\/+$/g, "").toLowerCase() === "/recap";
+const RECAP_APPROVAL_POLICY = "never";
+const RECAP_SANDBOX_MODE = "read-only";
+const RECAP_THREAD_NAME = "Recap";
+const RECAP_DEVELOPER_INSTRUCTIONS = [
+  "You are operating in recap mode.",
+  "Your task is to analyze Codex session files and related logs in the working directory to answer user questions.",
+  "Focus on open-ended recap and research requests such as daily reports, project summaries, and locating where work was implemented.",
+  "Prefer concrete evidence from the files (thread ids, paths, timestamps, snippets) when available.",
+  "If evidence is missing, say what is unknown and suggest the best next query."
+].join(" ");
 
 let socket = null;
 let socketReadyPromise = null;
@@ -66,11 +77,8 @@ let jumpCollapseMode = false;
 let conversationMetaMenuOpen = false;
 let planModeNextTurn = false;
 let configuredDefaultModel = "";
-let speechRecorder = null;
-let speechStream = null;
-let speechChunks = [];
-let speechRecording = false;
-let speechUploadInFlight = false;
+let scribeController = null;
+let recapRootPath = "";
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -2329,8 +2337,123 @@ function formatSessionSubtitle(entry) {
   return parts.join(" | ");
 }
 
+function getRecapWorkingDirectory() {
+  if (!IS_RECAP_MODE) {
+    return normalizeProjectCwd(cwdInput.value.trim());
+  }
+
+  const preferred = normalizeProjectCwd(recapRootPath || "");
+  if (preferred) {
+    return preferred;
+  }
+
+  return normalizeProjectCwd(cwdInput.value.trim());
+}
+
+function buildCollaborationModePayload(planModeEnabled) {
+  if (!IS_RECAP_MODE) {
+    if (planModeEnabled === true) {
+      return { mode: "plan" };
+    }
+
+    return null;
+  }
+
+  return {
+    mode: planModeEnabled === true ? "plan" : "default",
+    settings: {
+      developerInstructions: RECAP_DEVELOPER_INSTRUCTIONS
+    }
+  };
+}
+
+async function initializeRecapMode() {
+  if (!IS_RECAP_MODE) {
+    return;
+  }
+
+  try {
+    const recapLink = document.querySelector('.sidebar-nav-link[href="recap"]');
+    const codexLink = document.querySelector('.sidebar-nav-link[href="./"]');
+    if (codexLink) {
+      codexLink.classList.remove("active");
+      codexLink.removeAttribute("aria-current");
+    }
+    if (recapLink) {
+      recapLink.classList.add("active");
+      recapLink.setAttribute("aria-current", "page");
+    }
+    if (sidebarExtrasGroup && sidebarExtrasGroup.classList.contains("hidden")) {
+      sidebarExtrasGroup.classList.remove("hidden");
+    }
+    if (sidebarExtrasToggleBtn) {
+      sidebarExtrasToggleBtn.setAttribute("aria-expanded", "true");
+      const icon = sidebarExtrasToggleBtn.querySelector(".sidebar-nav-toggle-icon");
+      if (icon) {
+        icon.classList.add("expanded");
+      }
+    }
+
+    if (newProjectSidebarBtn) {
+      newProjectSidebarBtn.classList.add("hidden");
+    }
+    if (newProjectBtn) {
+      newProjectBtn.classList.add("hidden");
+    }
+    if (attachSessionBtn) {
+      attachSessionBtn.classList.add("hidden");
+    }
+    if (existingSessionSelect) {
+      existingSessionSelect.classList.add("hidden");
+    }
+
+    if (conversationApprovalSelect) {
+      conversationApprovalSelect.value = RECAP_APPROVAL_POLICY;
+      conversationApprovalSelect.disabled = true;
+    }
+    if (conversationSandboxSelect) {
+      conversationSandboxSelect.value = RECAP_SANDBOX_MODE;
+      conversationSandboxSelect.disabled = true;
+    }
+    if (newSessionApprovalSelect) {
+      newSessionApprovalSelect.value = RECAP_APPROVAL_POLICY;
+      newSessionApprovalSelect.disabled = true;
+    }
+    if (newSessionSandboxSelect) {
+      newSessionSandboxSelect.value = RECAP_SANDBOX_MODE;
+      newSessionSandboxSelect.disabled = true;
+    }
+    if (conversationTitle) {
+      conversationTitle.textContent = "Recap Conversation";
+    }
+
+    let resolvedRoot = "";
+    try {
+      const response = await fetch("api/logs/sessions?limit=1", { cache: "no-store" });
+      if (response.ok) {
+        const payload = await response.json();
+        resolvedRoot = normalizeProjectCwd(payload?.codexHomePath || "");
+      }
+    } catch {
+    }
+
+    if (!resolvedRoot) {
+      resolvedRoot = normalizeProjectCwd(localStorage.getItem(STORAGE_CWD_KEY) || "");
+    }
+
+    if (resolvedRoot) {
+      recapRootPath = resolvedRoot;
+      cwdInput.value = resolvedRoot;
+      localStorage.setItem(STORAGE_CWD_KEY, resolvedRoot);
+      selectedProjectKey = getProjectKeyFromCwd(resolvedRoot);
+    }
+  } catch (error) {
+    appendLog(`[recap] setup failed: ${error}`);
+  }
+}
+
 async function createSessionForCwd(cwd, options = {}) {
-  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  const normalizedCwd = normalizeProjectCwd(IS_RECAP_MODE ? getRecapWorkingDirectory() : (cwd || ""));
   const hasProvidedName = Object.prototype.hasOwnProperty.call(options, "threadName");
   const shouldPromptName = options.askName === true && !hasProvidedName;
   const rawName = hasProvidedName
@@ -2362,11 +2485,17 @@ async function createSessionForCwd(cwd, options = {}) {
   if (effort) {
     payload.effort = effort;
   }
-  const approvalPolicy = normalizeApprovalPolicy(options.approvalPolicy ?? selectedApprovalValue() ?? "");
+  const approvalPolicy = normalizeApprovalPolicy(
+    IS_RECAP_MODE
+      ? RECAP_APPROVAL_POLICY
+      : (options.approvalPolicy ?? selectedApprovalValue() ?? ""));
   if (approvalPolicy) {
     payload.approvalPolicy = approvalPolicy;
   }
-  const sandboxMode = normalizeSandboxMode(options.sandbox ?? options.sandboxMode ?? selectedSandboxValue() ?? "");
+  const sandboxMode = normalizeSandboxMode(
+    IS_RECAP_MODE
+      ? RECAP_SANDBOX_MODE
+      : (options.sandbox ?? options.sandboxMode ?? selectedSandboxValue() ?? ""));
   if (sandboxMode) {
     payload.sandbox = sandboxMode;
   }
@@ -2407,7 +2536,10 @@ async function attachSessionByThreadId(threadId, cwd) {
   if (model) {
     payload.model = model;
   }
-  if (preferredPermission.found) {
+  if (IS_RECAP_MODE) {
+    payload.approvalPolicy = RECAP_APPROVAL_POLICY;
+    payload.sandbox = RECAP_SANDBOX_MODE;
+  } else if (preferredPermission.found) {
     if (preferredPermission.approval) {
       payload.approvalPolicy = preferredPermission.approval;
     }
@@ -2416,7 +2548,7 @@ async function attachSessionByThreadId(threadId, cwd) {
     }
   }
 
-  const normalizedCwd = normalizeProjectCwd(cwd || cwdInput.value.trim());
+  const normalizedCwd = normalizeProjectCwd(IS_RECAP_MODE ? getRecapWorkingDirectory() : (cwd || cwdInput.value.trim()));
   if (normalizedCwd) {
     payload.cwd = normalizedCwd;
     cwdInput.value = normalizedCwd;
@@ -3801,220 +3933,34 @@ async function addComposerFiles(filesLike) {
   renderComposerImages();
 }
 
-function isSpeechToTextSupported() {
-  return typeof window.MediaRecorder === "function"
-    && !!navigator.mediaDevices
-    && typeof navigator.mediaDevices.getUserMedia === "function";
-}
-
-function setSpeechButtonState(state) {
-  if (!speechToTextBtn) {
+function initializeScribeControl() {
+  if (!speechToTextBtn || !promptInput) {
     return;
   }
 
-  const icon = speechToTextBtn.querySelector("i");
-  speechToTextBtn.classList.toggle("is-recording", state === "recording");
-  speechToTextBtn.disabled = state === "busy" || state === "disabled";
-
-  if (icon) {
-    if (state === "recording") {
-      icon.className = "bi bi-stop-fill";
-    } else if (state === "busy") {
-      icon.className = "bi bi-arrow-repeat";
-    } else {
-      icon.className = "bi bi-mic-fill";
-    }
-  }
-
-  if (state === "recording") {
-    speechToTextBtn.title = "Stop recording and transcribe";
-    speechToTextBtn.setAttribute("aria-label", "Stop recording and transcribe");
-  } else if (state === "busy") {
-    speechToTextBtn.title = "Transcribing...";
-    speechToTextBtn.setAttribute("aria-label", "Transcribing...");
-  } else if (state === "disabled") {
-    speechToTextBtn.title = "Speech-to-text is unavailable in this browser";
-    speechToTextBtn.setAttribute("aria-label", "Speech-to-text is unavailable in this browser");
-  } else {
-    speechToTextBtn.title = "Record speech to text";
-    speechToTextBtn.setAttribute("aria-label", "Record speech to text");
-  }
-}
-
-function stopSpeechStreamTracks() {
-  if (!speechStream) {
+  if (typeof window.initScribe !== "function") {
+    appendLog("[voice] scribe module is unavailable");
+    speechToTextBtn.disabled = true;
+    speechToTextBtn.title = "Speech-to-text failed to initialize";
+    speechToTextBtn.setAttribute("aria-label", "Speech-to-text failed to initialize");
     return;
   }
 
-  for (const track of speechStream.getTracks()) {
-    try {
-      track.stop();
-    } catch {
-    }
-  }
-
-  speechStream = null;
-}
-
-async function startSpeechCapture() {
-  if (speechRecording || speechUploadInFlight) {
-    return;
-  }
-  if (!isSpeechToTextSupported()) {
-    setSpeechButtonState("disabled");
-    appendLog("[voice] speech-to-text is not supported in this browser");
+  const targetId = (speechToTextBtn.dataset.scribeTarget || "").trim();
+  const target = targetId ? document.getElementById(targetId) : promptInput;
+  if (!target) {
+    appendLog("[voice] speech-to-text target field was not found");
+    speechToTextBtn.disabled = true;
     return;
   }
 
-  const preferredMimeTypes = [
-    "audio/webm;codecs=opus",
-    "audio/webm",
-    "audio/mp4"
-  ];
-  let selectedMimeType = "";
-  for (const candidate of preferredMimeTypes) {
-    if (window.MediaRecorder.isTypeSupported(candidate)) {
-      selectedMimeType = candidate;
-      break;
-    }
-  }
-
-  try {
-    speechStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    speechChunks = [];
-    speechRecorder = selectedMimeType
-      ? new MediaRecorder(speechStream, { mimeType: selectedMimeType })
-      : new MediaRecorder(speechStream);
-    speechRecorder.ondataavailable = (event) => {
-      if (event.data && event.data.size > 0) {
-        speechChunks.push(event.data);
-      }
-    };
-    speechRecorder.start(250);
-    speechRecording = true;
-    setSpeechButtonState("recording");
-  } catch (error) {
-    speechRecording = false;
-    speechRecorder = null;
-    speechChunks = [];
-    stopSpeechStreamTracks();
-    setSpeechButtonState("idle");
-    appendLog(`[voice] unable to start microphone capture: ${error}`);
-  }
-}
-
-async function transcribeSpeechBlob(blob) {
-  const extension = blob.type.includes("wav")
-    ? "wav"
-    : (blob.type.includes("mp4") || blob.type.includes("m4a")) ? "m4a" : "webm";
-  const formData = new FormData();
-  formData.append("file", blob, `speech_${Date.now()}.${extension}`);
-  const response = await fetch(new URL("api/transcribe", document.baseURI), {
-    method: "POST",
-    body: formData
+  scribeController = window.initScribe({
+    button: speechToTextBtn,
+    target,
+    transcribeUrl: new URL("api/transcribe", document.baseURI),
+    onLog: (message) => appendLog(message),
+    onDraftSync: () => rememberPromptDraftForState(getActiveSessionState())
   });
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const raw = (await response.text()).trim();
-      if (raw) {
-        detail = raw;
-      }
-    } catch {
-    }
-
-    throw new Error(detail);
-  }
-
-  return response.text();
-}
-
-function appendSpeechTranscript(text) {
-  if (!promptInput) {
-    return;
-  }
-
-  const normalized = String(text || "").trim();
-  if (!normalized) {
-    appendLog("[voice] transcription returned no text");
-    return;
-  }
-
-  const prior = promptInput.value || "";
-  const separator = prior && !/\s$/.test(prior) ? "\n" : "";
-  promptInput.value = `${prior}${separator}${normalized}`;
-  rememberPromptDraftForState(getActiveSessionState());
-  promptInput.focus();
-  promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
-  appendLog("[voice] transcription appended to prompt");
-}
-
-async function stopSpeechCaptureAndTranscribe() {
-  if (!speechRecorder || speechUploadInFlight) {
-    return;
-  }
-
-  speechUploadInFlight = true;
-  setSpeechButtonState("busy");
-
-  const recorder = speechRecorder;
-  const mimeType = recorder.mimeType || "audio/webm";
-  try {
-    const recordedBlob = await new Promise((resolve, reject) => {
-      const handleStop = () => {
-        recorder.removeEventListener("stop", handleStop);
-        recorder.removeEventListener("error", handleError);
-        resolve(new Blob(speechChunks, { type: mimeType }));
-      };
-      const handleError = (event) => {
-        recorder.removeEventListener("stop", handleStop);
-        recorder.removeEventListener("error", handleError);
-        const err = event && event.error ? event.error : new Error("MediaRecorder error");
-        reject(err);
-      };
-
-      recorder.addEventListener("stop", handleStop, { once: true });
-      recorder.addEventListener("error", handleError, { once: true });
-
-      if (recorder.state === "inactive") {
-        handleStop();
-        return;
-      }
-
-      recorder.stop();
-    });
-
-    const blob = recordedBlob;
-    if (!blob || blob.size <= 0) {
-      appendLog("[voice] recorded audio is empty");
-      return;
-    }
-
-    const transcript = await transcribeSpeechBlob(blob);
-    appendSpeechTranscript(transcript);
-  } catch (error) {
-    appendLog(`[voice] transcription failed: ${error}`);
-  } finally {
-    speechRecording = false;
-    speechUploadInFlight = false;
-    speechRecorder = null;
-    speechChunks = [];
-    stopSpeechStreamTracks();
-    setSpeechButtonState("idle");
-  }
-}
-
-async function toggleSpeechToTextCapture() {
-  if (speechUploadInFlight) {
-    return;
-  }
-
-  if (speechRecording) {
-    await stopSpeechCaptureAndTranscribe();
-    return;
-  }
-
-  await startSpeechCapture();
 }
 
 function getQueuedTurnsForSession(sessionId) {
@@ -4188,7 +4134,7 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
     return false;
   }
 
-  const turnCwd = cwdInput.value.trim();
+  const turnCwd = IS_RECAP_MODE ? getRecapWorkingDirectory() : cwdInput.value.trim();
   const state = sessions.get(sessionId);
   const turnModel = normalizeModelValue(state?.model || "");
   const turnEffort = normalizeReasoningEffort(state?.reasoningEffort || "");
@@ -4207,10 +4153,13 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
   if (turnEffort) {
     payload.effort = turnEffort;
   }
-  if (options.planMode === true) {
-    payload.collaborationMode = {
-      mode: "plan"
-    };
+  if (IS_RECAP_MODE) {
+    payload.approvalPolicy = RECAP_APPROVAL_POLICY;
+    payload.sandbox = RECAP_SANDBOX_MODE;
+  }
+  const collaborationMode = buildCollaborationModePayload(options.planMode === true);
+  if (collaborationMode) {
+    payload.collaborationMode = collaborationMode;
   }
 
   if (!send("turn_queue_add", payload)) {
@@ -4273,7 +4222,7 @@ function restoreQueuedPromptForEditing(text, images = []) {
 function startTurn(sessionId, promptText, images = [], options = {}) {
   const normalizedText = String(promptText || "").trim();
   const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
-  const turnCwd = cwdInput.value.trim();
+  const turnCwd = IS_RECAP_MODE ? getRecapWorkingDirectory() : cwdInput.value.trim();
   const state = sessions.get(sessionId);
   const turnModel = normalizeModelValue(state?.model || "");
   if (!sessionId || (!normalizedText && safeImages.length === 0)) {
@@ -4312,10 +4261,13 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
   if (turnEffort) {
     payload.effort = turnEffort;
   }
-  if (options.planMode === true) {
-    payload.collaborationMode = {
-      mode: "plan"
-    };
+  if (IS_RECAP_MODE) {
+    payload.approvalPolicy = RECAP_APPROVAL_POLICY;
+    payload.sandbox = RECAP_SANDBOX_MODE;
+  }
+  const collaborationMode = buildCollaborationModePayload(options.planMode === true);
+  if (collaborationMode) {
+    payload.collaborationMode = collaborationMode;
   }
   if (state && sessionId === activeSessionId && !turnCwd) {
     refreshSessionMeta();
@@ -6626,9 +6578,12 @@ reloadModelsBtn.addEventListener("click", async () => {
 });
 
 cwdInput.addEventListener("change", () => {
-  const normalized = normalizeProjectCwd(cwdInput.value.trim());
+  const normalized = normalizeProjectCwd(IS_RECAP_MODE ? getRecapWorkingDirectory() : cwdInput.value.trim());
   cwdInput.value = normalized;
   localStorage.setItem(STORAGE_CWD_KEY, normalized);
+  if (IS_RECAP_MODE && normalized) {
+    recapRootPath = normalized;
+  }
   if (normalized) {
     selectedProjectKey = getProjectKeyFromCwd(normalized);
   }
@@ -6705,16 +6660,7 @@ if (imageUploadBtn && imageUploadInput) {
   });
 }
 
-if (speechToTextBtn) {
-  if (!isSpeechToTextSupported()) {
-    setSpeechButtonState("disabled");
-  } else {
-    setSpeechButtonState("idle");
-    speechToTextBtn.addEventListener("click", () => {
-      toggleSpeechToTextCapture().catch((error) => appendLog(`[voice] capture failed: ${error}`));
-    });
-  }
-}
+initializeScribeControl();
 
 promptInput.addEventListener("paste", async (event) => {
   const items = Array.from(event.clipboardData?.items || []);
@@ -7122,12 +7068,11 @@ window.addEventListener("resize", () => {
 window.addEventListener("beforeunload", () => {
   rememberPromptDraftForState(getActiveSessionState());
   try {
-    if (speechRecorder && speechRecorder.state !== "inactive") {
-      speechRecorder.stop();
+    if (scribeController && typeof scribeController.dispose === "function") {
+      scribeController.dispose();
     }
   } catch {
   }
-  stopSpeechStreamTracks();
 });
 
 applySavedUiSettings();
@@ -7154,5 +7099,9 @@ loadRuntimeSecurityConfig()
     setSecurityWarningVisible(SECURITY_WARNING_TEXT, ["Security posture could not be loaded from the server."]);
   })
   .finally(() => {
-    ensureSocket().catch((error) => appendLog(`[ws] connect failed: ${error}`));
+    initializeRecapMode()
+      .catch((error) => appendLog(`[recap] setup failed: ${error}`))
+      .finally(() => {
+        ensureSocket().catch((error) => appendLog(`[ws] connect failed: ${error}`));
+      });
   });

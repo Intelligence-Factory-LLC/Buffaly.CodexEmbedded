@@ -100,15 +100,15 @@ app.MapGet("/recap", async context =>
 		return;
 	}
 
-	var recapPagePath = Path.Combine(webRoot, "recap.html");
-	if (!File.Exists(recapPagePath))
+	var indexPagePath = Path.Combine(webRoot, "index.html");
+	if (!File.Exists(indexPagePath))
 	{
 		context.Response.StatusCode = StatusCodes.Status404NotFound;
 		return;
 	}
 
 	context.Response.ContentType = "text/html; charset=utf-8";
-	await context.Response.SendFileAsync(recapPagePath);
+	await context.Response.SendFileAsync(indexPagePath);
 });
 
 app.MapGet("/server", async context =>
