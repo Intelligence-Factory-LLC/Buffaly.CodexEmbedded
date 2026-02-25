@@ -2142,6 +2142,9 @@ function renderProjectSidebar() {
 
     const groupEl = document.createElement("div");
     groupEl.className = "project-group";
+    if (selectedProjectKey === group.key) {
+      groupEl.classList.add("selected");
+    }
     if (collapsedProjectKeys.has(group.key)) {
       groupEl.classList.add("collapsed");
     }

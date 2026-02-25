@@ -374,6 +374,20 @@ body {
 	background: #ffffff;
 }
 
+.project-group.selected .project-header {
+	background: #eef6ff;
+	border-bottom-color: #bfdbfe;
+}
+
+.project-group.selected .project-name {
+	color: #1e3a8a;
+	font-weight: 700;
+}
+
+.project-group.selected .project-path {
+	color: #1d4ed8;
+}
+
 .project-toggle {
 	width: 1.1rem;
 	height: 1.1rem;
@@ -2135,6 +2149,23 @@ html[data-theme="dark"] .sidebar-nav-link.active {
 	color: #dbeafe;
 }
 
+html[data-theme="dark"] .project-group.selected .project-header {
+	background: #1f3556;
+	border-bottom-color: #60a5fa;
+}
+
+html[data-theme="dark"] .project-group.selected .project-name {
+	color: #f8fafc;
+}
+
+html[data-theme="dark"] .project-group.selected .project-path {
+	color: #bfdbfe;
+}
+
+html[data-theme="dark"] .project-group.selected .project-toggle {
+	color: #dbeafe;
+}
+
 html[data-theme="dark"] .project-header {
 	background: #0f172a;
 	border-bottom-color: #334155;
@@ -2229,6 +2260,21 @@ html[data-theme="dark"] .prompt-queue-item {
 html[data-theme="dark"] .prompt-form textarea.drag-over {
 	background: #0f2f2c;
 	border-color: #14b8a6;
+}
+
+html[data-theme="dark"] .prompt-form .prompt-send-btn,
+html[data-theme="dark"] .prompt-form .prompt-send-btn.queue-mode,
+html[data-theme="dark"] .prompt-form .prompt-send-btn.solo-send {
+	background: #2563eb;
+	border: 1px solid #60a5fa;
+	color: #ffffff;
+	box-shadow: 0 10px 22px rgba(37, 99, 235, 0.34);
+}
+
+html[data-theme="dark"] .prompt-form .prompt-send-btn:hover,
+html[data-theme="dark"] .prompt-form .prompt-send-btn.queue-mode:hover,
+html[data-theme="dark"] .prompt-form .prompt-send-btn.solo-send:hover {
+	background: #1d4ed8;
 }
 
 html[data-theme="dark"] .chat-panel.session-loading::before {
