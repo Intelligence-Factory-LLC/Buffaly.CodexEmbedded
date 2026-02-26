@@ -3723,7 +3723,7 @@ function createToolUserInputQuestionNode(question, questionIndex) {
   options.className = "tool-user-input-options";
   const radioName = `tool_user_input_${question.id}`;
 
-  const renderOption = (value, description, checkedByDefault) => {
+  const renderOption = (value, description) => {
     const row = document.createElement("label");
     row.className = "tool-user-input-option";
 
@@ -3731,10 +3731,6 @@ function createToolUserInputQuestionNode(question, questionIndex) {
     radio.type = "radio";
     radio.name = radioName;
     radio.value = value;
-    if (checkedByDefault) {
-      radio.checked = true;
-    }
-
     const content = document.createElement("div");
     const label = document.createElement("div");
     label.className = "tool-user-input-option-label";
@@ -3753,14 +3749,14 @@ function createToolUserInputQuestionNode(question, questionIndex) {
   };
 
   if (question.options.length > 0) {
-    question.options.forEach((option, optionIndex) => {
-      renderOption(option.label, option.description, optionIndex === 0);
+    question.options.forEach((option) => {
+      renderOption(option.label, option.description);
     });
   } else {
-    renderOption("Provide answer", "", true);
+    renderOption("Provide answer", "");
   }
 
-  renderOption("__other__", "Enter a custom answer", false);
+  renderOption("__other__", "Enter a custom answer");
 
   const otherInput = document.createElement("input");
   otherInput.type = "text";
@@ -3800,8 +3796,11 @@ function renderToolUserInputModal() {
   });
 
   setToolUserInputModalVisible(true);
-  if (toolUserInputSubmitBtn) {
-    toolUserInputSubmitBtn.focus();
+  if (toolUserInputQuestions) {
+    const firstInteractive = toolUserInputQuestions.querySelector("input[type=\"radio\"], input.tool-user-input-other-input");
+    if (firstInteractive instanceof HTMLElement) {
+      firstInteractive.focus();
+    }
   }
 }
 
@@ -3838,6 +3837,27 @@ function collectToolUserInputAnswers() {
   }
 
   return answers;
+}
+
+function findMissingToolUserInputQuestionIds(answers) {
+  const missing = [];
+  if (!pendingToolUserInput) {
+    return missing;
+  }
+
+  const normalizedAnswers = answers && typeof answers === "object" ? answers : {};
+  for (const question of pendingToolUserInput.questions || []) {
+    const questionId = typeof question.id === "string" ? question.id.trim() : "";
+    if (!questionId) {
+      continue;
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(normalizedAnswers, questionId)) {
+      missing.push(questionId);
+    }
+  }
+
+  return missing;
 }
 
 function normalizeToolUserInputPromptAnswer(question, rawValue) {
@@ -3974,6 +3994,19 @@ function submitPendingToolUserInput() {
   }
 
   const answers = collectToolUserInputAnswers();
+  const missingQuestionIds = findMissingToolUserInputQuestionIds(answers);
+  if (missingQuestionIds.length > 0) {
+    appendLog(`[tool_input] answer all questions before submitting (${missingQuestionIds.length} remaining)`);
+    const firstMissingId = missingQuestionIds[0];
+    const firstMissingInput = toolUserInputQuestions
+      ? toolUserInputQuestions.querySelector(`input[name="tool_user_input_${firstMissingId}"]`)
+      : null;
+    if (firstMissingInput instanceof HTMLElement) {
+      firstMissingInput.focus();
+    }
+    return;
+  }
+
   submitPendingToolUserInputWithAnswers(answers, "modal");
 }
 
@@ -6841,6 +6874,13 @@ if (toolUserInputModal) {
       cancelPendingToolUserInput();
     }
   });
+
+  toolUserInputModal.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  });
 }
 
 logVerbositySelect.addEventListener("change", async () => {
@@ -7132,11 +7172,6 @@ promptForm.addEventListener("submit", async (event) => {
   const images = pendingComposerImages.map((x) => ({ ...x }));
   const usePlanMode = planModeNextTurn === true;
   if (pendingToolUserInput) {
-    if (!prompt) {
-      appendLog("[tool_input] answer required for pending request (use modal or type a response)");
-      return;
-    }
-
     if (prompt.localeCompare("cancel", undefined, { sensitivity: "accent" }) === 0) {
       cancelPendingToolUserInput();
       promptInput.value = "";
@@ -7145,15 +7180,7 @@ promptForm.addEventListener("submit", async (event) => {
       return;
     }
 
-    const answersFromPrompt = collectToolUserInputAnswersFromPrompt(prompt);
-    if (!submitPendingToolUserInputWithAnswers(answersFromPrompt, "composer")) {
-      appendLog("[tool_input] failed to submit pending request from composer");
-      return;
-    }
-
-    promptInput.value = "";
-    clearCurrentPromptDraft();
-    clearComposerImages();
+    appendLog("[tool_input] complete the selection dialog and click Submit (or type 'cancel')");
     return;
   }
 
