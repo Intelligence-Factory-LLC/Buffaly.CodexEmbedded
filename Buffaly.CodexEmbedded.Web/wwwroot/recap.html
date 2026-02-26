@@ -8,31 +8,45 @@
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 	<link rel="stylesheet" href="site.css?v=20260226-imagepreview1">
 	<style>
+		.recap-panel {
+			font-family: "IBM Plex Sans", "Segoe UI", Tahoma, sans-serif;
+			background:
+				radial-gradient(circle at 95% 5%, rgba(17, 132, 112, 0.14), transparent 32%),
+				radial-gradient(circle at 6% 82%, rgba(241, 111, 45, 0.1), transparent 30%);
+		}
+
+		.recap-shell {
+			padding: 0.4rem;
+		}
+
 		.recap-explain {
-			border: 1px solid var(--border-color);
-			border-radius: 10px;
-			padding: 0.85rem 1rem;
-			background: var(--panel-bg-soft, #f6f8fb);
-			margin-bottom: 0.9rem;
+			border: 1px solid rgba(19, 108, 90, 0.28);
+			border-radius: 14px;
+			padding: 1rem 1.1rem;
+			background: linear-gradient(135deg, rgba(239, 255, 250, 0.88), rgba(255, 248, 240, 0.84));
+			margin-bottom: 1rem;
+			box-shadow: 0 6px 24px rgba(12, 46, 62, 0.08);
 		}
 
 		.recap-export-grid {
 			display: grid;
 			grid-template-columns: repeat(2, minmax(0, 1fr));
-			gap: 0.8rem;
-			margin-bottom: 0.8rem;
+			gap: 0.9rem;
+			margin-bottom: 1rem;
 		}
 
 		.recap-export-card {
-			border: 1px solid var(--border-color);
-			border-radius: 10px;
-			padding: 0.75rem;
-			background: var(--panel-bg-soft, #f8fafc);
+			border: 1px solid rgba(30, 58, 91, 0.12);
+			border-radius: 14px;
+			padding: 0.9rem;
+			background: rgba(255, 255, 255, 0.82);
+			box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
 		}
 
 		.recap-export-card h3 {
-			margin: 0 0 0.45rem 0;
-			font-size: 0.95rem;
+			margin: 0 0 0.55rem 0;
+			font-size: 1rem;
+			letter-spacing: 0.01em;
 		}
 
 		.recap-form-row {
@@ -46,6 +60,9 @@
 		.recap-form-row input[type="date"],
 		.recap-form-row select {
 			min-width: 12rem;
+			border-radius: 10px;
+			border: 1px solid rgba(30, 58, 91, 0.2);
+			padding: 0.3rem 0.45rem;
 		}
 
 		#recapProjectsSelect {
@@ -53,6 +70,9 @@
 			min-height: 14rem;
 			font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 			font-size: 0.85rem;
+			border-radius: 10px;
+			border: 1px solid rgba(30, 58, 91, 0.18);
+			background: rgba(252, 253, 255, 0.95);
 		}
 
 		.recap-actions {
@@ -63,24 +83,31 @@
 			margin-bottom: 0.6rem;
 		}
 
-		.recap-state-badge {
+		.recap-run-state {
 			display: inline-flex;
 			align-items: center;
 			gap: 0.35rem;
-			padding: 0.25rem 0.5rem;
+			padding: 0.32rem 0.58rem;
 			border-radius: 999px;
-			font-size: 0.78rem;
-			border: 1px solid var(--border-color);
+			font-size: 0.8rem;
+			border: 1px solid rgba(30, 58, 91, 0.18);
+			background: rgba(255, 255, 255, 0.9);
+			color: #334155;
 		}
 
-		.recap-state-badge.ready {
-			background: rgba(15, 158, 81, 0.12);
+		.recap-run-state.ready {
+			background: rgba(15, 158, 81, 0.14);
 			color: #0f9e51;
 		}
 
-		.recap-state-badge.busy {
-			background: rgba(52, 123, 246, 0.12);
+		.recap-run-state.busy {
+			background: rgba(52, 123, 246, 0.14);
 			color: #1f5fbf;
+		}
+
+		.recap-run-state.idle {
+			background: rgba(148, 163, 184, 0.16);
+			color: #475569;
 		}
 
 		.recap-spin {
@@ -106,6 +133,10 @@
 			max-height: 60vh;
 			overflow: auto;
 			white-space: pre-wrap;
+			border-radius: 12px;
+			border: 1px solid rgba(30, 58, 91, 0.16);
+			background: rgba(250, 252, 255, 0.98);
+			padding: 0.8rem;
 		}
 
 		@media (max-width: 1000px) {
@@ -164,66 +195,64 @@
 			</aside>
 			<section class="panel chat-panel recap-panel">
 				<div class="panel-title">Recap Export</div>
-				<div class="recap-explain">
-					<strong>What this page does</strong><br>
-					This page exports Codex conversations from your session history into a markdown report. Select a date window, pick projects (or all projects), choose the detail level, and generate a downloadable file.
-				</div>
+				<div class="recap-shell">
+					<div class="recap-explain">
+						<strong>What this page does</strong><br>
+						Build a markdown recap from Codex session history. Choose a time window, include all projects or a subset, pick message-only or full detail, then generate and download the report.
+					</div>
 
-				<div class="recap-export-grid">
-					<div class="recap-export-card">
-						<h3>Time Window</h3>
-						<div class="recap-form-row">
-							<label for="recapStartDate">Start date</label>
-							<input id="recapStartDate" type="date">
-							<label for="recapEndDate">End date</label>
-							<input id="recapEndDate" type="date">
+					<div class="recap-export-grid">
+						<div class="recap-export-card">
+							<h3>Time Window</h3>
+							<div class="recap-form-row">
+								<label for="recapStartDate">Start date</label>
+								<input id="recapStartDate" type="date">
+								<label for="recapEndDate">End date</label>
+								<input id="recapEndDate" type="date">
+							</div>
+							<div class="recap-form-row">
+								<label for="recapDetailLevel">Detail level</label>
+								<select id="recapDetailLevel">
+									<option value="messages">User and assistant messages only</option>
+									<option value="all">Everything (including tool calls and results)</option>
+								</select>
+							</div>
 						</div>
-						<div class="recap-form-row">
-							<label for="recapDetailLevel">Detail level</label>
-							<select id="recapDetailLevel">
-								<option value="messages">User and assistant messages only</option>
-								<option value="all">Everything (including tool calls and results)</option>
-							</select>
+
+						<div class="recap-export-card">
+							<h3>Project Scope</h3>
+							<div class="recap-form-row">
+								<label>
+									<input id="recapAllProjectsToggle" type="checkbox" checked>
+									All projects
+								</label>
+								<button id="recapRefreshProjectsBtn" type="button">Refresh Projects</button>
+							</div>
+							<select id="recapProjectsSelect" multiple size="12"></select>
 						</div>
 					</div>
 
-					<div class="recap-export-card">
-						<h3>Project Scope</h3>
-						<div class="recap-form-row">
-							<label>
-								<input id="recapAllProjectsToggle" type="checkbox" checked>
-								All projects
-							</label>
-							<button id="recapRefreshProjectsBtn" type="button">Refresh Projects</button>
-						</div>
-						<select id="recapProjectsSelect" multiple size="12"></select>
+					<div class="recap-actions">
+						<button id="recapGenerateBtn" type="button">Generate Markdown</button>
+						<a id="recapDownloadLink" href="#" class="hidden" download>Download Latest Markdown</a>
+						<span id="recapRunState" class="recap-run-state idle">
+							<i id="recapRunStateIcon" class="bi bi-hourglass-split" aria-hidden="true"></i>
+							<span id="recapRunStateText">Idle</span>
+						</span>
 					</div>
-				</div>
 
-				<div class="recap-actions">
-					<button id="recapGenerateBtn" type="button">Generate Markdown</button>
-					<a id="recapDownloadLink" href="#" class="hidden" download>Download Latest Markdown</a>
-					<span id="recapBusyBadge" class="recap-state-badge busy hidden">
-						<i class="bi bi-arrow-repeat recap-spin" aria-hidden="true"></i>
-						Exporting...
-					</span>
-					<span id="recapReadyBadge" class="recap-state-badge ready hidden">
-						<i class="bi bi-check-circle" aria-hidden="true"></i>
-						Ready
-					</span>
-				</div>
-
-				<div id="recapStatus" class="logs-status">Loading projects...</div>
-				<pre id="recapSummary" class="recap-report">No report generated yet.</pre>
-				<div class="recap-preview-wrap">
-					<h3>Markdown Preview</h3>
-					<pre id="recapPreview" class="recap-report">No preview yet.</pre>
+					<div id="recapStatus" class="logs-status">Loading projects...</div>
+					<pre id="recapSummary" class="recap-report">No report generated yet.</pre>
+					<div class="recap-preview-wrap">
+						<h3>Markdown Preview</h3>
+						<pre id="recapPreview" class="recap-report">No preview yet.</pre>
+					</div>
 				</div>
 			</section>
 		</main>
 		<button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close navigation"></button>
 	</div>
 	<script src="theme.js?v=20260225-settings1"></script>
-	<script src="recap.js?v=20260226-recap-export2"></script>
+	<script src="recap.js?v=20260226-recap-export3"></script>
 </body>
 </html>

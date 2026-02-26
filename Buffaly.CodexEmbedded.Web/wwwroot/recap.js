@@ -13,8 +13,9 @@ const recapProjectsSelect = document.getElementById("recapProjectsSelect");
 const recapRefreshProjectsBtn = document.getElementById("recapRefreshProjectsBtn");
 const recapGenerateBtn = document.getElementById("recapGenerateBtn");
 const recapDownloadLink = document.getElementById("recapDownloadLink");
-const recapBusyBadge = document.getElementById("recapBusyBadge");
-const recapReadyBadge = document.getElementById("recapReadyBadge");
+const recapRunState = document.getElementById("recapRunState");
+const recapRunStateIcon = document.getElementById("recapRunStateIcon");
+const recapRunStateText = document.getElementById("recapRunStateText");
 const recapStatus = document.getElementById("recapStatus");
 const recapSummary = document.getElementById("recapSummary");
 const recapPreview = document.getElementById("recapPreview");
@@ -38,14 +39,32 @@ function setPreview(text) {
 }
 
 function setExportState(state) {
-  const busy = state === "busy";
-  const ready = state === "ready";
-
-  if (recapBusyBadge) {
-    recapBusyBadge.classList.toggle("hidden", !busy);
+  if (!recapRunState) {
+    return;
   }
-  if (recapReadyBadge) {
-    recapReadyBadge.classList.toggle("hidden", !ready);
+
+  recapRunState.classList.remove("idle", "busy", "ready");
+  recapRunState.classList.add(state);
+
+  if (recapRunStateText) {
+    recapRunStateText.textContent = state === "busy"
+      ? "Exporting"
+      : (state === "ready" ? "Ready" : "Idle");
+  }
+
+  if (recapRunStateIcon) {
+    recapRunStateIcon.className = "bi";
+    if (state === "busy") {
+      recapRunStateIcon.classList.add("bi-arrow-repeat", "recap-spin");
+      return;
+    }
+
+    if (state === "ready") {
+      recapRunStateIcon.classList.add("bi-check-circle");
+      return;
+    }
+
+    recapRunStateIcon.classList.add("bi-hourglass-split");
   }
 }
 
