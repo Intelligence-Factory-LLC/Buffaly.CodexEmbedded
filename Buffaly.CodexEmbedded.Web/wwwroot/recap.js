@@ -11,6 +11,8 @@ const recapDetailLevel = document.getElementById("recapDetailLevel");
 const recapAllProjectsToggle = document.getElementById("recapAllProjectsToggle");
 const recapProjectList = document.getElementById("recapProjectList");
 const recapRefreshProjectsBtn = document.getElementById("recapRefreshProjectsBtn");
+const recapRefreshReportsBtn = document.getElementById("recapRefreshReportsBtn");
+const recapReportsList = document.getElementById("recapReportsList");
 const recapGenerateBtn = document.getElementById("recapGenerateBtn");
 const recapDownloadLink = document.getElementById("recapDownloadLink");
 const recapRunState = document.getElementById("recapRunState");
@@ -19,6 +21,8 @@ const recapRunStateText = document.getElementById("recapRunStateText");
 const recapStatus = document.getElementById("recapStatus");
 const recapSummary = document.getElementById("recapSummary");
 const recapPreview = document.getElementById("recapPreview");
+let recapReports = [];
+let activeReportFileName = "";
 
 function setStatus(text) {
   if (recapStatus) {
@@ -106,6 +110,134 @@ function setProjectSelectEnabled(enabled) {
   }
   for (const node of recapProjectList.querySelectorAll(".recap-project-option")) {
     node.classList.toggle("recap-project-option-disabled", !allowSelection);
+  }
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes < 1024) {
+    return `${Math.max(0, Math.floor(bytes))} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function renderReportsList() {
+  if (!recapReportsList) {
+    return;
+  }
+
+  recapReportsList.textContent = "";
+  if (!Array.isArray(recapReports) || recapReports.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sidebar-empty";
+    empty.textContent = "No recap reports yet.";
+    recapReportsList.appendChild(empty);
+    return;
+  }
+
+  for (const report of recapReports) {
+    const fileName = String(report?.fileName || "");
+    if (!fileName) {
+      continue;
+    }
+
+    const row = document.createElement("div");
+    row.className = "session-row";
+    if (fileName === activeReportFileName) {
+      row.classList.add("active");
+    }
+
+    const head = document.createElement("div");
+    head.className = "session-row-head";
+
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "session-open-btn";
+    openBtn.title = fileName;
+
+    const title = document.createElement("div");
+    title.className = "session-title";
+    title.textContent = fileName;
+    openBtn.appendChild(title);
+
+    const subtitle = document.createElement("div");
+    subtitle.className = "session-subtitle";
+    const updated = report?.lastWriteUtc ? new Date(report.lastWriteUtc).toLocaleString() : "unknown";
+    subtitle.textContent = `${updated} | ${formatBytes(report?.sizeBytes)}`;
+    openBtn.appendChild(subtitle);
+    openBtn.addEventListener("click", () => {
+      activeReportFileName = fileName;
+      renderReportsList();
+      if (recapDownloadLink && typeof report?.downloadUrl === "string" && report.downloadUrl.trim()) {
+        recapDownloadLink.href = report.downloadUrl;
+        recapDownloadLink.textContent = `Download ${fileName}`;
+        recapDownloadLink.classList.remove("hidden");
+      }
+      setSummary([
+        `Created: ${fileName}`,
+        `Path: ${report?.filePath || "(unknown)"}`,
+        `Updated: ${updated}`,
+        `Size: ${formatBytes(report?.sizeBytes)}`
+      ].join("\n"));
+    });
+    head.appendChild(openBtn);
+
+    const actions = document.createElement("div");
+    actions.className = "project-actions";
+    if (typeof report?.downloadUrl === "string" && report.downloadUrl.trim()) {
+      const downloadBtn = document.createElement("button");
+      downloadBtn.type = "button";
+      downloadBtn.className = "icon-btn";
+      downloadBtn.title = "Download report";
+      downloadBtn.setAttribute("aria-label", "Download report");
+      const icon = document.createElement("i");
+      icon.className = "bi bi-download";
+      icon.setAttribute("aria-hidden", "true");
+      downloadBtn.appendChild(icon);
+      downloadBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const anchor = document.createElement("a");
+        anchor.href = report.downloadUrl;
+        anchor.download = fileName;
+        anchor.click();
+      });
+      actions.appendChild(downloadBtn);
+    }
+    head.appendChild(actions);
+
+    row.appendChild(head);
+    recapReportsList.appendChild(row);
+  }
+}
+
+async function loadReports(options = {}) {
+  if (!recapReportsList) {
+    return;
+  }
+
+  const preserveSelection = options.preserveSelection !== false;
+  const previous = activeReportFileName;
+  try {
+    const response = await fetch("api/recap/reports?limit=500", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`failed loading reports (${response.status})`);
+    }
+
+    const data = await response.json();
+    recapReports = Array.isArray(data?.reports) ? data.reports : [];
+    if (preserveSelection && previous && recapReports.some((x) => String(x?.fileName || "") === previous)) {
+      activeReportFileName = previous;
+    } else {
+      activeReportFileName = recapReports.length > 0 ? String(recapReports[0]?.fileName || "") : "";
+    }
+    renderReportsList();
+  } catch {
+    recapReports = [];
+    activeReportFileName = "";
+    renderReportsList();
   }
 }
 
@@ -265,6 +397,8 @@ async function generateMarkdownExport() {
       ? result.previewMarkdown
       : "(No preview returned)";
     setPreview(previewText || "(Preview is empty)");
+    activeReportFileName = String(result.fileName || "");
+    await loadReports({ preserveSelection: true });
   } catch (error) {
     setStatus(String(error));
     setPreview(`Failed to generate preview.\n\n${String(error)}`);
@@ -359,6 +493,12 @@ function wireEvents() {
     });
   }
 
+  if (recapRefreshReportsBtn) {
+    recapRefreshReportsBtn.addEventListener("click", () => {
+      void loadReports({ preserveSelection: true });
+    });
+  }
+
   if (recapGenerateBtn) {
     recapGenerateBtn.addEventListener("click", () => {
       void generateMarkdownExport();
@@ -421,6 +561,7 @@ async function initializePage() {
   wireEvents();
 
   await loadProjects();
+  await loadReports({ preserveSelection: false });
 }
 
 void initializePage();

@@ -284,6 +284,53 @@ app.MapPost("/api/recap/export", async (HttpRequest request, WebRuntimeDefaults 
 	});
 });
 
+app.MapGet("/api/recap/reports", (HttpRequest request) =>
+{
+	var limit = QueryValueParser.GetPositiveInt(request.Query["limit"], fallback: 200, max: 1000);
+	var reportsRoot = Path.Combine(Environment.CurrentDirectory, "reports", "recap");
+	if (!Directory.Exists(reportsRoot))
+	{
+		return Results.Ok(new
+		{
+			reportsRoot,
+			reports = Array.Empty<object>()
+		});
+	}
+
+	var reports = Directory.EnumerateFiles(reportsRoot, "*.md", SearchOption.TopDirectoryOnly)
+		.Select(path =>
+		{
+			try
+			{
+				return new FileInfo(path);
+			}
+			catch
+			{
+				return null;
+			}
+		})
+		.Where(info => info is not null)
+		.Select(info => info!)
+		.OrderByDescending(info => info.LastWriteTimeUtc)
+		.ThenByDescending(info => info.Name, StringComparer.Ordinal)
+		.Take(limit)
+		.Select(info => new
+		{
+			fileName = info.Name,
+			filePath = info.FullName,
+			lastWriteUtc = new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero).ToString("O"),
+			sizeBytes = info.Length,
+			downloadUrl = $"/api/recap/reports/{Uri.EscapeDataString(info.Name)}"
+		})
+		.ToArray();
+
+	return Results.Ok(new
+	{
+		reportsRoot,
+		reports
+	});
+});
+
 app.MapGet("/api/recap/reports/{fileName}", (string fileName) =>
 {
 	var safeFileName = Path.GetFileName(fileName ?? string.Empty);
