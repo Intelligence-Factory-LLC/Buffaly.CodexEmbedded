@@ -4,7 +4,8 @@ const LOG_FLUSH_INTERVAL_MS = 250;
 const MAX_RENDERED_CLIENT_LOG_LINES = 800;
 const ENABLE_CONSOLE_LOG_FALLBACK = false;
 const INDEX_TIMELINE_SOURCE = "logs"; // keep index timeline poll-based; backend now serves consolidated turns from logs
-const IS_RECAP_MODE = (window.location.pathname || "").replace(/\/+$/g, "").toLowerCase() === "/recap";
+const NORMALIZED_PATHNAME = (window.location.pathname || "").replace(/\/+$/g, "").toLowerCase();
+const IS_RECAP_MODE = NORMALIZED_PATHNAME === "/recap" || NORMALIZED_PATHNAME.endsWith("/recap");
 const RECAP_APPROVAL_POLICY = "never";
 const RECAP_SANDBOX_MODE = "read-only";
 const RECAP_THREAD_NAME = "Recap";
@@ -967,7 +968,7 @@ function updatePlanPanel() {
   const streamingText = normalizePlanPayloadText(state.planDraftText || "");
   const displayText = canonicalText || streamingText;
   const hasText = displayText.length > 0;
-  const shouldShow = state.isPlanTurn === true || hasText || status === "streaming" || status === "error";
+  const shouldShow = status === "streaming" || status === "error";
   planPanel.classList.toggle("hidden", !shouldShow);
   if (!shouldShow) {
     return;
