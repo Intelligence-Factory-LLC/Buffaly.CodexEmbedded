@@ -89,6 +89,8 @@ let planModeNextTurn = false;
 let configuredDefaultModel = "";
 let scribeController = null;
 let recapRootPath = "";
+let recapSessionId = null;
+let recapSessionEnsureInFlight = false;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -546,6 +548,162 @@ function normalizePlanPayloadText(rawText) {
   text = text.replace(/^\s*<proposed_plan>\s*/i, "");
   text = text.replace(/\s*<\/proposed_plan>\s*$/i, "");
   return text.trim();
+}
+
+function extractTaggedProposedPlanText(rawText) {
+  if (typeof rawText !== "string" || !rawText.trim()) {
+    return "";
+  }
+
+  const normalized = rawText.replace(/\r/g, "");
+  const taggedMatch = normalized.match(/<proposed_plan>([\s\S]*?)<\/proposed_plan>/i);
+  if (!taggedMatch || typeof taggedMatch[1] !== "string") {
+    return "";
+  }
+
+  return normalizePlanPayloadText(taggedMatch[1]);
+}
+
+function readTurnSnapshotEntryText(entry) {
+  if (!entry || typeof entry !== "object") {
+    return "";
+  }
+
+  if (typeof entry.text === "string") {
+    return entry.text;
+  }
+
+  if (typeof entry.Text === "string") {
+    return entry.Text;
+  }
+
+  return "";
+}
+
+function readTurnSnapshotEntryRawType(entry) {
+  if (!entry || typeof entry !== "object") {
+    return "";
+  }
+
+  if (typeof entry.rawType === "string") {
+    return entry.rawType.trim().toLowerCase();
+  }
+
+  if (typeof entry.RawType === "string") {
+    return entry.RawType.trim().toLowerCase();
+  }
+
+  return "";
+}
+
+function readTurnSnapshotEntryTitle(entry) {
+  if (!entry || typeof entry !== "object") {
+    return "";
+  }
+
+  if (typeof entry.title === "string") {
+    return entry.title.trim().toLowerCase();
+  }
+
+  if (typeof entry.Title === "string") {
+    return entry.Title.trim().toLowerCase();
+  }
+
+  return "";
+}
+
+function isPlanUpdatedRawType(rawType) {
+  return rawType === "plan_update" || rawType === "plan_updated" || rawType === "turn/plan/updated";
+}
+
+function extractPlanFromTurnSnapshot(turn) {
+  if (!turn || typeof turn !== "object") {
+    return "";
+  }
+
+  const assistantEntry = (turn.assistantFinal && typeof turn.assistantFinal === "object")
+    ? turn.assistantFinal
+    : ((turn.AssistantFinal && typeof turn.AssistantFinal === "object") ? turn.AssistantFinal : null);
+  const assistantText = readTurnSnapshotEntryText(assistantEntry);
+  const taggedPlanText = extractTaggedProposedPlanText(assistantText);
+  if (taggedPlanText) {
+    return taggedPlanText;
+  }
+
+  const intermediate = Array.isArray(turn.intermediate)
+    ? turn.intermediate
+    : (Array.isArray(turn.Intermediate) ? turn.Intermediate : []);
+  for (let i = intermediate.length - 1; i >= 0; i -= 1) {
+    const entry = intermediate[i];
+    const rawType = readTurnSnapshotEntryRawType(entry);
+    const title = readTurnSnapshotEntryTitle(entry);
+    if (!isPlanUpdatedRawType(rawType) && title !== "plan updated") {
+      continue;
+    }
+
+    const planText = normalizePlanPayloadText(readTurnSnapshotEntryText(entry));
+    if (planText) {
+      return planText;
+    }
+  }
+
+  return "";
+}
+
+function isTurnSnapshotInFlight(turn) {
+  if (!turn || typeof turn !== "object") {
+    return false;
+  }
+
+  if (turn.isInFlight === true || turn.IsInFlight === true) {
+    return true;
+  }
+
+  return false;
+}
+
+function reconcileTurnAndPlanStateFromTurnsWatch(sessionId, turns) {
+  if (!sessionId || !Array.isArray(turns) || turns.length === 0) {
+    return;
+  }
+
+  const latestTurn = turns[turns.length - 1];
+  const watchInFlight = isTurnSnapshotInFlight(latestTurn);
+  const localInFlight = isTurnInFlight(sessionId);
+  if (localInFlight !== watchInFlight) {
+    setTurnInFlight(sessionId, watchInFlight);
+    if (!watchInFlight && sessionId === activeSessionId) {
+      renderPromptQueue();
+    }
+  }
+
+  const state = ensureSessionState(sessionId);
+  ensurePlanStateShape(state);
+  const planText = extractPlanFromTurnSnapshot(latestTurn);
+  if (planText) {
+    state.isPlanTurn = true;
+    state.planText = planText;
+    state.planDraftText = planText;
+    state.planStatus = watchInFlight ? "streaming" : "completed";
+    state.planUpdatedAt = new Date().toISOString();
+    if (sessionId === activeSessionId) {
+      updatePlanPanel();
+    }
+    return;
+  }
+
+  if (!watchInFlight && state.isPlanTurn === true && normalizePlanStatus(state.planStatus) === "streaming") {
+    const currentText = normalizePlanPayloadText(state.planText || state.planDraftText || "");
+    if (currentText) {
+      state.planText = currentText;
+      state.planDraftText = currentText;
+    }
+    state.planStatus = "completed";
+    state.planUpdatedAt = new Date().toISOString();
+    if (sessionId === activeSessionId) {
+      updatePlanPanel();
+    }
+  }
 }
 
 function findPlanTextOverlapSuffixPrefix(left, right) {
@@ -2247,6 +2405,42 @@ function getProjectForSessionState(state) {
 }
 
 function buildSidebarProjectGroups() {
+  if (IS_RECAP_MODE) {
+    const recapCwd = getRecapWorkingDirectory();
+    const recapKey = getProjectKeyFromCwd(recapCwd);
+    const recapGroup = {
+      key: recapKey,
+      cwd: recapCwd,
+      customName: "Recap Source",
+      isCustom: true,
+      sessions: [],
+      latestTick: 0
+    };
+
+    if (activeSessionId && sessions.has(activeSessionId)) {
+      const state = sessions.get(activeSessionId);
+      const tick = state?.lastActivityTick || state?.createdAtTick || 0;
+      recapGroup.latestTick = tick;
+      recapGroup.sessions.push({
+        threadId: state?.threadId || "",
+        threadName: state?.threadName || RECAP_THREAD_NAME,
+        updatedAtUtc: tick > 0 ? new Date(tick).toISOString() : null,
+        sortTick: tick,
+        cwd: recapCwd,
+        model: state?.model || "",
+        reasoningEffort: normalizeReasoningEffort(state?.reasoningEffort || ""),
+        attachedSessionId: activeSessionId,
+        isAttached: true,
+        isProcessing: isTurnInFlight(activeSessionId),
+        hasPendingApproval: !!(state && state.pendingApproval && typeof state.pendingApproval.approvalId === "string" && state.pendingApproval.approvalId.trim()),
+        isArchived: false,
+        hasUnreadCompletion: !!(state?.threadId && hasThreadCompletionUnread(state.threadId))
+      });
+    }
+
+    return [recapGroup];
+  }
+
   const map = new Map();
   const seenThreads = new Set();
 
@@ -2486,21 +2680,19 @@ function updateConversationModelSummary() {
   }
 
   const state = getActiveSessionState();
-  if (!state) {
-    conversationModelSummary.textContent = "default | default";
-    conversationModelSummary.title = "";
-    return;
-  }
-
   const modelValue = normalizeModelValue(
-    conversationModelSelect?.value || state.model || ""
+    conversationModelSelect?.value
+      || state?.model
+      || configuredDefaultModel
+      || modelSelect?.value
+      || ""
   );
   const reasoningValue = normalizeReasoningEffort(
-    conversationReasoningSelect?.value || state.reasoningEffort || ""
+    conversationReasoningSelect?.value || state?.reasoningEffort || ""
   );
 
-  const modelLabel = modelValue || "default";
-  const reasoningLabel = reasoningValue || "default";
+  const modelLabel = modelValue || "auto";
+  const reasoningLabel = reasoningValue || "auto";
   const summary = `${modelLabel} | ${reasoningLabel}`;
   conversationModelSummary.textContent = summary;
   conversationModelSummary.title = summary;
@@ -2735,6 +2927,9 @@ async function initializeRecapMode() {
       cwdInput.disabled = true;
       cwdInput.title = "Recap mode is pinned to the Codex sessions source directory.";
     }
+
+    await ensureSocket();
+    await ensureRecapSessionBound();
   } catch (error) {
     appendLog(`[recap] setup failed: ${error}`);
   }
@@ -4673,6 +4868,11 @@ function getStoredLastSessionId() {
 }
 
 async function tryAutoAttachStoredThread() {
+  if (IS_RECAP_MODE) {
+    autoAttachAttempted = true;
+    return;
+  }
+
   if (autoAttachAttempted) {
     return;
   }
@@ -4706,6 +4906,81 @@ async function tryAutoAttachStoredThread() {
   appendLog(`[session] auto-attaching previous thread=${threadId}`);
   const catalogEntry = getCatalogEntryByThreadId(threadId);
   await attachSessionByThreadId(threadId, catalogEntry?.cwd || cwdInput.value.trim());
+}
+
+function findBestRecapSessionId() {
+  const root = getRecapWorkingDirectory();
+  const normalizedRoot = normalizeProjectCwd(root || "");
+  if (!normalizedRoot) {
+    return null;
+  }
+
+  let bestSessionId = null;
+  let bestTick = -1;
+  for (const [sessionId, state] of sessions.entries()) {
+    if (!state) {
+      continue;
+    }
+
+    const stateCwd = normalizeProjectCwd(state.cwd || "");
+    if (stateCwd !== normalizedRoot) {
+      continue;
+    }
+
+    const tick = Number.isFinite(state.lastActivityTick)
+      ? state.lastActivityTick
+      : (Number.isFinite(state.createdAtTick) ? state.createdAtTick : 0);
+    if (tick > bestTick) {
+      bestTick = tick;
+      bestSessionId = sessionId;
+    }
+  }
+
+  return bestSessionId;
+}
+
+async function ensureRecapSessionBound() {
+  if (!IS_RECAP_MODE) {
+    return;
+  }
+
+  const root = getRecapWorkingDirectory();
+  const normalizedRoot = normalizeProjectCwd(root || "");
+  if (!normalizedRoot || recapSessionEnsureInFlight) {
+    return;
+  }
+
+  if (activeSessionId && sessions.has(activeSessionId)) {
+    const active = sessions.get(activeSessionId);
+    if (normalizeProjectCwd(active?.cwd || "") === normalizedRoot) {
+      recapSessionId = activeSessionId;
+      return;
+    }
+  }
+
+  const bestExisting = (recapSessionId && sessions.has(recapSessionId))
+    ? recapSessionId
+    : findBestRecapSessionId();
+  if (bestExisting && sessions.has(bestExisting)) {
+    recapSessionId = bestExisting;
+    if (activeSessionId !== bestExisting) {
+      setActiveSession(bestExisting, { persistSelection: true, restartTimeline: true });
+      send("session_select", { sessionId: bestExisting });
+    }
+    return;
+  }
+
+  recapSessionEnsureInFlight = true;
+  try {
+    await createSessionForCwd(normalizedRoot, {
+      askName: false,
+      threadName: RECAP_THREAD_NAME,
+      approvalPolicy: RECAP_APPROVAL_POLICY,
+      sandbox: RECAP_SANDBOX_MODE
+    });
+  } finally {
+    recapSessionEnsureInFlight = false;
+  }
 }
 
 function syncConversationModelOptions(preferredValue = null) {
@@ -4753,7 +5028,7 @@ function populateReasoningEffortSelect() {
 
   const defaultOption = document.createElement("option");
   defaultOption.value = "";
-  defaultOption.textContent = "default";
+  defaultOption.textContent = "auto";
   conversationReasoningSelect.appendChild(defaultOption);
 
   for (const level of REASONING_EFFORT_LEVELS) {
@@ -4908,6 +5183,7 @@ async function pollTimelineOnce(initial, generation) {
   }
 
   const state = getActiveSessionState();
+  const polledSessionId = activeSessionId;
   if (!state || !state.threadId) {
     return;
   }
@@ -4960,6 +5236,11 @@ async function pollTimelineOnce(initial, generation) {
       } else {
         timeline.clear();
       }
+
+      if (polledSessionId && sessions.has(polledSessionId)) {
+        reconcileTurnAndPlanStateFromTurnsWatch(polledSessionId, turns);
+      }
+
       timelineHasTruncatedHead = false;
       if (data.reset === true) {
         appendLog("[timeline] session file was reset or rotated");
@@ -5111,21 +5392,29 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     !!serverActiveState &&
     normalizeThreadId(serverActiveState.threadId || "") === normalizeThreadId(pendingSessionLoadThreadId);
   const preferServerActive = options.preferServerActive === true || pendingThreadMatch;
-  const toSelect = preferServerActive
-    ? (serverActiveId ||
-      activeSessionId ||
-      current ||
-      (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
-      (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
-      (ids.length > 0 ? ids[0] : null))
-    : (activeSessionId ||
-      current ||
-      (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
-      (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
-      serverActiveId ||
-      (ids.length > 0 ? ids[0] : null));
+  const recapBestSessionId = IS_RECAP_MODE ? (findBestRecapSessionId() || null) : null;
+  const toSelect = IS_RECAP_MODE
+    ? ((recapSessionId && sessions.has(recapSessionId) ? recapSessionId : null) ||
+      recapBestSessionId ||
+      null)
+    : (preferServerActive
+      ? (serverActiveId ||
+        activeSessionId ||
+        current ||
+        (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
+        (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
+        (ids.length > 0 ? ids[0] : null))
+      : (activeSessionId ||
+        current ||
+        (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
+        (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
+        serverActiveId ||
+        (ids.length > 0 ? ids[0] : null)));
   if (toSelect && sessions.has(toSelect)) {
     const changed = activeSessionId !== toSelect;
+    if (IS_RECAP_MODE) {
+      recapSessionId = toSelect;
+    }
     setActiveSession(toSelect, { restartTimeline: changed });
   } else {
     clearActiveSession();
@@ -5815,6 +6104,9 @@ function handleServerEvent(frame) {
       }
 
       updateSessionSelect(sessionId, { preferServerActive: true });
+      if (IS_RECAP_MODE) {
+        ensureRecapSessionBound().catch((error) => appendLog(`[recap] bind failed: ${error}`));
+      }
       return;
     }
 
@@ -5975,6 +6267,9 @@ function handleServerEvent(frame) {
       applyProcessingByThread(nextProcessingByThread);
       prunePromptState();
       updateSessionSelect(payload.activeSessionId || null);
+      if (IS_RECAP_MODE) {
+        ensureRecapSessionBound().catch((error) => appendLog(`[recap] bind failed: ${error}`));
+      }
 
       const activeState = getActiveSessionState();
       const activePending = activeState && activeState.pendingApproval ? activeState.pendingApproval : null;
@@ -6083,6 +6378,9 @@ function handleServerEvent(frame) {
       refreshSessionMeta();
       appendLog(`[catalog] loaded ${sessionCatalog.length} existing sessions from ${payload.codexHomePath || "default CODEX_HOME"}`);
       tryAutoAttachStoredThread().catch((error) => appendLog(`[session] auto-attach failed: ${error}`));
+      if (IS_RECAP_MODE) {
+        ensureRecapSessionBound().catch((error) => appendLog(`[recap] bind failed: ${error}`));
+      }
       return;
     }
 
