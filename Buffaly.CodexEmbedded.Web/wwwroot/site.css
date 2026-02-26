@@ -2628,6 +2628,110 @@ body {
 	color: #047857;
 }
 
+.watcher-plan-entry {
+	border-left-color: #3b82f6;
+}
+
+.watcher-plan-collapsible {
+	margin-top: 0.2rem;
+	border: 1px solid #bfdbfe;
+	border-radius: 10px;
+	padding: 0.4rem 0.55rem;
+	background: linear-gradient(180deg, #eff6ff 0%, #f8fbff 100%);
+}
+
+.watcher-plan-summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+	font-size: 0.82rem;
+	font-weight: 700;
+	color: #1e3a8a;
+}
+
+.watcher-plan-icon {
+	font-size: 0.95rem;
+	color: #2563eb;
+}
+
+.watcher-plan-body {
+	margin-top: 0.45rem;
+	font-size: 0.88rem;
+	line-height: 1.45;
+	color: #111827;
+}
+
+.watcher-plan-body > :first-child {
+	margin-top: 0;
+}
+
+.watcher-plan-body > :last-child {
+	margin-bottom: 0;
+}
+
+.watcher-plan-body h1,
+.watcher-plan-body h2,
+.watcher-plan-body h3,
+.watcher-plan-body h4,
+.watcher-plan-body h5,
+.watcher-plan-body h6 {
+	margin: 0.75rem 0 0.35rem;
+	line-height: 1.3;
+	color: #0f172a;
+}
+
+.watcher-plan-body h1 {
+	font-size: 1rem;
+}
+
+.watcher-plan-body h2 {
+	font-size: 0.95rem;
+}
+
+.watcher-plan-body h3 {
+	font-size: 0.9rem;
+}
+
+.watcher-plan-body p {
+	margin: 0.4rem 0;
+}
+
+.watcher-plan-body ul,
+.watcher-plan-body ol {
+	margin: 0.35rem 0 0.5rem 1.1rem;
+	padding: 0;
+}
+
+.watcher-plan-body li {
+	margin: 0.2rem 0;
+}
+
+.watcher-plan-body code {
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.82rem;
+	background: #dbeafe;
+	border: 1px solid #bfdbfe;
+	border-radius: 5px;
+	padding: 0.04rem 0.28rem;
+	color: #1e3a8a;
+}
+
+.watcher-plan-body pre {
+	margin: 0.45rem 0;
+	padding: 0.5rem 0.6rem;
+	border-radius: 8px;
+	border: 1px solid #bfdbfe;
+	background: #f8fafc;
+	overflow: auto;
+}
+
+.watcher-plan-body pre code {
+	background: transparent;
+	border: 0;
+	padding: 0;
+	color: inherit;
+}
+
 .watcher-entry-images {
 	margin-top: 0.45rem;
 	display: flex;
@@ -3086,6 +3190,7 @@ html[data-theme="dark"] .watcher-entry,
 html[data-theme="dark"] .watcher-inline-entry,
 html[data-theme="dark"] .recap-card,
 html[data-theme="dark"] .watcher-agents-collapsible,
+html[data-theme="dark"] .watcher-plan-collapsible,
 html[data-theme="dark"] .watcher-env-collapsible,
 html[data-theme="dark"] .prompt-queue,
 html[data-theme="dark"] .new-project-modal-note,
@@ -3116,6 +3221,38 @@ html[data-theme="dark"] .watcher-tool-hidden-toggle:hover {
 	background: #1e293b;
 	border-color: #60a5fa;
 	color: #dbeafe;
+}
+
+html[data-theme="dark"] .watcher-plan-summary {
+	color: #93c5fd;
+}
+
+html[data-theme="dark"] .watcher-plan-icon {
+	color: #60a5fa;
+}
+
+html[data-theme="dark"] .watcher-plan-body {
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .watcher-plan-body h1,
+html[data-theme="dark"] .watcher-plan-body h2,
+html[data-theme="dark"] .watcher-plan-body h3,
+html[data-theme="dark"] .watcher-plan-body h4,
+html[data-theme="dark"] .watcher-plan-body h5,
+html[data-theme="dark"] .watcher-plan-body h6 {
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .watcher-plan-body code {
+	background: #0b2447;
+	border-color: #1d4ed8;
+	color: #bfdbfe;
+}
+
+html[data-theme="dark"] .watcher-plan-body pre {
+	background: #020617;
+	border-color: #1e3a8a;
 }
 
 html[data-theme="dark"] .recap-controls input[type="date"],

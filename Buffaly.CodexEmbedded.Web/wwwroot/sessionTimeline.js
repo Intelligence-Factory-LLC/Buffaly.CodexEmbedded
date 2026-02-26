@@ -1507,6 +1507,243 @@
       return entry.text || "";
     }
 
+    normalizePlanPayloadText(rawText) {
+      if (typeof rawText !== "string") {
+        return "";
+      }
+
+      let text = rawText.replace(/\r/g, "");
+      text = text.replace(/^\s*<proposed_plan>\s*/i, "");
+      text = text.replace(/\s*<\/proposed_plan>\s*$/i, "");
+      return text.trim();
+    }
+
+    extractTaggedProposedPlanText(rawText) {
+      if (typeof rawText !== "string" || !rawText.trim()) {
+        return "";
+      }
+
+      const normalized = rawText.replace(/\r/g, "");
+      const match = normalized.match(/<proposed_plan>([\s\S]*?)<\/proposed_plan>/i);
+      if (!match || typeof match[1] !== "string") {
+        return "";
+      }
+
+      return this.normalizePlanPayloadText(match[1]);
+    }
+
+    isPlanUpdatedRawType(rawType) {
+      const normalized = typeof rawType === "string" ? rawType.trim().toLowerCase() : "";
+      return normalized === "plan_update" || normalized === "plan_updated" || normalized === "turn/plan/updated";
+    }
+
+    isPlanUpdatedEntry(entry) {
+      if (!entry || typeof entry !== "object") {
+        return false;
+      }
+
+      if (this.isPlanUpdatedRawType(entry.rawType || "")) {
+        return true;
+      }
+
+      const title = typeof entry.title === "string" ? entry.title.trim().toLowerCase() : "";
+      return title === "plan updated";
+    }
+
+    extractPlanTextForEntry(entry, bodyText) {
+      const tagged = this.extractTaggedProposedPlanText(bodyText);
+      if (tagged) {
+        return tagged;
+      }
+
+      if (this.isPlanUpdatedEntry(entry)) {
+        return this.normalizePlanPayloadText(bodyText);
+      }
+
+      return "";
+    }
+
+    shouldUsePlanCollapsedBody(entry, bodyText) {
+      if (!entry || (entry.role !== "assistant" && entry.role !== "system")) {
+        return false;
+      }
+
+      return !!this.extractPlanTextForEntry(entry, bodyText);
+    }
+
+    appendPlanInlineMarkdown(parent, text) {
+      const source = typeof text === "string" ? text : "";
+      if (!source) {
+        return;
+      }
+
+      let cursor = 0;
+      while (cursor < source.length) {
+        if (source.startsWith("**", cursor)) {
+          const end = source.indexOf("**", cursor + 2);
+          if (end > cursor + 2) {
+            const strong = document.createElement("strong");
+            strong.textContent = source.slice(cursor + 2, end);
+            parent.appendChild(strong);
+            cursor = end + 2;
+            continue;
+          }
+        }
+
+        if (source.startsWith("`", cursor)) {
+          const end = source.indexOf("`", cursor + 1);
+          if (end > cursor + 1) {
+            const code = document.createElement("code");
+            code.textContent = source.slice(cursor + 1, end);
+            parent.appendChild(code);
+            cursor = end + 1;
+            continue;
+          }
+        }
+
+        let next = source.length;
+        const nextBold = source.indexOf("**", cursor);
+        const nextCode = source.indexOf("`", cursor);
+        if (nextBold >= 0 && nextBold < next) {
+          next = nextBold;
+        }
+        if (nextCode >= 0 && nextCode < next) {
+          next = nextCode;
+        }
+
+        parent.appendChild(document.createTextNode(source.slice(cursor, next)));
+        cursor = next;
+      }
+    }
+
+    renderPlanMarkdownIntoContainer(container, markdownText) {
+      if (!container) {
+        return;
+      }
+
+      container.textContent = "";
+      const text = this.normalizePlanPayloadText(markdownText || "");
+      if (!text) {
+        return;
+      }
+
+      const fragment = document.createDocumentFragment();
+      const lines = text.split("\n");
+      let paragraphLines = [];
+      let listElement = null;
+      let listType = "";
+      let codeBlock = null;
+
+      const flushParagraph = () => {
+        if (paragraphLines.length === 0) {
+          return;
+        }
+        const paragraph = document.createElement("p");
+        this.appendPlanInlineMarkdown(paragraph, paragraphLines.join(" ").trim());
+        fragment.appendChild(paragraph);
+        paragraphLines = [];
+      };
+
+      const clearList = () => {
+        listElement = null;
+        listType = "";
+      };
+
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\s+$/, "");
+        const trimmed = line.trim();
+
+        if (codeBlock) {
+          if (trimmed.startsWith("```")) {
+            codeBlock = null;
+          } else {
+            codeBlock.textContent += `${line}\n`;
+          }
+          continue;
+        }
+
+        if (trimmed.startsWith("```")) {
+          flushParagraph();
+          clearList();
+          const pre = document.createElement("pre");
+          const code = document.createElement("code");
+          pre.appendChild(code);
+          fragment.appendChild(pre);
+          codeBlock = code;
+          continue;
+        }
+
+        if (!trimmed) {
+          flushParagraph();
+          clearList();
+          continue;
+        }
+
+        const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+        if (headingMatch) {
+          flushParagraph();
+          clearList();
+          const level = Math.min(6, headingMatch[1].length);
+          const heading = document.createElement(`h${level}`);
+          this.appendPlanInlineMarkdown(heading, headingMatch[2]);
+          fragment.appendChild(heading);
+          continue;
+        }
+
+        const unorderedMatch = trimmed.match(/^[-*]\s+(.*)$/);
+        if (unorderedMatch) {
+          flushParagraph();
+          if (!listElement || listType !== "ul") {
+            listElement = document.createElement("ul");
+            listType = "ul";
+            fragment.appendChild(listElement);
+          }
+          const item = document.createElement("li");
+          this.appendPlanInlineMarkdown(item, unorderedMatch[1]);
+          listElement.appendChild(item);
+          continue;
+        }
+
+        const orderedMatch = trimmed.match(/^\d+\.\s+(.*)$/);
+        if (orderedMatch) {
+          flushParagraph();
+          if (!listElement || listType !== "ol") {
+            listElement = document.createElement("ol");
+            listType = "ol";
+            fragment.appendChild(listElement);
+          }
+          const item = document.createElement("li");
+          this.appendPlanInlineMarkdown(item, orderedMatch[1]);
+          listElement.appendChild(item);
+          continue;
+        }
+
+        clearList();
+        paragraphLines.push(trimmed);
+      }
+
+      flushParagraph();
+      container.appendChild(fragment);
+    }
+
+    renderPlanBodyContent(bodyWrap, entry, bodyText) {
+      if (!bodyWrap) {
+        return;
+      }
+
+      const planText = this.extractPlanTextForEntry(entry, bodyText);
+      bodyWrap.textContent = "";
+      bodyWrap.dataset.bodyKind = "plan";
+      if (!planText) {
+        const empty = document.createElement("p");
+        empty.textContent = "Plan content unavailable.";
+        bodyWrap.appendChild(empty);
+        return;
+      }
+
+      this.renderPlanMarkdownIntoContainer(bodyWrap, planText);
+    }
+
     parseAgentsInstructionHeader(bodyText) {
       const normalized = typeof bodyText === "string" ? bodyText : "";
       if (!normalized) {
@@ -1874,6 +2111,41 @@
     createBodyNodeForEntry(card, entry, bodyText) {
       if (!bodyText) {
         return { body: null, detailsWrap: null };
+      }
+
+      if (this.shouldUsePlanCollapsedBody(entry, bodyText)) {
+        const details = document.createElement("details");
+        details.className = "watcher-entry-collapsible watcher-plan-collapsible";
+
+        const toggle = document.createElement("summary");
+        const summaryWrap = document.createElement("span");
+        summaryWrap.className = "watcher-plan-summary";
+
+        const icon = document.createElement("i");
+        icon.className = "bi bi-diagram-3 watcher-plan-icon";
+        icon.setAttribute("aria-hidden", "true");
+        summaryWrap.appendChild(icon);
+
+        const summaryText = document.createElement("span");
+        const baseText = "Plan";
+        summaryText.textContent = `${baseText} (click to expand)`;
+        summaryWrap.appendChild(summaryText);
+        toggle.appendChild(summaryWrap);
+        details.appendChild(toggle);
+
+        const body = document.createElement("div");
+        body.className = "watcher-plan-body";
+        this.renderPlanBodyContent(body, entry, bodyText);
+        details.appendChild(body);
+
+        details.addEventListener("toggle", () => {
+          const stateText = details.open ? " (click to collapse)" : " (click to expand)";
+          summaryText.textContent = `${baseText}${stateText}`;
+        });
+
+        card.classList.add("watcher-plan-entry");
+        card.appendChild(details);
+        return { body, detailsWrap: details };
       }
 
       if (this.isToolEntry(entry)) {
@@ -2567,13 +2839,45 @@
 
       const bodyText = this.getEntryBodyText(entry);
       const shouldCollapse = this.shouldUseCollapsibleBody(entry);
+      const shouldUsePlan = this.shouldUsePlanCollapsedBody(entry, bodyText);
+      const hasPlanBody = node.body?.dataset?.bodyKind === "plan";
 
       if (!node.body && bodyText) {
         const bodyNode = this.createBodyNodeForEntry(node.card, entry, bodyText);
         node.body = bodyNode.body;
         node.detailsWrap = bodyNode.detailsWrap;
       } else if (node.body) {
-        if (node.body.dataset?.bodyKind === "tool" || node.body.dataset?.bodyKind === "tool-fold") {
+        if (shouldUsePlan && !hasPlanBody) {
+          const bodyNode = this.createBodyNodeForEntry(node.card, entry, bodyText);
+          if (bodyNode.body) {
+            const parent = node.body.parentElement;
+            if (parent && parent.classList && parent.classList.contains("watcher-entry-collapsible")) {
+              parent.remove();
+            } else if (parent === node.card) {
+              node.card.removeChild(node.body);
+            }
+            node.card.classList.add("watcher-plan-entry");
+            node.body = bodyNode.body;
+            node.detailsWrap = bodyNode.detailsWrap;
+          }
+        } else if (hasPlanBody) {
+          if (!shouldUsePlan) {
+            const bodyNode = this.createBodyNodeForEntry(node.card, entry, bodyText);
+            if (bodyNode.body) {
+              const parent = node.body.parentElement;
+              if (parent && parent.classList && parent.classList.contains("watcher-entry-collapsible")) {
+                parent.remove();
+              } else if (parent === node.card) {
+                node.card.removeChild(node.body);
+              }
+              node.card.classList.remove("watcher-plan-entry");
+              node.body = bodyNode.body;
+              node.detailsWrap = bodyNode.detailsWrap;
+            }
+          } else {
+            this.renderPlanBodyContent(node.body, entry, bodyText);
+          }
+        } else if (node.body.dataset?.bodyKind === "tool" || node.body.dataset?.bodyKind === "tool-fold") {
           this.renderToolBodyContent(node.body, entry, bodyText);
         } else if (shouldCollapse && !node.detailsWrap) {
           const bodyNode = this.createBodyNodeForEntry(node.card, entry, bodyText);
