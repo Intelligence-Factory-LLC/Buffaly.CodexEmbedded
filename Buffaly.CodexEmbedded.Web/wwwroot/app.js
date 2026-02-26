@@ -5364,10 +5364,14 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     sessionSelect.textContent = "";
   }
 
-  const ids = Array.from(sessions.keys());
-  ids.sort();
+  const ids = Array.from(sessions.keys()).sort();
+  const recapBestSessionId = IS_RECAP_MODE ? (findBestRecapSessionId() || null) : null;
+  const visibleIds = IS_RECAP_MODE
+    ? [((recapSessionId && sessions.has(recapSessionId) ? recapSessionId : null) || recapBestSessionId || "")]
+      .filter((id) => !!id && sessions.has(id))
+    : ids;
   if (sessionSelect) {
-    for (const id of ids) {
+    for (const id of visibleIds) {
       const state = sessions.get(id);
       const option = document.createElement("option");
       option.value = id;
@@ -5392,7 +5396,6 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     !!serverActiveState &&
     normalizeThreadId(serverActiveState.threadId || "") === normalizeThreadId(pendingSessionLoadThreadId);
   const preferServerActive = options.preferServerActive === true || pendingThreadMatch;
-  const recapBestSessionId = IS_RECAP_MODE ? (findBestRecapSessionId() || null) : null;
   const toSelect = IS_RECAP_MODE
     ? ((recapSessionId && sessions.has(recapSessionId) ? recapSessionId : null) ||
       recapBestSessionId ||
