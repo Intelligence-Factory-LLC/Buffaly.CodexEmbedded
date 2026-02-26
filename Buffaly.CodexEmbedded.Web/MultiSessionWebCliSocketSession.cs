@@ -16,9 +16,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	private readonly string _connectionId;
 	private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web);
 	private readonly SemaphoreSlim _socketSendLock = new(1, 1);
-	private static readonly object _recoveryLock = new();
-	private static DateTimeOffset _recoveryLastRefreshedUtc = DateTimeOffset.MinValue;
-	private static Dictionary<string, RecoveredRunningState> _recoveredRunningByThreadId = new(StringComparer.Ordinal);
 	private static readonly TimeSpan SafeSocketSendTimeout = TimeSpan.FromSeconds(5);
 	private string? _activeSessionId;
 	private volatile CodexEventVerbosity _uiLogVerbosity = CodexEventVerbosity.Normal;
@@ -1118,91 +1115,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 	private Dictionary<string, bool> BuildProcessingByThreadMap()
 	{
-		var processingByThread = _orchestrator.GetLiveProcessingByThread();
-		var liveThreadIds = new HashSet<string>(processingByThread.Keys, StringComparer.Ordinal);
-
-		var recovered = GetRecoveredRunningByThreadId();
-		foreach (var kvp in recovered)
-		{
-			if (liveThreadIds.Contains(kvp.Key))
-			{
-				continue;
-			}
-
-			processingByThread[kvp.Key] = kvp.Value.IsProcessing;
-		}
-
-		return processingByThread;
-	}
-
-	private Dictionary<string, RecoveredRunningState> GetRecoveredRunningByThreadId()
-	{
-		var nowUtc = DateTimeOffset.UtcNow;
-		var refreshEvery = TimeSpan.FromSeconds(_defaults.RunningRecoveryRefreshSeconds);
-		lock (_recoveryLock)
-		{
-			if ((nowUtc - _recoveryLastRefreshedUtc) <= refreshEvery)
-			{
-				return new Dictionary<string, RecoveredRunningState>(_recoveredRunningByThreadId, StringComparer.Ordinal);
-			}
-		}
-
-		var rebuilt = RebuildRecoveredRunningByThreadId(nowUtc);
-		lock (_recoveryLock)
-		{
-			_recoveredRunningByThreadId = rebuilt;
-			_recoveryLastRefreshedUtc = nowUtc;
-			return new Dictionary<string, RecoveredRunningState>(_recoveredRunningByThreadId, StringComparer.Ordinal);
-		}
-	}
-
-	private Dictionary<string, RecoveredRunningState> RebuildRecoveredRunningByThreadId(DateTimeOffset nowUtc)
-	{
-		var output = new Dictionary<string, RecoveredRunningState>(StringComparer.Ordinal);
-		var activeWindow = TimeSpan.FromMinutes(_defaults.RunningRecoveryActiveWindowMinutes);
-		var sessions = CodexSessionCatalog.ListSessions(_defaults.CodexHomePath, limit: _defaults.RunningRecoveryScanMaxSessions);
-
-		foreach (var session in sessions)
-		{
-			if (string.IsNullOrWhiteSpace(session.ThreadId) || string.IsNullOrWhiteSpace(session.SessionFilePath))
-			{
-				continue;
-			}
-
-			var path = session.SessionFilePath!;
-			if (!File.Exists(path))
-			{
-				continue;
-			}
-
-			if (session.UpdatedAtUtc.HasValue && (nowUtc - session.UpdatedAtUtc.Value) > activeWindow)
-			{
-				continue;
-			}
-
-			JsonlWatchResult tail;
-			try
-			{
-				tail = JsonlFileTailReader.ReadInitial(path, _defaults.RunningRecoveryTailLineLimit);
-			}
-			catch
-			{
-				continue;
-			}
-
-			var analysis = CodexTaskStateRecovery.AnalyzeJsonLines(tail.Lines);
-			if (!CodexTaskStateRecovery.IsLikelyProcessing(analysis, nowUtc, activeWindow))
-			{
-				continue;
-			}
-
-			output[session.ThreadId] = new RecoveredRunningState(
-				IsProcessing: true,
-				OutstandingTaskCount: analysis.OutstandingTaskCount,
-				LastTaskEventAtUtc: analysis.LastTaskEventAtUtc);
-		}
-
-		return output;
+		return _orchestrator.GetLiveProcessingByThread();
 	}
 
 	private async Task SendEventAsync(string type, object payload, CancellationToken cancellationToken)
@@ -1538,11 +1451,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 		return value[..maxLength] + "...";
 	}
-
-	private sealed record RecoveredRunningState(
-		bool IsProcessing,
-		int OutstandingTaskCount,
-		DateTimeOffset? LastTaskEventAtUtc);
 
 }
 

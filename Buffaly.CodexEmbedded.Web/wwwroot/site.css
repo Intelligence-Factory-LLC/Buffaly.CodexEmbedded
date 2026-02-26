@@ -1703,7 +1703,7 @@ body {
 	display: block;
 	width: 100%;
 	min-width: 0;
-	padding: 0.75rem 12.2rem 2.95rem 0.9rem;
+	padding: 0.75rem 0.9rem;
 	border: 1px solid #d1d5db;
 	border-radius: 18px;
 	min-height: 7.2rem;
@@ -1721,15 +1721,13 @@ body {
 }
 
 .prompt-actions {
-	position: absolute;
-	right: 1.35rem;
-	bottom: 1.35rem;
-	z-index: 3;
+	margin-top: 0.55rem;
 	display: flex;
 	align-items: center;
+	justify-content: flex-end;
+	flex-wrap: wrap;
 	gap: 0.3rem;
-	min-width: 0;
-	width: auto;
+	width: 100%;
 }
 
 .composer-status-stack {
@@ -2593,6 +2591,52 @@ body {
 	font-family: Consolas, "Courier New", monospace;
 }
 
+.watcher-assistant-markdown {
+	white-space: normal;
+	font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+	line-height: 1.5;
+}
+
+.watcher-assistant-markdown p,
+.watcher-assistant-markdown ul,
+.watcher-assistant-markdown ol,
+.watcher-assistant-markdown pre,
+.watcher-assistant-markdown h1,
+.watcher-assistant-markdown h2,
+.watcher-assistant-markdown h3,
+.watcher-assistant-markdown h4,
+.watcher-assistant-markdown h5,
+.watcher-assistant-markdown h6 {
+	margin: 0 0 0.55rem 0;
+}
+
+.watcher-assistant-markdown p:last-child,
+.watcher-assistant-markdown ul:last-child,
+.watcher-assistant-markdown ol:last-child,
+.watcher-assistant-markdown pre:last-child,
+.watcher-assistant-markdown h1:last-child,
+.watcher-assistant-markdown h2:last-child,
+.watcher-assistant-markdown h3:last-child,
+.watcher-assistant-markdown h4:last-child,
+.watcher-assistant-markdown h5:last-child,
+.watcher-assistant-markdown h6:last-child {
+	margin-bottom: 0;
+}
+
+.watcher-assistant-markdown ul,
+.watcher-assistant-markdown ol {
+	padding-left: 1.2rem;
+}
+
+.watcher-assistant-markdown pre {
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-family: Consolas, "Courier New", monospace;
+	background: rgba(15, 23, 42, 0.05);
+	padding: 0.42rem 0.5rem;
+	border-radius: 8px;
+}
+
 .watcher-tool-body {
 	margin-top: 0.05rem;
 	display: flex;
@@ -2881,6 +2925,48 @@ body {
 	height: 100%;
 	object-fit: cover;
 	display: block;
+	cursor: zoom-in;
+}
+
+.watcher-image-preview-overlay {
+	position: fixed;
+	inset: 0;
+	background: rgba(2, 6, 23, 0.8);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 1rem;
+	z-index: 60;
+}
+
+.watcher-image-preview-image {
+	max-width: min(96vw, 1400px);
+	max-height: 90vh;
+	border-radius: 10px;
+	border: 1px solid #334155;
+	box-shadow: 0 18px 40px rgba(2, 6, 23, 0.55);
+	background: #0f172a;
+	object-fit: contain;
+}
+
+.watcher-image-preview-close {
+	position: fixed;
+	top: 14px;
+	right: 14px;
+	width: 36px;
+	height: 36px;
+	border: 1px solid #64748b;
+	border-radius: 999px;
+	background: rgba(15, 23, 42, 0.85);
+	color: #f8fafc;
+	font-size: 1rem;
+	line-height: 1;
+	padding: 0;
+	cursor: pointer;
+}
+
+.watcher-image-preview-close:hover {
+	background: rgba(30, 41, 59, 0.95);
 }
 
 .watcher-embedded-entry {
@@ -3300,6 +3386,10 @@ html[data-theme="dark"] .watcher-plan-icon {
 
 html[data-theme="dark"] .watcher-plan-body {
 	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .watcher-assistant-markdown pre {
+	background: rgba(148, 163, 184, 0.14);
 }
 
 html[data-theme="dark"] .watcher-plan-body h1,
@@ -4004,7 +4094,7 @@ html[data-theme="dark"] .server-table td {
 		width: 100%;
 		min-height: 5.2rem;
 		max-height: 10rem;
-		padding: 0.5rem 10.6rem 2.55rem 0.62rem;
+		padding: 0.5rem 0.62rem;
 	}
 
 	.prompt-form textarea:focus {
@@ -4012,15 +4102,15 @@ html[data-theme="dark"] .server-table td {
 	}
 
 	.prompt-actions {
-		position: absolute;
-		right: 0.95rem;
-		bottom: 0.95rem;
+		position: static;
+		margin-top: 0.42rem;
 		display: flex;
 		align-items: center;
+		justify-content: flex-end;
+		flex-wrap: wrap;
 		column-gap: 0.24rem;
 		row-gap: 0.24rem;
-		min-width: 0;
-		width: auto;
+		width: 100%;
 	}
 
 	.scroll-to-bottom-btn {

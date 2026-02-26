@@ -3,10 +3,10 @@
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1">
-	<title>Codex Recap</title>
+	<title>Codex Recap Export</title>
 	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-	<link rel="stylesheet" href="site.css?v=20260225-recap3">
+	<link rel="stylesheet" href="site.css?v=20260226-imagepreview1">
 </head>
 <body>
 	<div class="layout">
@@ -52,51 +52,49 @@
 				</nav>
 				<div class="sidebar-divider" aria-hidden="true"></div>
 				<div class="recap-sidebar-note">
-					Recap uses a dedicated Codex session pointed at a chosen root path.
-					Default permissions are read focused: approval policy <code>never</code> (no approvals needed) and sandbox <code>read-only</code>.
+					Generate markdown exports directly from Codex session files for a specific time window.
 				</div>
 			</aside>
 			<section class="panel chat-panel recap-panel">
-				<div class="panel-title">Recap Workspace</div>
+				<div class="panel-title">Recap Export</div>
+
 				<div class="recap-controls">
-					<label for="recapRootInput">Root</label>
-					<input id="recapRootInput" type="text" placeholder="C:\Users\you\.codex">
-					<button id="recapStartBtn" type="button">Start Recap Session</button>
-					<button id="recapOpenTimelineBtn" type="button">Open Timeline</button>
+					<label for="recapStartDate">Start date</label>
+					<input id="recapStartDate" type="date">
+					<label for="recapEndDate">End date</label>
+					<input id="recapEndDate" type="date">
 				</div>
-				<div id="recapStatus" class="logs-status">Connecting...</div>
-				<div id="recapApprovalPanel" class="approval-panel hidden">
-					<div id="recapApprovalSummary" class="approval-summary">Approval requested</div>
-					<div id="recapApprovalDetails" class="approval-details"></div>
-					<div class="approval-actions">
-						<button type="button" data-decision="accept">Accept once</button>
-						<button type="button" data-decision="acceptForSession">Accept for session</button>
-						<button type="button" data-decision="decline">Decline</button>
-						<button type="button" data-decision="cancel">Cancel</button>
-					</div>
-				</div>
-				<div class="recap-answer" id="recapMeta">
-					<div><strong>Session:</strong> <span id="recapSessionValue">(none)</span></div>
-					<div><strong>Thread:</strong> <span id="recapThreadValue">(none)</span></div>
-				</div>
-				<div id="recapOutput" class="recap-report">Ask open-ended questions once the recap session is started.</div>
+
 				<div class="recap-controls">
-					<input id="recapPromptInput" type="text" placeholder="What did I work on today? Organize by project and bullets.">
-					<button id="recapAskBtn" type="button">Ask</button>
+					<label for="recapDetailLevel">Detail level</label>
+					<select id="recapDetailLevel">
+						<option value="messages">User and assistant messages only</option>
+						<option value="all">Everything (including tool calls and results)</option>
+					</select>
+					<label>
+						<input id="recapAllProjectsToggle" type="checkbox" checked>
+						All projects
+					</label>
+					<button id="recapRefreshProjectsBtn" type="button">Refresh Projects</button>
 				</div>
-				<div class="recap-grid">
-					<div class="recap-column recap-timeline-column" style="border-left: 0;">
-						<div id="recapTimelineTitle" class="recap-section-title">Timeline</div>
-						<div id="recapTimelineStatus" class="logs-status">Timeline is available after a recap session starts.</div>
-						<div id="recapTimeline" class="watcher-timeline"></div>
-					</div>
+
+				<div class="recap-controls">
+					<label for="recapProjectsSelect">Projects</label>
+					<select id="recapProjectsSelect" multiple size="12" style="min-width: 24rem;"></select>
 				</div>
+
+				<div class="recap-controls">
+					<button id="recapGenerateBtn" type="button">Generate Markdown</button>
+					<a id="recapDownloadLink" href="#" class="hidden" download>Download Latest Markdown</a>
+				</div>
+
+				<div id="recapStatus" class="logs-status">Loading projects...</div>
+				<pre id="recapSummary" class="recap-report">No report generated yet.</pre>
 			</section>
 		</main>
 		<button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close navigation"></button>
 	</div>
 	<script src="theme.js?v=20260225-settings1"></script>
-	<script src="sessionTimeline.js?v=20260224-turnfmt1"></script>
-	<script src="recap.js?v=20260225-recap5"></script>
+	<script src="recap.js?v=20260226-recap-export1"></script>
 </body>
 </html>

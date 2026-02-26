@@ -100,15 +100,15 @@ app.MapGet("/recap", async context =>
 		return;
 	}
 
-	var indexPagePath = Path.Combine(webRoot, "index.html");
-	if (!File.Exists(indexPagePath))
+	var recapPagePath = Path.Combine(webRoot, "recap.html");
+	if (!File.Exists(recapPagePath))
 	{
 		context.Response.StatusCode = StatusCodes.Status404NotFound;
 		return;
 	}
 
 	context.Response.ContentType = "text/html; charset=utf-8";
-	await context.Response.SendFileAsync(indexPagePath);
+	await context.Response.SendFileAsync(recapPagePath);
 });
 
 app.MapGet("/server", async context =>
@@ -175,6 +175,126 @@ app.MapGet("/api/logs/sessions", (HttpRequest request, WebRuntimeDefaults defaul
 		codexHomePath = CodexHomePaths.ResolveCodexHomePath(defaults.CodexHomePath),
 		sessions
 	});
+});
+
+app.MapGet("/api/recap/projects", (WebRuntimeDefaults defaults) =>
+{
+	var sessions = CodexSessionCatalog.ListSessions(defaults.CodexHomePath, limit: 0)
+		.Where(x => !string.IsNullOrWhiteSpace(x.SessionFilePath))
+		.ToArray();
+
+	var projects = sessions
+		.GroupBy(x => string.IsNullOrWhiteSpace(x.Cwd) ? "(unknown)" : x.Cwd!, StringComparer.OrdinalIgnoreCase)
+		.Select(group => new
+		{
+			cwd = group.Key,
+			sessionCount = group.Count(),
+			lastUpdatedUtc = group.Max(x => x.UpdatedAtUtc)?.ToString("O")
+		})
+		.OrderBy(x => x.cwd, StringComparer.OrdinalIgnoreCase)
+		.ToArray();
+
+	return Results.Ok(new
+	{
+		codexHomePath = CodexHomePaths.ResolveCodexHomePath(defaults.CodexHomePath),
+		projects
+	});
+});
+
+app.MapPost("/api/recap/export", async (HttpRequest request, WebRuntimeDefaults defaults, CancellationToken cancellationToken) =>
+{
+	RecapExportRequest? exportRequest;
+	try
+	{
+		exportRequest = await JsonSerializer.DeserializeAsync<RecapExportRequest>(
+			request.Body,
+			new JsonSerializerOptions
+			{
+				PropertyNameCaseInsensitive = true
+			},
+			cancellationToken);
+	}
+	catch (Exception ex)
+	{
+		return Results.BadRequest(new { message = $"Invalid request JSON: {ex.Message}" });
+	}
+
+	if (exportRequest is null || string.IsNullOrWhiteSpace(exportRequest.StartUtc) || string.IsNullOrWhiteSpace(exportRequest.EndUtc))
+	{
+		return Results.BadRequest(new { message = "startUtc and endUtc are required." });
+	}
+
+	if (!DateTimeOffset.TryParse(exportRequest.StartUtc, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var startUtc))
+	{
+		return Results.BadRequest(new { message = "startUtc must be a valid ISO timestamp." });
+	}
+	if (!DateTimeOffset.TryParse(exportRequest.EndUtc, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var endUtc))
+	{
+		return Results.BadRequest(new { message = "endUtc must be a valid ISO timestamp." });
+	}
+
+	startUtc = startUtc.ToUniversalTime();
+	endUtc = endUtc.ToUniversalTime();
+	if (endUtc < startUtc)
+	{
+		return Results.BadRequest(new { message = "endUtc must be greater than or equal to startUtc." });
+	}
+
+	var selectedProjects = (exportRequest.Projects ?? Array.Empty<string>())
+		.Where(x => !string.IsNullOrWhiteSpace(x))
+		.Select(x => x.Trim())
+		.Distinct(StringComparer.OrdinalIgnoreCase)
+		.ToHashSet(StringComparer.OrdinalIgnoreCase);
+	var includeAllDetails = string.Equals(exportRequest.DetailLevel, "all", StringComparison.OrdinalIgnoreCase);
+
+	var sessions = CodexSessionCatalog.ListSessions(defaults.CodexHomePath, limit: 0)
+		.Where(x => !string.IsNullOrWhiteSpace(x.SessionFilePath))
+		.Where(x => selectedProjects.Count == 0 || selectedProjects.Contains(string.IsNullOrWhiteSpace(x.Cwd) ? "(unknown)" : x.Cwd!))
+		.OrderBy(x => x.Cwd ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+		.ThenByDescending(x => x.UpdatedAtUtc ?? DateTimeOffset.MinValue)
+		.ThenBy(x => x.ThreadId, StringComparer.Ordinal)
+		.ToArray();
+
+	var report = RecapMarkdownBuilder.BuildReport(
+		sessions,
+		startUtc,
+		endUtc,
+		includeAllDetails);
+
+	var reportsRoot = Path.Combine(Environment.CurrentDirectory, "reports", "recap");
+	Directory.CreateDirectory(reportsRoot);
+	var fileName = $"recap-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.md";
+	var fullPath = Path.Combine(reportsRoot, fileName);
+	await File.WriteAllTextAsync(fullPath, report.Markdown, new UTF8Encoding(false), cancellationToken);
+
+	return Results.Ok(new
+	{
+		fileName,
+		filePath = fullPath,
+		downloadUrl = $"/api/recap/reports/{Uri.EscapeDataString(fileName)}",
+		createdAtUtc = DateTimeOffset.UtcNow.ToString("O"),
+		projectCount = report.ProjectCount,
+		sessionCount = report.SessionCount,
+		entryCount = report.EntryCount
+	});
+});
+
+app.MapGet("/api/recap/reports/{fileName}", (string fileName) =>
+{
+	var safeFileName = Path.GetFileName(fileName ?? string.Empty);
+	if (string.IsNullOrWhiteSpace(safeFileName) || !safeFileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
+	{
+		return Results.BadRequest(new { message = "Invalid report file name." });
+	}
+
+	var reportsRoot = Path.Combine(Environment.CurrentDirectory, "reports", "recap");
+	var fullPath = Path.Combine(reportsRoot, safeFileName);
+	if (!File.Exists(fullPath))
+	{
+		return Results.NotFound(new { message = $"Report not found: {safeFileName}" });
+	}
+
+	return Results.File(fullPath, "text/markdown; charset=utf-8", fileDownloadName: safeFileName);
 });
 
 app.MapGet("/api/logs/watch", (HttpRequest request, WebRuntimeDefaults defaults) =>
@@ -2182,8 +2302,13 @@ internal sealed class WebCliSocketSession : IAsyncDisposable
 	private static List<string> GetCommandActionSummaries(JsonElement paramsElement)
 	{
 		var output = new List<string>();
+		var fallbackCommand = TryGetPathString(paramsElement, "command");
 		if (!paramsElement.TryGetProperty("commandActions", out var actionsElement) || actionsElement.ValueKind != JsonValueKind.Array)
 		{
+			if (!string.IsNullOrWhiteSpace(fallbackCommand))
+			{
+				output.Add($"run {FormatActionText(fallbackCommand)}");
+			}
 			return output;
 		}
 
@@ -2193,6 +2318,7 @@ internal sealed class WebCliSocketSession : IAsyncDisposable
 			var path = TryGetPathString(action, "path");
 			var name = TryGetPathString(action, "name");
 			var query = TryGetPathString(action, "query");
+			var command = TryGetPathString(action, "command") ?? TryGetPathString(action, "cmd");
 
 			switch (type)
 			{
@@ -2206,12 +2332,41 @@ internal sealed class WebCliSocketSession : IAsyncDisposable
 					output.Add($"search {(query ?? "(query unknown)")} in {(path ?? "(path unknown)")}");
 					break;
 				default:
-					output.Add(type);
+					if (!string.IsNullOrWhiteSpace(command))
+					{
+						output.Add($"run {FormatActionText(command)}");
+					}
+					else if (!string.IsNullOrWhiteSpace(path))
+					{
+						output.Add($"{type} {FormatActionText(path)}");
+					}
+					else if (string.Equals(type, "unknown", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(fallbackCommand))
+					{
+						output.Add($"run {FormatActionText(fallbackCommand)}");
+					}
+					else
+					{
+						output.Add(type);
+					}
 					break;
 			}
 		}
 
 		return output;
+	}
+
+	private static string FormatActionText(string? value)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return string.Empty;
+		}
+
+		var singleLine = value.Replace("\r", " ").Replace("\n", " ").Trim();
+		const int maxLength = 180;
+		return singleLine.Length <= maxLength
+			? singleLine
+			: singleLine[..maxLength] + "...";
 	}
 }
 
@@ -2508,3 +2663,369 @@ internal sealed class ServerRuntimeStateTracker
 }
 
 internal sealed record OpenAiKeyUpdateRequest(string? ApiKey);
+
+internal sealed record RecapExportRequest(
+	string? StartUtc,
+	string? EndUtc,
+	string[]? Projects,
+	string? DetailLevel);
+
+internal sealed record RecapExportEntry(
+	DateTimeOffset TimestampUtc,
+	string Role,
+	string Label,
+	string Text);
+
+internal sealed record RecapReportBuildResult(
+	string Markdown,
+	int ProjectCount,
+	int SessionCount,
+	int EntryCount);
+
+internal static class RecapMarkdownBuilder
+{
+	public static RecapReportBuildResult BuildReport(
+		IReadOnlyList<CodexStoredSessionInfo> sessions,
+		DateTimeOffset startUtc,
+		DateTimeOffset endUtc,
+		bool includeAllDetails)
+	{
+		var byProject = new Dictionary<string, List<(CodexStoredSessionInfo Session, List<RecapExportEntry> Entries)>>(StringComparer.OrdinalIgnoreCase);
+		var totalEntries = 0;
+		var includedSessions = 0;
+
+		foreach (var session in sessions)
+		{
+			var path = session.SessionFilePath;
+			if (string.IsNullOrWhiteSpace(path))
+			{
+				continue;
+			}
+
+			var fullPath = Path.GetFullPath(path);
+			if (!File.Exists(fullPath))
+			{
+				continue;
+			}
+
+			List<RecapExportEntry> entries;
+			try
+			{
+				entries = ReadEntries(fullPath, startUtc, endUtc, includeAllDetails);
+			}
+			catch
+			{
+				continue;
+			}
+
+			if (entries.Count == 0)
+			{
+				continue;
+			}
+
+			var project = string.IsNullOrWhiteSpace(session.Cwd) ? "(unknown)" : session.Cwd!;
+			if (!byProject.TryGetValue(project, out var sessionsForProject))
+			{
+				sessionsForProject = new List<(CodexStoredSessionInfo Session, List<RecapExportEntry> Entries)>();
+				byProject[project] = sessionsForProject;
+			}
+
+			sessionsForProject.Add((session, entries));
+			totalEntries += entries.Count;
+			includedSessions += 1;
+		}
+
+		var markdown = RenderMarkdown(byProject, startUtc, endUtc, includeAllDetails, includedSessions, totalEntries);
+		return new RecapReportBuildResult(
+			Markdown: markdown,
+			ProjectCount: byProject.Count,
+			SessionCount: includedSessions,
+			EntryCount: totalEntries);
+	}
+
+	private static string RenderMarkdown(
+		Dictionary<string, List<(CodexStoredSessionInfo Session, List<RecapExportEntry> Entries)>> byProject,
+		DateTimeOffset startUtc,
+		DateTimeOffset endUtc,
+		bool includeAllDetails,
+		int sessionCount,
+		int entryCount)
+	{
+		var sb = new StringBuilder();
+		sb.AppendLine("# Recap Export");
+		sb.AppendLine();
+		sb.AppendLine($"- Generated: {DateTimeOffset.UtcNow:yyyy-MM-dd HH:mm:ss} UTC");
+		sb.AppendLine($"- Window: {startUtc:yyyy-MM-dd HH:mm:ss} UTC to {endUtc:yyyy-MM-dd HH:mm:ss} UTC");
+		sb.AppendLine($"- Detail level: {(includeAllDetails ? "all" : "messages")}");
+		sb.AppendLine($"- Sessions: {sessionCount}");
+		sb.AppendLine($"- Entries: {entryCount}");
+		sb.AppendLine();
+
+		foreach (var project in byProject.Keys.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
+		{
+			var sessions = byProject[project]
+				.OrderByDescending(x => x.Session.UpdatedAtUtc ?? DateTimeOffset.MinValue)
+				.ThenBy(x => x.Session.ThreadId, StringComparer.Ordinal)
+				.ToList();
+
+			sb.AppendLine($"## Project: {project}");
+			sb.AppendLine();
+			foreach (var item in sessions)
+			{
+				var session = item.Session;
+				var entries = item.Entries.OrderBy(x => x.TimestampUtc).ToList();
+				var sessionTitle = string.IsNullOrWhiteSpace(session.ThreadName)
+					? session.ThreadId
+					: $"{session.ThreadName} ({session.ThreadId})";
+
+				sb.AppendLine($"### Session: {sessionTitle}");
+				sb.AppendLine();
+				sb.AppendLine($"- Updated: {(session.UpdatedAtUtc.HasValue ? session.UpdatedAtUtc.Value.ToString("yyyy-MM-dd HH:mm:ss 'UTC'") : "unknown")}");
+				sb.AppendLine($"- File: {session.SessionFilePath}");
+				sb.AppendLine($"- Entries in window: {entries.Count}");
+				sb.AppendLine();
+
+				foreach (var entry in entries)
+				{
+					var label = string.IsNullOrWhiteSpace(entry.Label) ? entry.Role : entry.Label;
+					sb.AppendLine($"- {entry.TimestampUtc:yyyy-MM-dd HH:mm:ss} UTC | **{label}**");
+					foreach (var line in SplitLines(entry.Text))
+					{
+						sb.AppendLine($"  {line}");
+					}
+				}
+
+				sb.AppendLine();
+			}
+		}
+
+		if (sessionCount == 0)
+		{
+			sb.AppendLine("_No matching conversation entries were found for this window and project filter._");
+			sb.AppendLine();
+		}
+
+		return sb.ToString();
+	}
+
+	private static IEnumerable<string> SplitLines(string? text)
+	{
+		var normalized = (text ?? string.Empty).Replace("\r", string.Empty);
+		if (string.IsNullOrWhiteSpace(normalized))
+		{
+			yield return "(empty)";
+			yield break;
+		}
+
+		var lines = normalized.Split('\n');
+		foreach (var line in lines)
+		{
+			yield return string.IsNullOrWhiteSpace(line) ? string.Empty : line;
+		}
+	}
+
+	private static List<RecapExportEntry> ReadEntries(
+		string filePath,
+		DateTimeOffset startUtc,
+		DateTimeOffset endUtc,
+		bool includeAllDetails)
+	{
+		var output = new List<RecapExportEntry>();
+		foreach (var line in File.ReadLines(filePath))
+		{
+			if (string.IsNullOrWhiteSpace(line))
+			{
+				continue;
+			}
+
+			try
+			{
+				using var doc = JsonDocument.Parse(line);
+				var root = doc.RootElement;
+				if (root.ValueKind != JsonValueKind.Object)
+				{
+					continue;
+				}
+
+				var timestampRaw = TryGetString(root, "timestamp");
+				if (!TryParseTimestamp(timestampRaw, out var timestampUtc))
+				{
+					continue;
+				}
+				if (timestampUtc < startUtc || timestampUtc > endUtc)
+				{
+					continue;
+				}
+
+				var lineType = TryGetString(root, "type") ?? string.Empty;
+				if (!root.TryGetProperty("payload", out var payload) || payload.ValueKind != JsonValueKind.Object)
+				{
+					continue;
+				}
+
+				if (string.Equals(lineType, "response_item", StringComparison.Ordinal))
+				{
+					var payloadType = TryGetString(payload, "type") ?? string.Empty;
+					if (string.Equals(payloadType, "message", StringComparison.Ordinal))
+					{
+						var role = (TryGetString(payload, "role") ?? string.Empty).Trim().ToLowerInvariant();
+						if (!string.Equals(role, "user", StringComparison.Ordinal) && !string.Equals(role, "assistant", StringComparison.Ordinal))
+						{
+							continue;
+						}
+
+						var text = ExtractTextFromContent(payload);
+						if (string.IsNullOrWhiteSpace(text))
+						{
+							continue;
+						}
+
+						var label = string.Equals(role, "assistant", StringComparison.Ordinal) ? "Assistant" : "User";
+						output.Add(new RecapExportEntry(timestampUtc, role, label, text));
+						continue;
+					}
+
+					if (includeAllDetails &&
+						(string.Equals(payloadType, "function_call", StringComparison.Ordinal)
+						|| string.Equals(payloadType, "custom_tool_call", StringComparison.Ordinal)))
+					{
+						var name = TryGetString(payload, "name") ?? "tool";
+						var arguments = TryGetString(payload, "arguments") ?? TryGetString(payload, "input") ?? string.Empty;
+						output.Add(new RecapExportEntry(timestampUtc, "tool", $"Tool Call: {name}", arguments));
+						continue;
+					}
+
+					if (includeAllDetails &&
+						(string.Equals(payloadType, "function_call_output", StringComparison.Ordinal)
+						|| string.Equals(payloadType, "custom_tool_call_output", StringComparison.Ordinal)))
+					{
+						var result = TryGetString(payload, "output")
+							?? TryGetString(payload, "result")
+							?? TryGetString(payload, "content")
+							?? payload.ToString();
+						output.Add(new RecapExportEntry(timestampUtc, "tool", "Tool Output", result ?? string.Empty));
+						continue;
+					}
+
+					if (includeAllDetails && string.Equals(payloadType, "reasoning", StringComparison.Ordinal))
+					{
+						var reasoning = TryGetString(payload, "summary") ?? TryGetString(payload, "content") ?? string.Empty;
+						if (!string.IsNullOrWhiteSpace(reasoning))
+						{
+							output.Add(new RecapExportEntry(timestampUtc, "reasoning", "Reasoning", reasoning));
+						}
+						continue;
+					}
+
+					continue;
+				}
+
+				if (includeAllDetails && string.Equals(lineType, "event_msg", StringComparison.Ordinal))
+				{
+					var eventType = TryGetString(payload, "type") ?? "event";
+					if (string.Equals(eventType, "token_count", StringComparison.Ordinal))
+					{
+						continue;
+					}
+
+					var message = TryGetString(payload, "message")
+						?? TryGetString(payload, "text")
+						?? TryGetString(payload, "summary")
+						?? payload.ToString();
+					if (!string.IsNullOrWhiteSpace(message))
+					{
+						output.Add(new RecapExportEntry(timestampUtc, "event", $"Event: {eventType}", message));
+					}
+				}
+			}
+			catch
+			{
+			}
+		}
+
+		return output;
+	}
+
+	private static bool TryParseTimestamp(string? raw, out DateTimeOffset utc)
+	{
+		utc = default;
+		if (string.IsNullOrWhiteSpace(raw))
+		{
+			return false;
+		}
+
+		if (!DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed))
+		{
+			return false;
+		}
+
+		utc = parsed.ToUniversalTime();
+		return true;
+	}
+
+	private static string ExtractTextFromContent(JsonElement payload)
+	{
+		if (!payload.TryGetProperty("content", out var content))
+		{
+			return string.Empty;
+		}
+
+		if (content.ValueKind == JsonValueKind.String)
+		{
+			return content.GetString() ?? string.Empty;
+		}
+
+		if (content.ValueKind != JsonValueKind.Array)
+		{
+			return string.Empty;
+		}
+
+		var parts = new List<string>();
+		foreach (var item in content.EnumerateArray())
+		{
+			if (item.ValueKind == JsonValueKind.String)
+			{
+				var raw = item.GetString();
+				if (!string.IsNullOrWhiteSpace(raw))
+				{
+					parts.Add(raw!);
+				}
+				continue;
+			}
+
+			if (item.ValueKind != JsonValueKind.Object)
+			{
+				continue;
+			}
+
+			var text = TryGetString(item, "text")
+				?? TryGetString(item, "value")
+				?? TryGetString(item, "output_text")
+				?? TryGetString(item, "message");
+			if (!string.IsNullOrWhiteSpace(text))
+			{
+				parts.Add(text!);
+			}
+		}
+
+		return string.Join("\n", parts);
+	}
+
+	private static string? TryGetString(JsonElement element, string propertyName)
+	{
+		if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(propertyName, out var value))
+		{
+			return null;
+		}
+
+		return value.ValueKind switch
+		{
+			JsonValueKind.String => value.GetString(),
+			JsonValueKind.Number => value.ToString(),
+			JsonValueKind.True => "true",
+			JsonValueKind.False => "false",
+			JsonValueKind.Null => null,
+			_ => value.ToString()
+		};
+	}
+}

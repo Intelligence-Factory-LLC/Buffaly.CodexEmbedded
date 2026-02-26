@@ -1,4 +1,5 @@
 const STORAGE_SIDEBAR_COLLAPSED_KEY = "codex.settings.sidebarCollapsed.v1";
+const STORAGE_RENDER_ASSISTANT_MARKDOWN_KEY = "codex.settings.renderAssistantMarkdown.v1";
 
 const layoutRoot = document.querySelector(".layout");
 const sidebarToggleBtn = document.getElementById("sidebarToggleBtn");
@@ -7,6 +8,8 @@ const sidebarBackdrop = document.getElementById("sidebarBackdrop");
 
 const themeModeToggle = document.getElementById("themeModeToggle");
 const themeModeValue = document.getElementById("themeModeValue");
+const assistantMarkdownToggle = document.getElementById("assistantMarkdownToggle");
+const assistantMarkdownValue = document.getElementById("assistantMarkdownValue");
 
 const openAiKeyInput = document.getElementById("openAiKeyInput");
 const openAiKeySaveBtn = document.getElementById("openAiKeySaveBtn");
@@ -118,6 +121,39 @@ function refreshThemeModeUi() {
   }
   if (themeModeValue) {
     themeModeValue.textContent = darkModeEnabled ? "Dark mode enabled" : "Light mode enabled";
+  }
+}
+
+function isAssistantMarkdownEnabled() {
+  try {
+    const stored = localStorage.getItem(STORAGE_RENDER_ASSISTANT_MARKDOWN_KEY);
+    if (stored === null) {
+      return true;
+    }
+
+    return stored === "1";
+  } catch {
+    return true;
+  }
+}
+
+function setAssistantMarkdownEnabled(enabled) {
+  try {
+    localStorage.setItem(STORAGE_RENDER_ASSISTANT_MARKDOWN_KEY, enabled ? "1" : "0");
+  } catch {
+    // no-op
+  }
+}
+
+function refreshAssistantMarkdownUi() {
+  const enabled = isAssistantMarkdownEnabled();
+  if (assistantMarkdownToggle) {
+    assistantMarkdownToggle.checked = enabled;
+  }
+  if (assistantMarkdownValue) {
+    assistantMarkdownValue.textContent = enabled
+      ? "Assistant Markdown rendering enabled"
+      : "Assistant Markdown rendering disabled";
   }
 }
 
@@ -278,6 +314,13 @@ if (themeModeToggle) {
   });
 }
 
+if (assistantMarkdownToggle) {
+  assistantMarkdownToggle.addEventListener("change", () => {
+    setAssistantMarkdownEnabled(assistantMarkdownToggle.checked);
+    refreshAssistantMarkdownUi();
+  });
+}
+
 if (openAiKeySaveBtn) {
   openAiKeySaveBtn.addEventListener("click", () => {
     saveOpenAiKey().catch((error) => setKeyStatusText(`Failed to save key: ${error}`, "error"));
@@ -321,4 +364,5 @@ const sidebarCollapsed = localStorage.getItem(STORAGE_SIDEBAR_COLLAPSED_KEY) ===
 applySidebarCollapsed(sidebarCollapsed);
 setMobileProjectsOpen(false);
 refreshThemeModeUi();
+refreshAssistantMarkdownUi();
 loadOpenAiKeyStatus().catch((error) => setKeyStatusText(`Failed to load key status: ${error}`, "error"));

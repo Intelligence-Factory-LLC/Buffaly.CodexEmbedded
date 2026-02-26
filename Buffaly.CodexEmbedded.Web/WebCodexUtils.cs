@@ -10,8 +10,14 @@ internal static class WebCodexUtils
 			return output;
 		}
 
+		var fallbackCommand = TryGetPathString(paramsElement, "command");
+
 		if (!paramsElement.TryGetProperty("commandActions", out var actionsElement) || actionsElement.ValueKind != JsonValueKind.Array)
 		{
+			if (!string.IsNullOrWhiteSpace(fallbackCommand))
+			{
+				output.Add($"run {FormatActionText(fallbackCommand)}");
+			}
 			return output;
 		}
 
@@ -21,6 +27,7 @@ internal static class WebCodexUtils
 			var path = TryGetPathString(action, "path");
 			var name = TryGetPathString(action, "name");
 			var query = TryGetPathString(action, "query");
+			var command = TryGetPathString(action, "command") ?? TryGetPathString(action, "cmd");
 
 			switch (type)
 			{
@@ -34,12 +41,41 @@ internal static class WebCodexUtils
 					output.Add($"search {(query ?? "(query unknown)")} in {(path ?? "(path unknown)")}");
 					break;
 				default:
-					output.Add(type);
+					if (!string.IsNullOrWhiteSpace(command))
+					{
+						output.Add($"run {FormatActionText(command)}");
+					}
+					else if (!string.IsNullOrWhiteSpace(path))
+					{
+						output.Add($"{type} {FormatActionText(path)}");
+					}
+					else if (string.Equals(type, "unknown", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(fallbackCommand))
+					{
+						output.Add($"run {FormatActionText(fallbackCommand)}");
+					}
+					else
+					{
+						output.Add(type);
+					}
 					break;
 			}
 		}
 
 		return output;
+	}
+
+	private static string FormatActionText(string? value)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return string.Empty;
+		}
+
+		var singleLine = value.Replace("\r", " ").Replace("\n", " ").Trim();
+		const int maxLength = 180;
+		return singleLine.Length <= maxLength
+			? singleLine
+			: singleLine[..maxLength] + "...";
 	}
 
 	public static string? TryGetPathString(JsonElement root, params string[] path)

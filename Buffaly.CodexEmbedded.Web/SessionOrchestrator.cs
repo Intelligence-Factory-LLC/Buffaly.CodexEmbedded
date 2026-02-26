@@ -18,12 +18,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private readonly Dictionary<string, string> _lastThreadNameByThread = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, RateLimitDispatchState> _rateLimitDispatchBySession = new(StringComparer.Ordinal);
 	private static readonly TimeSpan RateLimitCoalesceDelay = TimeSpan.FromMilliseconds(350);
-	private static readonly TimeSpan StaleTurnRecoveryFromLogsMinAge = TimeSpan.FromSeconds(30);
-	private static readonly TimeSpan StaleTurnRecoveryWithQueuedTurnMinAge = TimeSpan.FromSeconds(8);
-	private static readonly TimeSpan StaleTurnRecoveryWithActiveTurnIdMaxAge = TimeSpan.FromMinutes(5);
-	private static readonly TimeSpan StaleTurnRecoveryWithQueuedTurnActiveTurnIdMaxAge = TimeSpan.FromSeconds(45);
-	private static readonly TimeSpan InferredTurnRecoveryNoLogActivityMaxAge = TimeSpan.FromMinutes(5);
-	private static readonly TimeSpan InferredTurnRecoveryNoLogActivityWithQueuedTurnsMaxAge = TimeSpan.FromSeconds(90);
 
 	public event Action? SessionsChanged;
 	public event Action<string, object>? Broadcast;
@@ -317,99 +311,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 			catch
 			{
-			}
-		}
-
-			var inferredByThread = new Dictionary<string, (bool Inferred, DateTime FileLastWriteUtc)>(StringComparer.Ordinal);
-			lock (_turnCacheSync)
-			{
-				foreach (var threadId in uniqueThreadIds)
-				{
-					if (_turnCacheByThread.TryGetValue(threadId, out var state))
-					{
-						inferredByThread[threadId] = (state.LastInferredTurnInFlightFromLogs, state.FileLastWriteUtc);
-					}
-				}
-			}
-
-		foreach (var session in sessions)
-		{
-			var threadId = session.Session.ThreadId;
-				if (string.IsNullOrWhiteSpace(threadId) || !inferredByThread.TryGetValue(threadId, out var inferredState))
-				{
-					continue;
-				}
-
-				var inferred = inferredState.Inferred;
-				if (inferred)
-				{
-					if (session.IsTurnInFlight && inferredState.FileLastWriteUtc > DateTime.MinValue)
-					{
-						var noLogActivity = DateTime.UtcNow - inferredState.FileLastWriteUtc;
-						var inferredRecoveryNoLogAge = session.HasQueuedTurns()
-							? InferredTurnRecoveryNoLogActivityWithQueuedTurnsMaxAge
-							: InferredTurnRecoveryNoLogActivityMaxAge;
-						if (noLogActivity >= inferredRecoveryNoLogAge &&
-							session.TryRecoverStaleTurnFromLogConsensus(
-								inferredRecoveryNoLogAge,
-								inferredRecoveryNoLogAge,
-								out var inferredStaleReason))
-						{
-							session.Log.Write($"[turn_recovery] cleared stale inferred active turn after {Math.Max(0, (int)noLogActivity.TotalSeconds)}s without log activity ({inferredStaleReason})");
-							Broadcast?.Invoke(
-								"turn_complete",
-								new
-								{
-									sessionId = session.SessionId,
-									status = "recovered",
-									errorMessage = $"Recovered stale inferred active turn after log inactivity ({inferredStaleReason})."
-								});
-							SessionsChanged?.Invoke();
-							EnsureQueueDispatcher(session.SessionId, session);
-							continue;
-						}
-					}
-
-					if (!session.IsTurnInFlight && session.TryMarkTurnStartedFromCoreSignal(turnId: null))
-					{
-						session.Log.Write("[turn_recovery] inferred active turn from log timeline");
-				}
-				continue;
-			}
-
-			if (session.IsTurnInFlightRecoveredFromLogs &&
-				TryPublishTurnComplete(
-					session.SessionId,
-					session,
-					status: "recovered",
-					errorMessage: "Recovered log-inferred turn completion."))
-			{
-				session.Log.Write("[turn_recovery] cleared recovered active turn from log timeline");
-				continue;
-			}
-
-			var minimumInFlightAge = session.HasQueuedTurns()
-				? StaleTurnRecoveryWithQueuedTurnMinAge
-				: StaleTurnRecoveryFromLogsMinAge;
-			var activeTurnIdMaxAge = session.HasQueuedTurns()
-				? StaleTurnRecoveryWithQueuedTurnActiveTurnIdMaxAge
-				: StaleTurnRecoveryWithActiveTurnIdMaxAge;
-			if (session.TryRecoverStaleTurnFromLogConsensus(
-				minimumInFlightAge,
-				activeTurnIdMaxAge,
-				out var staleReason))
-			{
-				session.Log.Write($"[turn_recovery] cleared stale active turn from log consensus ({staleReason})");
-				Broadcast?.Invoke(
-					"turn_complete",
-					new
-					{
-						sessionId = session.SessionId,
-						status = "recovered",
-						errorMessage = $"Recovered stale active turn from log consensus ({staleReason})."
-					});
-				SessionsChanged?.Invoke();
-				EnsureQueueDispatcher(session.SessionId, session);
 			}
 		}
 	}
@@ -1554,11 +1455,24 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var forcedResetApplied = false;
 		var clearedQueuedTurnCount = 0;
 
+		// Apply local reset first so cancel always unblocks the UI/session even if interrupt hangs.
+		var localCanceled = session.CancelActiveTurn();
+		var forcedResetResult = session.ForceResetTurnState(clearQueuedTurns: true);
+		forcedResetApplied = forcedResetResult.HadTurnInFlight;
+		clearedQueuedTurnCount = forcedResetResult.ClearedQueuedTurnCount;
+		localCanceled = localCanceled || forcedResetResult.HadActiveTurnToken || forcedResetResult.HadTurnInFlight;
+
 		if (hadTurnInFlightAtRequest)
 		{
 			try
 			{
-				interruptSent = await session.Session.InterruptTurnAsync(waitForTurnStart: TimeSpan.FromSeconds(2), cancellationToken);
+				using var interruptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+				interruptCts.CancelAfter(TimeSpan.FromSeconds(2));
+				interruptSent = await session.Session.InterruptTurnAsync(waitForTurnStart: TimeSpan.FromSeconds(2), interruptCts.Token);
+			}
+			catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+			{
+				fallbackReason = "interrupt timeout";
 			}
 			catch (Exception ex)
 			{
@@ -1566,12 +1480,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				fallbackReason = ex.Message;
 			}
 		}
-
-		var localCanceled = session.CancelActiveTurn();
-		var forcedResetResult = session.ForceResetTurnState(clearQueuedTurns: true);
-		forcedResetApplied = forcedResetResult.HadTurnInFlight;
-		clearedQueuedTurnCount = forcedResetResult.ClearedQueuedTurnCount;
-		localCanceled = localCanceled || forcedResetResult.HadActiveTurnToken || forcedResetResult.HadTurnInFlight;
 
 		if (!interruptSent && !localCanceled && clearedQueuedTurnCount == 0)
 		{
@@ -1919,6 +1827,28 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	{
 		sessionLog.Write(CodexEventLogging.Format(ev, includeTimestamp: false));
 
+		if (IsCoreTransportPumpFailure(ev))
+		{
+			var managed = TryGetSession(sessionId);
+			if (managed is not null && managed.IsTurnInFlight)
+			{
+				var errorMessage = string.IsNullOrWhiteSpace(ev.Message)
+					? "Core transport pump failed while a turn was active."
+					: $"Core transport pump failed while a turn was active: {ev.Message}";
+				if (TryPublishTurnComplete(sessionId, managed, status: "interrupted", errorMessage: errorMessage))
+				{
+					sessionLog.Write($"[turn_recovery] closed in-flight turn after core transport failure ({ev.Type})");
+					Broadcast?.Invoke(
+						"status",
+						new
+						{
+							sessionId,
+							message = "Core transport failed; in-flight turn was reset for recovery."
+						});
+				}
+			}
+		}
+
 		if (TryParseCoreTurnSignal(ev, out var signal))
 		{
 			var managed = TryGetSession(sessionId);
@@ -1926,7 +1856,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				if (signal.Kind == CoreTurnSignalKind.Started)
 				{
-					if (managed.TryMarkTurnStartedFromCoreSignal(signal.TurnId))
+					if (!string.IsNullOrWhiteSpace(signal.TurnId) &&
+						managed.TryMarkTurnStartedFromCoreSignal(signal.TurnId))
 					{
 						sessionLog.Write($"[turn_recovery] marked started from core signal ({signal.Source})");
 						var collaborationMode = managed.GetActiveCollaborationMode();
@@ -1989,6 +1920,17 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		CoreEvent?.Invoke(sessionId, ev);
+	}
+
+	private static bool IsCoreTransportPumpFailure(CodexCoreEvent ev)
+	{
+		if (ev is null || string.IsNullOrWhiteSpace(ev.Type))
+		{
+			return false;
+		}
+
+		return string.Equals(ev.Type, "stdout_pump_failed", StringComparison.Ordinal) ||
+			string.Equals(ev.Type, "stderr_pump_failed", StringComparison.Ordinal);
 	}
 
 	private bool TryPublishTurnComplete(
@@ -3041,11 +2983,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		if (line.IndexOf("turn/started", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("task_started", StringComparison.Ordinal) < 0 &&
+			line.IndexOf("codex/event/turn_started", StringComparison.Ordinal) < 0 &&
 			line.IndexOf("\"turn_started\"", StringComparison.Ordinal) < 0 &&
 			line.IndexOf("turn/completed", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("task_complete", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("\"turn_complete\"", StringComparison.Ordinal) < 0)
+			line.IndexOf("codex/event/task_complete", StringComparison.Ordinal) < 0 &&
+			line.IndexOf("codex/event/turn_complete", StringComparison.Ordinal) < 0 &&
+			line.IndexOf("\"turn_complete\"", StringComparison.Ordinal) < 0 &&
+			line.IndexOf("\"task_complete\"", StringComparison.Ordinal) < 0)
 		{
 			return false;
 		}
@@ -3065,57 +3009,47 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				var method = methodElement.GetString();
 				if (string.Equals(method, "turn/started", StringComparison.Ordinal) ||
-					string.Equals(method, "codex/event/task_started", StringComparison.Ordinal) ||
 					string.Equals(method, "codex/event/turn_started", StringComparison.Ordinal))
 				{
 					var paramsElement = root.TryGetProperty("params", out var startedParamsElement) ? startedParamsElement : default;
+					var turnId = TryExtractCoreTurnId(root, paramsElement);
+					if (string.IsNullOrWhiteSpace(turnId))
+					{
+						return false;
+					}
+
 					signal = new CoreTurnSignal(
 						Kind: CoreTurnSignalKind.Started,
-						TurnId: TryExtractCoreTurnId(root, paramsElement),
+						TurnId: turnId,
 						Status: null,
 						ErrorMessage: null,
 						Source: method ?? "unknown_method");
 					return true;
 				}
 
-				if (string.Equals(method, "turn/completed", StringComparison.Ordinal))
+				if (string.Equals(method, "turn/completed", StringComparison.Ordinal) ||
+					string.Equals(method, "codex/event/turn_complete", StringComparison.Ordinal) ||
+					string.Equals(method, "codex/event/task_complete", StringComparison.Ordinal))
 				{
 					var paramsElement = root.TryGetProperty("params", out var completedParamsElement) ? completedParamsElement : default;
-					var status = WebCodexUtils.TryGetPathString(root, "params", "turn", "status")
-						?? WebCodexUtils.TryGetPathString(root, "params", "status")
-						?? "unknown";
-					var errorMessage = WebCodexUtils.TryGetPathString(root, "params", "turn", "error", "message")
-						?? WebCodexUtils.TryGetPathString(root, "params", "error", "message")
-						?? WebCodexUtils.TryGetPathString(root, "params", "errorMessage");
-					signal = new CoreTurnSignal(
-						Kind: CoreTurnSignalKind.Completed,
-						TurnId: TryExtractCoreTurnId(root, paramsElement),
-						Status: status,
-						ErrorMessage: errorMessage,
-						Source: method ?? "unknown_method");
-					return true;
-				}
-
-				if (string.Equals(method, "codex/event/task_complete", StringComparison.Ordinal) ||
-					string.Equals(method, "codex/event/turn_complete", StringComparison.Ordinal))
-				{
-					var paramsElement = root.TryGetProperty("params", out var eventParamsElement) ? eventParamsElement : default;
-					var status = WebCodexUtils.TryGetPathString(root, "params", "msg", "status")
-						?? WebCodexUtils.TryGetPathString(root, "params", "status");
-					if (string.IsNullOrWhiteSpace(status))
+					var turnId = TryExtractCoreTurnId(root, paramsElement);
+					if (string.IsNullOrWhiteSpace(turnId))
 					{
-						status = string.Equals(method, "codex/event/task_complete", StringComparison.Ordinal)
-							? "completed"
-							: "unknown";
+						return false;
 					}
 
-					var errorMessage = WebCodexUtils.TryGetPathString(root, "params", "msg", "error", "message")
+					var status = WebCodexUtils.TryGetPathString(root, "params", "turn", "status")
+						?? WebCodexUtils.TryGetPathString(root, "params", "msg", "status")
+						?? WebCodexUtils.TryGetPathString(root, "params", "status")
+						?? (string.Equals(method, "codex/event/task_complete", StringComparison.Ordinal) ? "completed" : "unknown");
+					var errorMessage = WebCodexUtils.TryGetPathString(root, "params", "turn", "error", "message")
+						?? WebCodexUtils.TryGetPathString(root, "params", "msg", "error", "message")
 						?? WebCodexUtils.TryGetPathString(root, "params", "msg", "errorMessage")
 						?? WebCodexUtils.TryGetPathString(root, "params", "error", "message")
 						?? WebCodexUtils.TryGetPathString(root, "params", "errorMessage");
 					signal = new CoreTurnSignal(
 						Kind: CoreTurnSignalKind.Completed,
-						TurnId: TryExtractCoreTurnId(root, paramsElement),
+						TurnId: turnId,
 						Status: status,
 						ErrorMessage: errorMessage,
 						Source: method ?? "unknown_method");
@@ -3143,25 +3077,42 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 
 			var payloadType = payloadTypeElement.GetString();
-			if (string.Equals(payloadType, "task_started", StringComparison.Ordinal) ||
-				string.Equals(payloadType, "turn_started", StringComparison.Ordinal))
+			if (string.Equals(payloadType, "turn_started", StringComparison.Ordinal))
 			{
+				var turnId = TryGetAnyPathString(payloadElement,
+					new[] { "turn", "id" },
+					new[] { "turnId" },
+					new[] { "turn_id" },
+					new[] { "id" });
+				if (string.IsNullOrWhiteSpace(turnId))
+				{
+					return false;
+				}
+
 				signal = new CoreTurnSignal(
 					Kind: CoreTurnSignalKind.Started,
-					TurnId: TryGetAnyPathString(payloadElement,
-						new[] { "turn", "id" },
-						new[] { "turnId" },
-						new[] { "turn_id" },
-						new[] { "id" }),
+					TurnId: turnId,
 					Status: null,
 					ErrorMessage: null,
 					Source: $"event_msg:{payloadType}");
 				return true;
 			}
 
-			if (string.Equals(payloadType, "task_complete", StringComparison.Ordinal) ||
-				string.Equals(payloadType, "turn_complete", StringComparison.Ordinal))
+			if (string.Equals(payloadType, "turn_complete", StringComparison.Ordinal) ||
+				string.Equals(payloadType, "task_complete", StringComparison.Ordinal))
 			{
+				var turnId = TryGetAnyPathString(payloadElement,
+					new[] { "turn", "id" },
+					new[] { "turnId" },
+					new[] { "turn_id" },
+					new[] { "msg", "turn_id" },
+					new[] { "msg", "turnId" },
+					new[] { "id" });
+				if (string.IsNullOrWhiteSpace(turnId))
+				{
+					return false;
+				}
+
 				var status = WebCodexUtils.TryGetPathString(payloadElement, "status");
 				if (string.IsNullOrWhiteSpace(status))
 				{
@@ -3171,14 +3122,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				}
 
 				var errorMessage = WebCodexUtils.TryGetPathString(payloadElement, "error", "message")
+					?? WebCodexUtils.TryGetPathString(payloadElement, "msg", "error", "message")
+					?? WebCodexUtils.TryGetPathString(payloadElement, "msg", "errorMessage")
 					?? WebCodexUtils.TryGetPathString(payloadElement, "errorMessage");
 				signal = new CoreTurnSignal(
 					Kind: CoreTurnSignalKind.Completed,
-					TurnId: TryGetAnyPathString(payloadElement,
-						new[] { "turn", "id" },
-						new[] { "turnId" },
-						new[] { "turn_id" },
-						new[] { "id" }),
+					TurnId: turnId,
 					Status: status,
 					ErrorMessage: errorMessage,
 					Source: $"event_msg:{payloadType}");
@@ -3277,12 +3226,52 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	public event Action<string, CodexCoreEvent>? CoreEvent;
 
+	private TimeSpan GetRecoveredTurnStaleAfter()
+	{
+		var seconds = Math.Clamp(_defaults.TurnSlotWaitTimeoutSeconds * 2, 90, 300);
+		return TimeSpan.FromSeconds(seconds);
+	}
+
+	private bool TryExpireStaleRecoveredTurn(string sessionId, ManagedSession session, TimeSpan staleAfter)
+	{
+		if (!session.IsRecoveredTurnStale(staleAfter, out var recoveredAge))
+		{
+			return false;
+		}
+
+		var roundedSeconds = Math.Round(recoveredAge.TotalSeconds);
+		var message = $"Recovered in-flight turn expired after {roundedSeconds:0}s without completion signal.";
+		if (!TryPublishTurnComplete(sessionId, session, status: "interrupted", errorMessage: message))
+		{
+			return false;
+		}
+
+		session.Log.Write($"[turn_recovery] expired stale recovered turn after {roundedSeconds:0}s");
+		Broadcast?.Invoke("status", new { sessionId, message = "Recovered in-flight turn was stale and has been reset." });
+		return true;
+	}
+
 	private async Task<bool> WaitForTurnSlotWithTimeoutAsync(string sessionId, ManagedSession session)
 	{
+		var staleRecoveredAfter = GetRecoveredTurnStaleAfter();
+
 		if (session.TryRecoverTurnSlotIfIdle())
 		{
 			session.Log.Write("[turn_gate] recovered stuck idle gate");
 			return true;
+		}
+
+		if (TryExpireStaleRecoveredTurn(sessionId, session, staleRecoveredAfter))
+		{
+			if (session.TryRecoverTurnSlotIfIdle())
+			{
+				session.Log.Write("[turn_gate] recovered stuck idle gate");
+			}
+
+			if (await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
+			{
+				return true;
+			}
 		}
 
 		if (await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
@@ -3302,6 +3291,19 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				session.Log.Write("[turn_gate] recovered stuck idle gate");
 				return true;
+			}
+
+			if (TryExpireStaleRecoveredTurn(sessionId, session, staleRecoveredAfter))
+			{
+				if (session.TryRecoverTurnSlotIfIdle())
+				{
+					session.Log.Write("[turn_gate] recovered stuck idle gate");
+				}
+
+				if (await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
+				{
+					return true;
+				}
 			}
 
 			var remaining = deadline - DateTimeOffset.UtcNow;
@@ -3577,6 +3579,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string? ApprovalPolicy = null,
 		string? SandboxPolicy = null)
 	{
+		private enum TurnLifecycleState
+		{
+			Idle,
+			RunningLocal,
+			RunningRecovered
+		}
+
 		private readonly CancellationTokenSource _lifetimeCts = new();
 		private readonly SemaphoreSlim _turnGate = new(1, 1);
 		private readonly object _approvalSync = new();
@@ -3590,9 +3599,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		private CancellationTokenSource? _activeTurnCts;
 		private string? _activeTurnId;
 		private string? _activeCollaborationMode;
-		private bool _turnInFlight;
-		private bool _turnSlotHeld;
-		private DateTimeOffset _turnInFlightChangedUtc = DateTimeOffset.UtcNow;
+		private TurnLifecycleState _turnState = TurnLifecycleState.Idle;
+		private DateTimeOffset _turnStateChangedUtc = DateTimeOffset.UtcNow;
 		private bool _queueDispatchRunning;
 		private PendingApprovalSnapshot? _pendingApproval;
 
@@ -3628,7 +3636,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				lock (_turnSync)
 				{
-					return _turnInFlight;
+					return _turnState != TurnLifecycleState.Idle;
 				}
 			}
 		}
@@ -3639,7 +3647,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				lock (_turnSync)
 				{
-					return _turnInFlight && !_turnSlotHeld && _activeTurnCts is null;
+					return _turnState == TurnLifecycleState.RunningRecovered;
 				}
 			}
 		}
@@ -3904,6 +3912,27 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
+		public bool IsRecoveredTurnStale(TimeSpan staleAfter, out TimeSpan recoveredAge)
+		{
+			recoveredAge = TimeSpan.Zero;
+			lock (_turnSync)
+			{
+				if (_turnState != TurnLifecycleState.RunningRecovered)
+				{
+					return false;
+				}
+
+				recoveredAge = DateTimeOffset.UtcNow - _turnStateChangedUtc;
+				return recoveredAge >= staleAfter;
+			}
+		}
+
+		private void SetTurnState(TurnLifecycleState state)
+		{
+			_turnState = state;
+			_turnStateChangedUtc = DateTimeOffset.UtcNow;
+		}
+
 		public async Task<bool> TryWaitForTurnSlotAsync(TimeSpan timeout, CancellationToken cancellationToken)
 		{
 			var waitingOnRecoveredExternalTurn = false;
@@ -3911,7 +3940,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				// External signal recovery can mark a turn as active without owning the semaphore slot.
 				// Keep queueing blocked until a matching completion signal clears in-flight state.
-				if (_turnInFlight && !_turnSlotHeld)
+				if (_turnState == TurnLifecycleState.RunningRecovered)
 				{
 					waitingOnRecoveredExternalTurn = true;
 				}
@@ -3940,9 +3969,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			var shouldRelease = false;
 			lock (_turnSync)
 			{
-				if (_turnSlotHeld)
+				if (_turnState == TurnLifecycleState.RunningLocal)
 				{
-					_turnSlotHeld = false;
+					_activeTurnCts = null;
+					SetTurnState(TurnLifecycleState.RunningRecovered);
 					shouldRelease = true;
 				}
 			}
@@ -3965,7 +3995,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		{
 			lock (_turnSync)
 			{
-				if (_turnInFlight)
+				if (_turnState != TurnLifecycleState.Idle)
 				{
 					return false;
 				}
@@ -3991,40 +4021,48 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		{
 			lock (_turnSync)
 			{
-				_activeTurnCts = turnCts;
-				_activeTurnId = Session.TryGetActiveTurnId(out var activeFromClient) ? activeFromClient : _activeTurnId;
-				_activeCollaborationMode = WebCodexUtils.NormalizeCollaborationMode(collaborationMode);
-				_turnSlotHeld = true;
-				if (_turnInFlight)
+				if (_turnState != TurnLifecycleState.Idle)
 				{
+					if (string.IsNullOrWhiteSpace(_activeTurnId) &&
+						Session.TryGetActiveTurnId(out var currentTurnId) &&
+						!string.IsNullOrWhiteSpace(currentTurnId))
+					{
+						_activeTurnId = currentTurnId;
+					}
+
 					return false;
 				}
 
-				_turnInFlight = true;
-				_turnInFlightChangedUtc = DateTimeOffset.UtcNow;
+				_activeTurnCts = turnCts;
+				_activeTurnId = Session.TryGetActiveTurnId(out var activeFromClient) ? activeFromClient : _activeTurnId;
+				_activeCollaborationMode = WebCodexUtils.NormalizeCollaborationMode(collaborationMode);
+				SetTurnState(TurnLifecycleState.RunningLocal);
 				return true;
 			}
 		}
 
-		public bool TryMarkTurnStartedFromCoreSignal(string? turnId)
+		public bool TryMarkTurnStartedFromCoreSignal(string turnId)
 		{
+			var normalizedTurnId = turnId?.Trim();
+			if (string.IsNullOrWhiteSpace(normalizedTurnId))
+			{
+				return false;
+			}
+
 			lock (_turnSync)
 			{
-				if (_turnInFlight)
+				if (_turnState != TurnLifecycleState.Idle)
 				{
-					if (!string.IsNullOrWhiteSpace(turnId) && string.IsNullOrWhiteSpace(_activeTurnId))
+					if (string.IsNullOrWhiteSpace(_activeTurnId))
 					{
-						_activeTurnId = turnId;
+						_activeTurnId = normalizedTurnId;
 					}
 					return false;
 				}
 
-				_turnInFlight = true;
-				_turnInFlightChangedUtc = DateTimeOffset.UtcNow;
-				if (!string.IsNullOrWhiteSpace(turnId))
-				{
-					_activeTurnId = turnId;
-				}
+				_activeTurnCts = null;
+				_activeTurnId = normalizedTurnId;
+				SetTurnState(TurnLifecycleState.RunningRecovered);
 				return true;
 			}
 		}
@@ -4034,21 +4072,16 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			var shouldRelease = false;
 			lock (_turnSync)
 			{
-				if (!_turnInFlight)
+				if (_turnState == TurnLifecycleState.Idle)
 				{
 					return false;
 				}
 
+				shouldRelease = _turnState == TurnLifecycleState.RunningLocal;
 				_activeTurnCts = null;
 				_activeTurnId = null;
 				_activeCollaborationMode = null;
-				_turnInFlight = false;
-				_turnInFlightChangedUtc = DateTimeOffset.UtcNow;
-				if (_turnSlotHeld)
-				{
-					_turnSlotHeld = false;
-					shouldRelease = true;
-				}
+				SetTurnState(TurnLifecycleState.Idle);
 			}
 
 			if (shouldRelease)
@@ -4062,82 +4095,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				}
 			}
 
-			return true;
-		}
-
-		public bool TryRecoverStaleTurnFromLogConsensus(
-			TimeSpan minimumInFlightAge,
-			TimeSpan activeTurnIdMaxAge,
-			out string reason)
-		{
-			reason = string.Empty;
-			CancellationTokenSource? activeTurnCts = null;
-			var shouldRelease = false;
-
-			lock (_turnSync)
-			{
-				if (!_turnInFlight)
-				{
-					reason = "not_in_flight";
-					return false;
-				}
-
-				var age = DateTimeOffset.UtcNow - _turnInFlightChangedUtc;
-				if (age < minimumInFlightAge)
-				{
-					reason = $"age_{Math.Max(0, (int)age.TotalSeconds)}s";
-					return false;
-				}
-
-				if (Session.TryGetActiveTurnId(out var activeFromClient) && !string.IsNullOrWhiteSpace(activeFromClient))
-				{
-					_activeTurnId = activeFromClient;
-					if (age < activeTurnIdMaxAge)
-					{
-						reason = "active_turn_id_present";
-						return false;
-					}
-				}
-
-				// No active turn id and logs infer idle for a sustained window.
-				// After a sustained idle consensus window, treat in-flight as stale and force-clear
-				// so queue/send can recover even if a stale activeTurnId remains in the client state.
-				activeTurnCts = _activeTurnCts;
-				_activeTurnCts = null;
-				_activeTurnId = null;
-				_activeCollaborationMode = null;
-				_turnInFlight = false;
-				_turnInFlightChangedUtc = DateTimeOffset.UtcNow;
-				if (_turnSlotHeld)
-				{
-					_turnSlotHeld = false;
-					shouldRelease = true;
-				}
-			}
-
-			if (activeTurnCts is not null)
-			{
-				try
-				{
-					activeTurnCts.Cancel();
-				}
-				catch
-				{
-				}
-			}
-
-			if (shouldRelease)
-			{
-				try
-				{
-					_turnGate.Release();
-				}
-				catch
-				{
-				}
-			}
-
-			reason = "log_consensus_idle";
 			return true;
 		}
 
@@ -4151,7 +4108,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 			lock (_turnSync)
 			{
-				if (!_turnInFlight)
+				if (_turnState == TurnLifecycleState.Idle)
 				{
 					return;
 				}
@@ -4169,19 +4126,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 			lock (_turnSync)
 			{
-				hadTurnInFlight = _turnInFlight;
+				hadTurnInFlight = _turnState != TurnLifecycleState.Idle;
+				shouldRelease = _turnState == TurnLifecycleState.RunningLocal;
 				activeTurnCts = _activeTurnCts;
 				hadActiveTurnToken = activeTurnCts is not null;
 				_activeTurnCts = null;
 				_activeTurnId = null;
 				_activeCollaborationMode = null;
-				_turnInFlight = false;
-				_turnInFlightChangedUtc = DateTimeOffset.UtcNow;
-				if (_turnSlotHeld)
-				{
-					_turnSlotHeld = false;
-					shouldRelease = true;
-				}
+				SetTurnState(TurnLifecycleState.Idle);
 			}
 
 			if (activeTurnCts is not null)
