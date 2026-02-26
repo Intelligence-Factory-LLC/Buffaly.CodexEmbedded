@@ -23,6 +23,7 @@ var defaults = WebRuntimeDefaults.Load(builder.Configuration);
 var userSecretsOptions = UserSecretsOptions.Load(builder.Configuration);
 builder.Services.AddSingleton(defaults);
 builder.Services.AddSingleton(userSecretsOptions);
+builder.Services.AddSingleton<RecapSettingsStore>();
 builder.Services.AddSingleton<SessionOrchestrator>();
 builder.Services.AddSingleton<ServerRuntimeStateTracker>();
 builder.Services.AddSingleton<TimelineProjectionService>();
@@ -201,7 +202,7 @@ app.MapGet("/api/recap/projects", (WebRuntimeDefaults defaults) =>
 	});
 });
 
-app.MapPost("/api/recap/export", async (HttpRequest request, WebRuntimeDefaults defaults, CancellationToken cancellationToken) =>
+app.MapPost("/api/recap/export", async (HttpRequest request, WebRuntimeDefaults defaults, RecapSettingsStore recapSettingsStore, CancellationToken cancellationToken) =>
 {
 	RecapExportRequest? exportRequest;
 	try
@@ -261,7 +262,7 @@ app.MapPost("/api/recap/export", async (HttpRequest request, WebRuntimeDefaults 
 		endUtc,
 		includeAllDetails);
 
-	var reportsRoot = Path.Combine(Environment.CurrentDirectory, "reports", "recap");
+	var reportsRoot = recapSettingsStore.GetReportsRootPath();
 	Directory.CreateDirectory(reportsRoot);
 	var fileName = $"recap-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.md";
 	var fullPath = Path.Combine(reportsRoot, fileName);
@@ -284,10 +285,10 @@ app.MapPost("/api/recap/export", async (HttpRequest request, WebRuntimeDefaults 
 	});
 });
 
-app.MapGet("/api/recap/reports", (HttpRequest request) =>
+app.MapGet("/api/recap/reports", (HttpRequest request, RecapSettingsStore recapSettingsStore) =>
 {
 	var limit = QueryValueParser.GetPositiveInt(request.Query["limit"], fallback: 200, max: 1000);
-	var reportsRoot = Path.Combine(Environment.CurrentDirectory, "reports", "recap");
+	var reportsRoot = recapSettingsStore.GetReportsRootPath();
 	if (!Directory.Exists(reportsRoot))
 	{
 		return Results.Ok(new
@@ -331,7 +332,7 @@ app.MapGet("/api/recap/reports", (HttpRequest request) =>
 	});
 });
 
-app.MapGet("/api/recap/reports/{fileName}", (string fileName) =>
+app.MapGet("/api/recap/reports/{fileName}", (string fileName, RecapSettingsStore recapSettingsStore) =>
 {
 	var safeFileName = Path.GetFileName(fileName ?? string.Empty);
 	if (string.IsNullOrWhiteSpace(safeFileName) || !safeFileName.EndsWith(".md", StringComparison.OrdinalIgnoreCase))
@@ -339,7 +340,7 @@ app.MapGet("/api/recap/reports/{fileName}", (string fileName) =>
 		return Results.BadRequest(new { message = "Invalid report file name." });
 	}
 
-	var reportsRoot = Path.Combine(Environment.CurrentDirectory, "reports", "recap");
+	var reportsRoot = recapSettingsStore.GetReportsRootPath();
 	var fullPath = Path.Combine(reportsRoot, safeFileName);
 	if (!File.Exists(fullPath))
 	{
@@ -347,6 +348,54 @@ app.MapGet("/api/recap/reports/{fileName}", (string fileName) =>
 	}
 
 	return Results.File(fullPath, "text/markdown; charset=utf-8", fileDownloadName: safeFileName);
+});
+
+app.MapGet("/api/settings/recap", (RecapSettingsStore recapSettingsStore) =>
+{
+	var settings = recapSettingsStore.GetSnapshot();
+	return Results.Ok(new
+	{
+		reportsRootPath = settings.ReportsRootPath,
+		defaultReportsRootPath = settings.DefaultReportsRootPath,
+		isDefault = settings.IsDefault,
+		settingsFilePath = settings.SettingsFilePath
+	});
+});
+
+app.MapPut("/api/settings/recap", async (HttpRequest request, RecapSettingsStore recapSettingsStore, CancellationToken cancellationToken) =>
+{
+	RecapSettingsUpdateRequest? updateRequest;
+	try
+	{
+		updateRequest = await JsonSerializer.DeserializeAsync<RecapSettingsUpdateRequest>(
+			request.Body,
+			new JsonSerializerOptions
+			{
+				PropertyNameCaseInsensitive = true
+			},
+			cancellationToken);
+	}
+	catch (Exception ex)
+	{
+		return Results.BadRequest(new { message = $"Invalid request JSON: {ex.Message}" });
+	}
+
+	updateRequest ??= new RecapSettingsUpdateRequest();
+	try
+	{
+		var settings = recapSettingsStore.SaveReportsRootPath(updateRequest.ReportsRootPath, updateRequest.UseDefault);
+		return Results.Ok(new
+		{
+			reportsRootPath = settings.ReportsRootPath,
+			defaultReportsRootPath = settings.DefaultReportsRootPath,
+			isDefault = settings.IsDefault,
+			settingsFilePath = settings.SettingsFilePath
+		});
+	}
+	catch (ArgumentException ex)
+	{
+		return Results.BadRequest(new { message = ex.Message });
+	}
 });
 
 app.MapGet("/api/logs/watch", (HttpRequest request, WebRuntimeDefaults defaults) =>
@@ -2715,6 +2764,10 @@ internal sealed class ServerRuntimeStateTracker
 }
 
 internal sealed record OpenAiKeyUpdateRequest(string? ApiKey);
+
+internal sealed record RecapSettingsUpdateRequest(
+	string? ReportsRootPath = null,
+	bool UseDefault = false);
 
 internal sealed record RecapExportRequest(
 	string? StartUtc,

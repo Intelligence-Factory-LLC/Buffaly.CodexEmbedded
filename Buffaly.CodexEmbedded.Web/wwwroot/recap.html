@@ -61,25 +61,68 @@
 			color: #334155;
 		}
 
-		.recap-field-row input[type="date"],
-		.recap-field-row select {
-			width: 100%;
-			min-height: 2rem;
-			border: 1px solid #cbd5e1;
-			border-radius: 6px;
-			padding: 0.24rem 0.42rem;
-			background: #ffffff;
-			color: #0f172a;
-			font-size: 0.84rem;
-		}
+			.recap-field-row input[type="date"],
+			.recap-field-row input[type="text"],
+			.recap-field-row select {
+				width: 100%;
+				min-height: 2rem;
+				border: 1px solid #cbd5e1;
+				border-radius: 6px;
+				padding: 0.24rem 0.42rem;
+				background: #ffffff;
+				color: #0f172a;
+				font-size: 0.84rem;
+			}
 
-		.recap-project-header {
-			display: flex;
-			align-items: center;
-			justify-content: space-between;
-			gap: 0.45rem;
-			margin-bottom: 0.45rem;
-		}
+			.recap-inline-actions {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 0.45rem;
+				margin-top: 0.35rem;
+			}
+
+			.recap-inline-actions button {
+				min-height: 2rem;
+				padding: 0.26rem 0.52rem;
+				border: 1px solid #cbd5e1;
+				border-radius: 6px;
+				background: #ffffff;
+				color: #1e293b;
+				cursor: pointer;
+				font-size: 0.84rem;
+			}
+
+			.recap-inline-actions button:hover {
+				background: #eff6ff;
+				border-color: #93c5fd;
+			}
+
+			.recap-path-meta {
+				margin-top: 0.4rem;
+				font-size: 0.76rem;
+				color: #475569;
+				word-break: break-all;
+			}
+
+			.recap-sidebar-path {
+				margin-top: 0.45rem;
+				padding: 0.45rem;
+				border: 1px solid #e2e8f0;
+				border-radius: 6px;
+				font-size: 0.74rem;
+				line-height: 1.35;
+				color: #334155;
+				word-break: break-all;
+				background: #ffffff;
+			}
+
+			.recap-project-header {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 0.45rem;
+				margin-bottom: 0.45rem;
+			}
 
 		.recap-project-header-right {
 			display: inline-flex;
@@ -282,6 +325,7 @@
 				<div class="recap-sidebar-note">
 					Generate markdown exports directly from Codex session files for a specific time window.
 				</div>
+				<div id="recapReportsRootSidebar" class="recap-sidebar-path">Loading report folder...</div>
 				<div class="sidebar-divider sidebar-project-divider" aria-hidden="true"></div>
 				<div class="sidebar-create-row">
 					<button id="recapRefreshReportsBtn" class="new-project-btn" type="button">
@@ -294,47 +338,60 @@
 			</aside>
 			<section class="panel chat-panel recap-panel">
 				<div class="panel-title">Recap Export</div>
-				<div class="recap-shell">
-					<div class="recap-explain">
-						<strong>What this page does</strong><br>
-						Build a markdown recap from Codex session history. Choose a time window, include all projects or a subset, pick message-only or full detail, then generate and download the report.
-					</div>
-
-					<div class="recap-export-grid">
-						<div class="recap-export-card">
-							<h3>Time Window</h3>
-							<div class="recap-field-row">
-								<label for="recapStartDate">Start date</label>
-								<input id="recapStartDate" type="date">
-							</div>
-							<div class="recap-field-row">
-								<label for="recapEndDate">End date</label>
-								<input id="recapEndDate" type="date">
-							</div>
-							<div class="recap-field-row">
-								<label for="recapDetailLevel">Detail level</label>
-								<select id="recapDetailLevel">
-									<option value="messages">User and assistant messages only</option>
-									<option value="all">Everything (including tool calls and results)</option>
-								</select>
-							</div>
+					<div class="recap-shell">
+						<div class="recap-explain">
+							<strong>What this page does</strong><br>
+							Build a markdown recap from Codex session history. Choose a time window, include all projects or a subset, pick message-only or full detail, then generate and download the report.
 						</div>
 
 						<div class="recap-export-card">
-							<h3>Project Scope</h3>
-							<div class="recap-project-header">
-								<label for="recapProjectList">Projects</label>
-								<div class="recap-project-header-right">
-									<label>
-										<input id="recapAllProjectsToggle" type="checkbox" checked>
-										All projects
-									</label>
-									<button id="recapRefreshProjectsBtn" type="button">Refresh Projects</button>
+							<h3>Report Location</h3>
+							<div class="recap-field-row">
+								<label for="recapReportsRootPath">Output folder</label>
+								<input id="recapReportsRootPath" type="text" autocomplete="off" spellcheck="false" placeholder="C:\\Users\\...\\reports\\recap">
+							</div>
+							<div class="recap-inline-actions">
+								<button id="recapSaveReportsRootBtn" type="button">Save Location</button>
+								<button id="recapUseDefaultReportsRootBtn" type="button">Use Default</button>
+							</div>
+							<div id="recapReportsRootMeta" class="recap-path-meta">Loading report location...</div>
+						</div>
+
+						<div class="recap-export-grid">
+							<div class="recap-export-card">
+								<h3>Time Window</h3>
+								<div class="recap-field-row">
+									<label for="recapStartDate">Start date</label>
+									<input id="recapStartDate" type="date">
+								</div>
+								<div class="recap-field-row">
+									<label for="recapEndDate">End date</label>
+									<input id="recapEndDate" type="date">
+								</div>
+								<div class="recap-field-row">
+									<label for="recapDetailLevel">Detail level</label>
+									<select id="recapDetailLevel">
+										<option value="messages">User and assistant messages only</option>
+										<option value="all">Everything (including tool calls and results)</option>
+									</select>
 								</div>
 							</div>
-							<div id="recapProjectList" class="project-list recap-project-list"></div>
+
+							<div class="recap-export-card">
+								<h3>Project Scope</h3>
+								<div class="recap-project-header">
+									<label for="recapProjectList">Projects</label>
+									<div class="recap-project-header-right">
+										<label>
+											<input id="recapAllProjectsToggle" type="checkbox" checked>
+											All projects
+										</label>
+										<button id="recapRefreshProjectsBtn" type="button">Refresh Projects</button>
+									</div>
+								</div>
+								<div id="recapProjectList" class="project-list recap-project-list"></div>
+							</div>
 						</div>
-					</div>
 
 					<div class="recap-actions">
 						<button id="recapGenerateBtn" type="button">Generate Markdown</button>
@@ -354,9 +411,9 @@
 				</div>
 			</section>
 		</main>
-		<button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close navigation"></button>
-	</div>
-	<script src="theme.js?v=20260225-settings1"></script>
-		<script src="recap.js?v=20260226-recap-export5"></script>
+			<button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close navigation"></button>
+		</div>
+		<script src="theme.js?v=20260225-settings1"></script>
+		<script src="recap.js?v=20260226-recap-export6"></script>
 	</body>
 	</html>

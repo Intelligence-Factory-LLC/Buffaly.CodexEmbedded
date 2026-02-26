@@ -11,6 +11,11 @@ const recapDetailLevel = document.getElementById("recapDetailLevel");
 const recapAllProjectsToggle = document.getElementById("recapAllProjectsToggle");
 const recapProjectList = document.getElementById("recapProjectList");
 const recapRefreshProjectsBtn = document.getElementById("recapRefreshProjectsBtn");
+const recapReportsRootPath = document.getElementById("recapReportsRootPath");
+const recapSaveReportsRootBtn = document.getElementById("recapSaveReportsRootBtn");
+const recapUseDefaultReportsRootBtn = document.getElementById("recapUseDefaultReportsRootBtn");
+const recapReportsRootMeta = document.getElementById("recapReportsRootMeta");
+const recapReportsRootSidebar = document.getElementById("recapReportsRootSidebar");
 const recapRefreshReportsBtn = document.getElementById("recapRefreshReportsBtn");
 const recapReportsList = document.getElementById("recapReportsList");
 const recapGenerateBtn = document.getElementById("recapGenerateBtn");
@@ -23,6 +28,7 @@ const recapSummary = document.getElementById("recapSummary");
 const recapPreview = document.getElementById("recapPreview");
 let recapReports = [];
 let activeReportFileName = "";
+let recapSettings = null;
 
 function setStatus(text) {
   if (recapStatus) {
@@ -122,6 +128,103 @@ function formatBytes(value) {
     return `${(bytes / 1024).toFixed(1)} KB`;
   }
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function setReportsRootSidebarPath(pathValue) {
+  if (!recapReportsRootSidebar) {
+    return;
+  }
+
+  const pathText = typeof pathValue === "string" && pathValue.trim()
+    ? pathValue.trim()
+    : "(unknown)";
+  recapReportsRootSidebar.textContent = `Reports folder: ${pathText}`;
+}
+
+function applyRecapSettings(settings) {
+  recapSettings = settings && typeof settings === "object" ? settings : null;
+  const effectiveRoot = recapSettings && typeof recapSettings.reportsRootPath === "string"
+    ? recapSettings.reportsRootPath
+    : "";
+  const defaultRoot = recapSettings && typeof recapSettings.defaultReportsRootPath === "string"
+    ? recapSettings.defaultReportsRootPath
+    : "";
+  const usingDefault = recapSettings ? recapSettings.isDefault === true : false;
+
+  if (recapReportsRootPath) {
+    recapReportsRootPath.value = effectiveRoot || "";
+  }
+
+  if (recapReportsRootMeta) {
+    if (!recapSettings) {
+      recapReportsRootMeta.textContent = "Report location unavailable.";
+    } else {
+      const sourceText = usingDefault ? "Using default location." : "Using custom location.";
+      recapReportsRootMeta.textContent = `${sourceText} Default: ${defaultRoot || "(unknown)"}`;
+    }
+  }
+
+  setReportsRootSidebarPath(effectiveRoot);
+}
+
+function setReportsRootButtonsDisabled(isDisabled) {
+  const disabled = !!isDisabled;
+  if (recapSaveReportsRootBtn) {
+    recapSaveReportsRootBtn.disabled = disabled;
+  }
+  if (recapUseDefaultReportsRootBtn) {
+    recapUseDefaultReportsRootBtn.disabled = disabled;
+  }
+  if (recapReportsRootPath) {
+    recapReportsRootPath.disabled = disabled;
+  }
+}
+
+async function loadRecapSettings() {
+  try {
+    const response = await fetch("api/settings/recap", { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error(`failed loading recap settings (${response.status})`);
+    }
+
+    const payload = await response.json();
+    applyRecapSettings(payload);
+  } catch (error) {
+    applyRecapSettings(null);
+    setStatus(String(error));
+  }
+}
+
+async function saveRecapSettings(options = {}) {
+  const useDefault = options.useDefault === true;
+  const reportsRootPath = useDefault
+    ? ""
+    : (recapReportsRootPath ? recapReportsRootPath.value.trim() : "");
+
+  setReportsRootButtonsDisabled(true);
+  try {
+    const response = await fetch("api/settings/recap", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        reportsRootPath,
+        useDefault
+      })
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`failed saving recap settings (${response.status}): ${detail}`);
+    }
+
+    const payload = await response.json();
+    applyRecapSettings(payload);
+    setStatus("Recap report location saved.");
+    await loadReports({ preserveSelection: true });
+  } catch (error) {
+    setStatus(String(error));
+  } finally {
+    setReportsRootButtonsDisabled(false);
+  }
 }
 
 function renderReportsList() {
@@ -227,6 +330,9 @@ async function loadReports(options = {}) {
     }
 
     const data = await response.json();
+    if (typeof data?.reportsRoot === "string" && data.reportsRoot.trim()) {
+      setReportsRootSidebarPath(data.reportsRoot);
+    }
     recapReports = Array.isArray(data?.reports) ? data.reports : [];
     if (preserveSelection && previous && recapReports.some((x) => String(x?.fileName || "") === previous)) {
       activeReportFileName = previous;
@@ -499,6 +605,28 @@ function wireEvents() {
     });
   }
 
+  if (recapSaveReportsRootBtn) {
+    recapSaveReportsRootBtn.addEventListener("click", () => {
+      void saveRecapSettings({ useDefault: false });
+    });
+  }
+
+  if (recapUseDefaultReportsRootBtn) {
+    recapUseDefaultReportsRootBtn.addEventListener("click", () => {
+      void saveRecapSettings({ useDefault: true });
+    });
+  }
+
+  if (recapReportsRootPath) {
+    recapReportsRootPath.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") {
+        return;
+      }
+      event.preventDefault();
+      void saveRecapSettings({ useDefault: false });
+    });
+  }
+
   if (recapGenerateBtn) {
     recapGenerateBtn.addEventListener("click", () => {
       void generateMarkdownExport();
@@ -560,6 +688,7 @@ async function initializePage() {
   setMobileNavigationOpen(false);
   wireEvents();
 
+  await loadRecapSettings();
   await loadProjects();
   await loadReports({ preserveSelection: false });
 }

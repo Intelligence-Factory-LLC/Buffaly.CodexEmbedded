@@ -38,8 +38,16 @@ dotnet run --project Buffaly.CodexEmbedded.Web
 - `CodexHomePath` (optional)
 - `TurnTimeoutSeconds`
 - `LogRootPath`
+- `RecapSettingsStoragePath` (optional, path where recap settings JSON is stored)
 - `WebSocketAuthRequired` (keep `true`)
 - `WebSocketAuthToken` (required when `WebSocketAuthRequired=true`; startup fails if missing/blank)
+
+Recap exports:
+
+- Recap markdown reports are written outside the repository by default.
+- Default location is `<CODEX_HOME>/reports/recap` when `CodexHomePath` is available.
+- Fallback default is `%LOCALAPPDATA%/Buffaly.CodexEmbedded/reports/recap`.
+- Override at runtime from the Recap page using the report location controls.
 
 Websocket auth token handling:
 

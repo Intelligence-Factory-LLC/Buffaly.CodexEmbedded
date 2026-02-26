@@ -9,6 +9,7 @@ _web_run_stdout.log
 _web_run_stderr.log
 msbuild.binlog
 logs/
+Buffaly.CodexEmbedded.Web/reports/
 lib/
 working/
 .codex-runtime/
