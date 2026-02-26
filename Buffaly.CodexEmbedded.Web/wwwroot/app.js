@@ -8,6 +8,7 @@ const IS_RECAP_MODE = (window.location.pathname || "").replace(/\/+$/g, "").toLo
 const RECAP_APPROVAL_POLICY = "never";
 const RECAP_SANDBOX_MODE = "read-only";
 const RECAP_THREAD_NAME = "Recap";
+const RECAP_PROMPT_MARKER = "[[RECAP_MODE_PROMPT_V1]]";
 const RECAP_DEVELOPER_INSTRUCTIONS = [
   "You are operating in recap mode.",
   "Your task is to analyze Codex session files and related logs in the working directory to answer user questions.",
@@ -15,6 +16,15 @@ const RECAP_DEVELOPER_INSTRUCTIONS = [
   "Prefer concrete evidence from the files (thread ids, paths, timestamps, snippets) when available.",
   "If evidence is missing, say what is unknown and suggest the best next query."
 ].join(" ");
+const RECAP_PROMPT_PREFIX = [
+  RECAP_PROMPT_MARKER,
+  "You are Recap Assistant for Codex session history analysis.",
+  "Use files in the current working directory as the source of truth.",
+  "Answer user requests like daily summaries, what was implemented, and where changes happened.",
+  "Return concise, evidence-based answers with thread ids, paths, and timestamps when available.",
+  "If evidence is missing, say what is unknown and suggest a better follow-up query.",
+  "User request follows below."
+].join("\n");
 
 let socket = null;
 let socketReadyPromise = null;
@@ -2627,6 +2637,19 @@ function buildCollaborationModePayload(planModeEnabled) {
   };
 }
 
+function buildRecapTurnText(userText) {
+  const raw = String(userText || "").trim();
+  if (!IS_RECAP_MODE || !raw) {
+    return raw;
+  }
+
+  if (raw.includes(RECAP_PROMPT_MARKER)) {
+    return raw;
+  }
+
+  return `${RECAP_PROMPT_PREFIX}\n\n${raw}`;
+}
+
 async function initializeRecapMode() {
   if (!IS_RECAP_MODE) {
     return;
@@ -2686,6 +2709,9 @@ async function initializeRecapMode() {
     if (conversationTitle) {
       conversationTitle.textContent = "Recap Conversation";
     }
+    if (promptInput) {
+      promptInput.placeholder = "Ask recap questions, for example: what did I finish today by project?";
+    }
 
     let resolvedRoot = "";
     try {
@@ -2706,6 +2732,8 @@ async function initializeRecapMode() {
       cwdInput.value = resolvedRoot;
       localStorage.setItem(STORAGE_CWD_KEY, resolvedRoot);
       selectedProjectKey = getProjectKeyFromCwd(resolvedRoot);
+      cwdInput.disabled = true;
+      cwdInput.title = "Recap mode is pinned to the Codex sessions source directory.";
     }
   } catch (error) {
     appendLog(`[recap] setup failed: ${error}`);
@@ -4435,6 +4463,7 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
   }
 
   const normalizedText = String(promptText || "");
+  const outboundText = buildRecapTurnText(normalizedText);
   const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
   if (!normalizedText.trim() && safeImages.length === 0) {
     return false;
@@ -4447,7 +4476,7 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
 
   const payload = {
     sessionId,
-    text: normalizedText,
+    text: outboundText,
     images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" }))
   };
   if (turnCwd) {
@@ -4527,17 +4556,18 @@ function restoreQueuedPromptForEditing(text, images = []) {
 
 function startTurn(sessionId, promptText, images = [], options = {}) {
   const normalizedText = String(promptText || "").trim();
+  const outboundText = buildRecapTurnText(normalizedText);
   const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
   const turnCwd = IS_RECAP_MODE ? getRecapWorkingDirectory() : cwdInput.value.trim();
   const state = sessions.get(sessionId);
   const turnModel = normalizeModelValue(state?.model || "");
-  if (!sessionId || (!normalizedText && safeImages.length === 0)) {
+  if (!sessionId || (!outboundText && safeImages.length === 0)) {
     return false;
   }
 
   const payload = {
     sessionId,
-    text: normalizedText,
+    text: outboundText,
     images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" }))
   };
 
