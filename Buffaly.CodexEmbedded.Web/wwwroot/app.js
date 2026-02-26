@@ -516,12 +516,238 @@ function ensurePlanStateShape(state) {
   if (typeof state.planText !== "string") {
     state.planText = "";
   }
+  if (typeof state.planDraftText !== "string") {
+    state.planDraftText = "";
+  }
   if (typeof state.isPlanTurn !== "boolean") {
     state.isPlanTurn = false;
   }
   if (state.planUpdatedAt !== null && state.planUpdatedAt !== undefined && typeof state.planUpdatedAt !== "string") {
     state.planUpdatedAt = null;
   }
+}
+
+function normalizePlanPayloadText(rawText) {
+  if (typeof rawText !== "string") {
+    return "";
+  }
+
+  let text = rawText.replace(/\r/g, "");
+  text = text.replace(/^\s*<proposed_plan>\s*/i, "");
+  text = text.replace(/\s*<\/proposed_plan>\s*$/i, "");
+  return text.trim();
+}
+
+function findPlanTextOverlapSuffixPrefix(left, right) {
+  if (!left || !right) {
+    return 0;
+  }
+
+  const maxWindow = 4096;
+  const leftSlice = left.length > maxWindow ? left.slice(left.length - maxWindow) : left;
+  const rightSlice = right.length > maxWindow ? right.slice(0, maxWindow) : right;
+  const maxOverlap = Math.min(leftSlice.length, rightSlice.length);
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    if (leftSlice.slice(leftSlice.length - size) === rightSlice.slice(0, size)) {
+      return size;
+    }
+  }
+
+  return 0;
+}
+
+function mergePlanDeltaText(currentDraft, incomingDelta) {
+  const current = normalizePlanPayloadText(currentDraft || "");
+  const incoming = normalizePlanPayloadText(incomingDelta || "");
+  if (!incoming) {
+    return current;
+  }
+  if (!current) {
+    return incoming;
+  }
+  if (current === incoming) {
+    return current;
+  }
+  if (incoming.startsWith(current)) {
+    return incoming;
+  }
+  if (current.endsWith(incoming)) {
+    return current;
+  }
+  if (incoming.length > 16 && current.includes(incoming)) {
+    return current;
+  }
+
+  const overlap = findPlanTextOverlapSuffixPrefix(current, incoming);
+  return overlap > 0 ? `${current}${incoming.slice(overlap)}` : `${current}${incoming}`;
+}
+
+function appendPlanInlineMarkdown(parent, text) {
+  const source = typeof text === "string" ? text : "";
+  if (!source) {
+    return;
+  }
+
+  let cursor = 0;
+  while (cursor < source.length) {
+    if (source.startsWith("**", cursor)) {
+      const end = source.indexOf("**", cursor + 2);
+      if (end > cursor + 2) {
+        const strong = document.createElement("strong");
+        strong.textContent = source.slice(cursor + 2, end);
+        parent.appendChild(strong);
+        cursor = end + 2;
+        continue;
+      }
+    }
+
+    if (source.startsWith("`", cursor)) {
+      const end = source.indexOf("`", cursor + 1);
+      if (end > cursor + 1) {
+        const code = document.createElement("code");
+        code.textContent = source.slice(cursor + 1, end);
+        parent.appendChild(code);
+        cursor = end + 1;
+        continue;
+      }
+    }
+
+    let next = source.length;
+    const nextBold = source.indexOf("**", cursor);
+    const nextCode = source.indexOf("`", cursor);
+    if (nextBold >= 0 && nextBold < next) {
+      next = nextBold;
+    }
+    if (nextCode >= 0 && nextCode < next) {
+      next = nextCode;
+    }
+
+    parent.appendChild(document.createTextNode(source.slice(cursor, next)));
+    cursor = next;
+  }
+}
+
+function renderPlanMarkdownIntoBody(container, markdownText) {
+  if (!container) {
+    return;
+  }
+
+  container.textContent = "";
+  container.classList.remove("plan-panel-empty");
+  const text = normalizePlanPayloadText(markdownText || "");
+  if (!text) {
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  const lines = text.split("\n");
+  let paragraphLines = [];
+  let listElement = null;
+  let listType = "";
+  let codeBlock = null;
+
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) {
+      return;
+    }
+    const paragraph = document.createElement("p");
+    appendPlanInlineMarkdown(paragraph, paragraphLines.join(" ").trim());
+    fragment.appendChild(paragraph);
+    paragraphLines = [];
+  };
+
+  const clearList = () => {
+    listElement = null;
+    listType = "";
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\s+$/, "");
+    const trimmed = line.trim();
+
+    if (codeBlock) {
+      if (trimmed.startsWith("```")) {
+        codeBlock = null;
+      } else {
+        codeBlock.textContent += `${line}\n`;
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith("```")) {
+      flushParagraph();
+      clearList();
+      const pre = document.createElement("pre");
+      const code = document.createElement("code");
+      pre.appendChild(code);
+      fragment.appendChild(pre);
+      codeBlock = code;
+      continue;
+    }
+
+    if (!trimmed) {
+      flushParagraph();
+      clearList();
+      continue;
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      flushParagraph();
+      clearList();
+      const level = Math.min(6, headingMatch[1].length);
+      const heading = document.createElement(`h${level}`);
+      appendPlanInlineMarkdown(heading, headingMatch[2]);
+      fragment.appendChild(heading);
+      continue;
+    }
+
+    const unorderedMatch = trimmed.match(/^[-*]\s+(.*)$/);
+    if (unorderedMatch) {
+      flushParagraph();
+      if (!listElement || listType !== "ul") {
+        listElement = document.createElement("ul");
+        listType = "ul";
+        fragment.appendChild(listElement);
+      }
+      const item = document.createElement("li");
+      appendPlanInlineMarkdown(item, unorderedMatch[1]);
+      listElement.appendChild(item);
+      continue;
+    }
+
+    const orderedMatch = trimmed.match(/^\d+\.\s+(.*)$/);
+    if (orderedMatch) {
+      flushParagraph();
+      if (!listElement || listType !== "ol") {
+        listElement = document.createElement("ol");
+        listType = "ol";
+        fragment.appendChild(listElement);
+      }
+      const item = document.createElement("li");
+      appendPlanInlineMarkdown(item, orderedMatch[1]);
+      listElement.appendChild(item);
+      continue;
+    }
+
+    clearList();
+    paragraphLines.push(trimmed);
+  }
+
+  flushParagraph();
+  container.appendChild(fragment);
+}
+
+function setPlanPanelEmptyMessage(message) {
+  if (!planPanelBody) {
+    return;
+  }
+
+  planPanelBody.textContent = "";
+  planPanelBody.classList.add("plan-panel-empty");
+  const paragraph = document.createElement("p");
+  paragraph.textContent = message;
+  planPanelBody.appendChild(paragraph);
 }
 
 function setPlanModeNextTurn(enabled) {
@@ -569,7 +795,10 @@ function updatePlanPanel() {
 
   ensurePlanStateShape(state);
   const status = normalizePlanStatus(state.planStatus);
-  const hasText = typeof state.planText === "string" && state.planText.trim().length > 0;
+  const canonicalText = normalizePlanPayloadText(state.planText || "");
+  const streamingText = normalizePlanPayloadText(state.planDraftText || "");
+  const displayText = canonicalText || streamingText;
+  const hasText = displayText.length > 0;
   const shouldShow = state.isPlanTurn === true || hasText || status === "streaming" || status === "error";
   planPanel.classList.toggle("hidden", !shouldShow);
   if (!shouldShow) {
@@ -582,15 +811,15 @@ function updatePlanPanel() {
     planPanelStatus.classList.add(status);
   }
   if (hasText) {
-    planPanelBody.textContent = state.planText;
+    renderPlanMarkdownIntoBody(planPanelBody, displayText);
   } else if (status === "streaming") {
-    planPanelBody.textContent = "Waiting for plan output...";
+    setPlanPanelEmptyMessage("Generating plan...");
   } else if (status === "completed") {
-    planPanelBody.textContent = "Plan finished with no text output.";
+    setPlanPanelEmptyMessage("Plan finished with no text output.");
   } else if (status === "error") {
-    planPanelBody.textContent = "Plan output is unavailable for this turn.";
+    setPlanPanelEmptyMessage("Plan output is unavailable for this turn.");
   } else {
-    planPanelBody.textContent = "Plan output will appear here when available.";
+    setPlanPanelEmptyMessage("Plan output will appear here when available.");
   }
 }
 
@@ -600,6 +829,7 @@ function markPlanTurnStarted(sessionId, isPlanTurn) {
   state.isPlanTurn = !!isPlanTurn;
   state.planStatus = isPlanTurn ? "streaming" : "idle";
   state.planText = "";
+  state.planDraftText = "";
   state.planUpdatedAt = isPlanTurn ? new Date().toISOString() : null;
   if (sessionId === activeSessionId) {
     updatePlanPanel();
@@ -615,7 +845,7 @@ function appendPlanDeltaToSession(sessionId, text) {
   ensurePlanStateShape(state);
   state.isPlanTurn = true;
   state.planStatus = "streaming";
-  state.planText = `${state.planText || ""}${text}`;
+  state.planDraftText = mergePlanDeltaText(state.planDraftText || "", text);
   state.planUpdatedAt = new Date().toISOString();
   if (sessionId === activeSessionId) {
     const shouldAutoScroll = planPanelBody
@@ -636,8 +866,12 @@ function applyPlanUpdatedToSession(sessionId, text) {
   const state = ensureSessionState(sessionId);
   ensurePlanStateShape(state);
   state.isPlanTurn = true;
-  if (typeof text === "string" && text.trim().length > 0) {
-    state.planText = text;
+  const normalizedIncoming = normalizePlanPayloadText(text || "");
+  if (normalizedIncoming) {
+    state.planText = normalizedIncoming;
+    state.planDraftText = normalizedIncoming;
+  } else if (normalizePlanPayloadText(state.planDraftText || "")) {
+    state.planText = normalizePlanPayloadText(state.planDraftText || "");
   }
   state.planStatus = "completed";
   state.planUpdatedAt = new Date().toISOString();
@@ -660,6 +894,9 @@ function finalizePlanTurn(sessionId, status, isPlanTurnFlag) {
   state.isPlanTurn = isPlanTurnFlag === true || state.isPlanTurn === true;
   const normalizedStatus = String(status || "").trim().toLowerCase();
   state.planStatus = normalizedStatus === "completed" ? "completed" : "error";
+  if (state.planStatus === "completed" && !normalizePlanPayloadText(state.planText || "") && normalizePlanPayloadText(state.planDraftText || "")) {
+    state.planText = normalizePlanPayloadText(state.planDraftText || "");
+  }
   state.planUpdatedAt = new Date().toISOString();
   if (sessionId === activeSessionId) {
     updatePlanPanel();
@@ -2525,9 +2762,13 @@ async function createSessionForCwd(cwd, options = {}) {
   send("session_catalog_list");
 }
 
-async function attachSessionByThreadId(threadId, cwd) {
+async function attachSessionByThreadId(threadId, cwd, options = {}) {
   if (!threadId) {
     return false;
+  }
+
+  if (options.persistSelection === true) {
+    storeLastThreadId(threadId);
   }
 
   try {
@@ -3129,13 +3370,13 @@ function renderProjectSidebar() {
 
         if (entry.attachedSessionId && sessions.has(entry.attachedSessionId)) {
           clearPendingSessionLoad();
-          setActiveSession(entry.attachedSessionId);
+          setActiveSession(entry.attachedSessionId, { persistSelection: true });
           send("session_select", { sessionId: entry.attachedSessionId });
           return;
         }
 
         beginPendingSessionLoad(entry.threadId, entry.threadName || entry.threadId);
-        const attached = await attachSessionByThreadId(entry.threadId, entry.cwd || group.cwd);
+        const attached = await attachSessionByThreadId(entry.threadId, entry.cwd || group.cwd, { persistSelection: true });
         if (!attached) {
           handlePendingSessionLoadFailure();
         }
@@ -3744,6 +3985,7 @@ function ensureSessionState(sessionId) {
       isPlanTurn: false,
       planStatus: "idle",
       planText: "",
+      planDraftText: "",
       planUpdatedAt: null,
       pendingApproval: null,
       createdAtTick: now,
@@ -4658,6 +4900,7 @@ function setActiveSession(sessionId, options = {}) {
   }
 
   const restartTimeline = options.restartTimeline !== false;
+  const persistSelection = options.persistSelection === true;
   const changed = activeSessionId !== sessionId;
   const previousState = getActiveSessionState();
   if (changed) {
@@ -4694,9 +4937,11 @@ function setActiveSession(sessionId, options = {}) {
   if (state?.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
     clearPendingSessionLoad();
   }
-  storeLastSessionId(sessionId);
-  if (state && state.threadId) {
-    storeLastThreadId(state.threadId);
+  if (persistSelection) {
+    storeLastSessionId(sessionId);
+    if (state && state.threadId) {
+      storeLastThreadId(state.threadId);
+    }
   }
   syncSelectedProjectFromActiveSession();
   refreshSessionMeta();
@@ -5509,6 +5754,7 @@ function handleServerEvent(frame) {
             isPlanTurn: false,
             planStatus: "idle",
             planText: "",
+            planDraftText: "",
             planUpdatedAt: null,
             pendingApproval: null,
             queuedTurns: [],
@@ -6214,7 +6460,7 @@ if (attachSessionBtn) {
     }
 
     const catalogEntry = getCatalogEntryByThreadId(threadId);
-    await attachSessionByThreadId(threadId, catalogEntry?.cwd || cwdInput.value.trim());
+    await attachSessionByThreadId(threadId, catalogEntry?.cwd || cwdInput.value.trim(), { persistSelection: true });
   });
 }
 
@@ -6235,7 +6481,7 @@ if (sessionSelect) {
     const sessionId = sessionSelect.value;
     if (!sessionId) return;
     if (!sessions.has(sessionId)) return;
-    setActiveSession(sessionId);
+    setActiveSession(sessionId, { persistSelection: true });
     send("session_select", { sessionId });
   });
 }

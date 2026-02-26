@@ -1106,12 +1106,90 @@ body {
 	border-radius: 8px;
 	background: #ffffff;
 	color: #0f172a;
-	font-family: Consolas, "Courier New", monospace;
-	font-size: 0.78rem;
-	line-height: 1.32;
-	white-space: pre-wrap;
+	font-size: 0.79rem;
+	line-height: 1.45;
 	max-height: 220px;
 	overflow: auto;
+}
+
+.plan-panel-body.plan-panel-empty p {
+	margin: 0;
+	color: #475569;
+	font-style: italic;
+}
+
+.plan-panel-body > :first-child {
+	margin-top: 0;
+}
+
+.plan-panel-body > :last-child {
+	margin-bottom: 0;
+}
+
+.plan-panel-body h1,
+.plan-panel-body h2,
+.plan-panel-body h3,
+.plan-panel-body h4,
+.plan-panel-body h5,
+.plan-panel-body h6 {
+	margin: 0.35rem 0 0.3rem;
+	color: #0f172a;
+	font-weight: 700;
+	line-height: 1.28;
+}
+
+.plan-panel-body h1 {
+	font-size: 0.92rem;
+}
+
+.plan-panel-body h2 {
+	font-size: 0.86rem;
+}
+
+.plan-panel-body h3 {
+	font-size: 0.81rem;
+}
+
+.plan-panel-body p {
+	margin: 0.26rem 0;
+}
+
+.plan-panel-body ul,
+.plan-panel-body ol {
+	margin: 0.24rem 0 0.36rem 1.1rem;
+	padding: 0;
+}
+
+.plan-panel-body li {
+	margin: 0.14rem 0;
+}
+
+.plan-panel-body code {
+	background: #eff6ff;
+	border: 1px solid #bfdbfe;
+	border-radius: 5px;
+	padding: 0.03rem 0.2rem;
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.74rem;
+}
+
+.plan-panel-body pre {
+	margin: 0.32rem 0;
+	padding: 0.38rem 0.45rem;
+	border: 1px solid #bfdbfe;
+	border-radius: 7px;
+	background: #f8fafc;
+	overflow: auto;
+}
+
+.plan-panel-body pre code {
+	background: transparent;
+	border: 0;
+	padding: 0;
+	font-size: 0.72rem;
+	line-height: 1.38;
+	display: block;
+	white-space: pre;
 }
 
 @keyframes turn-activity-shimmer {
@@ -3266,6 +3344,30 @@ html[data-theme="dark"] .plan-panel-body {
 	background: #0f172a;
 	border-color: #1e3a8a;
 	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .plan-panel-body.plan-panel-empty p {
+	color: #94a3b8;
+}
+
+html[data-theme="dark"] .plan-panel-body h1,
+html[data-theme="dark"] .plan-panel-body h2,
+html[data-theme="dark"] .plan-panel-body h3,
+html[data-theme="dark"] .plan-panel-body h4,
+html[data-theme="dark"] .plan-panel-body h5,
+html[data-theme="dark"] .plan-panel-body h6 {
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .plan-panel-body code {
+	background: #0b2447;
+	border-color: #1d4ed8;
+	color: #bfdbfe;
+}
+
+html[data-theme="dark"] .plan-panel-body pre {
+	background: #020617;
+	border-color: #1e3a8a;
 }
 
 html[data-theme="dark"] .tool-user-input-subtitle {
