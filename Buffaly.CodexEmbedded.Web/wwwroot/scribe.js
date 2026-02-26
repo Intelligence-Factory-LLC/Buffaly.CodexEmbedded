@@ -249,6 +249,7 @@
     let isRecording = false;
     let isProcessing = false;
     let disposed = false;
+    let recordingContext = null;
 
     function log(message) {
       if (onLog) {
@@ -363,28 +364,80 @@
       }
     }
 
-    function appendTranscript(text) {
-      const normalized = String(text || "").trim();
-      if (!normalized) {
-        return;
-      }
-      const previous = target.value || "";
-      const separator = previous && !/\s$/.test(previous) ? "\n" : "";
-      target.value = `${previous}${separator}${normalized}`;
+    function applyTargetValue(nextValue) {
+      target.value = nextValue;
       syncDraft();
       target.focus();
       target.selectionStart = target.selectionEnd = target.value.length;
     }
 
-    function replaceTranscript(text) {
+    function createRecordingContext() {
+      const current = String(target.value || "");
+      return {
+        start: current.length,
+        end: current.length,
+        separator: current.length > 0 && !/\s$/.test(current) ? "\n" : "",
+        segmentTexts: []
+      };
+    }
+
+    function applyScopedTranscript(normalizedText) {
+      const normalized = String(normalizedText || "").trim();
+      if (!normalized) {
+        return false;
+      }
+
+      if (!recordingContext) {
+        recordingContext = createRecordingContext();
+      }
+
+      const applyWithinCurrentContext = () => {
+        const context = recordingContext;
+        if (!context) {
+          return false;
+        }
+
+        const current = String(target.value || "");
+        if (context.start < 0 || context.end < context.start || context.end > current.length) {
+          return false;
+        }
+
+        const scopedText = `${context.separator}${normalized}`;
+        const next = `${current.slice(0, context.start)}${scopedText}${current.slice(context.end)}`;
+        context.end = context.start + scopedText.length;
+        applyTargetValue(next);
+        return true;
+      };
+
+      if (applyWithinCurrentContext()) {
+        return true;
+      }
+
+      // If the composer changed externally while recording, reset to append mode
+      // and scope this recording to a new tail slice instead of replacing all text.
+      recordingContext = createRecordingContext();
+      return applyWithinCurrentContext();
+    }
+
+    function appendIncrementalTranscript(text) {
       const normalized = String(text || "").trim();
       if (!normalized) {
-        return;
+        return false;
       }
-      target.value = normalized;
-      syncDraft();
-      target.focus();
-      target.selectionStart = target.selectionEnd = target.value.length;
+      if (!recordingContext) {
+        recordingContext = createRecordingContext();
+      }
+      recordingContext.segmentTexts.push(normalized);
+      const merged = recordingContext.segmentTexts.join("\n");
+      return applyScopedTranscript(merged);
+    }
+
+    function applyFinalTranscript(text) {
+      const normalized = String(text || "").trim();
+      if (!normalized) {
+        return false;
+      }
+      return applyScopedTranscript(normalized);
     }
 
     function resetAudioGraph() {
@@ -475,8 +528,11 @@
         }
         try {
           const text = await transcribeBlob(transcribeUrl, blob);
-          appendTranscript(text);
-          log("[voice] incremental transcription appended");
+          if (appendIncrementalTranscript(text)) {
+            log("[voice] incremental transcription appended");
+          } else {
+            log("[voice] incremental transcription returned no text");
+          }
         } catch (error) {
           log(`[voice] incremental transcription failed: ${error}`);
         }
@@ -501,6 +557,7 @@
       pendingSegmentStops = 0;
       segmentRecorder = null;
       segmentChunks = [];
+      recordingContext = createRecordingContext();
 
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -595,6 +652,7 @@
       } catch (error) {
         resetAudioGraph();
         isRecording = false;
+        recordingContext = null;
         setState("idle");
         log(`[voice] unable to start microphone capture: ${error}`);
       }
@@ -659,14 +717,18 @@
       if (fullBlob && fullBlob.size > 0) {
         try {
           const fullText = await transcribeBlob(transcribeUrl, fullBlob);
-          replaceTranscript(fullText);
-          log("[voice] final transcription replaced incremental text");
+          if (applyFinalTranscript(fullText)) {
+            log("[voice] final transcription replaced this recording slice");
+          } else {
+            log("[voice] final transcription returned no text");
+          }
         } catch (error) {
           log(`[voice] final transcription failed: ${error}`);
         }
       }
 
       isProcessing = false;
+      recordingContext = null;
       setState("idle");
     }
 
