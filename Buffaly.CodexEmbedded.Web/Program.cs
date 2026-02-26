@@ -266,6 +266,7 @@ app.MapPost("/api/recap/export", async (HttpRequest request, WebRuntimeDefaults 
 	var fileName = $"recap-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.md";
 	var fullPath = Path.Combine(reportsRoot, fileName);
 	await File.WriteAllTextAsync(fullPath, report.Markdown, new UTF8Encoding(false), cancellationToken);
+	var preview = RecapMarkdownBuilder.BuildUtf8Preview(report.Markdown, maxBytes: 2 * 1024 * 1024, out var previewTruncated, out var totalBytes);
 
 	return Results.Ok(new
 	{
@@ -275,7 +276,11 @@ app.MapPost("/api/recap/export", async (HttpRequest request, WebRuntimeDefaults 
 		createdAtUtc = DateTimeOffset.UtcNow.ToString("O"),
 		projectCount = report.ProjectCount,
 		sessionCount = report.SessionCount,
-		entryCount = report.EntryCount
+		entryCount = report.EntryCount,
+		previewMarkdown = preview,
+		previewTruncated,
+		previewBytes = Encoding.UTF8.GetByteCount(preview),
+		totalBytes
 	});
 });
 
@@ -2684,6 +2689,35 @@ internal sealed record RecapReportBuildResult(
 
 internal static class RecapMarkdownBuilder
 {
+	public static string BuildUtf8Preview(string markdown, int maxBytes, out bool truncated, out int totalBytes)
+	{
+		var text = markdown ?? string.Empty;
+		var utf8 = Encoding.UTF8;
+		totalBytes = utf8.GetByteCount(text);
+		if (maxBytes <= 0 || totalBytes <= maxBytes)
+		{
+			truncated = false;
+			return text;
+		}
+
+		var builder = new StringBuilder();
+		var usedBytes = 0;
+		foreach (var ch in text)
+		{
+			var nextBytes = utf8.GetByteCount(new[] { ch });
+			if (usedBytes + nextBytes > maxBytes)
+			{
+				break;
+			}
+
+			builder.Append(ch);
+			usedBytes += nextBytes;
+		}
+
+		truncated = true;
+		return builder.ToString();
+	}
+
 	public static RecapReportBuildResult BuildReport(
 		IReadOnlyList<CodexStoredSessionInfo> sessions,
 		DateTimeOffset startUtc,

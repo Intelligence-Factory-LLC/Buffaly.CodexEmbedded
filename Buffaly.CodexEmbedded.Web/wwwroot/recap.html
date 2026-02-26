@@ -7,6 +7,113 @@
 	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
 	<link rel="stylesheet" href="site.css?v=20260226-imagepreview1">
+	<style>
+		.recap-explain {
+			border: 1px solid var(--border-color);
+			border-radius: 10px;
+			padding: 0.85rem 1rem;
+			background: var(--panel-bg-soft, #f6f8fb);
+			margin-bottom: 0.9rem;
+		}
+
+		.recap-export-grid {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 0.8rem;
+			margin-bottom: 0.8rem;
+		}
+
+		.recap-export-card {
+			border: 1px solid var(--border-color);
+			border-radius: 10px;
+			padding: 0.75rem;
+			background: var(--panel-bg-soft, #f8fafc);
+		}
+
+		.recap-export-card h3 {
+			margin: 0 0 0.45rem 0;
+			font-size: 0.95rem;
+		}
+
+		.recap-form-row {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			gap: 0.5rem;
+			margin-bottom: 0.55rem;
+		}
+
+		.recap-form-row input[type="date"],
+		.recap-form-row select {
+			min-width: 12rem;
+		}
+
+		#recapProjectsSelect {
+			width: 100%;
+			min-height: 14rem;
+			font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+			font-size: 0.85rem;
+		}
+
+		.recap-actions {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			gap: 0.6rem;
+			margin-bottom: 0.6rem;
+		}
+
+		.recap-state-badge {
+			display: inline-flex;
+			align-items: center;
+			gap: 0.35rem;
+			padding: 0.25rem 0.5rem;
+			border-radius: 999px;
+			font-size: 0.78rem;
+			border: 1px solid var(--border-color);
+		}
+
+		.recap-state-badge.ready {
+			background: rgba(15, 158, 81, 0.12);
+			color: #0f9e51;
+		}
+
+		.recap-state-badge.busy {
+			background: rgba(52, 123, 246, 0.12);
+			color: #1f5fbf;
+		}
+
+		.recap-spin {
+			animation: recap-spin 0.9s linear infinite;
+		}
+
+		@keyframes recap-spin {
+			from { transform: rotate(0deg); }
+			to { transform: rotate(360deg); }
+		}
+
+		.recap-preview-wrap {
+			margin-top: 0.8rem;
+		}
+
+		.recap-preview-wrap h3 {
+			margin: 0 0 0.4rem 0;
+			font-size: 0.95rem;
+		}
+
+		#recapPreview {
+			min-height: 24rem;
+			max-height: 60vh;
+			overflow: auto;
+			white-space: pre-wrap;
+		}
+
+		@media (max-width: 1000px) {
+			.recap-export-grid {
+				grid-template-columns: 1fr;
+			}
+		}
+	</style>
 </head>
 <body>
 	<div class="layout">
@@ -57,44 +164,66 @@
 			</aside>
 			<section class="panel chat-panel recap-panel">
 				<div class="panel-title">Recap Export</div>
-
-				<div class="recap-controls">
-					<label for="recapStartDate">Start date</label>
-					<input id="recapStartDate" type="date">
-					<label for="recapEndDate">End date</label>
-					<input id="recapEndDate" type="date">
+				<div class="recap-explain">
+					<strong>What this page does</strong><br>
+					This page exports Codex conversations from your session history into a markdown report. Select a date window, pick projects (or all projects), choose the detail level, and generate a downloadable file.
 				</div>
 
-				<div class="recap-controls">
-					<label for="recapDetailLevel">Detail level</label>
-					<select id="recapDetailLevel">
-						<option value="messages">User and assistant messages only</option>
-						<option value="all">Everything (including tool calls and results)</option>
-					</select>
-					<label>
-						<input id="recapAllProjectsToggle" type="checkbox" checked>
-						All projects
-					</label>
-					<button id="recapRefreshProjectsBtn" type="button">Refresh Projects</button>
+				<div class="recap-export-grid">
+					<div class="recap-export-card">
+						<h3>Time Window</h3>
+						<div class="recap-form-row">
+							<label for="recapStartDate">Start date</label>
+							<input id="recapStartDate" type="date">
+							<label for="recapEndDate">End date</label>
+							<input id="recapEndDate" type="date">
+						</div>
+						<div class="recap-form-row">
+							<label for="recapDetailLevel">Detail level</label>
+							<select id="recapDetailLevel">
+								<option value="messages">User and assistant messages only</option>
+								<option value="all">Everything (including tool calls and results)</option>
+							</select>
+						</div>
+					</div>
+
+					<div class="recap-export-card">
+						<h3>Project Scope</h3>
+						<div class="recap-form-row">
+							<label>
+								<input id="recapAllProjectsToggle" type="checkbox" checked>
+								All projects
+							</label>
+							<button id="recapRefreshProjectsBtn" type="button">Refresh Projects</button>
+						</div>
+						<select id="recapProjectsSelect" multiple size="12"></select>
+					</div>
 				</div>
 
-				<div class="recap-controls">
-					<label for="recapProjectsSelect">Projects</label>
-					<select id="recapProjectsSelect" multiple size="12" style="min-width: 24rem;"></select>
-				</div>
-
-				<div class="recap-controls">
+				<div class="recap-actions">
 					<button id="recapGenerateBtn" type="button">Generate Markdown</button>
 					<a id="recapDownloadLink" href="#" class="hidden" download>Download Latest Markdown</a>
+					<span id="recapBusyBadge" class="recap-state-badge busy hidden">
+						<i class="bi bi-arrow-repeat recap-spin" aria-hidden="true"></i>
+						Exporting...
+					</span>
+					<span id="recapReadyBadge" class="recap-state-badge ready hidden">
+						<i class="bi bi-check-circle" aria-hidden="true"></i>
+						Ready
+					</span>
 				</div>
 
 				<div id="recapStatus" class="logs-status">Loading projects...</div>
 				<pre id="recapSummary" class="recap-report">No report generated yet.</pre>
+				<div class="recap-preview-wrap">
+					<h3>Markdown Preview</h3>
+					<pre id="recapPreview" class="recap-report">No preview yet.</pre>
+				</div>
 			</section>
 		</main>
 		<button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close navigation"></button>
 	</div>
 	<script src="theme.js?v=20260225-settings1"></script>
-	<script src="recap.js?v=20260226-recap-export1"></script>
+	<script src="recap.js?v=20260226-recap-export2"></script>
 </body>
 </html>

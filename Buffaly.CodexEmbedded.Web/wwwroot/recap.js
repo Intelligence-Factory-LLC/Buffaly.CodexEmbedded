@@ -13,8 +13,11 @@ const recapProjectsSelect = document.getElementById("recapProjectsSelect");
 const recapRefreshProjectsBtn = document.getElementById("recapRefreshProjectsBtn");
 const recapGenerateBtn = document.getElementById("recapGenerateBtn");
 const recapDownloadLink = document.getElementById("recapDownloadLink");
+const recapBusyBadge = document.getElementById("recapBusyBadge");
+const recapReadyBadge = document.getElementById("recapReadyBadge");
 const recapStatus = document.getElementById("recapStatus");
 const recapSummary = document.getElementById("recapSummary");
+const recapPreview = document.getElementById("recapPreview");
 
 function setStatus(text) {
   if (recapStatus) {
@@ -25,6 +28,24 @@ function setStatus(text) {
 function setSummary(text) {
   if (recapSummary) {
     recapSummary.textContent = text || "";
+  }
+}
+
+function setPreview(text) {
+  if (recapPreview) {
+    recapPreview.textContent = text || "";
+  }
+}
+
+function setExportState(state) {
+  const busy = state === "busy";
+  const ready = state === "ready";
+
+  if (recapBusyBadge) {
+    recapBusyBadge.classList.toggle("hidden", !busy);
+  }
+  if (recapReadyBadge) {
+    recapReadyBadge.classList.toggle("hidden", !ready);
   }
 }
 
@@ -129,6 +150,7 @@ async function generateMarkdownExport() {
   };
 
   setStatus("Generating markdown report...");
+  setExportState("busy");
   if (recapGenerateBtn) {
     recapGenerateBtn.disabled = true;
   }
@@ -136,6 +158,7 @@ async function generateMarkdownExport() {
     recapDownloadLink.classList.add("hidden");
     recapDownloadLink.removeAttribute("href");
   }
+  setPreview("Generating preview...");
 
   try {
     const response = await fetch("api/recap/export", {
@@ -154,18 +177,29 @@ async function generateMarkdownExport() {
       `Path: ${result.filePath || "(unknown)"}`,
       `Projects: ${Number(result.projectCount || 0)}`,
       `Sessions: ${Number(result.sessionCount || 0)}`,
-      `Entries: ${Number(result.entryCount || 0)}`
+      `Entries: ${Number(result.entryCount || 0)}`,
+      `Preview bytes: ${Number(result.previewBytes || 0)}`,
+      `Total bytes: ${Number(result.totalBytes || 0)}`,
+      `Preview truncated: ${result.previewTruncated === true ? "yes" : "no"}`
     ].join("\n");
     setSummary(summary);
     setStatus("Markdown export created.");
+    setExportState("ready");
 
     if (recapDownloadLink && typeof result.downloadUrl === "string" && result.downloadUrl.trim()) {
       recapDownloadLink.href = result.downloadUrl;
       recapDownloadLink.textContent = `Download ${result.fileName || "report.md"}`;
       recapDownloadLink.classList.remove("hidden");
     }
+
+    const previewText = typeof result.previewMarkdown === "string"
+      ? result.previewMarkdown
+      : "(No preview returned)";
+    setPreview(previewText || "(Preview is empty)");
   } catch (error) {
     setStatus(String(error));
+    setPreview(`Failed to generate preview.\n\n${String(error)}`);
+    setExportState("idle");
   } finally {
     if (recapGenerateBtn) {
       recapGenerateBtn.disabled = false;
@@ -310,6 +344,8 @@ async function initializePage() {
     recapEndDate.value = today;
   }
   setProjectSelectEnabled(!(recapAllProjectsToggle && recapAllProjectsToggle.checked));
+  setExportState("idle");
+  setPreview("No preview yet.");
 
   const savedCollapsed = localStorage.getItem(STORAGE_SIDEBAR_COLLAPSED_KEY) === "1";
   applySidebarCollapsed(savedCollapsed);
