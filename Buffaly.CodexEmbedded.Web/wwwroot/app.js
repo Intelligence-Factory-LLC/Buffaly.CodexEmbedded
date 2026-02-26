@@ -581,7 +581,17 @@ function updatePlanPanel() {
   if (status !== "idle") {
     planPanelStatus.classList.add(status);
   }
-  planPanelBody.textContent = hasText ? state.planText : "No plan generated for this turn.";
+  if (hasText) {
+    planPanelBody.textContent = state.planText;
+  } else if (status === "streaming") {
+    planPanelBody.textContent = "Waiting for plan output...";
+  } else if (status === "completed") {
+    planPanelBody.textContent = "Plan finished with no text output.";
+  } else if (status === "error") {
+    planPanelBody.textContent = "Plan output is unavailable for this turn.";
+  } else {
+    planPanelBody.textContent = "Plan output will appear here when available.";
+  }
 }
 
 function markPlanTurnStarted(sessionId, isPlanTurn) {
