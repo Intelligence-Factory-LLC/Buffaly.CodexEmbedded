@@ -1922,6 +1922,14 @@ function normalizeProjectCwd(cwd) {
   return normalized;
 }
 
+function getEffectiveProjectCwd(cwd) {
+  if (IS_RECAP_MODE) {
+    return getRecapWorkingDirectory();
+  }
+
+  return normalizeProjectCwd(cwd || "");
+}
+
 function getProjectKeyFromCwd(cwd) {
   const normalized = normalizeProjectCwd(cwd);
   return normalized ? normalized.toLowerCase() : "(unknown)";
@@ -2005,6 +2013,11 @@ function loadProjectUiState() {
       })
       .filter((x) => !!x)
     : [];
+
+  if (IS_RECAP_MODE) {
+    customProjects = [];
+    collapsedProjectKeys = new Set();
+  }
 }
 
 function getProjectDisplayName(project) {
@@ -2219,7 +2232,7 @@ function getProjectForSessionState(state) {
     return { key: "(unknown)", cwd: "" };
   }
 
-  const cwd = normalizeProjectCwd(state.cwd || "");
+  const cwd = getEffectiveProjectCwd(state.cwd || "");
   return { key: getProjectKeyFromCwd(cwd), cwd };
 }
 
@@ -2228,14 +2241,14 @@ function buildSidebarProjectGroups() {
   const seenThreads = new Set();
 
   function ensureProject(cwd) {
-    const normalizedCwd = normalizeProjectCwd(cwd || "");
+    const normalizedCwd = getEffectiveProjectCwd(cwd || "");
     const key = getProjectKeyFromCwd(normalizedCwd);
     if (!map.has(key)) {
       const custom = customProjects.find((x) => x && x.key === key) || null;
       map.set(key, {
         key,
         cwd: normalizedCwd,
-        customName: custom?.name || "",
+        customName: IS_RECAP_MODE ? "Recap Source" : (custom?.name || ""),
         isCustom: !!custom,
         sessions: [],
         latestTick: 0
@@ -2256,7 +2269,7 @@ function buildSidebarProjectGroups() {
 
     const attachedSessionId = getAttachedSessionIdByThreadId(entry.threadId);
     const attachedState = attachedSessionId ? sessions.get(attachedSessionId) : null;
-    const effectiveCwd = normalizeProjectCwd(entry.cwd || attachedState?.cwd || "");
+    const effectiveCwd = getEffectiveProjectCwd(entry.cwd || attachedState?.cwd || "");
     const project = ensureProject(effectiveCwd);
     const tick = Math.max(getCatalogSessionUpdatedTick(entry), attachedState?.lastActivityTick || 0);
     if (tick > project.latestTick) {
@@ -2296,7 +2309,7 @@ function buildSidebarProjectGroups() {
       threadName: state.threadName || "",
       updatedAtUtc: tick > 0 ? new Date(tick).toISOString() : null,
       sortTick: tick,
-      cwd: normalizeProjectCwd(state.cwd || ""),
+      cwd: getEffectiveProjectCwd(state.cwd || ""),
       model: state.model || "",
       reasoningEffort: normalizeReasoningEffort(state.reasoningEffort || ""),
       attachedSessionId: sessionId,
@@ -3305,12 +3318,16 @@ function renderProjectSidebar() {
 
     const name = document.createElement("div");
     name.className = "project-name";
-    name.textContent = `${getProjectDisplayName(group)} (${visibleSessions.length})`;
+    const projectNameLabel = `${getProjectDisplayName(group)} (${visibleSessions.length})`;
+    name.textContent = projectNameLabel;
+    name.title = projectNameLabel;
     nameWrap.appendChild(name);
 
     const path = document.createElement("div");
     path.className = "project-path";
-    path.textContent = group.cwd || "(unknown cwd)";
+    const projectPathLabel = group.cwd || "(unknown cwd)";
+    path.textContent = projectPathLabel;
+    path.title = projectPathLabel;
     nameWrap.appendChild(path);
     header.appendChild(nameWrap);
 
@@ -3384,12 +3401,16 @@ function renderProjectSidebar() {
 
       const title = document.createElement("div");
       title.className = "session-title";
-      title.textContent = entry.threadName || entry.threadId;
+      const sessionTitleLabel = entry.threadName || entry.threadId;
+      title.textContent = sessionTitleLabel;
+      title.title = sessionTitleLabel;
       openBtn.appendChild(title);
 
       const subtitle = document.createElement("div");
       subtitle.className = "session-subtitle";
-      subtitle.textContent = formatSessionSubtitle(entry);
+      const sessionSubtitleLabel = formatSessionSubtitle(entry);
+      subtitle.textContent = sessionSubtitleLabel;
+      subtitle.title = sessionSubtitleLabel;
       openBtn.appendChild(subtitle);
       head.appendChild(openBtn);
 
@@ -5955,7 +5976,12 @@ function handleServerEvent(frame) {
           const preferred = getPreferredModelForThread(s.threadId);
           const preferredEffort = getPreferredReasoningForThread(s.threadId);
           if (preferred.found) {
-            return { ...s, model: preferred.model, reasoningEffort: preferredEffort.found ? preferredEffort.effort : normalizeReasoningEffort(s.reasoningEffort ?? s.effort ?? "") };
+            return {
+              ...s,
+              cwd: getEffectiveProjectCwd(s.cwd || ""),
+              model: preferred.model,
+              reasoningEffort: preferredEffort.found ? preferredEffort.effort : normalizeReasoningEffort(s.reasoningEffort ?? s.effort ?? "")
+            };
           }
 
           const normalizedServerModel = normalizeModelValue(s.model);
@@ -5966,7 +5992,12 @@ function handleServerEvent(frame) {
           if (ensureThreadReasoningPreference(s.threadId, normalizedServerEffort, { persist: false })) {
             persistedPreferenceUpdated = true;
           }
-          return { ...s, model: normalizedServerModel, reasoningEffort: preferredEffort.found ? preferredEffort.effort : normalizedServerEffort };
+          return {
+            ...s,
+            cwd: getEffectiveProjectCwd(s.cwd || ""),
+            model: normalizedServerModel,
+            reasoningEffort: preferredEffort.found ? preferredEffort.effort : normalizedServerEffort
+          };
         })
         .sort((a, b) => (b.updatedAtUtc || "").localeCompare(a.updatedAtUtc || ""));
       if (payload.processingByThread && typeof payload.processingByThread === "object" && !Array.isArray(payload.processingByThread)) {
