@@ -158,6 +158,7 @@ const turnActivityTimer = document.getElementById("turnActivityTimer");
 const turnActivityReasoning = document.getElementById("turnActivityReasoning");
 const turnActivityCancelLink = document.getElementById("turnActivityCancelLink");
 const planPanel = document.getElementById("planPanel");
+const planPanelSummary = document.getElementById("planPanelSummary");
 const planPanelStatus = document.getElementById("planPanelStatus");
 const planPanelBody = document.getElementById("planPanelBody");
 const sendPromptBtn = document.getElementById("sendPromptBtn");
@@ -966,11 +967,14 @@ function updatePlanPanel() {
   const status = normalizePlanStatus(state.planStatus);
   const canonicalText = normalizePlanPayloadText(state.planText || "");
   const streamingText = normalizePlanPayloadText(state.planDraftText || "");
-  const displayText = canonicalText || streamingText;
-  const hasText = displayText.length > 0;
   const shouldShow = status === "streaming" || status === "error";
   planPanel.classList.toggle("hidden", !shouldShow);
+  planPanel.classList.toggle("plan-panel-inline", shouldShow);
   if (!shouldShow) {
+    if (planPanelSummary) {
+      planPanelSummary.textContent = "";
+    }
+    planPanelBody.classList.remove("hidden");
     return;
   }
 
@@ -979,16 +983,38 @@ function updatePlanPanel() {
   if (status !== "idle") {
     planPanelStatus.classList.add(status);
   }
-  if (hasText) {
-    renderPlanMarkdownIntoBody(planPanelBody, displayText);
-  } else if (status === "streaming") {
-    setPlanPanelEmptyMessage("Generating plan...");
-  } else if (status === "completed") {
-    setPlanPanelEmptyMessage("Plan finished with no text output.");
-  } else if (status === "error") {
-    setPlanPanelEmptyMessage("Plan output is unavailable for this turn.");
+
+  if (planPanelSummary) {
+    if (status === "streaming") {
+      const source = streamingText || canonicalText;
+      if (!source) {
+        planPanelSummary.textContent = "Generating plan...";
+      } else {
+        const firstMeaningfulLine = source
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find((line) => line.length > 0);
+        planPanelSummary.textContent = firstMeaningfulLine
+          ? `Generating plan: ${firstMeaningfulLine}`
+          : "Generating plan...";
+      }
+    } else if (status === "error") {
+      planPanelSummary.textContent = "Plan stream interrupted. Check timeline for latest plan output.";
+    } else {
+      planPanelSummary.textContent = "Plan update";
+    }
+  }
+
+  if (status === "error") {
+    const fallback = canonicalText || streamingText;
+    if (fallback) {
+      renderPlanMarkdownIntoBody(planPanelBody, fallback);
+      planPanelBody.classList.remove("hidden");
+    } else {
+      planPanelBody.classList.add("hidden");
+    }
   } else {
-    setPlanPanelEmptyMessage("Plan output will appear here when available.");
+    planPanelBody.classList.add("hidden");
   }
 }
 

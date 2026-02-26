@@ -1069,6 +1069,17 @@ body {
 	color: #1d4ed8;
 }
 
+.plan-panel-summary {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-size: 0.79rem;
+	font-family: Consolas, "Courier New", monospace;
+	color: #475569;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
 .plan-panel-status {
 	padding: 0.16rem 0.42rem;
 	border: 1px solid #bfdbfe;
@@ -1190,6 +1201,62 @@ body {
 	line-height: 1.38;
 	display: block;
 	white-space: pre;
+}
+
+.plan-panel.plan-panel-inline {
+	position: relative;
+	margin: 0.35rem 0.75rem 0.5rem;
+	padding: 0.42rem 0.58rem;
+	border: 1px solid #f8d6a5;
+	border-left: 4px solid #f59e0b;
+	border-radius: 12px;
+	background: linear-gradient(180deg, #fff7ed 0%, #ffedd5 100%);
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+	color: #7c2d12;
+	overflow: hidden;
+}
+
+.plan-panel.plan-panel-inline .plan-panel-header {
+	position: relative;
+	z-index: 1;
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	min-width: 0;
+	font-size: 0.78rem;
+	font-weight: 700;
+}
+
+.plan-panel.plan-panel-inline .plan-panel-title {
+	color: #b45309;
+	white-space: nowrap;
+}
+
+.plan-panel.plan-panel-inline .plan-panel-summary {
+	color: #7c2d12;
+}
+
+.plan-panel.plan-panel-inline .plan-panel-status {
+	flex: 0 0 auto;
+	border-color: #f5c375;
+	background: #ffedd5;
+	color: #9a3412;
+}
+
+.plan-panel.plan-panel-inline .plan-panel-status.streaming {
+	border-color: #f59e0b;
+	background: #fde68a;
+	color: #92400e;
+}
+
+.plan-panel.plan-panel-inline .plan-panel-status.error {
+	border-color: #fda4af;
+	background: #fff1f2;
+	color: #be123c;
+}
+
+.plan-panel.plan-panel-inline .plan-panel-body {
+	display: none;
 }
 
 @keyframes turn-activity-shimmer {
@@ -3453,6 +3520,10 @@ html[data-theme="dark"] .plan-panel-title {
 	color: #93c5fd;
 }
 
+html[data-theme="dark"] .plan-panel-summary {
+	color: #cbd5e1;
+}
+
 html[data-theme="dark"] .plan-panel-status {
 	background: #1e293b;
 	border-color: #334155;
@@ -3505,6 +3576,33 @@ html[data-theme="dark"] .plan-panel-body code {
 html[data-theme="dark"] .plan-panel-body pre {
 	background: #020617;
 	border-color: #1e3a8a;
+}
+
+html[data-theme="dark"] .plan-panel.plan-panel-inline {
+	border-color: #7c4a12;
+	border-left-color: #f59e0b;
+	background: linear-gradient(180deg, #2a1a06 0%, #1f1406 100%);
+	color: #f8d6a5;
+}
+
+html[data-theme="dark"] .plan-panel.plan-panel-inline .plan-panel-title {
+	color: #fbbf24;
+}
+
+html[data-theme="dark"] .plan-panel.plan-panel-inline .plan-panel-summary {
+	color: #fcd9a8;
+}
+
+html[data-theme="dark"] .plan-panel.plan-panel-inline .plan-panel-status {
+	border-color: #9a6a2b;
+	background: #3a250d;
+	color: #fbbf24;
+}
+
+html[data-theme="dark"] .plan-panel.plan-panel-inline .plan-panel-status.streaming {
+	border-color: #f59e0b;
+	background: #4a2d0b;
+	color: #fcd34d;
 }
 
 html[data-theme="dark"] .tool-user-input-subtitle {
