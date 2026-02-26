@@ -9,7 +9,7 @@ const recapStartDate = document.getElementById("recapStartDate");
 const recapEndDate = document.getElementById("recapEndDate");
 const recapDetailLevel = document.getElementById("recapDetailLevel");
 const recapAllProjectsToggle = document.getElementById("recapAllProjectsToggle");
-const recapProjectsSelect = document.getElementById("recapProjectsSelect");
+const recapProjectList = document.getElementById("recapProjectList");
 const recapRefreshProjectsBtn = document.getElementById("recapRefreshProjectsBtn");
 const recapGenerateBtn = document.getElementById("recapGenerateBtn");
 const recapDownloadLink = document.getElementById("recapDownloadLink");
@@ -86,37 +86,50 @@ function toUtcRange(startDateValue, endDateValue) {
 }
 
 function getSelectedProjects() {
-  if (!recapProjectsSelect) {
+  if (!recapProjectList) {
     return [];
   }
 
-  return Array.from(recapProjectsSelect.selectedOptions)
-    .map((option) => option.value)
+  return Array.from(recapProjectList.querySelectorAll('input[type="checkbox"][data-cwd]:checked'))
+    .map((input) => input.getAttribute("data-cwd") || "")
     .filter((value) => !!value);
 }
 
 function setProjectSelectEnabled(enabled) {
-  if (recapProjectsSelect) {
-    recapProjectsSelect.disabled = !enabled;
+  if (!recapProjectList) {
+    return;
+  }
+
+  const allowSelection = !!enabled;
+  for (const input of recapProjectList.querySelectorAll('input[type="checkbox"][data-cwd]')) {
+    input.disabled = !allowSelection;
+  }
+  for (const node of recapProjectList.querySelectorAll(".recap-project-option")) {
+    node.classList.toggle("recap-project-option-disabled", !allowSelection);
   }
 }
 
-function formatProjectLabel(project) {
+function formatProjectLabel(project, options = {}) {
+  const includeCwd = options.includeCwd !== false;
   const cwd = project?.cwd || "(unknown)";
   const sessions = Number(project?.sessionCount || 0);
   const updated = project?.lastUpdatedUtc
     ? new Date(project.lastUpdatedUtc).toLocaleString()
     : "unknown";
+  if (!includeCwd) {
+    return `${sessions} sessions, last ${updated}`;
+  }
   return `${cwd} (${sessions} sessions, last ${updated})`;
 }
 
 async function loadProjects() {
-  if (!recapProjectsSelect) {
+  if (!recapProjectList) {
     return;
   }
 
   setStatus("Loading projects...");
-  recapProjectsSelect.textContent = "";
+  const previousSelection = new Set(getSelectedProjects());
+  recapProjectList.textContent = "";
 
   try {
     const response = await fetch("api/recap/projects", { cache: "no-store" });
@@ -126,13 +139,50 @@ async function loadProjects() {
 
     const data = await response.json();
     const projects = Array.isArray(data?.projects) ? data.projects : [];
-    for (const project of projects) {
-      const option = document.createElement("option");
-      option.value = String(project?.cwd || "(unknown)");
-      option.textContent = formatProjectLabel(project);
-      recapProjectsSelect.appendChild(option);
+    if (projects.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "sidebar-empty";
+      empty.textContent = "No projects found.";
+      recapProjectList.appendChild(empty);
+      setStatus(`Loaded 0 projects from ${data?.codexHomePath || "Codex home"}.`);
+      return;
     }
 
+    for (const project of projects) {
+      const cwd = String(project?.cwd || "(unknown)");
+      const row = document.createElement("div");
+      row.className = "session-row";
+
+      const head = document.createElement("div");
+      head.className = "session-row-head";
+
+      const option = document.createElement("label");
+      option.className = "recap-project-option session-open-btn";
+
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.setAttribute("data-cwd", cwd);
+      checkbox.checked = previousSelection.has(cwd);
+      option.appendChild(checkbox);
+
+      const body = document.createElement("div");
+      body.className = "recap-project-option-body";
+      const title = document.createElement("div");
+      title.className = "session-title";
+      title.textContent = cwd;
+      body.appendChild(title);
+      const subtitle = document.createElement("div");
+      subtitle.className = "session-subtitle";
+      subtitle.textContent = formatProjectLabel(project, { includeCwd: false });
+      body.appendChild(subtitle);
+      option.appendChild(body);
+
+      head.appendChild(option);
+      row.appendChild(head);
+      recapProjectList.appendChild(row);
+    }
+
+    setProjectSelectEnabled(!(recapAllProjectsToggle && recapAllProjectsToggle.checked));
     setStatus(`Loaded ${projects.length} projects from ${data?.codexHomePath || "Codex home"}.`);
   } catch (error) {
     setStatus(String(error));
@@ -362,7 +412,6 @@ async function initializePage() {
   if (recapEndDate && !recapEndDate.value) {
     recapEndDate.value = today;
   }
-  setProjectSelectEnabled(!(recapAllProjectsToggle && recapAllProjectsToggle.checked));
   setExportState("idle");
   setPreview("No preview yet.");
 
