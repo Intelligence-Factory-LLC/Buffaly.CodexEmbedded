@@ -6,6 +6,8 @@
   const TOOL_PREVIEW_TAIL_LINES = 5;
   const TOOL_PREVIEW_MIN_HIDDEN_LINES = 3;
   const STORAGE_RENDER_ASSISTANT_MARKDOWN_KEY = "codex.settings.renderAssistantMarkdown.v1";
+  const MAX_TIMELINE_ENTRY_TEXT_CHARS = 20_000;
+  const MAX_TIMELINE_IMAGE_URL_CHARS = 8_192;
 
   class CodexSessionTimeline {
     constructor(options) {
@@ -439,9 +441,12 @@
       const title = typeof rawEntry.title === "string" && rawEntry.title.trim().length > 0
         ? rawEntry.title.trim()
         : fallbackTitle;
-      const text = this.normalizeText(rawEntry.text || "");
+      const text = this.truncateText(rawEntry.text || "", MAX_TIMELINE_ENTRY_TEXT_CHARS);
       const images = Array.isArray(rawEntry.images)
-        ? rawEntry.images.filter((x) => typeof x === "string" && x.trim().length > 0)
+        ? rawEntry.images
+          .filter((x) => typeof x === "string" && x.trim().length > 0)
+          .map((x) => x.trim())
+          .filter((x) => !(x.startsWith("data:") && x.length > MAX_TIMELINE_IMAGE_URL_CHARS))
         : [];
       return {
         role,
@@ -1135,10 +1140,13 @@
       const title = typeof rawEntry.title === "string" && rawEntry.title.trim().length > 0
         ? rawEntry.title.trim()
         : (role === "assistant" ? "Assistant" : "System");
-      const text = this.normalizeText(rawEntry.text || "");
+      const text = this.truncateText(rawEntry.text || "", MAX_TIMELINE_ENTRY_TEXT_CHARS);
       const rawType = typeof rawEntry.rawType === "string" ? rawEntry.rawType : "";
       const images = Array.isArray(rawEntry.images)
-        ? rawEntry.images.filter((x) => typeof x === "string" && x.trim().length > 0)
+        ? rawEntry.images
+          .filter((x) => typeof x === "string" && x.trim().length > 0)
+          .map((x) => x.trim())
+          .filter((x) => !(x.startsWith("data:") && x.length > MAX_TIMELINE_IMAGE_URL_CHARS))
         : [];
       const taskDepthRaw = Number(rawEntry.taskDepth);
       const taskDepth = Number.isFinite(taskDepthRaw) ? Math.max(0, Math.floor(taskDepthRaw)) : 0;

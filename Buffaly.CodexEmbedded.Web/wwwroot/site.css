@@ -307,6 +307,9 @@ body {
 }
 
 .sidebar-create-row {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
 	padding: 0.35rem 0.55rem;
 	background: #f8fafc;
 }
@@ -316,12 +319,48 @@ body {
 	margin-bottom: 0.1rem;
 }
 
+.sidebar-search-row {
+	padding: 0.32rem 0.55rem 0.4rem;
+	background: #ffffff;
+	border-bottom: 1px solid #e2e8f0;
+}
+
+.sidebar-search-toggle-btn {
+	width: 1.95rem;
+	height: 1.95rem;
+	font-size: 0.84rem;
+}
+
+.sidebar-search-toggle-btn.active {
+	border-color: #60a5fa;
+	color: #1d4ed8;
+}
+
+.sidebar-search-input {
+	width: 100%;
+	padding: 0.4rem 0.6rem;
+	border: 1px solid #cbd5e1;
+	border-radius: 8px;
+	background: #f8fafc;
+	color: #0f172a;
+	font-size: 0.82rem;
+	line-height: 1.3;
+}
+
+.sidebar-search-input:focus {
+	outline: none;
+	border-color: #60a5fa;
+	box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.2);
+	background: #ffffff;
+}
+
 .new-project-btn {
 	display: inline-flex;
 	align-items: center;
 	justify-content: flex-start;
 	gap: 0.5rem;
-	width: 100%;
+	width: auto;
+	flex: 1;
 	padding: 0.45rem 0.6rem !important;
 	border-radius: 8px !important;
 	border: 1px solid transparent !important;
@@ -633,6 +672,7 @@ body {
 
 .layout.sidebar-collapsed .sidebar-divider,
 .layout.sidebar-collapsed .sidebar-create-row,
+.layout.sidebar-collapsed .sidebar-search-row,
 .layout.sidebar-collapsed .project-list {
 	display: none;
 }
@@ -3161,6 +3201,7 @@ html[data-theme="dark"] .server-meta {
 html[data-theme="dark"] .sidebar-shell-header,
 html[data-theme="dark"] .sidebar-nav,
 html[data-theme="dark"] .sidebar-create-row,
+html[data-theme="dark"] .sidebar-search-row,
 html[data-theme="dark"] .logs-help-text,
 html[data-theme="dark"] .recap-answer,
 html[data-theme="dark"] .recap-report,
@@ -3182,6 +3223,23 @@ html[data-theme="dark"] .conversation-meta-menu-btn {
 	background: #111827;
 	border-color: #475569;
 	color: #dbeafe;
+}
+
+html[data-theme="dark"] .sidebar-search-input {
+	background: #0f172a;
+	border-color: #334155;
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .sidebar-search-input:focus {
+	border-color: #60a5fa;
+	box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.25);
+	background: #111827;
+}
+
+html[data-theme="dark"] .sidebar-search-toggle-btn.active {
+	border-color: #60a5fa;
+	color: #bfdbfe;
 }
 
 html[data-theme="dark"] .sidebar-nav-link,

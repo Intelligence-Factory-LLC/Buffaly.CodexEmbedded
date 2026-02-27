@@ -2545,6 +2545,8 @@ internal sealed record JsonlWatchResult(
 
 internal static class JsonlFileTailReader
 {
+	private const int MaxWatchLineChars = 250_000;
+
 	public static JsonlWatchResult ReadInitial(string path, int maxLines)
 	{
 		using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -2559,6 +2561,14 @@ internal static class JsonlFileTailReader
 			if (line is null)
 			{
 				break;
+			}
+
+			// Defensive guard: oversized JSONL lines (often compacted replacement histories or large data URLs)
+			// can stall timeline/log endpoints and freeze the browser when echoed back.
+			if (line.Length > MaxWatchLineChars)
+			{
+				truncated = true;
+				continue;
 			}
 
 			ring.Enqueue(line);
@@ -2594,6 +2604,7 @@ internal static class JsonlFileTailReader
 		fs.Seek(startCursor, SeekOrigin.Begin);
 		using var reader = new StreamReader(fs, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 4096, leaveOpen: true);
 
+		var truncated = false;
 		var lines = new List<string>();
 		while (true)
 		{
@@ -2603,10 +2614,15 @@ internal static class JsonlFileTailReader
 				break;
 			}
 
+			if (line.Length > MaxWatchLineChars)
+			{
+				truncated = true;
+				continue;
+			}
+
 			lines.Add(line);
 		}
 
-		var truncated = false;
 		if (lines.Count > maxLines)
 		{
 			lines = lines.Skip(lines.Count - maxLines).ToList();

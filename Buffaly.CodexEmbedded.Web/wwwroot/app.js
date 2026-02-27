@@ -93,6 +93,8 @@ let scribeController = null;
 let recapRootPath = "";
 let recapSessionId = null;
 let recapSessionEnsureInFlight = false;
+let sidebarProjectSearchQuery = "";
+let sidebarProjectSearchExpanded = false;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -208,6 +210,9 @@ const conversationSandboxSelect = document.getElementById("conversationSandboxSe
 const sessionSidebar = document.getElementById("sessionSidebar");
 const sidebarToggleBtn = document.getElementById("sidebarToggleBtn");
 const projectList = document.getElementById("projectList");
+const projectSearchInput = document.getElementById("projectSearchInput");
+const projectSearchToggleBtn = document.getElementById("projectSearchToggleBtn");
+const sidebarSearchRow = document.getElementById("sidebarSearchRow");
 
 const logVerbositySelect = document.getElementById("logVerbositySelect");
 const modelSelect = document.getElementById("modelSelect");
@@ -3625,6 +3630,42 @@ function toggleProjectCollapsed(projectKey) {
   renderProjectSidebar();
 }
 
+function normalizeSidebarSearchQuery(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function matchesSidebarSearch(text, query) {
+  if (!query) {
+    return true;
+  }
+
+  return normalizeSidebarSearchQuery(text).includes(query);
+}
+
+function applyProjectSearchUi(options = {}) {
+  const focus = options.focus === true;
+  const visible = sidebarProjectSearchExpanded || sidebarProjectSearchQuery.length > 0;
+  if (sidebarSearchRow) {
+    sidebarSearchRow.classList.toggle("hidden", !visible);
+  }
+
+  if (projectSearchToggleBtn) {
+    projectSearchToggleBtn.classList.toggle("active", visible);
+    projectSearchToggleBtn.setAttribute("aria-expanded", visible ? "true" : "false");
+    projectSearchToggleBtn.title = visible ? "Close search" : "Search projects and sessions";
+    projectSearchToggleBtn.setAttribute("aria-label", projectSearchToggleBtn.title);
+    const icon = projectSearchToggleBtn.querySelector("i");
+    if (icon) {
+      icon.className = visible ? "bi bi-x-lg" : "bi bi-search";
+    }
+  }
+
+  if (visible && focus && projectSearchInput) {
+    projectSearchInput.focus();
+    projectSearchInput.select();
+  }
+}
+
 function renderProjectSidebar() {
   if (!projectList) {
     return;
@@ -3636,6 +3677,15 @@ function renderProjectSidebar() {
   } else if (selectedProjectKey && !groups.some((x) => x.key === selectedProjectKey)) {
     selectedProjectKey = groups.length > 0 ? groups[0].key : null;
   }
+  if (projectSearchInput && projectSearchInput.value !== sidebarProjectSearchQuery) {
+    projectSearchInput.value = sidebarProjectSearchQuery;
+  }
+  if (sidebarProjectSearchQuery.length > 0) {
+    sidebarProjectSearchExpanded = true;
+  }
+  applyProjectSearchUi();
+  const searchQuery = normalizeSidebarSearchQuery(sidebarProjectSearchQuery);
+  const searchEnabled = searchQuery.length > 0;
 
   projectList.textContent = "";
   if (groups.length === 0) {
@@ -3648,12 +3698,25 @@ function renderProjectSidebar() {
 
   for (const group of groups) {
     const visibleSessions = group.sessions.filter((x) => !x.isArchived || x.attachedSessionId === activeSessionId);
-    const hasSessionOverflow = visibleSessions.length > MAX_PROJECT_SESSIONS_COLLAPSED;
+    const projectLabelForSearch = `${getProjectDisplayName(group)}\n${group.cwd || ""}`;
+    const projectMatchesSearch = matchesSidebarSearch(projectLabelForSearch, searchQuery);
+    const matchingSessions = searchEnabled
+      ? visibleSessions.filter((entry) => {
+        const sessionLabel = `${entry.threadName || ""}\n${entry.threadId || ""}\n${entry.cwd || ""}\n${formatSessionSubtitle(entry)}`;
+        return matchesSidebarSearch(sessionLabel, searchQuery);
+      })
+      : visibleSessions;
+    const sessionsForGroup = searchEnabled ? matchingSessions : visibleSessions;
+    if (searchEnabled && !projectMatchesSearch && sessionsForGroup.length === 0) {
+      continue;
+    }
+
+    const hasSessionOverflow = sessionsForGroup.length > MAX_PROJECT_SESSIONS_COLLAPSED;
     const projectSessionsExpanded = expandedProjectKeys.has(group.key);
     const sessionsToRender = hasSessionOverflow && !projectSessionsExpanded
-      ? visibleSessions.slice(0, MAX_PROJECT_SESSIONS_COLLAPSED)
-      : visibleSessions;
-    if (visibleSessions.length === 0 && !group.isCustom) {
+      ? sessionsForGroup.slice(0, MAX_PROJECT_SESSIONS_COLLAPSED)
+      : sessionsForGroup;
+    if (sessionsForGroup.length === 0 && !group.isCustom && !projectMatchesSearch) {
       continue;
     }
 
@@ -3690,7 +3753,7 @@ function renderProjectSidebar() {
 
     const name = document.createElement("div");
     name.className = "project-name";
-    const projectNameLabel = `${getProjectDisplayName(group)} (${visibleSessions.length})`;
+    const projectNameLabel = `${getProjectDisplayName(group)} (${sessionsForGroup.length})`;
     name.textContent = projectNameLabel;
     name.title = projectNameLabel;
     nameWrap.appendChild(name);
@@ -3859,10 +3922,10 @@ function renderProjectSidebar() {
       sessionsWrap.appendChild(row);
     }
 
-    if (visibleSessions.length === 0) {
+    if (sessionsForGroup.length === 0) {
       const empty = document.createElement("div");
       empty.className = "sidebar-empty";
-      empty.textContent = "No sessions in this project.";
+      empty.textContent = searchEnabled ? "No matching sessions in this project." : "No sessions in this project.";
       sessionsWrap.appendChild(empty);
     } else if (hasSessionOverflow) {
       const toggleMoreBtn = document.createElement("button");
@@ -3871,7 +3934,7 @@ function renderProjectSidebar() {
       if (projectSessionsExpanded) {
         toggleMoreBtn.textContent = "Show less";
       } else {
-        const remainingCount = visibleSessions.length - sessionsToRender.length;
+        const remainingCount = sessionsForGroup.length - sessionsToRender.length;
         toggleMoreBtn.textContent = `Read more (${remainingCount})`;
       }
 
@@ -3895,7 +3958,7 @@ function renderProjectSidebar() {
   if (!projectList.firstChild) {
     const empty = document.createElement("div");
     empty.className = "sidebar-empty";
-    empty.textContent = "No sessions to display.";
+    empty.textContent = searchEnabled ? "No matching projects or sessions." : "No sessions to display.";
     projectList.appendChild(empty);
   }
 }
@@ -7473,6 +7536,52 @@ if (sidebarToggleBtn) {
       return;
     }
     applySidebarCollapsed(!isSidebarCollapsed());
+  });
+}
+
+if (projectSearchInput) {
+  sidebarProjectSearchQuery = normalizeSidebarSearchQuery(projectSearchInput.value || "");
+  projectSearchInput.addEventListener("input", () => {
+    sidebarProjectSearchQuery = normalizeSidebarSearchQuery(projectSearchInput.value || "");
+    if (sidebarProjectSearchQuery.length > 0) {
+      sidebarProjectSearchExpanded = true;
+    }
+    renderProjectSidebar();
+  });
+  projectSearchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (sidebarProjectSearchQuery.length > 0) {
+        sidebarProjectSearchQuery = "";
+        projectSearchInput.value = "";
+        sidebarProjectSearchExpanded = false;
+        renderProjectSidebar();
+        return;
+      }
+
+      if (sidebarProjectSearchExpanded) {
+        sidebarProjectSearchExpanded = false;
+        applyProjectSearchUi();
+      }
+    }
+  });
+}
+
+if (projectSearchToggleBtn) {
+  projectSearchToggleBtn.addEventListener("click", () => {
+    const currentlyVisible = sidebarProjectSearchExpanded || sidebarProjectSearchQuery.length > 0;
+    if (currentlyVisible) {
+      sidebarProjectSearchQuery = "";
+      sidebarProjectSearchExpanded = false;
+      if (projectSearchInput) {
+        projectSearchInput.value = "";
+      }
+      renderProjectSidebar();
+      return;
+    }
+
+    sidebarProjectSearchExpanded = true;
+    applyProjectSearchUi({ focus: true });
   });
 }
 

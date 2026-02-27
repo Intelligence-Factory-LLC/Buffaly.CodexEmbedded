@@ -6,7 +6,7 @@ internal sealed class TimelineProjectionService
 {
 	private const int MaxMessageTextChars = 20_000;
 	private const int MaxInlineDataImageUrlChars = 8_192;
-	private const int SkipHeavyLineParseChars = 1_000_000;
+	private const int SkipHeavyLineParseChars = 250_000;
 
 	private readonly ConcurrentDictionary<string, TimelineProjectionState> _stateByThread = new(StringComparer.Ordinal);
 
@@ -122,13 +122,7 @@ internal sealed class TimelineProjectionService
 
 	private static bool ShouldSkipHeavyLineWithoutParse(string line)
 	{
-		if (line.Length < SkipHeavyLineParseChars)
-		{
-			return false;
-		}
-
-		return line.Contains("\"type\":\"compacted\"", StringComparison.Ordinal) ||
-			line.Contains("\"replacement_history\"", StringComparison.Ordinal);
+		return line.Length >= SkipHeavyLineParseChars;
 	}
 
 	private static void UpdateSessionMeta(TimelineProjectionState state, JsonElement payload)
