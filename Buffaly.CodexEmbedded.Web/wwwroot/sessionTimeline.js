@@ -402,6 +402,19 @@
             intermediate.push(normalized);
           }
         }
+        const intermediateCountRaw = Number(
+          rawTurn.intermediateCount ?? rawTurn.IntermediateCount ?? intermediate.length
+        );
+        const intermediateCount = Number.isFinite(intermediateCountRaw) && intermediateCountRaw >= 0
+          ? Math.floor(intermediateCountRaw)
+          : intermediate.length;
+        const hasIntermediate = rawTurn.hasIntermediate === true
+          || rawTurn.HasIntermediate === true
+          || intermediateCount > 0
+          || intermediate.length > 0;
+        const intermediateLoaded = rawTurn.intermediateLoaded === true
+          || rawTurn.IntermediateLoaded === true
+          || (hasIntermediate && intermediate.length >= intermediateCount);
 
         if (!user && !assistantFinal && intermediate.length === 0) {
           continue;
@@ -423,7 +436,10 @@
           user: syntheticUser,
           assistantFinal,
           intermediate,
-          isInFlight: rawTurn.isInFlight === true
+          isInFlight: rawTurn.isInFlight === true,
+          hasIntermediate,
+          intermediateCount,
+          intermediateLoaded
         });
       }
 
@@ -467,7 +483,7 @@
         container.classList.add("watcher-turn-active");
       }
 
-      const userNode = this.createTurnEntryNode(turn.user, { roleClassOverride: "user", includeToggle: turn.intermediate.length > 0 });
+      const userNode = this.createTurnEntryNode(turn.user, { roleClassOverride: "user", includeToggle: turn.hasIntermediate === true });
       container.appendChild(userNode.card);
 
       const intermediateWrap = document.createElement("div");
@@ -475,6 +491,23 @@
       for (const entry of turn.intermediate) {
         const itemNode = this.createTurnEntryNode(entry, { roleClassOverride: entry.role || "system", intermediate: true });
         intermediateWrap.appendChild(itemNode.card);
+      }
+      if (turn.hasIntermediate === true && turn.intermediate.length === 0) {
+        const detailText = turn.intermediateLoaded === true
+          ? "(no intermediate events)"
+          : "(details load on demand)";
+        const detailNode = this.createTurnEntryNode(
+          {
+            role: "system",
+            title: "Details",
+            text: detailText,
+            timestamp: null,
+            rawType: "inline_notice",
+            compact: true,
+            images: []
+          },
+          { roleClassOverride: "system", intermediate: true });
+        intermediateWrap.appendChild(detailNode.card);
       }
       container.appendChild(intermediateWrap);
 
@@ -498,7 +531,15 @@
       if (userNode.toggle) {
         userNode.toggle.addEventListener("click", () => {
           const collapsed = this.isTurnCollapsed(turn);
-          this.turnCollapsedById.set(turn.turnId, !collapsed);
+          const nextCollapsed = !collapsed;
+          this.turnCollapsedById.set(turn.turnId, nextCollapsed);
+          if (!nextCollapsed &&
+            turn.turnId &&
+            turn.hasIntermediate === true &&
+            turn.intermediateLoaded !== true &&
+            turn.intermediate.length === 0) {
+            this.dispatchTimelineEvent("turn-detail-request", { turnId: turn.turnId });
+          }
           this.refreshTurnVisibility();
         });
       }

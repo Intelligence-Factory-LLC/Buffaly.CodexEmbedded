@@ -81,7 +81,8 @@ let runtimeSecurityConfig = null;
 let rateLimitBySession = new Map(); // sessionId -> latest rate limit summary payload
 let renderedClientLogLines = [];
 let pendingClientLogLines = [];
-let timelineCacheByThread = new Map(); // threadId -> { turns, nextCursor, truncated, contextUsage, permission, reasoningSummary, maxEntries }
+let timelineCacheByThread = new Map(); // threadId -> { turns(summary + hydrated details), nextCursor, truncated, contextUsage, permission, reasoningSummary, maxEntries }
+let turnDetailFetchInFlight = new Set(); // `${threadId}::${turnId}`
 let turnActivityTickTimer = null;
 let turnStartedAtBySession = new Map(); // sessionId -> epoch ms when running turn started
 let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
@@ -118,8 +119,6 @@ const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
 const SESSION_LIST_SYNC_INTERVAL_MS = 10000;
 const TIMELINE_INITIAL_WINDOW_DEFAULT = 300;
-const TIMELINE_INITIAL_WINDOW_RETRY = 6000;
-const TIMELINE_ENTRY_FALLBACK_MAX_ENTRIES = 500;
 let timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
 const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only.";
 const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
@@ -1723,54 +1722,170 @@ function normalizeTimelineMaxEntries(value, fallback = TIMELINE_INITIAL_WINDOW_D
   return numeric;
 }
 
-async function tryRenderTimelineEntriesFallback(threadId) {
-  const normalizedThreadId = normalizeThreadId(threadId);
-  if (!normalizedThreadId) {
-    return false;
+function readTurnSnapshotTurnId(turn) {
+  if (!turn || typeof turn !== "object") {
+    return "";
   }
 
-  const url = new URL("api/timeline/watch", document.baseURI);
-  url.searchParams.set("threadId", normalizedThreadId);
-  url.searchParams.set("initial", "true");
-  url.searchParams.set("maxEntries", String(TIMELINE_ENTRY_FALLBACK_MAX_ENTRIES));
-
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) {
-    return false;
+  if (typeof turn.turnId === "string" && turn.turnId.trim()) {
+    return turn.turnId.trim();
   }
 
-  const data = await response.json();
-  const entries = Array.isArray(data?.entries) ? data.entries : [];
-  if (entries.length === 0) {
-    return false;
+  if (typeof turn.TurnId === "string" && turn.TurnId.trim()) {
+    return turn.TurnId.trim();
   }
 
-  setJumpCollapseMode(false);
-  if (typeof timeline.clear === "function") {
-    timeline.clear();
-  }
-  if (typeof timeline.enqueueInlineNotice === "function") {
-    timeline.enqueueInlineNotice("Showing recent log lines because no complete turns were found yet.");
-  }
-  if (typeof timeline.enqueueServerEntries === "function") {
-    timeline.enqueueServerEntries(entries);
-  }
-  if (typeof timeline.flush === "function") {
-    timeline.flush();
+  return "";
+}
+
+function readTurnSnapshotIntermediate(turn) {
+  if (!turn || typeof turn !== "object") {
+    return [];
   }
 
-  const nextCursor = typeof data.nextCursor === "number" ? data.nextCursor : null;
-  if (Number.isFinite(nextCursor)) {
-    timelineCursor = nextCursor;
+  if (Array.isArray(turn.intermediate)) {
+    return turn.intermediate;
   }
-  timelineHasTruncatedHead = data?.truncated === true;
-  applyTimelineWatchMetadata(normalizedThreadId, {
-    contextUsage: data?.contextUsage || null,
-    permission: data?.permission || null,
-    reasoningSummary: data?.reasoningSummary || ""
-  });
-  updateTimelineTruncationNotice();
-  return true;
+
+  if (Array.isArray(turn.Intermediate)) {
+    return turn.Intermediate;
+  }
+
+  return [];
+}
+
+function cloneTurnSnapshotEntry(entry) {
+  if (!entry || typeof entry !== "object") {
+    return null;
+  }
+
+  return {
+    role: typeof entry.role === "string" ? entry.role : (typeof entry.Role === "string" ? entry.Role : ""),
+    title: typeof entry.title === "string" ? entry.title : (typeof entry.Title === "string" ? entry.Title : ""),
+    text: typeof entry.text === "string" ? entry.text : (typeof entry.Text === "string" ? entry.Text : ""),
+    timestamp: entry.timestamp || entry.Timestamp || null,
+    rawType: typeof entry.rawType === "string" ? entry.rawType : (typeof entry.RawType === "string" ? entry.RawType : ""),
+    compact: entry.compact === true || entry.Compact === true,
+    images: Array.isArray(entry.images)
+      ? entry.images.slice()
+      : (Array.isArray(entry.Images) ? entry.Images.slice() : [])
+  };
+}
+
+function cloneTurnSnapshot(turn) {
+  if (!turn || typeof turn !== "object") {
+    return null;
+  }
+
+  const user = cloneTurnSnapshotEntry(turn.user || turn.User || null);
+  const assistantFinal = cloneTurnSnapshotEntry(turn.assistantFinal || turn.AssistantFinal || null);
+  const intermediate = readTurnSnapshotIntermediate(turn)
+    .map((entry) => cloneTurnSnapshotEntry(entry))
+    .filter((entry) => !!entry);
+  const intermediateCountRaw = Number(turn.intermediateCount ?? turn.IntermediateCount ?? intermediate.length);
+  const intermediateCount = Number.isFinite(intermediateCountRaw) && intermediateCountRaw >= 0
+    ? Math.floor(intermediateCountRaw)
+    : intermediate.length;
+  const hasIntermediate = turn.hasIntermediate === true
+    || turn.HasIntermediate === true
+    || intermediateCount > 0
+    || intermediate.length > 0;
+  const intermediateLoaded = turn.intermediateLoaded === true
+    || turn.IntermediateLoaded === true
+    || (hasIntermediate && intermediate.length >= intermediateCount);
+
+  return {
+    turnId: readTurnSnapshotTurnId(turn),
+    user,
+    assistantFinal,
+    intermediate,
+    isInFlight: turn.isInFlight === true || turn.IsInFlight === true,
+    hasIntermediate,
+    intermediateCount,
+    intermediateLoaded
+  };
+}
+
+function mergeTurnWithDetail(baseTurn, detailTurn) {
+  const summary = cloneTurnSnapshot(baseTurn);
+  const detail = cloneTurnSnapshot(detailTurn);
+  if (!summary) {
+    return detail;
+  }
+
+  if (!detail) {
+    return summary;
+  }
+
+  const detailIntermediate = Array.isArray(detail.intermediate) ? detail.intermediate : [];
+  if (detailIntermediate.length > 0 || detail.intermediateLoaded === true) {
+    summary.intermediate = detailIntermediate.slice();
+    summary.intermediateLoaded = true;
+  }
+
+  if (!summary.assistantFinal && detail.assistantFinal) {
+    summary.assistantFinal = detail.assistantFinal;
+  }
+
+  if (detail.hasIntermediate === true || detailIntermediate.length > 0) {
+    summary.hasIntermediate = true;
+  }
+  if (Number.isFinite(detail.intermediateCount) && detail.intermediateCount > summary.intermediateCount) {
+    summary.intermediateCount = detail.intermediateCount;
+  }
+  if (!Number.isFinite(summary.intermediateCount) || summary.intermediateCount < 0) {
+    summary.intermediateCount = summary.intermediate.length;
+  }
+  if (summary.intermediateLoaded === true && summary.intermediateCount < summary.intermediate.length) {
+    summary.intermediateCount = summary.intermediate.length;
+  }
+
+  return summary;
+}
+
+function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurnDetail) {
+  const incoming = Array.isArray(incomingTurns) ? incomingTurns : [];
+  if (incoming.length === 0) {
+    return [];
+  }
+
+  const existingByTurnId = new Map();
+  if (Array.isArray(existingTurns)) {
+    for (const item of existingTurns) {
+      const turnId = readTurnSnapshotTurnId(item);
+      if (!turnId) {
+        continue;
+      }
+      const cloned = cloneTurnSnapshot(item);
+      if (cloned) {
+        existingByTurnId.set(turnId, cloned);
+      }
+    }
+  }
+
+  const activeDetailId = readTurnSnapshotTurnId(activeTurnDetail);
+  const merged = [];
+  for (const turn of incoming) {
+    const summary = cloneTurnSnapshot(turn);
+    if (!summary) {
+      continue;
+    }
+
+    const turnId = summary.turnId;
+    if (turnId && activeDetailId && turnId === activeDetailId) {
+      merged.push(mergeTurnWithDetail(summary, activeTurnDetail));
+      continue;
+    }
+
+    if (turnId && existingByTurnId.has(turnId)) {
+      merged.push(mergeTurnWithDetail(summary, existingByTurnId.get(turnId)));
+      continue;
+    }
+
+    merged.push(summary);
+  }
+
+  return merged;
 }
 
 function rememberTimelineCache(threadId, payload) {
@@ -1827,6 +1942,82 @@ function restoreTimelineFromCache(threadId) {
   });
   updateTimelineTruncationNotice();
   return true;
+}
+
+function applyTurnDetailToThreadCache(threadId, detailTurn) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  const normalizedDetail = cloneTurnSnapshot(detailTurn);
+  const detailTurnId = readTurnSnapshotTurnId(normalizedDetail);
+  if (!normalizedThreadId || !normalizedDetail || !detailTurnId) {
+    return false;
+  }
+
+  const cached = timelineCacheByThread.get(normalizedThreadId);
+  if (!cached || !Array.isArray(cached.turns) || cached.turns.length === 0) {
+    return false;
+  }
+
+  let changed = false;
+  const nextTurns = cached.turns.map((turn) => {
+    const turnId = readTurnSnapshotTurnId(turn);
+    if (!turnId || turnId !== detailTurnId) {
+      return turn;
+    }
+
+    changed = true;
+    return mergeTurnWithDetail(turn, normalizedDetail);
+  });
+
+  if (!changed) {
+    return false;
+  }
+
+  cached.turns = nextTurns;
+  timelineCacheByThread.set(normalizedThreadId, cached);
+
+  const activeThreadId = normalizeThreadId(getActiveSessionState()?.threadId || "");
+  if (activeThreadId === normalizedThreadId && typeof timeline.setServerTurns === "function") {
+    timeline.setServerTurns(nextTurns);
+  }
+
+  return true;
+}
+
+async function fetchTurnDetailForThread(threadId, turnId) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  const normalizedTurnId = typeof turnId === "string" ? turnId.trim() : "";
+  if (!normalizedThreadId || !normalizedTurnId) {
+    return;
+  }
+
+  const cacheKey = `${normalizedThreadId}::${normalizedTurnId}`;
+  if (turnDetailFetchInFlight.has(cacheKey)) {
+    return;
+  }
+
+  turnDetailFetchInFlight.add(cacheKey);
+  try {
+    const url = new URL("api/turns/detail", document.baseURI);
+    url.searchParams.set("threadId", normalizedThreadId);
+    url.searchParams.set("turnId", normalizedTurnId);
+    url.searchParams.set("maxEntries", String(normalizeTimelineMaxEntries(timelineWatchMaxEntries, TIMELINE_INITIAL_WINDOW_DEFAULT)));
+    const response = await fetch(url, { cache: "no-store" });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`turn detail failed (${response.status}): ${detail}`);
+    }
+
+    const payload = await response.json();
+    if (!payload || typeof payload !== "object" || !payload.turn || typeof payload.turn !== "object") {
+      return;
+    }
+
+    applyTurnDetailToThreadCache(normalizedThreadId, payload.turn);
+  } catch (error) {
+    appendLog(`[timeline] turn detail load failed: ${error}`);
+  } finally {
+    turnDetailFetchInFlight.delete(cacheKey);
+  }
 }
 
 function normalizePath(path) {
@@ -5408,16 +5599,29 @@ async function pollTimelineOnce(initial, generation) {
     const isInitialRequest = initial || timelineCursor === null;
     let activeWatchMaxEntries = normalizeTimelineMaxEntries(timelineWatchMaxEntries, TIMELINE_INITIAL_WINDOW_DEFAULT);
     timelineWatchMaxEntries = activeWatchMaxEntries;
-    const fetchTurnsWatch = async (maxEntries, forceInitial = false) => {
+    const fetchTurnsBootstrap = async (maxEntries) => {
+      const requestedMaxEntries = normalizeTimelineMaxEntries(maxEntries, activeWatchMaxEntries);
+      const url = new URL("api/turns/bootstrap", document.baseURI);
+      url.searchParams.set("threadId", normalizedThreadId || state.threadId);
+      url.searchParams.set("maxEntries", String(requestedMaxEntries));
+
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(`watch failed (${response.status}): ${detail}`);
+      }
+
+      return response.json();
+    };
+    const fetchTurnsWatch = async (maxEntries) => {
       const requestedMaxEntries = normalizeTimelineMaxEntries(maxEntries, activeWatchMaxEntries);
       const url = new URL("api/turns/watch", document.baseURI);
       url.searchParams.set("threadId", normalizedThreadId || state.threadId);
       url.searchParams.set("maxEntries", String(requestedMaxEntries));
-
-      if (forceInitial || isInitialRequest) {
-        url.searchParams.set("initial", "true");
-      } else {
+      if (Number.isFinite(timelineCursor)) {
         url.searchParams.set("cursor", String(timelineCursor));
+      } else {
+        url.searchParams.set("initial", "true");
       }
 
       const response = await fetch(url, { cache: "no-store" });
@@ -5429,71 +5633,36 @@ async function pollTimelineOnce(initial, generation) {
       return response.json();
     };
 
-    const response = await fetchTurnsWatch(activeWatchMaxEntries, isInitialRequest);
+    const response = isInitialRequest
+      ? await fetchTurnsBootstrap(activeWatchMaxEntries)
+      : await fetchTurnsWatch(activeWatchMaxEntries);
     if (generation !== timelinePollGeneration) {
       return;
     }
 
-    let data = response;
-    let turns = Array.isArray(data.turns) ? data.turns : [];
-    if (isInitialRequest && turns.length === 0 && data.truncated === true && activeWatchMaxEntries < TIMELINE_INITIAL_WINDOW_RETRY) {
-      activeWatchMaxEntries = normalizeTimelineMaxEntries(TIMELINE_INITIAL_WINDOW_RETRY, TIMELINE_INITIAL_WINDOW_RETRY);
-      timelineWatchMaxEntries = activeWatchMaxEntries;
-      data = await fetchTurnsWatch(activeWatchMaxEntries, true);
-      turns = Array.isArray(data.turns) ? data.turns : [];
-    }
-
+    const data = response;
     timelineConnectionIssueShown = false;
     if (generation !== timelinePollGeneration) {
       return;
     }
 
-    const hasVisibleTimelineContent = !!chatMessages && chatMessages.childElementCount > 0;
-    if (isInitialRequest && turns.length === 0 && !hasVisibleTimelineContent) {
-      try {
-        const renderedFallback = await tryRenderTimelineEntriesFallback(state.threadId);
-        if (generation !== timelinePollGeneration) {
-          return;
-        }
-
-        if (renderedFallback) {
-          appendLog("[timeline] rendered raw timeline fallback because turns window is empty");
-          return;
-        }
-      } catch (fallbackError) {
-        appendLog(`[timeline] fallback render failed: ${fallbackError}`);
-      }
-
-      setJumpCollapseMode(false);
-      if (typeof timeline.clear === "function") {
-        timeline.clear();
-      }
-      if (typeof timeline.enqueueInlineNotice === "function") {
-        timeline.enqueueInlineNotice("No complete turns found yet for this session.");
-      }
-      if (typeof timeline.flush === "function") {
-        timeline.flush();
-      }
-
-      const fallbackCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
-      timelineCursor = Number.isFinite(fallbackCursor) ? fallbackCursor : timelineCursor;
-      applyTimelineWatchMetadata(state.threadId, data);
-      timelineHasTruncatedHead = data.truncated === true;
-      updateTimelineTruncationNotice();
-      return;
-    }
-
     const priorCursor = timelineCursor;
     const nextCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
+    const incomingTurns = Array.isArray(data.turns) ? data.turns : [];
+    const cachedTimeline = timelineCacheByThread.get(normalizedThreadId) || null;
+    const existingTurns = Array.isArray(cachedTimeline?.turns)
+      ? cachedTimeline.turns
+      : [];
+    const turns = mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, data.activeTurnDetail || null);
     const hasIncomingTurns = turns.length > 0;
+    const hasVisibleTimelineContent = !!chatMessages && chatMessages.childElementCount > 0;
     const shouldReplaceTurns =
       initial ||
       data.reset === true ||
       priorCursor === null ||
       hasIncomingTurns;
-    const keepExistingOnEmptyInitial = isInitialRequest && !hasIncomingTurns && hasVisibleTimelineContent;
 
-    if (shouldReplaceTurns && !keepExistingOnEmptyInitial) {
+    if (shouldReplaceTurns && hasIncomingTurns) {
       if (typeof timeline.setServerTurns === "function") {
         timeline.setServerTurns(turns);
       } else {
@@ -5504,17 +5673,30 @@ async function pollTimelineOnce(initial, generation) {
         reconcileTurnAndPlanStateFromTurnsWatch(polledSessionId, turns);
       }
 
-      timelineHasTruncatedHead = false;
+      timelineHasTruncatedHead = data.truncated === true;
       if (data.reset === true) {
         appendLog("[timeline] session file was reset or rotated");
       }
-    } else if (keepExistingOnEmptyInitial) {
-      appendLog("[timeline] keeping existing timeline because initial window returned no complete turns");
+    } else if (isInitialRequest && !hasIncomingTurns) {
+      if (!hasVisibleTimelineContent) {
+        setJumpCollapseMode(false);
+        if (typeof timeline.clear === "function") {
+          timeline.clear();
+        }
+        if (typeof timeline.enqueueInlineNotice === "function") {
+          timeline.enqueueInlineNotice("No complete turns found yet for this session.");
+        }
+        if (typeof timeline.flush === "function") {
+          timeline.flush();
+        }
+      } else {
+        appendLog("[timeline] keeping existing timeline because bootstrap returned no turns");
+      }
     }
 
     timelineCursor = nextCursor;
     applyTimelineWatchMetadata(state.threadId, data);
-    if (!(isInitialRequest && turns.length === 0)) {
+    if (hasIncomingTurns) {
       rememberTimelineCache(state.threadId, {
         turns,
         nextCursor,
@@ -5526,7 +5708,7 @@ async function pollTimelineOnce(initial, generation) {
       });
     }
 
-    if (data.truncated === true) {
+    if (data.truncated === true && !hasIncomingTurns) {
       timelineHasTruncatedHead = true;
     }
     updateTimelineTruncationNotice();
@@ -7613,6 +7795,18 @@ if (chatMessages) {
   chatMessages.addEventListener("codex:timeline-updated", () => {
     updateScrollToBottomButton();
     updateTimelineTruncationNotice();
+  });
+
+  chatMessages.addEventListener("codex:turn-detail-request", (event) => {
+    const turnId = event?.detail?.turnId;
+    const activeThreadId = normalizeThreadId(getActiveSessionState()?.threadId || "");
+    if (!activeThreadId || typeof turnId !== "string" || !turnId.trim()) {
+      return;
+    }
+
+    fetchTurnDetailForThread(activeThreadId, turnId.trim()).catch((error) => {
+      appendLog(`[timeline] turn detail request failed: ${error}`);
+    });
   });
 }
 
