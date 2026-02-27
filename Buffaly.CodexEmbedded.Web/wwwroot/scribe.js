@@ -181,6 +181,31 @@
     };
   }
 
+  function readErrorMessage(rawText) {
+    const raw = String(rawText || "").trim();
+    if (!raw) {
+      return "";
+    }
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        if (typeof parsed.message === "string" && parsed.message.trim()) {
+          return parsed.message.trim();
+        }
+        if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+          return parsed.detail.trim();
+        }
+        if (typeof parsed.title === "string" && parsed.title.trim()) {
+          return parsed.title.trim();
+        }
+      }
+    } catch {
+    }
+
+    return raw;
+  }
+
   async function transcribeBlob(transcribeUrl, blob) {
     const extension = inferExtension(blob.type || "");
     const formData = new FormData();
@@ -194,11 +219,13 @@
       try {
         const raw = (await response.text()).trim();
         if (raw) {
-          detail = raw;
+          detail = readErrorMessage(raw);
         }
       } catch {
       }
-      throw new Error(detail);
+      const error = new Error(detail);
+      error.status = response.status;
+      throw error;
     }
     return response.text();
   }
@@ -250,6 +277,7 @@
     let isProcessing = false;
     let disposed = false;
     let recordingContext = null;
+    let skipFinalTranscriptionForCapture = false;
 
     function log(message) {
       if (onLog) {
@@ -535,6 +563,12 @@
           }
         } catch (error) {
           log(`[voice] incremental transcription failed: ${error}`);
+          if (Number(error && error.status) === 400) {
+            skipFinalTranscriptionForCapture = true;
+            queue = [];
+            closeQueue();
+            return;
+          }
         }
       }
     }
@@ -558,6 +592,7 @@
       segmentRecorder = null;
       segmentChunks = [];
       recordingContext = createRecordingContext();
+      skipFinalTranscriptionForCapture = false;
 
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -714,7 +749,7 @@
       archivePromise = null;
       archiveRecorder = null;
 
-      if (fullBlob && fullBlob.size > 0) {
+      if (!skipFinalTranscriptionForCapture && fullBlob && fullBlob.size > 0) {
         try {
           const fullText = await transcribeBlob(transcribeUrl, fullBlob);
           if (applyFinalTranscript(fullText)) {

@@ -18,8 +18,12 @@ internal sealed class UserOpenAiKeyStore
 
 	public async Task<UserOpenAiKeyStatus> GetStatusAsync(string userId, CancellationToken cancellationToken)
 	{
-		var record = await ReadRecordAsync(userId, cancellationToken);
+		var record = await ReadRecordWithSingleEntryFallbackAsync(userId, cancellationToken);
 		if (record is null)
+		{
+			return UserOpenAiKeyStatus.Empty;
+		}
+		if (string.IsNullOrWhiteSpace(TryUnprotectApiKey(record)))
 		{
 			return UserOpenAiKeyStatus.Empty;
 		}
@@ -68,15 +72,52 @@ internal sealed class UserOpenAiKeyStore
 
 	public async Task<string?> TryGetApiKeyAsync(string userId, CancellationToken cancellationToken)
 	{
-		var record = await ReadRecordAsync(userId, cancellationToken);
-		if (record is null || string.IsNullOrWhiteSpace(record.ProtectedApiKey))
+		var record = await ReadRecordWithSingleEntryFallbackAsync(userId, cancellationToken);
+		return TryUnprotectApiKey(record);
+	}
+
+	private async Task<UserOpenAiKeyRecord?> ReadRecordWithSingleEntryFallbackAsync(string userId, CancellationToken cancellationToken)
+	{
+		var byUser = await ReadRecordForUserAsync(userId, cancellationToken);
+		if (byUser is not null)
 		{
-			return null;
+			return byUser;
 		}
 
+		return await ReadSingleStoredRecordAsync(cancellationToken);
+	}
+
+	private async Task<UserOpenAiKeyRecord?> ReadRecordForUserAsync(string userId, CancellationToken cancellationToken)
+	{
+		var path = GetPathForUser(userId);
+		return await ReadRecordFromPathAsync(path, cancellationToken);
+	}
+
+	private async Task<UserOpenAiKeyRecord?> ReadSingleStoredRecordAsync(CancellationToken cancellationToken)
+	{
 		try
 		{
-			return _protector.Unprotect(record.ProtectedApiKey);
+			var directory = _options.UserSecretStoragePath;
+			if (!Directory.Exists(directory))
+			{
+				return null;
+			}
+
+			var matches = new List<string>(capacity: 2);
+			foreach (var path in Directory.EnumerateFiles(directory, "*.json", SearchOption.TopDirectoryOnly))
+			{
+				matches.Add(path);
+				if (matches.Count > 1)
+				{
+					return null;
+				}
+			}
+			if (matches.Count != 1)
+			{
+				return null;
+			}
+
+			return await ReadRecordFromPathAsync(matches[0], cancellationToken);
 		}
 		catch
 		{
@@ -84,10 +125,9 @@ internal sealed class UserOpenAiKeyStore
 		}
 	}
 
-	private async Task<UserOpenAiKeyRecord?> ReadRecordAsync(string userId, CancellationToken cancellationToken)
+	private async Task<UserOpenAiKeyRecord?> ReadRecordFromPathAsync(string path, CancellationToken cancellationToken)
 	{
-		var path = GetPathForUser(userId);
-		if (!File.Exists(path))
+		if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
 		{
 			return null;
 		}
@@ -101,6 +141,23 @@ internal sealed class UserOpenAiKeyStore
 			}
 
 			return JsonSerializer.Deserialize<UserOpenAiKeyRecord>(json, _jsonOptions);
+		}
+		catch
+		{
+			return null;
+		}
+	}
+
+	private string? TryUnprotectApiKey(UserOpenAiKeyRecord? record)
+	{
+		if (record is null || string.IsNullOrWhiteSpace(record.ProtectedApiKey))
+		{
+			return null;
+		}
+
+		try
+		{
+			return _protector.Unprotect(record.ProtectedApiKey);
 		}
 		catch
 		{
