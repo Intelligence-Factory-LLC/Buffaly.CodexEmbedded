@@ -4,6 +4,10 @@ using System.Text.Json;
 
 internal sealed class TimelineProjectionService
 {
+	private const int MaxMessageTextChars = 20_000;
+	private const int MaxInlineDataImageUrlChars = 8_192;
+	private const int SkipHeavyLineParseChars = 1_000_000;
+
 	private readonly ConcurrentDictionary<string, TimelineProjectionState> _stateByThread = new(StringComparer.Ordinal);
 
 	public TimelineProjectionResult Project(string threadId, JsonlWatchResult watchResult, bool initial)
@@ -34,6 +38,13 @@ internal sealed class TimelineProjectionService
 	private static void ParseLine(TimelineProjectionState state, string line, List<TimelineProjectedEntry> entries)
 	{
 		if (string.IsNullOrWhiteSpace(line))
+		{
+			return;
+		}
+
+		// Some compacted history lines can exceed multiple megabytes and are not needed in timeline projection.
+		// Skip them before JSON parse to avoid expensive allocations and request stalls.
+		if (ShouldSkipHeavyLineWithoutParse(line))
 		{
 			return;
 		}
@@ -107,6 +118,17 @@ internal sealed class TimelineProjectionService
 		catch
 		{
 		}
+	}
+
+	private static bool ShouldSkipHeavyLineWithoutParse(string line)
+	{
+		if (line.Length < SkipHeavyLineParseChars)
+		{
+			return false;
+		}
+
+		return line.Contains("\"type\":\"compacted\"", StringComparison.Ordinal) ||
+			line.Contains("\"replacement_history\"", StringComparison.Ordinal);
 	}
 
 	private static void UpdateSessionMeta(TimelineProjectionState state, JsonElement payload)
@@ -623,7 +645,7 @@ internal sealed class TimelineProjectionService
 
 		if (contentElement.ValueKind == JsonValueKind.String)
 		{
-			return (NormalizeText(contentElement.GetString()), images);
+			return (Truncate(contentElement.GetString(), MaxMessageTextChars), images);
 		}
 
 		if (contentElement.ValueKind != JsonValueKind.Array)
@@ -659,12 +681,19 @@ internal sealed class TimelineProjectionService
 					?? TryGetString(TryGetProperty(item, "imageUrl"), "url");
 				if (!string.IsNullOrWhiteSpace(url))
 				{
-					images.Add(url.Trim());
+					var normalized = url.Trim();
+					if (normalized.StartsWith("data:", StringComparison.OrdinalIgnoreCase) &&
+						normalized.Length > MaxInlineDataImageUrlChars)
+					{
+						continue;
+					}
+
+					images.Add(normalized);
 				}
 			}
 		}
 
-		return (NormalizeText(string.Join("\n", chunks)), images);
+		return (Truncate(string.Join("\n", chunks), MaxMessageTextChars), images);
 	}
 
 	private static string ExtractText(JsonElement value, int depth)
@@ -677,7 +706,7 @@ internal sealed class TimelineProjectionService
 		switch (value.ValueKind)
 		{
 			case JsonValueKind.String:
-				return NormalizeText(value.GetString());
+				return Truncate(value.GetString(), MaxMessageTextChars);
 			case JsonValueKind.Number:
 			case JsonValueKind.True:
 			case JsonValueKind.False:
@@ -685,15 +714,30 @@ internal sealed class TimelineProjectionService
 			case JsonValueKind.Array:
 			{
 				var chunks = new List<string>();
+				var totalChars = 0;
 				foreach (var item in value.EnumerateArray())
 				{
 					var nested = ExtractText(item, depth + 1);
 					if (!string.IsNullOrWhiteSpace(nested))
 					{
+						var remaining = MaxMessageTextChars - totalChars;
+						if (remaining <= 0)
+						{
+							break;
+						}
+
+						if (nested.Length > remaining)
+						{
+							chunks.Add(nested[..remaining]);
+							totalChars = MaxMessageTextChars;
+							break;
+						}
+
 						chunks.Add(nested);
+						totalChars += nested.Length + 1;
 					}
 				}
-				return string.Join("\n", chunks);
+				return Truncate(string.Join("\n", chunks), MaxMessageTextChars);
 			}
 			case JsonValueKind.Object:
 			{
@@ -704,7 +748,7 @@ internal sealed class TimelineProjectionService
 					?? TryGetString(value, "message");
 				if (!string.IsNullOrWhiteSpace(direct))
 				{
-					return NormalizeText(direct);
+					return Truncate(direct, MaxMessageTextChars);
 				}
 
 				var nestedKeys = new[] { "content", "parts", "items", "message", "output", "data" };

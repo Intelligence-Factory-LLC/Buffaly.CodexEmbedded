@@ -44,6 +44,7 @@
       this.turnNodeById = new Map();
       this.turnCollapsedById = new Map();
       this.expandedToolEntryIds = new Set();
+      this.expandedPlanEntryKeys = new Set();
       this.renderAssistantMarkdown = this.resolveAssistantMarkdownPreference(opts.renderAssistantMarkdown);
       this.imagePreviewOverlay = null;
       this.imagePreviewImage = null;
@@ -300,6 +301,12 @@
     setServerTurns(rawTurns) {
       const safeTurns = this.normalizeServerTurns(rawTurns);
       const shouldStick = this.autoScrollPinned || this.isNearBottom();
+      const livePlanKeys = this.collectPlanStateKeysFromTurns(safeTurns);
+      for (const key of Array.from(this.expandedPlanEntryKeys)) {
+        if (!livePlanKeys.has(key)) {
+          this.expandedPlanEntryKeys.delete(key);
+        }
+      }
 
       this.turnModeActive = true;
       this.turns = safeTurns;
@@ -337,6 +344,38 @@
       }
     }
 
+    collectPlanStateKeysFromTurns(turns) {
+      const keys = new Set();
+      if (!Array.isArray(turns)) {
+        return keys;
+      }
+
+      for (const turn of turns) {
+        if (!turn || typeof turn !== "object") {
+          continue;
+        }
+
+        const entries = [];
+        if (turn.user) entries.push(turn.user);
+        if (Array.isArray(turn.intermediate)) entries.push(...turn.intermediate);
+        if (turn.assistantFinal) entries.push(turn.assistantFinal);
+
+        for (const entry of entries) {
+          const bodyText = this.getEntryBodyText(entry);
+          if (!this.shouldUsePlanCollapsedBody(entry, bodyText)) {
+            continue;
+          }
+
+          const key = this.getPlanStateKey(entry, bodyText);
+          if (key) {
+            keys.add(key);
+          }
+        }
+      }
+
+      return keys;
+    }
+
     normalizeServerTurns(rawTurns) {
       if (!Array.isArray(rawTurns)) {
         return [];
@@ -352,10 +391,6 @@
         const turnIdRaw = typeof rawTurn.turnId === "string" ? rawTurn.turnId.trim() : "";
         const turnId = turnIdRaw || `turn-${i + 1}`;
         const user = this.normalizeTurnEntry(rawTurn.user, "user", "User");
-        if (!user) {
-          continue;
-        }
-
         const assistantFinal = this.normalizeTurnEntry(rawTurn.assistantFinal, "assistant", "Assistant");
         const intermediateRaw = Array.isArray(rawTurn.intermediate) ? rawTurn.intermediate : [];
         const intermediate = [];
@@ -366,9 +401,24 @@
           }
         }
 
+        if (!user && !assistantFinal && intermediate.length === 0) {
+          continue;
+        }
+
+        const syntheticUser = user || {
+          role: "user",
+          kind: "",
+          title: "Turn",
+          text: "(history window begins in the middle of a turn)",
+          timestamp: (assistantFinal && assistantFinal.timestamp) || (intermediate[0] && intermediate[0].timestamp) || null,
+          rawType: "turn_window_anchor",
+          compact: true,
+          images: []
+        };
+
         turns.push({
           turnId,
-          user,
+          user: syntheticUser,
           assistantFinal,
           intermediate,
           isInFlight: rawTurn.isInFlight === true
@@ -1643,6 +1693,22 @@
       return "";
     }
 
+    getPlanStateKey(entry, bodyText) {
+      if (!entry || typeof entry !== "object") {
+        return "";
+      }
+
+      const planText = this.extractPlanTextForEntry(entry, bodyText);
+      if (!planText) {
+        return "";
+      }
+
+      const role = typeof entry.role === "string" ? entry.role : "";
+      const title = typeof entry.title === "string" ? entry.title : "";
+      const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : "";
+      return `${role}|${title}|${timestamp}|${planText}`;
+    }
+
     shouldUsePlanCollapsedBody(entry, bodyText) {
       if (!entry || (entry.role !== "assistant" && entry.role !== "system")) {
         return false;
@@ -2363,6 +2429,7 @@
       }
 
       if (this.shouldUsePlanCollapsedBody(entry, bodyText)) {
+        const planStateKey = this.getPlanStateKey(entry, bodyText);
         const details = document.createElement("details");
         details.className = "watcher-entry-collapsible watcher-plan-collapsible";
 
@@ -2377,10 +2444,12 @@
 
         const summaryText = document.createElement("span");
         const baseText = "Plan";
-        summaryText.textContent = `${baseText} (click to expand)`;
+        const isExpanded = planStateKey && this.expandedPlanEntryKeys.has(planStateKey);
+        summaryText.textContent = isExpanded ? `${baseText} (click to collapse)` : `${baseText} (click to expand)`;
         summaryWrap.appendChild(summaryText);
         toggle.appendChild(summaryWrap);
         details.appendChild(toggle);
+        details.open = !!isExpanded;
 
         const body = document.createElement("div");
         body.className = "watcher-plan-body";
@@ -2390,6 +2459,15 @@
         details.addEventListener("toggle", () => {
           const stateText = details.open ? " (click to collapse)" : " (click to expand)";
           summaryText.textContent = `${baseText}${stateText}`;
+          if (!planStateKey) {
+            return;
+          }
+
+          if (details.open) {
+            this.expandedPlanEntryKeys.add(planStateKey);
+          } else {
+            this.expandedPlanEntryKeys.delete(planStateKey);
+          }
         });
 
         card.classList.add("watcher-plan-entry");

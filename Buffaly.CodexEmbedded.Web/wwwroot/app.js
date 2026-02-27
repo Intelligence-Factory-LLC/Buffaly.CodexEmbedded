@@ -81,6 +81,7 @@ let runtimeSecurityConfig = null;
 let rateLimitBySession = new Map(); // sessionId -> latest rate limit summary payload
 let renderedClientLogLines = [];
 let pendingClientLogLines = [];
+let timelineCacheByThread = new Map(); // threadId -> { turns, nextCursor, truncated, contextUsage, permission, reasoningSummary, maxEntries }
 let turnActivityTickTimer = null;
 let turnStartedAtBySession = new Map(); // sessionId -> epoch ms when running turn started
 let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
@@ -114,6 +115,10 @@ const MAX_COMPOSER_IMAGES = 4;
 const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
 const SESSION_LIST_SYNC_INTERVAL_MS = 10000;
+const TIMELINE_INITIAL_WINDOW_DEFAULT = 300;
+const TIMELINE_INITIAL_WINDOW_RETRY = 6000;
+const TIMELINE_ENTRY_FALLBACK_MAX_ENTRIES = 500;
+let timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
 const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only.";
 const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 const APPROVAL_POLICY_VALUES = ["untrusted", "on-failure", "on-request", "never"];
@@ -1703,6 +1708,122 @@ function applyTimelineWatchMetadata(threadId, data) {
   }
 }
 
+function normalizeTimelineMaxEntries(value, fallback = TIMELINE_INITIAL_WINDOW_DEFAULT) {
+  const fallbackNumeric = Math.max(20, Math.floor(Number(fallback) || TIMELINE_INITIAL_WINDOW_DEFAULT));
+  const numeric = Math.floor(Number(value));
+  if (!Number.isFinite(numeric) || numeric < 20) {
+    return fallbackNumeric;
+  }
+
+  return numeric;
+}
+
+async function tryRenderTimelineEntriesFallback(threadId) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  if (!normalizedThreadId) {
+    return false;
+  }
+
+  const url = new URL("api/timeline/watch", document.baseURI);
+  url.searchParams.set("threadId", normalizedThreadId);
+  url.searchParams.set("initial", "true");
+  url.searchParams.set("maxEntries", String(TIMELINE_ENTRY_FALLBACK_MAX_ENTRIES));
+
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    return false;
+  }
+
+  const data = await response.json();
+  const entries = Array.isArray(data?.entries) ? data.entries : [];
+  if (entries.length === 0) {
+    return false;
+  }
+
+  setJumpCollapseMode(false);
+  if (typeof timeline.clear === "function") {
+    timeline.clear();
+  }
+  if (typeof timeline.enqueueInlineNotice === "function") {
+    timeline.enqueueInlineNotice("Showing recent log lines because no complete turns were found yet.");
+  }
+  if (typeof timeline.enqueueServerEntries === "function") {
+    timeline.enqueueServerEntries(entries);
+  }
+  if (typeof timeline.flush === "function") {
+    timeline.flush();
+  }
+
+  const nextCursor = typeof data.nextCursor === "number" ? data.nextCursor : null;
+  if (Number.isFinite(nextCursor)) {
+    timelineCursor = nextCursor;
+  }
+  timelineHasTruncatedHead = data?.truncated === true;
+  applyTimelineWatchMetadata(normalizedThreadId, {
+    contextUsage: data?.contextUsage || null,
+    permission: data?.permission || null,
+    reasoningSummary: data?.reasoningSummary || ""
+  });
+  updateTimelineTruncationNotice();
+  return true;
+}
+
+function rememberTimelineCache(threadId, payload) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  if (!normalizedThreadId || !payload || typeof payload !== "object") {
+    return;
+  }
+
+  const existing = timelineCacheByThread.get(normalizedThreadId) || null;
+  const incomingTurns = Array.isArray(payload.turns) ? payload.turns : null;
+  const turns = incomingTurns && incomingTurns.length > 0
+    ? incomingTurns
+    : (existing && Array.isArray(existing.turns) ? existing.turns : []);
+  const nextCursor = typeof payload.nextCursor === "number"
+    ? payload.nextCursor
+    : (Number.isFinite(existing?.nextCursor) ? existing.nextCursor : null);
+  const truncated = payload.truncated === true || (payload.truncated !== false && existing?.truncated === true);
+  const maxEntries = normalizeTimelineMaxEntries(payload.maxEntries, existing?.maxEntries);
+  timelineCacheByThread.set(normalizedThreadId, {
+    turns,
+    nextCursor,
+    truncated,
+    contextUsage: payload.contextUsage || existing?.contextUsage || null,
+    permission: payload.permission || existing?.permission || null,
+    reasoningSummary: payload.reasoningSummary || existing?.reasoningSummary || "",
+    maxEntries
+  });
+}
+
+function restoreTimelineFromCache(threadId) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  if (!normalizedThreadId || !timelineCacheByThread.has(normalizedThreadId)) {
+    return false;
+  }
+
+  const cached = timelineCacheByThread.get(normalizedThreadId);
+  timelineWatchMaxEntries = normalizeTimelineMaxEntries(cached?.maxEntries, TIMELINE_INITIAL_WINDOW_DEFAULT);
+  if (!cached || !Array.isArray(cached.turns) || cached.turns.length === 0) {
+    return false;
+  }
+
+  if (typeof timeline.setServerTurns === "function") {
+    timeline.setServerTurns(cached.turns);
+  } else {
+    timeline.clear();
+  }
+
+  timelineCursor = Number.isFinite(cached.nextCursor) ? cached.nextCursor : null;
+  timelineHasTruncatedHead = cached.truncated === true;
+  applyTimelineWatchMetadata(normalizedThreadId, {
+    contextUsage: cached.contextUsage,
+    permission: cached.permission,
+    reasoningSummary: cached.reasoningSummary
+  });
+  updateTimelineTruncationNotice();
+  return true;
+}
+
 function normalizePath(path) {
   if (!path || typeof path !== "string") {
     return "";
@@ -2363,6 +2484,7 @@ function beginPendingSessionLoad(threadId, displayName = "") {
     timelinePollTimer = null;
   }
   timelineCursor = null;
+  timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
   timeline.clear();
   timelineHasTruncatedHead = false;
   updateTimelineTruncationNotice();
@@ -5166,6 +5288,7 @@ function restartTimelinePolling() {
 
   if (timelineUsesEventFeed()) {
     timelineCursor = null;
+    timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
     timelineHasTruncatedHead = false;
     updateTimelineTruncationNotice();
     pollTimelineOnce(true, generation).catch((error) => {
@@ -5179,7 +5302,8 @@ function restartTimelinePolling() {
     return;
   }
 
-  pollTimelineOnce(true, generation).catch((error) => {
+  const shouldInitialLoad = timelineCursor === null;
+  pollTimelineOnce(shouldInitialLoad, generation).catch((error) => {
     handleTimelinePollError(error);
   });
 
@@ -5217,47 +5341,96 @@ async function pollTimelineOnce(initial, generation) {
 
   timelinePollInFlight = true;
   try {
-    const url = new URL("api/turns/watch", document.baseURI);
-    url.searchParams.set("threadId", state.threadId);
-    url.searchParams.set("maxEntries", "6000");
+    const normalizedThreadId = normalizeThreadId(state.threadId || "");
+    const isInitialRequest = initial || timelineCursor === null;
+    let activeWatchMaxEntries = normalizeTimelineMaxEntries(timelineWatchMaxEntries, TIMELINE_INITIAL_WINDOW_DEFAULT);
+    timelineWatchMaxEntries = activeWatchMaxEntries;
+    const fetchTurnsWatch = async (maxEntries, forceInitial = false) => {
+      const requestedMaxEntries = normalizeTimelineMaxEntries(maxEntries, activeWatchMaxEntries);
+      const url = new URL("api/turns/watch", document.baseURI);
+      url.searchParams.set("threadId", normalizedThreadId || state.threadId);
+      url.searchParams.set("maxEntries", String(requestedMaxEntries));
 
-    if (initial || timelineCursor === null) {
-      url.searchParams.set("initial", "true");
-    } else {
-      url.searchParams.set("cursor", String(timelineCursor));
-    }
+      if (forceInitial || isInitialRequest) {
+        url.searchParams.set("initial", "true");
+      } else {
+        url.searchParams.set("cursor", String(timelineCursor));
+      }
 
-    const response = await fetch(url, { cache: "no-store" });
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(`watch failed (${response.status}): ${detail}`);
+      }
+
+      return response.json();
+    };
+
+    const response = await fetchTurnsWatch(activeWatchMaxEntries, isInitialRequest);
     if (generation !== timelinePollGeneration) {
       return;
     }
 
-    if (response.status === 404) {
-      return;
+    let data = response;
+    let turns = Array.isArray(data.turns) ? data.turns : [];
+    if (isInitialRequest && turns.length === 0 && data.truncated === true && activeWatchMaxEntries < TIMELINE_INITIAL_WINDOW_RETRY) {
+      activeWatchMaxEntries = normalizeTimelineMaxEntries(TIMELINE_INITIAL_WINDOW_RETRY, TIMELINE_INITIAL_WINDOW_RETRY);
+      timelineWatchMaxEntries = activeWatchMaxEntries;
+      data = await fetchTurnsWatch(activeWatchMaxEntries, true);
+      turns = Array.isArray(data.turns) ? data.turns : [];
     }
 
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`watch failed (${response.status}): ${detail}`);
-    }
-
-    const data = await response.json();
     timelineConnectionIssueShown = false;
     if (generation !== timelinePollGeneration) {
       return;
     }
 
+    const hasVisibleTimelineContent = !!chatMessages && chatMessages.childElementCount > 0;
+    if (isInitialRequest && turns.length === 0 && !hasVisibleTimelineContent) {
+      try {
+        const renderedFallback = await tryRenderTimelineEntriesFallback(state.threadId);
+        if (generation !== timelinePollGeneration) {
+          return;
+        }
+
+        if (renderedFallback) {
+          appendLog("[timeline] rendered raw timeline fallback because turns window is empty");
+          return;
+        }
+      } catch (fallbackError) {
+        appendLog(`[timeline] fallback render failed: ${fallbackError}`);
+      }
+
+      setJumpCollapseMode(false);
+      if (typeof timeline.clear === "function") {
+        timeline.clear();
+      }
+      if (typeof timeline.enqueueInlineNotice === "function") {
+        timeline.enqueueInlineNotice("No complete turns found yet for this session.");
+      }
+      if (typeof timeline.flush === "function") {
+        timeline.flush();
+      }
+
+      const fallbackCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
+      timelineCursor = Number.isFinite(fallbackCursor) ? fallbackCursor : timelineCursor;
+      applyTimelineWatchMetadata(state.threadId, data);
+      timelineHasTruncatedHead = data.truncated === true;
+      updateTimelineTruncationNotice();
+      return;
+    }
+
     const priorCursor = timelineCursor;
     const nextCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
-    const turns = Array.isArray(data.turns) ? data.turns : [];
-    const cursorChanged = Number.isFinite(nextCursor) && priorCursor !== null && nextCursor !== priorCursor;
+    const hasIncomingTurns = turns.length > 0;
     const shouldReplaceTurns =
       initial ||
       data.reset === true ||
       priorCursor === null ||
-      cursorChanged;
+      hasIncomingTurns;
+    const keepExistingOnEmptyInitial = isInitialRequest && !hasIncomingTurns && hasVisibleTimelineContent;
 
-    if (shouldReplaceTurns) {
+    if (shouldReplaceTurns && !keepExistingOnEmptyInitial) {
       if (typeof timeline.setServerTurns === "function") {
         timeline.setServerTurns(turns);
       } else {
@@ -5272,10 +5445,23 @@ async function pollTimelineOnce(initial, generation) {
       if (data.reset === true) {
         appendLog("[timeline] session file was reset or rotated");
       }
+    } else if (keepExistingOnEmptyInitial) {
+      appendLog("[timeline] keeping existing timeline because initial window returned no complete turns");
     }
 
     timelineCursor = nextCursor;
     applyTimelineWatchMetadata(state.threadId, data);
+    if (!(isInitialRequest && turns.length === 0)) {
+      rememberTimelineCache(state.threadId, {
+        turns,
+        nextCursor,
+        truncated: data.truncated === true,
+        contextUsage: data.contextUsage,
+        permission: data.permission,
+        reasoningSummary: data.reasoningSummary,
+        maxEntries: activeWatchMaxEntries
+      });
+    }
 
     if (data.truncated === true) {
       timelineHasTruncatedHead = true;
@@ -5352,10 +5538,14 @@ function setActiveSession(sessionId, options = {}) {
   }
 
   if (changed || restartTimeline) {
-    timelineCursor = null;
-    timeline.clear();
-    timelineHasTruncatedHead = false;
-    updateTimelineTruncationNotice();
+    const restoredFromCache = restoreTimelineFromCache(state?.threadId || "");
+    if (!restoredFromCache) {
+      timelineCursor = null;
+      timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
+      timeline.clear();
+      timelineHasTruncatedHead = false;
+      updateTimelineTruncationNotice();
+    }
     restartTimelinePolling();
   }
 
@@ -5377,6 +5567,7 @@ function clearActiveSession() {
   updatePermissionLevelIndicator();
   updatePromptActionState();
   timelineCursor = null;
+  timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
   timeline.clear();
   timelineHasTruncatedHead = false;
   updateTimelineTruncationNotice();

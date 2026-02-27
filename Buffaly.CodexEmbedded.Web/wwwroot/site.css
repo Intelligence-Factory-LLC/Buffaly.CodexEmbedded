@@ -3879,6 +3879,10 @@ html[data-theme="dark"] .server-table td {
 		padding: 0.5rem 0.58rem;
 	}
 
+	.layout:not(.mobile-projects-open) .chat-panel > .panel-title.conversation-title-row {
+		padding-left: 4rem;
+	}
+
 	.recap-controls {
 		padding: 0.45rem 0.5rem;
 		gap: 0.35rem;
