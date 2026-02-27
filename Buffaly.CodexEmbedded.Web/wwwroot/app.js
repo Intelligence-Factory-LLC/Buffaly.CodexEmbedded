@@ -118,7 +118,8 @@ const MAX_COMPOSER_IMAGES = 4;
 const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
 const SESSION_LIST_SYNC_INTERVAL_MS = 10000;
-const TIMELINE_INITIAL_WINDOW_DEFAULT = 300;
+// Server turn cache is rebuilt from recent JSONL lines, so keep this high enough to capture many complete turns.
+const TIMELINE_INITIAL_WINDOW_DEFAULT = 6000;
 let timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
 const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only.";
 const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
