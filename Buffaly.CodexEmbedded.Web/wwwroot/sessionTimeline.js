@@ -666,6 +666,113 @@
         .trimEnd();
     }
 
+    classifyDiffLine(line) {
+      if (typeof line !== "string" || !line.length) {
+        return "";
+      }
+
+      if (line.startsWith("@@")) {
+        return "hunk";
+      }
+
+      if (line.startsWith("+") && !line.startsWith("+++")) {
+        return "add";
+      }
+
+      if (line.startsWith("-") && !line.startsWith("---")) {
+        return "remove";
+      }
+
+      if (line.startsWith("diff ")
+        || line.startsWith("index ")
+        || line.startsWith("+++ ")
+        || line.startsWith("--- ")) {
+        return "header";
+      }
+
+      if (line.startsWith("*** Begin Patch")
+        || line.startsWith("*** End Patch")
+        || line.startsWith("*** Add File:")
+        || line.startsWith("*** Update File:")
+        || line.startsWith("*** Delete File:")
+        || line.startsWith("*** Move to:")
+        || line.startsWith("*** End of File")) {
+        return "header";
+      }
+
+      return "";
+    }
+
+    isLikelyDiffText(text) {
+      const normalized = this.normalizeText(text || "");
+      if (!normalized) {
+        return false;
+      }
+
+      const lines = normalized.split("\n");
+      if (lines.length < 2) {
+        return false;
+      }
+
+      let addCount = 0;
+      let removeCount = 0;
+      let headerCount = 0;
+      for (const line of lines) {
+        const kind = this.classifyDiffLine(line);
+        if (kind === "add") {
+          addCount++;
+        } else if (kind === "remove") {
+          removeCount++;
+        } else if (kind === "header" || kind === "hunk") {
+          headerCount++;
+        }
+      }
+
+      return (addCount > 0 && removeCount > 0) || (headerCount > 0 && (addCount > 0 || removeCount > 0));
+    }
+
+    renderTextWithOptionalDiffHighlight(element, text) {
+      if (!element) {
+        return;
+      }
+
+      const normalized = this.normalizeText(text || "");
+      element.classList.remove("watcher-diff-block");
+      element.textContent = "";
+      if (!normalized) {
+        return;
+      }
+
+      if (!this.isLikelyDiffText(normalized)) {
+        element.textContent = normalized;
+        return;
+      }
+
+      element.classList.add("watcher-diff-block");
+      const lines = normalized.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const lineNode = document.createElement("span");
+        lineNode.className = "watcher-diff-line";
+        const lineKind = this.classifyDiffLine(line);
+        if (lineKind) {
+          lineNode.classList.add(`watcher-diff-${lineKind}`);
+        }
+        lineNode.textContent = line;
+        element.appendChild(lineNode);
+        if (i < lines.length - 1) {
+          element.appendChild(document.createTextNode("\n"));
+        }
+      }
+    }
+
+    createToolPreBlock(className, text) {
+      const block = document.createElement("pre");
+      block.className = className;
+      this.renderTextWithOptionalDiffHighlight(block, text);
+      return block;
+    }
+
     truncateText(text, maxLength = this.maxTextChars) {
       const normalized = this.normalizeText(text);
       if (normalized.length <= maxLength) {
@@ -1835,6 +1942,7 @@
       let listElement = null;
       let listType = "";
       let codeBlock = null;
+      let codeBlockLines = [];
 
       const flushParagraph = () => {
         if (paragraphLines.length === 0) {
@@ -1857,9 +1965,11 @@
 
         if (codeBlock) {
           if (trimmed.startsWith("```")) {
+            this.renderTextWithOptionalDiffHighlight(codeBlock, codeBlockLines.join("\n"));
+            codeBlockLines = [];
             codeBlock = null;
           } else {
-            codeBlock.textContent += `${line}\n`;
+            codeBlockLines.push(line);
           }
           continue;
         }
@@ -1872,6 +1982,7 @@
           pre.appendChild(code);
           fragment.appendChild(pre);
           codeBlock = code;
+          codeBlockLines = [];
           continue;
         }
 
@@ -1924,6 +2035,10 @@
         paragraphLines.push(trimmed);
       }
 
+      if (codeBlock) {
+        this.renderTextWithOptionalDiffHighlight(codeBlock, codeBlockLines.join("\n"));
+      }
+
       flushParagraph();
       container.appendChild(fragment);
     }
@@ -1953,6 +2068,7 @@
       let listElement = null;
       let listType = "";
       let codeBlock = null;
+      let codeBlockLines = [];
 
       const flushParagraph = () => {
         if (paragraphLines.length === 0) {
@@ -1975,9 +2091,11 @@
 
         if (codeBlock) {
           if (trimmed.startsWith("```")) {
+            this.renderTextWithOptionalDiffHighlight(codeBlock, codeBlockLines.join("\n"));
+            codeBlockLines = [];
             codeBlock = null;
           } else {
-            codeBlock.textContent += `${line}\n`;
+            codeBlockLines.push(line);
           }
           continue;
         }
@@ -1990,6 +2108,7 @@
           pre.appendChild(code);
           fragment.appendChild(pre);
           codeBlock = code;
+          codeBlockLines = [];
           continue;
         }
 
@@ -2043,6 +2162,10 @@
         }
 
         paragraphLines.push(trimmed);
+      }
+
+      if (codeBlock) {
+        this.renderTextWithOptionalDiffHighlight(codeBlock, codeBlockLines.join("\n"));
       }
 
       flushParagraph();
@@ -2198,9 +2321,7 @@
 
       const segments = this.buildToolBodySegments(normalizedBodyText);
       if (!segments || entryId === null) {
-        const fullBody = document.createElement("pre");
-        fullBody.className = "watcher-entry-text";
-        fullBody.textContent = normalizedBodyText;
+        const fullBody = this.createToolPreBlock("watcher-entry-text", normalizedBodyText);
         bodyWrap.appendChild(fullBody);
         bodyWrap.dataset.bodyKind = "tool";
         if (entryId !== null) {
@@ -2211,14 +2332,10 @@
 
       bodyWrap.dataset.bodyKind = "tool-fold";
 
-      const head = document.createElement("pre");
-      head.className = "watcher-entry-text watcher-tool-body-block";
-      head.textContent = segments.headText;
+      const head = this.createToolPreBlock("watcher-entry-text watcher-tool-body-block", segments.headText);
       bodyWrap.appendChild(head);
 
-      const hidden = document.createElement("pre");
-      hidden.className = "watcher-entry-text watcher-tool-body-block watcher-tool-body-hidden";
-      hidden.textContent = segments.hiddenText;
+      const hidden = this.createToolPreBlock("watcher-entry-text watcher-tool-body-block watcher-tool-body-hidden", segments.hiddenText);
       const expanded = this.expandedToolEntryIds.has(entryId);
       hidden.classList.toggle("hidden", !expanded);
       bodyWrap.appendChild(hidden);
@@ -2244,9 +2361,7 @@
       });
       bodyWrap.appendChild(toggle);
 
-      const tail = document.createElement("pre");
-      tail.className = "watcher-entry-text watcher-tool-body-block";
-      tail.textContent = segments.tailText;
+      const tail = this.createToolPreBlock("watcher-entry-text watcher-tool-body-block", segments.tailText);
       bodyWrap.appendChild(tail);
     }
 
