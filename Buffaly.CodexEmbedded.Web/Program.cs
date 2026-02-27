@@ -534,7 +534,7 @@ app.MapGet("/api/timeline/watch", (HttpRequest request, WebRuntimeDefaults defau
 	});
 });
 
-app.MapGet("/api/turns/watch", (HttpRequest request, SessionOrchestrator orchestrator) =>
+app.MapGet("/api/turns/bootstrap", (HttpRequest request, SessionOrchestrator orchestrator) =>
 {
 	var threadId = request.Query["threadId"].ToString();
 	if (string.IsNullOrWhiteSpace(threadId))
@@ -543,22 +543,9 @@ app.MapGet("/api/turns/watch", (HttpRequest request, SessionOrchestrator orchest
 	}
 
 	var maxEntries = QueryValueParser.GetPositiveInt(request.Query["maxEntries"], fallback: 6000, max: 20000);
-	var initial = QueryValueParser.GetBool(request.Query["initial"]);
-	var cursorRaw = request.Query["cursor"].ToString();
-	long? cursor = null;
-	if (!string.IsNullOrWhiteSpace(cursorRaw))
-	{
-		if (!long.TryParse(cursorRaw, out var parsedCursor) || parsedCursor < 0)
-		{
-			return Results.BadRequest(new { message = "cursor must be a non-negative integer." });
-		}
-
-		cursor = parsedCursor;
-	}
-
 	try
 	{
-		var watch = orchestrator.WatchTurns(threadId, maxEntries, initial, cursor);
+		var watch = orchestrator.WatchTurns(threadId, maxEntries, initial: true, cursor: null, includeActiveTurnDetail: false);
 		return Results.Ok(new
 		{
 			threadId = watch.ThreadId,
@@ -585,6 +572,108 @@ app.MapGet("/api/turns/watch", (HttpRequest request, SessionOrchestrator orchest
 		return Results.Problem(
 			statusCode: StatusCodes.Status500InternalServerError,
 			title: "Failed to build turn timeline.",
+			detail: ex.Message);
+	}
+});
+
+app.MapGet("/api/turns/watch", (HttpRequest request, SessionOrchestrator orchestrator) =>
+{
+	var threadId = request.Query["threadId"].ToString();
+	if (string.IsNullOrWhiteSpace(threadId))
+	{
+		return Results.BadRequest(new { message = "threadId query parameter is required." });
+	}
+
+	var maxEntries = QueryValueParser.GetPositiveInt(request.Query["maxEntries"], fallback: 6000, max: 20000);
+	var initial = QueryValueParser.GetBool(request.Query["initial"]);
+	var cursorRaw = request.Query["cursor"].ToString();
+	long? cursor = null;
+	if (!string.IsNullOrWhiteSpace(cursorRaw))
+	{
+		if (!long.TryParse(cursorRaw, out var parsedCursor) || parsedCursor < 0)
+		{
+			return Results.BadRequest(new { message = "cursor must be a non-negative integer." });
+		}
+
+		cursor = parsedCursor;
+	}
+
+	try
+	{
+		var watch = orchestrator.WatchTurns(threadId, maxEntries, initial, cursor, includeActiveTurnDetail: true);
+		return Results.Ok(new
+		{
+			threadId = watch.ThreadId,
+			threadName = watch.ThreadName,
+			sessionFilePath = watch.SessionFilePath,
+			updatedAtUtc = watch.UpdatedAtUtc?.ToString("O"),
+			cursor = watch.Cursor,
+			nextCursor = watch.NextCursor,
+			reset = watch.Reset,
+			truncated = watch.Truncated,
+			turnCountInMemory = watch.TurnCountInMemory,
+			contextUsage = watch.ContextUsage,
+			permission = watch.Permission,
+			reasoningSummary = watch.ReasoningSummary,
+			turns = watch.Turns,
+			activeTurnDetail = watch.ActiveTurnDetail
+		});
+	}
+	catch (FileNotFoundException ex)
+	{
+		return Results.NotFound(new { message = ex.Message });
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem(
+			statusCode: StatusCodes.Status500InternalServerError,
+			title: "Failed to build turn timeline.",
+			detail: ex.Message);
+	}
+});
+
+app.MapGet("/api/turns/detail", (HttpRequest request, SessionOrchestrator orchestrator) =>
+{
+	var threadId = request.Query["threadId"].ToString();
+	if (string.IsNullOrWhiteSpace(threadId))
+	{
+		return Results.BadRequest(new { message = "threadId query parameter is required." });
+	}
+
+	var turnId = request.Query["turnId"].ToString();
+	if (string.IsNullOrWhiteSpace(turnId))
+	{
+		return Results.BadRequest(new { message = "turnId query parameter is required." });
+	}
+
+	var maxEntries = QueryValueParser.GetPositiveInt(request.Query["maxEntries"], fallback: 6000, max: 20000);
+
+	try
+	{
+		var detail = orchestrator.GetTurnDetail(threadId, turnId, maxEntries);
+		return Results.Ok(new
+		{
+			threadId = threadId.Trim(),
+			turn = detail
+		});
+	}
+	catch (FileNotFoundException ex)
+	{
+		return Results.NotFound(new { message = ex.Message });
+	}
+	catch (KeyNotFoundException ex)
+	{
+		return Results.NotFound(new { message = ex.Message });
+	}
+	catch (InvalidOperationException ex)
+	{
+		return Results.BadRequest(new { message = ex.Message });
+	}
+	catch (Exception ex)
+	{
+		return Results.Problem(
+			statusCode: StatusCodes.Status500InternalServerError,
+			title: "Failed to read turn detail.",
 			detail: ex.Message);
 	}
 });

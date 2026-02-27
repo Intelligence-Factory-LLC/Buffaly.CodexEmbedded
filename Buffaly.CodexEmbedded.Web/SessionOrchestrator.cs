@@ -87,7 +87,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string threadId,
 		int maxEntries,
 		bool initial,
-		long? cursor)
+		long? cursor,
+		bool includeActiveTurnDetail = true)
 	{
 		var normalizedThreadId = threadId?.Trim() ?? string.Empty;
 		if (string.IsNullOrWhiteSpace(normalizedThreadId))
@@ -160,8 +161,21 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				cursor.Value != version;
 
 			var turns = shouldSendFull
-				? state.Turns.Select(x => x.Clone()).ToArray()
+				? state.Turns.Select(ToSummaryTurn).ToArray()
 				: Array.Empty<ConsolidatedTurnSnapshot>();
+			ConsolidatedTurnSnapshot? activeTurnDetail = null;
+			if (shouldSendFull && includeActiveTurnDetail && state.Turns.Count > 0)
+			{
+				var latest = state.Turns[^1];
+				if (latest.IsInFlight || latest.Intermediate.Count > 0)
+				{
+					activeTurnDetail = latest.Clone();
+					activeTurnDetail.IntermediateLoaded = true;
+					activeTurnDetail.HasIntermediate = activeTurnDetail.Intermediate.Count > 0;
+					activeTurnDetail.IntermediateCount = activeTurnDetail.Intermediate.Count;
+				}
+			}
+
 			return new TurnWatchSnapshot(
 				ThreadId: normalizedThreadId,
 				ThreadName: sessionCatalogEntry.ThreadName,
@@ -175,7 +189,46 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				ContextUsage: state.ContextUsage,
 				Permission: state.Permission,
 				ReasoningSummary: state.ReasoningSummary,
-				Turns: turns);
+				Turns: turns,
+				ActiveTurnDetail: activeTurnDetail);
+		}
+	}
+
+	public ConsolidatedTurnSnapshot GetTurnDetail(string threadId, string turnId, int maxEntries)
+	{
+		var normalizedThreadId = threadId?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(normalizedThreadId))
+		{
+			throw new InvalidOperationException("threadId is required.");
+		}
+
+		var normalizedTurnId = turnId?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(normalizedTurnId))
+		{
+			throw new InvalidOperationException("turnId is required.");
+		}
+
+		// Ensure the in-memory turn cache is hydrated for this thread and window.
+		WatchTurns(normalizedThreadId, maxEntries, initial: false, cursor: null, includeActiveTurnDetail: false);
+
+		lock (_turnCacheSync)
+		{
+			if (!_turnCacheByThread.TryGetValue(normalizedThreadId, out var state))
+			{
+				throw new FileNotFoundException($"No turn cache found for threadId '{normalizedThreadId}'.");
+			}
+
+			var match = state.Turns.FirstOrDefault(x => string.Equals(x.TurnId, normalizedTurnId, StringComparison.Ordinal));
+			if (match is null)
+			{
+				throw new KeyNotFoundException($"No turn found for turnId '{normalizedTurnId}'.");
+			}
+
+			var detail = match.Clone();
+			detail.IntermediateLoaded = true;
+			detail.HasIntermediate = detail.Intermediate.Count > 0;
+			detail.IntermediateCount = detail.Intermediate.Count;
+			return detail;
 		}
 	}
 
@@ -456,6 +509,23 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		return next;
+	}
+
+	private static ConsolidatedTurnSnapshot ToSummaryTurn(ConsolidatedTurnSnapshot source)
+	{
+		var summary = new ConsolidatedTurnSnapshot
+		{
+			TurnId = source.TurnId,
+			User = source.User.Clone(),
+			AssistantFinal = source.AssistantFinal?.Clone(),
+			Intermediate = new List<TurnEntrySnapshot>(),
+			IsInFlight = source.IsInFlight,
+			HasIntermediate = source.Intermediate.Count > 0,
+			IntermediateCount = source.Intermediate.Count,
+			IntermediateLoaded = false
+		};
+
+		return summary;
 	}
 
 	private static TurnEntrySnapshot ToTurnEntry(TimelineProjectedEntry source)
@@ -3376,7 +3446,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		TurnContextUsageSnapshot? ContextUsage,
 		TurnPermissionInfoSnapshot? Permission,
 		string ReasoningSummary,
-		IReadOnlyList<ConsolidatedTurnSnapshot> Turns);
+		IReadOnlyList<ConsolidatedTurnSnapshot> Turns,
+		ConsolidatedTurnSnapshot? ActiveTurnDetail);
 
 	internal sealed record TurnContextUsageSnapshot(
 		double? UsedTokens,
@@ -3394,6 +3465,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		public TurnEntrySnapshot? AssistantFinal { get; set; }
 		public List<TurnEntrySnapshot> Intermediate { get; set; } = new();
 		public bool IsInFlight { get; set; }
+		public bool HasIntermediate { get; set; }
+		public int IntermediateCount { get; set; }
+		public bool IntermediateLoaded { get; set; }
 
 		public ConsolidatedTurnSnapshot Clone()
 		{
@@ -3403,7 +3477,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				User = User.Clone(),
 				AssistantFinal = AssistantFinal?.Clone(),
 				Intermediate = Intermediate.Select(x => x.Clone()).ToList(),
-				IsInFlight = IsInFlight
+				IsInFlight = IsInFlight,
+				HasIntermediate = HasIntermediate,
+				IntermediateCount = IntermediateCount,
+				IntermediateLoaded = IntermediateLoaded
 			};
 		}
 	}
@@ -3489,7 +3566,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				User = userTurnEntry,
 				AssistantFinal = FinalAssistant is null ? null : ToTurnEntry(FinalAssistant),
 				Intermediate = Intermediate.Select(x => x.Clone()).ToList(),
-				IsInFlight = IsInFlight
+				IsInFlight = IsInFlight,
+				HasIntermediate = Intermediate.Count > 0,
+				IntermediateCount = Intermediate.Count,
+				IntermediateLoaded = true
 			};
 		}
 	}
