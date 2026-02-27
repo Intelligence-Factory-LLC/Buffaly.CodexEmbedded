@@ -49,6 +49,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			loadedSessions = _sessions.Values.ToList();
 		}
 
+		var stalePendingStartAfter = GetPendingTurnStartStaleAfter();
+		foreach (var session in loadedSessions)
+		{
+			TryExpireStalePendingTurnStart(session.SessionId, session, stalePendingStartAfter);
+		}
+
 		EnsureTurnCacheForSessions(loadedSessions, maxEntries: 6000);
 
 		Dictionary<string, (int TurnCountInMemory, bool IsTurnInFlightInferredFromLogs)> turnStatsByThread;
@@ -3302,6 +3308,31 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		return TimeSpan.FromSeconds(seconds);
 	}
 
+	private TimeSpan GetPendingTurnStartStaleAfter()
+	{
+		var seconds = Math.Clamp(_defaults.TurnSlotWaitPollSeconds * 20, 30, 120);
+		return TimeSpan.FromSeconds(seconds);
+	}
+
+	private bool TryExpireStalePendingTurnStart(string sessionId, ManagedSession session, TimeSpan staleAfter)
+	{
+		if (!session.IsLocalTurnAwaitingStartStale(staleAfter, out var pendingAge))
+		{
+			return false;
+		}
+
+		var roundedSeconds = Math.Round(pendingAge.TotalSeconds);
+		var message = $"Turn start did not confirm after {roundedSeconds:0}s and was reset for recovery.";
+		if (!TryPublishTurnComplete(sessionId, session, status: "interrupted", errorMessage: message))
+		{
+			return false;
+		}
+
+		session.Log.Write($"[turn_recovery] expired pending turn/start after {roundedSeconds:0}s");
+		Broadcast?.Invoke("status", new { sessionId, message = "Turn start appeared stuck and was reset." });
+		return true;
+	}
+
 	private bool TryExpireStaleRecoveredTurn(string sessionId, ManagedSession session, TimeSpan staleAfter)
 	{
 		if (!session.IsRecoveredTurnStale(staleAfter, out var recoveredAge))
@@ -3324,11 +3355,20 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private async Task<bool> WaitForTurnSlotWithTimeoutAsync(string sessionId, ManagedSession session)
 	{
 		var staleRecoveredAfter = GetRecoveredTurnStaleAfter();
+		var stalePendingStartAfter = GetPendingTurnStartStaleAfter();
 
 		if (session.TryRecoverTurnSlotIfIdle())
 		{
 			session.Log.Write("[turn_gate] recovered stuck idle gate");
 			return true;
+		}
+
+		if (TryExpireStalePendingTurnStart(sessionId, session, stalePendingStartAfter))
+		{
+			if (await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
+			{
+				return true;
+			}
 		}
 
 		if (TryExpireStaleRecoveredTurn(sessionId, session, staleRecoveredAfter))
@@ -3361,6 +3401,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				session.Log.Write("[turn_gate] recovered stuck idle gate");
 				return true;
+			}
+
+			if (TryExpireStalePendingTurnStart(sessionId, session, stalePendingStartAfter))
+			{
+				if (await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
+				{
+					return true;
+				}
 			}
 
 			if (TryExpireStaleRecoveredTurn(sessionId, session, staleRecoveredAfter))
@@ -4004,6 +4052,32 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 				recoveredAge = DateTimeOffset.UtcNow - _turnStateChangedUtc;
 				return recoveredAge >= staleAfter;
+			}
+		}
+
+		public bool IsLocalTurnAwaitingStartStale(TimeSpan staleAfter, out TimeSpan pendingAge)
+		{
+			pendingAge = TimeSpan.Zero;
+			lock (_turnSync)
+			{
+				if (_turnState != TurnLifecycleState.RunningLocal)
+				{
+					return false;
+				}
+
+				if (!string.IsNullOrWhiteSpace(_activeTurnId))
+				{
+					return false;
+				}
+
+				if (Session.TryGetActiveTurnId(out var activeFromClient) && !string.IsNullOrWhiteSpace(activeFromClient))
+				{
+					_activeTurnId = activeFromClient;
+					return false;
+				}
+
+				pendingAge = DateTimeOffset.UtcNow - _turnStateChangedUtc;
+				return pendingAge >= staleAfter;
 			}
 		}
 
