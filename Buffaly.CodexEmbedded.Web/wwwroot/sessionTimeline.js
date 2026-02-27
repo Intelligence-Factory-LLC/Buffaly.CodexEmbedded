@@ -791,8 +791,7 @@
 
       element.classList.add("watcher-diff-block");
       const lines = normalized.split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
+      for (const line of lines) {
         const lineNode = document.createElement("span");
         lineNode.className = "watcher-diff-line";
         const lineKind = this.classifyDiffLine(line);
@@ -801,9 +800,6 @@
         }
         lineNode.textContent = line;
         element.appendChild(lineNode);
-        if (i < lines.length - 1) {
-          element.appendChild(document.createTextNode("\n"));
-        }
       }
     }
 
