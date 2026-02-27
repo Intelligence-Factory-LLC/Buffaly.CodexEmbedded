@@ -465,7 +465,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	private async Task AttachSessionAsync(JsonElement request, bool setActive, CancellationToken cancellationToken)
 	{
 		var requestId = TryGetString(request, "requestId");
-		var threadId = TryGetString(request, "threadId") ?? TryGetString(request, "id");
+		var threadId = (TryGetString(request, "threadId") ?? TryGetString(request, "id"))?.Trim();
 		if (string.IsNullOrWhiteSpace(threadId))
 		{
 			await SendEventAsync("error", new { message = "threadId is required to attach." }, cancellationToken);
@@ -488,15 +488,77 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var cwd = TryGetString(request, "cwd") ?? _defaults.DefaultCwd;
 		var codexPath = TryGetString(request, "codexPath") ?? _defaults.CodexPath;
 
-		var existingSessionId = _orchestrator.FindLoadedSessionIdByThreadId(threadId);
-		if (!string.IsNullOrWhiteSpace(existingSessionId) && setActive)
+		var matchingSnapshots = _orchestrator
+			.GetSessionSnapshots()
+			.Where(x => string.Equals(x.ThreadId, threadId, StringComparison.Ordinal))
+			.ToList();
+
+		if (matchingSnapshots.Count > 1)
 		{
-			_activeSessionId = existingSessionId;
+			await SendEventAsync(
+				"error",
+				new
+				{
+					message = $"Attach is ambiguous: multiple loaded sessions match thread {threadId}. Stop duplicate sessions and retry."
+				},
+				cancellationToken);
+			return;
 		}
 
-		if (!string.IsNullOrWhiteSpace(existingSessionId))
+		if (matchingSnapshots.Count == 1)
 		{
+			var existing = matchingSnapshots[0];
+			var existingSessionId = existing.SessionId;
+			if (string.IsNullOrWhiteSpace(existingSessionId) || !_orchestrator.HasSession(existingSessionId))
+			{
+				await SendEventAsync(
+					"error",
+					new
+					{
+						message = $"Attach failed: loaded session state for thread {threadId} is no longer available."
+					},
+					cancellationToken);
+				return;
+			}
+
+			if (setActive)
+			{
+				_activeSessionId = existingSessionId;
+			}
+
+			await WriteConnectionLogAsync(
+				$"[session] attach resolved existing session id={existingSessionId} threadId={threadId}",
+				cancellationToken);
 			await SendEventAsync("status", new { message = $"Session already loaded for thread {threadId}." }, cancellationToken);
+
+			// Protocol contract: `session_attached` is the authoritative attach completion event
+			// for both fresh attach and already-loaded attach paths.
+			await SendEventAsync("session_created", new
+			{
+				sessionId = existingSessionId,
+				requestId,
+				threadId = existing.ThreadId,
+				model = existing.Model,
+				reasoningEffort = existing.ReasoningEffort,
+				approvalPolicy = existing.ApprovalPolicy,
+				sandboxPolicy = existing.SandboxPolicy,
+				cwd = existing.Cwd,
+				attached = true,
+				logPath = (string?)null
+			}, cancellationToken);
+
+			await SendEventAsync("session_attached", new
+			{
+				sessionId = existingSessionId,
+				requestId,
+				threadId = existing.ThreadId,
+				model = existing.Model,
+				reasoningEffort = existing.ReasoningEffort,
+				approvalPolicy = existing.ApprovalPolicy,
+				sandboxPolicy = existing.SandboxPolicy,
+				cwd = existing.Cwd,
+				logPath = (string?)null
+			}, cancellationToken);
 			await SendSessionListAsync(cancellationToken);
 			return;
 		}
@@ -538,6 +600,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			logPath = attached.logPath
 		}, cancellationToken);
 
+		// Protocol contract: `session_attached` is the authoritative attach completion event
+		// for both fresh attach and already-loaded attach paths.
 		await SendEventAsync("session_attached", new
 		{
 			sessionId,
