@@ -2297,9 +2297,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			});
 	}
 
-	private static bool TryParseCoreAuxSignals(CodexCoreEvent ev, out CoreAuxSignals signals)
+	private static bool TryOpenStdoutJsonlDocument(
+		CodexCoreEvent ev,
+		Func<string, bool>? shouldParseLine,
+		out JsonDocument? document,
+		out JsonElement root)
 	{
-		signals = default;
+		document = null;
+		root = default;
 		if (ev is null || !string.Equals(ev.Type, "stdout_jsonl", StringComparison.Ordinal))
 		{
 			return false;
@@ -2311,52 +2316,119 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return false;
 		}
 
-		if (line.IndexOf("rateLimits", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("rate_limits", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("sessionConfigured", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("session_configured", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("thread/compacted", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("thread_compacted", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("thread/name/updated", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("thread_name_updated", StringComparison.Ordinal) < 0)
+		if (shouldParseLine is not null && !shouldParseLine(line))
 		{
 			return false;
 		}
 
 		try
 		{
-			using var doc = JsonDocument.Parse(line);
-			var root = doc.RootElement;
-			if (root.ValueKind != JsonValueKind.Object)
+			var parsed = JsonDocument.Parse(line);
+			var parsedRoot = parsed.RootElement;
+			if (parsedRoot.ValueKind != JsonValueKind.Object)
 			{
+				parsed.Dispose();
 				return false;
 			}
 
+			document = parsed;
+			root = parsedRoot;
+			return true;
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	private static bool TryGetCoreMethodParams(JsonElement root, out string method, out JsonElement paramsElement)
+	{
+		method = string.Empty;
+		paramsElement = default;
+		if (!root.TryGetProperty("method", out var methodElement) || methodElement.ValueKind != JsonValueKind.String)
+		{
+			return false;
+		}
+
+		method = methodElement.GetString() ?? string.Empty;
+		paramsElement = root.TryGetProperty("params", out var p) ? p : default;
+		return true;
+	}
+
+	private static bool TryGetCoreEventPayload(JsonElement root, out string payloadType, out JsonElement payloadElement)
+	{
+		payloadType = string.Empty;
+		payloadElement = default;
+		if (!root.TryGetProperty("type", out var typeElement) ||
+			typeElement.ValueKind != JsonValueKind.String ||
+			!string.Equals(typeElement.GetString(), "event_msg", StringComparison.Ordinal) ||
+			!root.TryGetProperty("payload", out payloadElement) ||
+			payloadElement.ValueKind != JsonValueKind.Object ||
+			!payloadElement.TryGetProperty("type", out var payloadTypeElement) ||
+			payloadTypeElement.ValueKind != JsonValueKind.String)
+		{
+			return false;
+		}
+
+		payloadType = payloadTypeElement.GetString() ?? string.Empty;
+		return true;
+	}
+
+	private static bool ShouldParseCoreAuxLine(string line)
+	{
+		return line.IndexOf("rateLimits", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("rate_limits", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("sessionConfigured", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("session_configured", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("thread/compacted", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("thread_compacted", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("thread/name/updated", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("thread_name_updated", StringComparison.Ordinal) >= 0;
+	}
+
+	private static bool ShouldParseCorePlanLine(string line)
+	{
+		return line.IndexOf("plan", StringComparison.OrdinalIgnoreCase) >= 0;
+	}
+
+	private static bool ShouldParseCoreTurnLine(string line)
+	{
+		return line.IndexOf("turn/started", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("codex/event/turn_started", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("\"turn_started\"", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("turn/completed", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("codex/event/task_complete", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("codex/event/turn_complete", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("\"turn_complete\"", StringComparison.Ordinal) >= 0 ||
+			line.IndexOf("\"task_complete\"", StringComparison.Ordinal) >= 0;
+	}
+
+	private static bool TryParseCoreAuxSignals(CodexCoreEvent ev, out CoreAuxSignals signals)
+	{
+		signals = default;
+		if (!TryOpenStdoutJsonlDocument(ev, ShouldParseCoreAuxLine, out var document, out var root) ||
+			document is null)
+		{
+			return false;
+		}
+
+		using (document)
+		{
 			CoreRateLimitsSignal? rateLimitsSignal = null;
 			CoreSessionConfiguredSignal? sessionConfiguredSignal = null;
 			CoreThreadCompactedSignal? threadCompactedSignal = null;
 			CoreThreadNameUpdatedSignal? threadNameUpdatedSignal = null;
 
-			if (root.TryGetProperty("method", out var methodElement) && methodElement.ValueKind == JsonValueKind.String)
+			if (TryGetCoreMethodParams(root, out var method, out var paramsElement))
 			{
-				var method = methodElement.GetString() ?? string.Empty;
-				var paramsElement = root.TryGetProperty("params", out var p) ? p : default;
-
 				rateLimitsSignal = TryParseCoreRateLimitsSignalFromMethod(method, paramsElement);
 				sessionConfiguredSignal = TryParseCoreSessionConfiguredSignalFromMethod(method, paramsElement);
 				threadCompactedSignal = TryParseCoreThreadCompactedSignalFromMethod(method, paramsElement);
 				threadNameUpdatedSignal = TryParseCoreThreadNameUpdatedSignalFromMethod(method, paramsElement);
 			}
 
-			if (root.TryGetProperty("type", out var typeElement) &&
-				typeElement.ValueKind == JsonValueKind.String &&
-				string.Equals(typeElement.GetString(), "event_msg", StringComparison.Ordinal) &&
-				root.TryGetProperty("payload", out var payloadElement) &&
-				payloadElement.ValueKind == JsonValueKind.Object &&
-				payloadElement.TryGetProperty("type", out var payloadTypeElement) &&
-				payloadTypeElement.ValueKind == JsonValueKind.String)
+			if (TryGetCoreEventPayload(root, out var payloadType, out var payloadElement))
 			{
-				var payloadType = payloadTypeElement.GetString() ?? string.Empty;
 				rateLimitsSignal ??= TryParseCoreRateLimitsSignalFromEventPayload(payloadType, payloadElement);
 				sessionConfiguredSignal ??= TryParseCoreSessionConfiguredSignalFromEventPayload(payloadType, payloadElement);
 				threadCompactedSignal ??= TryParseCoreThreadCompactedSignalFromEventPayload(payloadType, payloadElement);
@@ -2366,69 +2438,31 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			signals = new CoreAuxSignals(rateLimitsSignal, sessionConfiguredSignal, threadCompactedSignal, threadNameUpdatedSignal);
 			return signals.HasAnySignal;
 		}
-		catch
-		{
-			return false;
-		}
 	}
 
 	private static bool TryParseCorePlanSignal(CodexCoreEvent ev, out CorePlanSignal signal)
 	{
 		signal = default;
-		if (ev is null || !string.Equals(ev.Type, "stdout_jsonl", StringComparison.Ordinal))
+		if (!TryOpenStdoutJsonlDocument(ev, ShouldParseCorePlanLine, out var document, out var root) ||
+			document is null)
 		{
 			return false;
 		}
 
-		var line = ev.Message;
-		if (string.IsNullOrWhiteSpace(line))
+		using (document)
 		{
-			return false;
-		}
-
-		if (line.IndexOf("plan", StringComparison.OrdinalIgnoreCase) < 0)
-		{
-			return false;
-		}
-
-		try
-		{
-			using var doc = JsonDocument.Parse(line);
-			var root = doc.RootElement;
-			if (root.ValueKind != JsonValueKind.Object)
+			if (TryGetCoreMethodParams(root, out var method, out var paramsElement) &&
+				TryParseCorePlanSignalFromMethod(method, paramsElement, out signal))
 			{
-				return false;
+				return true;
 			}
 
-			if (root.TryGetProperty("method", out var methodElement) && methodElement.ValueKind == JsonValueKind.String)
+			if (TryGetCoreEventPayload(root, out var payloadType, out var payloadElement) &&
+				TryParseCorePlanSignalFromEventPayload(payloadType, payloadElement, out signal))
 			{
-				var method = methodElement.GetString() ?? string.Empty;
-				var paramsElement = root.TryGetProperty("params", out var p) ? p : default;
-				if (TryParseCorePlanSignalFromMethod(method, paramsElement, out signal))
-				{
-					return true;
-				}
+				return true;
 			}
 
-			if (root.TryGetProperty("type", out var typeElement) &&
-				typeElement.ValueKind == JsonValueKind.String &&
-				string.Equals(typeElement.GetString(), "event_msg", StringComparison.Ordinal) &&
-				root.TryGetProperty("payload", out var payloadElement) &&
-				payloadElement.ValueKind == JsonValueKind.Object &&
-				payloadElement.TryGetProperty("type", out var payloadTypeElement) &&
-				payloadTypeElement.ValueKind == JsonValueKind.String)
-			{
-				var payloadType = payloadTypeElement.GetString() ?? string.Empty;
-				if (TryParseCorePlanSignalFromEventPayload(payloadType, payloadElement, out signal))
-				{
-					return true;
-				}
-			}
-
-			return false;
-		}
-		catch
-		{
 			return false;
 		}
 	}
@@ -3076,47 +3110,19 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private static bool TryParseCoreTurnSignal(CodexCoreEvent ev, out CoreTurnSignal signal)
 	{
 		signal = default;
-		if (ev is null || string.IsNullOrWhiteSpace(ev.Type) || !string.Equals(ev.Type, "stdout_jsonl", StringComparison.Ordinal))
+		if (!TryOpenStdoutJsonlDocument(ev, ShouldParseCoreTurnLine, out var document, out var root) ||
+			document is null)
 		{
 			return false;
 		}
 
-		var line = ev.Message;
-		if (string.IsNullOrWhiteSpace(line))
+		using (document)
 		{
-			return false;
-		}
-
-		if (line.IndexOf("turn/started", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("codex/event/turn_started", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("\"turn_started\"", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("turn/completed", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("codex/event/task_complete", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("codex/event/turn_complete", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("\"turn_complete\"", StringComparison.Ordinal) < 0 &&
-			line.IndexOf("\"task_complete\"", StringComparison.Ordinal) < 0)
-		{
-			return false;
-		}
-
-		try
-		{
-			using var doc = JsonDocument.Parse(line);
-			var root = doc.RootElement;
-
-			if (root.ValueKind != JsonValueKind.Object)
+			if (TryGetCoreMethodParams(root, out var method, out var paramsElement))
 			{
-				return false;
-			}
-
-			if (root.TryGetProperty("method", out var methodElement) &&
-				methodElement.ValueKind == JsonValueKind.String)
-			{
-				var method = methodElement.GetString();
 				if (string.Equals(method, "turn/started", StringComparison.Ordinal) ||
 					string.Equals(method, "codex/event/turn_started", StringComparison.Ordinal))
 				{
-					var paramsElement = root.TryGetProperty("params", out var startedParamsElement) ? startedParamsElement : default;
 					var turnId = TryExtractCoreTurnId(root, paramsElement);
 					if (string.IsNullOrWhiteSpace(turnId))
 					{
@@ -3128,7 +3134,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 						TurnId: turnId,
 						Status: null,
 						ErrorMessage: null,
-						Source: method ?? "unknown_method");
+						Source: method);
 					return true;
 				}
 
@@ -3136,7 +3142,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					string.Equals(method, "codex/event/turn_complete", StringComparison.Ordinal) ||
 					string.Equals(method, "codex/event/task_complete", StringComparison.Ordinal))
 				{
-					var paramsElement = root.TryGetProperty("params", out var completedParamsElement) ? completedParamsElement : default;
 					var turnId = TryExtractCoreTurnId(root, paramsElement);
 					if (string.IsNullOrWhiteSpace(turnId))
 					{
@@ -3157,31 +3162,18 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 						TurnId: turnId,
 						Status: status,
 						ErrorMessage: errorMessage,
-						Source: method ?? "unknown_method");
+						Source: method);
 					return true;
 				}
 
 				return false;
 			}
 
-			if (!root.TryGetProperty("type", out var typeElement) ||
-				typeElement.ValueKind != JsonValueKind.String ||
-				!string.Equals(typeElement.GetString(), "event_msg", StringComparison.Ordinal))
+			if (!TryGetCoreEventPayload(root, out var payloadType, out var payloadElement))
 			{
 				return false;
 			}
 
-			if (!root.TryGetProperty("payload", out var payloadElement) || payloadElement.ValueKind != JsonValueKind.Object)
-			{
-				return false;
-			}
-
-			if (!payloadElement.TryGetProperty("type", out var payloadTypeElement) || payloadTypeElement.ValueKind != JsonValueKind.String)
-			{
-				return false;
-			}
-
-			var payloadType = payloadTypeElement.GetString();
 			if (string.Equals(payloadType, "turn_started", StringComparison.Ordinal))
 			{
 				var turnId = TryGetAnyPathString(payloadElement,
@@ -3239,10 +3231,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				return true;
 			}
 
-			return false;
-		}
-		catch
-		{
 			return false;
 		}
 	}
