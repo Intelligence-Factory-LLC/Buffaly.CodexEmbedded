@@ -566,83 +566,23 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		cwd = string.IsNullOrWhiteSpace(cwd) ? _defaults.DefaultCwd : cwd.Trim();
 		codexPath = string.IsNullOrWhiteSpace(codexPath) ? _defaults.CodexPath : codexPath.Trim();
 
-		var sessionLogPath = Path.Combine(_defaults.LogRootPath, $"session-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{sessionId}.log");
-		var sessionLog = new LocalLogWriter(sessionLogPath);
-		var pendingApprovals = new ConcurrentDictionary<string, TaskCompletionSource<string>>(StringComparer.Ordinal);
-		var pendingToolUserInputs = new ConcurrentDictionary<string, TaskCompletionSource<Dictionary<string, object?>>>(StringComparer.Ordinal);
-
-		CodexClient client;
-		CodexSession session;
-		try
-		{
-			var clientOptions = new CodexClientOptions
-			{
-				CodexPath = codexPath,
-				WorkingDirectory = cwd,
-				CodexHomePath = _defaults.CodexHomePath,
-				ServerRequestHandler = async (req, ct) =>
-				{
-					return await HandleServerRequestAsync(sessionId, sessionLog, pendingApprovals, pendingToolUserInputs, req, ct);
-				}
-			};
-
-			client = await CodexClient.StartAsync(clientOptions, cancellationToken);
-			client.OnEvent += ev =>
-			{
-				HandleCoreEvent(sessionId, sessionLog, ev);
-			};
-
-			session = await client.CreateSessionAsync(new CodexSessionCreateOptions
+		return await StartManagedSessionAsync(
+			sessionId,
+			model,
+			effort,
+			approvalPolicy,
+			sandboxMode,
+			cwd,
+			codexPath,
+			attached: false,
+			(client, ct) => client.CreateSessionAsync(new CodexSessionCreateOptions
 			{
 				Cwd = cwd,
 				Model = model,
 				ApprovalPolicy = approvalPolicy,
 				SandboxMode = sandboxMode
-			}, cancellationToken);
-		}
-		catch
-		{
-			sessionLog.Dispose();
-			throw;
-		}
-
-		var managed = new ManagedSession(
-			sessionId,
-			client,
-			session,
-			cwd,
-			model,
-			effort,
-			sessionLog,
-			pendingApprovals,
-			pendingToolUserInputs,
-			ApprovalPolicy: session.ApprovalPolicy ?? approvalPolicy,
-			SandboxPolicy: session.SandboxMode ?? sandboxMode);
-		lock (_sync)
-		{
-			_sessions[sessionId] = managed;
-		}
-
-		try
-		{
-			WatchTurns(session.ThreadId, maxEntries: 6000, initial: true, cursor: null);
-		}
-		catch
-		{
-		}
-
-		SessionsChanged?.Invoke();
-
-		return new SessionCreatedPayload(
-			sessionId: sessionId,
-			threadId: session.ThreadId,
-			model: model,
-			reasoningEffort: effort,
-			approvalPolicy: managed.CurrentApprovalPolicy,
-			sandboxPolicy: managed.CurrentSandboxPolicy,
-			cwd: cwd,
-			logPath: sessionLogPath,
-			attached: false);
+			}, ct),
+			cancellationToken);
 	}
 
 	public async Task<SessionCreatedPayload> AttachSessionAsync(
@@ -668,6 +608,40 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		cwd = string.IsNullOrWhiteSpace(cwd) ? _defaults.DefaultCwd : cwd.Trim();
 		codexPath = string.IsNullOrWhiteSpace(codexPath) ? _defaults.CodexPath : codexPath.Trim();
 
+		return await StartManagedSessionAsync(
+			sessionId,
+			model,
+			effort,
+			approvalPolicy,
+			sandboxMode,
+			cwd,
+			codexPath,
+			attached: true,
+			(client, ct) => client.AttachToSessionAsync(new CodexSessionAttachOptions
+			{
+				ThreadId = threadId,
+				Cwd = cwd,
+				Model = model,
+				ApprovalPolicy = approvalPolicy,
+				SandboxMode = sandboxMode
+			}, ct),
+			cancellationToken);
+	}
+
+	private async Task<SessionCreatedPayload> StartManagedSessionAsync(
+		string sessionId,
+		string? model,
+		string? effort,
+		string? approvalPolicy,
+		string? sandboxMode,
+		string? cwd,
+		string? codexPath,
+		bool attached,
+		Func<CodexClient, CancellationToken, Task<CodexSession>> openSessionAsync,
+		CancellationToken cancellationToken)
+	{
+		var effectiveCodexPath = codexPath ?? _defaults.CodexPath;
+		var effectiveCwd = cwd ?? _defaults.DefaultCwd;
 		var sessionLogPath = Path.Combine(_defaults.LogRootPath, $"session-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{sessionId}.log");
 		var sessionLog = new LocalLogWriter(sessionLogPath);
 		var pendingApprovals = new ConcurrentDictionary<string, TaskCompletionSource<string>>(StringComparer.Ordinal);
@@ -679,8 +653,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		{
 			var clientOptions = new CodexClientOptions
 			{
-				CodexPath = codexPath,
-				WorkingDirectory = cwd,
+				CodexPath = effectiveCodexPath,
+				WorkingDirectory = effectiveCwd,
 				CodexHomePath = _defaults.CodexHomePath,
 				ServerRequestHandler = async (req, ct) =>
 				{
@@ -694,14 +668,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				HandleCoreEvent(sessionId, sessionLog, ev);
 			};
 
-			session = await client.AttachToSessionAsync(new CodexSessionAttachOptions
-			{
-				ThreadId = threadId,
-				Cwd = cwd,
-				Model = model,
-				ApprovalPolicy = approvalPolicy,
-				SandboxMode = sandboxMode
-			}, cancellationToken);
+			session = await openSessionAsync(client, cancellationToken);
 		}
 		catch
 		{
@@ -745,7 +712,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			sandboxPolicy: managed.CurrentSandboxPolicy,
 			cwd: cwd,
 			logPath: sessionLogPath,
-			attached: true);
+			attached: attached);
 	}
 
 	public LoadedSessionAttachResolution ResolveLoadedSessionForAttach(string threadId)
