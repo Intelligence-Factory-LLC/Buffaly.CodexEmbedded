@@ -2050,6 +2050,16 @@ body {
 	opacity: 0.95;
 }
 
+.prompt-selection-indicator .preview {
+	font-family: "Consolas", "Courier New", monospace;
+	font-size: 0.76rem;
+	color: #3730a3;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 100%;
+}
+
 .composer-image-pill {
 	position: relative;
 	width: 64px;
@@ -3604,6 +3614,10 @@ html[data-theme="dark"] .prompt-selection-indicator {
 	background: #1e1b4b;
 	border-color: #4338ca;
 	color: #c7d2fe;
+}
+
+html[data-theme="dark"] .prompt-selection-indicator .preview {
+	color: #a5b4fc;
 }
 
 html[data-theme="dark"] .prompt-form textarea,
