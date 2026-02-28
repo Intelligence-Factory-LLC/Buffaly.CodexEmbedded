@@ -3344,40 +3344,64 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		return true;
 	}
 
-	private async Task<bool> WaitForTurnSlotWithTimeoutAsync(string sessionId, ManagedSession session)
+	private static bool TryRecoverIdleTurnGate(ManagedSession session)
 	{
-		var staleRecoveredAfter = GetRecoveredTurnStaleAfter();
-		var stalePendingStartAfter = GetPendingTurnStartStaleAfter();
+		if (!session.TryRecoverTurnSlotIfIdle())
+		{
+			return false;
+		}
+
+		session.Log.Write("[turn_gate] recovered stuck idle gate");
+		return true;
+	}
+
+	private async Task<bool> TryRecoverAndAcquireTurnSlotAsync(
+		string sessionId,
+		ManagedSession session,
+		TimeSpan stalePendingStartAfter,
+		TimeSpan staleRecoveredAfter,
+		bool includeDirectImmediateWait)
+	{
 		RecoverTurnStateFromClientIfNeeded(sessionId, session);
 
-		if (session.TryRecoverTurnSlotIfIdle())
+		if (TryRecoverIdleTurnGate(session))
 		{
-			session.Log.Write("[turn_gate] recovered stuck idle gate");
 			return true;
 		}
 
-		if (TryExpireStalePendingTurnStart(sessionId, session, stalePendingStartAfter))
+		if (TryExpireStalePendingTurnStart(sessionId, session, stalePendingStartAfter) &&
+			await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
 		{
-			if (await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
-			{
-				return true;
-			}
+			return true;
 		}
 
 		if (TryExpireStaleRecoveredTurn(sessionId, session, staleRecoveredAfter))
 		{
-			if (session.TryRecoverTurnSlotIfIdle())
-			{
-				session.Log.Write("[turn_gate] recovered stuck idle gate");
-			}
-
+			TryRecoverIdleTurnGate(session);
 			if (await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
 			{
 				return true;
 			}
 		}
 
-		if (await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
+		if (!includeDirectImmediateWait)
+		{
+			return false;
+		}
+
+		return await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken);
+	}
+
+	private async Task<bool> WaitForTurnSlotWithTimeoutAsync(string sessionId, ManagedSession session)
+	{
+		var staleRecoveredAfter = GetRecoveredTurnStaleAfter();
+		var stalePendingStartAfter = GetPendingTurnStartStaleAfter();
+		if (await TryRecoverAndAcquireTurnSlotAsync(
+			sessionId,
+			session,
+			stalePendingStartAfter,
+			staleRecoveredAfter,
+			includeDirectImmediateWait: true))
 		{
 			return true;
 		}
@@ -3390,33 +3414,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		while (DateTimeOffset.UtcNow < deadline && !session.LifetimeToken.IsCancellationRequested)
 		{
-			RecoverTurnStateFromClientIfNeeded(sessionId, session);
-
-			if (session.TryRecoverTurnSlotIfIdle())
+			if (await TryRecoverAndAcquireTurnSlotAsync(
+				sessionId,
+				session,
+				stalePendingStartAfter,
+				staleRecoveredAfter,
+				includeDirectImmediateWait: false))
 			{
-				session.Log.Write("[turn_gate] recovered stuck idle gate");
 				return true;
-			}
-
-			if (TryExpireStalePendingTurnStart(sessionId, session, stalePendingStartAfter))
-			{
-				if (await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
-				{
-					return true;
-				}
-			}
-
-			if (TryExpireStaleRecoveredTurn(sessionId, session, staleRecoveredAfter))
-			{
-				if (session.TryRecoverTurnSlotIfIdle())
-				{
-					session.Log.Write("[turn_gate] recovered stuck idle gate");
-				}
-
-				if (await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
-				{
-					return true;
-				}
 			}
 
 			var remaining = deadline - DateTimeOffset.UtcNow;
