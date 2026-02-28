@@ -3,6 +3,7 @@ const TURN_ACTIVITY_TICK_INTERVAL_MS = 1000;
 const LOG_FLUSH_INTERVAL_MS = 250;
 const MAX_RENDERED_CLIENT_LOG_LINES = 800;
 const ENABLE_CONSOLE_LOG_FALLBACK = false;
+const INDEX_TIMELINE_SOURCE = "logs"; // keep index timeline poll-based; backend now serves consolidated turns from logs
 const NORMALIZED_PATHNAME = (window.location.pathname || "").replace(/\/+$/g, "").toLowerCase();
 const IS_RECAP_MODE = NORMALIZED_PATHNAME === "/recap" || NORMALIZED_PATHNAME.endsWith("/recap");
 const RECAP_APPROVAL_POLICY = "never";
@@ -114,6 +115,7 @@ const STORAGE_ARCHIVED_THREADS_KEY = "codex-web-archived-threads";
 const STORAGE_SIDEBAR_COLLAPSED_KEY = "codex-web-sidebar-collapsed";
 const STORAGE_SIDEBAR_EXTRAS_EXPANDED_KEY = "codex-web-sidebar-extras-expanded";
 const STORAGE_CUSTOM_PROJECTS_KEY = "codex-web-custom-projects";
+const MAX_QUEUE_PREVIEW = 3;
 const MAX_QUEUE_TEXT_CHARS = 90;
 const MAX_PROJECT_SESSIONS_COLLAPSED = 4;
 const MAX_COMPOSER_IMAGES = 4;
@@ -128,6 +130,8 @@ const TIMELINE_INITIAL_WINDOW_DEFAULT = 6000;
 let timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
 const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only.";
 const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
+const APPROVAL_POLICY_VALUES = ["untrusted", "on-failure", "on-request", "never"];
+const SANDBOX_MODE_VALUES = ["read-only", "workspace-write", "danger-full-access"];
 const REASONING_EFFORT_HELP = {
   "": "Default uses the model's configured reasoning level. OpenAI docs define minimal, low, medium, and high; this app also exposes none and xhigh from the Codex schema.",
   none: "Below minimal. Best for very simple requests where latency matters most.",
@@ -265,6 +269,10 @@ const timeline = new window.CodexSessionTimeline({
   maxRenderedEntries: 1500,
   systemTitle: "Session"
 });
+
+function timelineUsesEventFeed() {
+  return INDEX_TIMELINE_SOURCE === "events";
+}
 
 function getMessageListRemainingScroll() {
   if (!chatMessages) {
@@ -406,6 +414,105 @@ function normalizeReasoningSummary(text) {
   }
 
   return normalized.length > 800 ? `${normalized.slice(0, 800)}...` : normalized;
+}
+
+function parseIsoTimestamp(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+
+  const tick = Date.parse(value);
+  return Number.isFinite(tick) ? tick : null;
+}
+
+function extractReasoningSummaryFromPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+
+  const eventType = typeof payload.type === "string" ? payload.type.trim().toLowerCase() : "";
+  if (eventType === "reasoning") {
+    if (Array.isArray(payload.summary)) {
+      const parts = [];
+      for (const item of payload.summary) {
+        if (item && typeof item.text === "string" && item.text.trim().length > 0) {
+          parts.push(item.text.trim());
+        }
+      }
+      const combined = normalizeReasoningSummary(parts.join(" "));
+      if (combined) {
+        return combined;
+      }
+    }
+
+    const fromContent = normalizeReasoningSummary(typeof payload.content === "string" ? payload.content : "");
+    if (fromContent) {
+      return fromContent;
+    }
+  }
+
+  if (eventType === "agent_reasoning") {
+    const fromMessage = normalizeReasoningSummary(
+      typeof payload.message === "string"
+        ? payload.message
+        : typeof payload.summary === "string"
+          ? payload.summary
+          : typeof payload.text === "string"
+            ? payload.text
+            : ""
+    );
+    if (fromMessage) {
+      return fromMessage;
+    }
+  }
+
+  return "";
+}
+
+function extractReasoningSummaryFromLogLine(line) {
+  if (typeof line !== "string" || !line.trim()) {
+    return "";
+  }
+
+  const parsed = safeJsonParse(line, null);
+  if (!parsed || typeof parsed !== "object") {
+    return "";
+  }
+
+  if (parsed.type === "response_item") {
+    return extractReasoningSummaryFromPayload(parsed.payload || {});
+  }
+
+  if (parsed.type === "event_msg") {
+    return extractReasoningSummaryFromPayload(parsed.payload || {});
+  }
+
+  return "";
+}
+
+function updateReasoningFromLogLines(threadId, lines) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  if (!normalizedThreadId || !Array.isArray(lines) || lines.length === 0) {
+    return;
+  }
+
+  let latest = "";
+  for (const line of lines) {
+    const next = extractReasoningSummaryFromLogLine(line);
+    if (next) {
+      latest = next;
+    }
+  }
+
+  if (!latest) {
+    return;
+  }
+
+  lastReasoningByThread.set(normalizedThreadId, latest);
+  const activeThreadId = normalizeThreadId(getActiveSessionState()?.threadId || "");
+  if (activeThreadId && activeThreadId === normalizedThreadId) {
+    updateTurnActivityStrip();
+  }
 }
 
 function updateTurnActivityStrip() {
@@ -857,6 +964,18 @@ function renderPlanMarkdownIntoBody(container, markdownText) {
   container.appendChild(fragment);
 }
 
+function setPlanPanelEmptyMessage(message) {
+  if (!planPanelBody) {
+    return;
+  }
+
+  planPanelBody.textContent = "";
+  planPanelBody.classList.add("plan-panel-empty");
+  const paragraph = document.createElement("p");
+  paragraph.textContent = message;
+  planPanelBody.appendChild(paragraph);
+}
+
 function setPlanModeNextTurn(enabled) {
   planModeNextTurn = !!enabled;
   if (!planTurnToggleBtn) {
@@ -1287,85 +1406,6 @@ function hasAnyPermissionField(payload) {
   return hasApprovalPolicyField(payload) || hasSandboxPolicyField(payload);
 }
 
-function readTokenCountInfo(payload) {
-  if (!payload || typeof payload !== "object" || payload.type !== "token_count") {
-    return null;
-  }
-
-  const info = payload.info;
-  if (!info || typeof info !== "object") {
-    return null;
-  }
-
-  const contextWindowRaw = info.model_context_window ?? info.modelContextWindow ?? null;
-  const contextWindowNumber = Number(contextWindowRaw);
-  const contextWindow = Number.isFinite(contextWindowNumber) && contextWindowNumber > 0 ? contextWindowNumber : null;
-
-  const lastUsage = info.last_token_usage ?? info.lastTokenUsage ?? info.last ?? null;
-  const totalUsage = info.total_token_usage ?? info.totalTokenUsage ?? info.total ?? null;
-
-  function readNumber(value) {
-    const next = Number(value);
-    return Number.isFinite(next) && next >= 0 ? next : null;
-  }
-
-  function readInputSideTokens(usage) {
-    if (!usage || typeof usage !== "object") {
-      return null;
-    }
-
-    const input = readNumber(usage.input_tokens ?? usage.inputTokens);
-    const cachedInput = readNumber(usage.cached_input_tokens ?? usage.cachedInputTokens);
-    if (input !== null) {
-      return input;
-    }
-
-    if (cachedInput === null) {
-      return null;
-    }
-
-    return cachedInput;
-  }
-
-  function readTotalTokens(usage) {
-    if (!usage || typeof usage !== "object") {
-      return null;
-    }
-
-    return readNumber(usage.total_tokens ?? usage.totalTokens);
-  }
-
-  const lastInputSide = readInputSideTokens(lastUsage);
-  const lastTotal = readTotalTokens(lastUsage);
-  const totalInputSide = readInputSideTokens(totalUsage);
-  const cumulativeTotal = readTotalTokens(totalUsage);
-  // Prefer latest request-side token usage for context occupancy.
-  let usedTokens = null;
-  if (lastInputSide !== null) {
-    usedTokens = lastInputSide;
-  } else if (lastTotal !== null) {
-    usedTokens = lastTotal;
-  } else if (totalInputSide !== null) {
-    usedTokens = totalInputSide;
-  } else if (cumulativeTotal !== null) {
-    usedTokens = cumulativeTotal;
-  }
-
-  if (contextWindow === null && usedTokens === null) {
-    return null;
-  }
-
-  return {
-    contextWindow,
-    usedTokens,
-    source: lastInputSide !== null
-      ? "last_input_side"
-      : (lastTotal !== null
-        ? "last_total"
-        : (totalInputSide !== null ? "total_input_side" : "total_total"))
-  };
-}
-
 function readNonNegativeNumber(value) {
   const next = Number(value);
   return Number.isFinite(next) && next >= 0 ? next : null;
@@ -1500,6 +1540,103 @@ function applyContextUsageForThread(threadId, pieces, sourceTag = "") {
     updateContextLeftIndicator();
   }
   return true;
+}
+
+function updateContextUsageFromLogLines(threadId, lines) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !Array.isArray(lines) || lines.length === 0) {
+    return;
+  }
+
+  const prior = contextUsageByThread.get(normalizedThreadId) || null;
+  let contextWindow = Number.isFinite(prior?.contextWindow) ? prior.contextWindow : null;
+  let usedTokens = Number.isFinite(prior?.usedTokens) ? prior.usedTokens : null;
+  let updatedFromSource = "";
+
+  for (const line of lines) {
+    if (typeof line !== "string" || !line.trim()) {
+      continue;
+    }
+
+    const parsed = safeJsonParse(line, null);
+    if (!parsed || typeof parsed !== "object") {
+      continue;
+    }
+
+    if (parsed.type === "event_msg" && parsed.payload && typeof parsed.payload === "object") {
+      const payload = parsed.payload;
+      if (payload.type === "task_started" || payload.type === "turn_started") {
+        const startedWindow = Number(payload.model_context_window ?? payload.modelContextWindow ?? null);
+        if (Number.isFinite(startedWindow) && startedWindow > 0) {
+          contextWindow = startedWindow;
+        }
+      }
+
+      const compactionPieces = readThreadCompactedInfo(payload);
+      if (compactionPieces) {
+        if (compactionPieces.contextWindow !== null) {
+          contextWindow = compactionPieces.contextWindow;
+        }
+        if (compactionPieces.usedTokensAfter !== null) {
+          usedTokens = compactionPieces.usedTokensAfter;
+          updatedFromSource = "thread_compacted";
+        }
+      }
+
+      const eventPieces = readTokenCountInfo(payload);
+      if (eventPieces) {
+        if (eventPieces.contextWindow !== null) {
+          contextWindow = eventPieces.contextWindow;
+        }
+        if (eventPieces.usedTokens !== null) {
+          usedTokens = eventPieces.usedTokens;
+          updatedFromSource = eventPieces.source || "";
+        }
+      }
+    }
+  }
+
+  applyContextUsageForThread(
+    normalizedThreadId,
+    {
+      contextWindow,
+      usedTokens
+    },
+    updatedFromSource
+  );
+}
+
+function updatePermissionInfoFromLogLines(threadId, lines) {
+  const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+  if (!normalizedThreadId || !Array.isArray(lines) || lines.length === 0) {
+    return;
+  }
+
+  for (const line of lines) {
+    if (typeof line !== "string" || !line.trim()) {
+      continue;
+    }
+
+    const parsed = safeJsonParse(line, null);
+    if (!parsed || typeof parsed !== "object") {
+      continue;
+    }
+
+    if (parsed.type === "event_msg" && parsed.payload && typeof parsed.payload === "object") {
+      const next = readPermissionInfoFromPayload(parsed.payload);
+      if (next) {
+        setPermissionLevelForThread(normalizedThreadId, next);
+      }
+      continue;
+    }
+
+    if (parsed.type === "session_meta" || parsed.type === "turn_context") {
+      const next = readPermissionInfoFromPayload(parsed.payload || null);
+      if (next) {
+        setPermissionLevelForThread(normalizedThreadId, next);
+      }
+    }
+  }
 }
 
 function applyTimelineWatchMetadata(threadId, data) {
@@ -4383,6 +4520,117 @@ function findMissingToolUserInputQuestionIds(answers) {
   return missing;
 }
 
+function normalizeToolUserInputPromptAnswer(question, rawValue) {
+  if (!question || typeof rawValue !== "string") {
+    return "";
+  }
+
+  const trimmed = rawValue.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const options = Array.isArray(question.options) ? question.options : [];
+  const numericMatch = trimmed.match(/^(\d+)$/);
+  if (numericMatch) {
+    const optionIndex = Number.parseInt(numericMatch[1], 10) - 1;
+    if (Number.isInteger(optionIndex) && optionIndex >= 0 && optionIndex < options.length) {
+      const selected = options[optionIndex];
+      if (selected && typeof selected.label === "string" && selected.label.trim()) {
+        return selected.label.trim();
+      }
+    }
+  }
+
+  for (const option of options) {
+    if (!option || typeof option.label !== "string") {
+      continue;
+    }
+
+    const label = option.label.trim();
+    if (!label) {
+      continue;
+    }
+
+    if (label.localeCompare(trimmed, undefined, { sensitivity: "accent" }) === 0) {
+      return label;
+    }
+  }
+
+  return trimmed;
+}
+
+function collectToolUserInputAnswersFromPrompt(rawPrompt) {
+  const answers = {};
+  if (!pendingToolUserInput || typeof rawPrompt !== "string") {
+    return answers;
+  }
+
+  const normalizedPrompt = rawPrompt.trim();
+  if (!normalizedPrompt) {
+    return answers;
+  }
+
+  const questions = Array.isArray(pendingToolUserInput.questions) ? pendingToolUserInput.questions : [];
+  if (questions.length === 0) {
+    return answers;
+  }
+
+  if (questions.length === 1) {
+    const single = questions[0];
+    const answer = normalizeToolUserInputPromptAnswer(single, normalizedPrompt);
+    if (answer && single && typeof single.id === "string" && single.id.trim()) {
+      answers[single.id.trim()] = answer;
+    }
+    return answers;
+  }
+
+  const byId = new Map();
+  for (const question of questions) {
+    if (!question || typeof question.id !== "string") {
+      continue;
+    }
+
+    const normalizedId = question.id.trim().toLowerCase();
+    if (normalizedId) {
+      byId.set(normalizedId, question);
+    }
+  }
+
+  const lines = normalizedPrompt.split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      continue;
+    }
+
+    const separatorIndex = line.indexOf(":") >= 0 ? line.indexOf(":") : line.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+
+    const idCandidate = line.slice(0, separatorIndex).trim().toLowerCase();
+    const valueCandidate = line.slice(separatorIndex + 1).trim();
+    if (!idCandidate || !valueCandidate) {
+      continue;
+    }
+
+    const matchedQuestion = byId.get(idCandidate);
+    if (!matchedQuestion || typeof matchedQuestion.id !== "string" || !matchedQuestion.id.trim()) {
+      continue;
+    }
+
+    const answer = normalizeToolUserInputPromptAnswer(matchedQuestion, valueCandidate);
+    if (!answer) {
+      continue;
+    }
+
+    answers[matchedQuestion.id.trim()] = answer;
+  }
+
+  return answers;
+}
+
 function submitPendingToolUserInputWithAnswers(answers, sourceLabel = "ui") {
   if (!pendingToolUserInput) {
     return false;
@@ -5591,6 +5839,17 @@ function restartTimelinePolling() {
   if (timelinePollTimer) {
     clearInterval(timelinePollTimer);
     timelinePollTimer = null;
+  }
+
+  if (timelineUsesEventFeed()) {
+    timelineCursor = null;
+    timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
+    timelineHasTruncatedHead = false;
+    updateTimelineTruncationNotice();
+    pollTimelineOnce(true, generation).catch((error) => {
+      handleTimelinePollError(error);
+    });
+    return;
   }
 
   const state = getActiveSessionState();
