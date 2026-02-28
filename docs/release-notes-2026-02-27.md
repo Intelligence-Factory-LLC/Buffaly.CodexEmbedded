@@ -2,22 +2,42 @@
 
 ## New Features
 
-This release focuses on faster long-session review, stronger recap workflows, and better state recovery under real multi-session load.
+This release is all about working faster and safer across long conversations and multiple sessions, with full Planning Mode support, voice dictation, and a new recap workflow you can export anywhere. 🚀
 
-### UI Improvements
+### 🧠 Planning Mode (Fully Supported)
 
-Long conversations are now easier to scan and navigate without losing detail when you need it.
+Planning Mode is now end-to-end: stream a plan, review it, approve it, and keep going without losing state.
 
-- Added recap mode at `/recap` with day and query drill-in plus a live recap timeline.
-- Added recap report history in the sidebar and aligned recap controls with the main index UI.
-- Upgraded the plan stream UI to a compact single-line status strip plus expandable proposed-plan cards.
-- Added canonical markdown rendering with delta reconciliation for plan output.
-- Added diff-style highlighting for timeline tool output and code blocks.
-- Reduced noisy default tool preview lines and added expandable hidden-line previews.
+- Streaming plan output now stays readable with a compact single-line status strip.
+- Proposed plans render as expandable timeline cards, so you can approve and reference them later.
+- Plan output is rendered as canonical markdown with delta reconciliation during streaming.
 
 ![Plan input and approval flow](../screenshots/plan-input.png)
 
 ![Plan completion and timeline card output](../screenshots/plan-complete.png)
+
+### 🎙️ Voice Dictation
+
+Voice dictation is now supported for easier prompt entry when you want to move quickly.
+
+![Voice dictation prompt entry](../screenshots/dictate.png)
+
+### 🧾 Recap Screen (Export-Friendly)
+
+The new recap screen is built for end-of-day reports, sharing with teammates, and exporting your work to other LLMs for summaries or deeper research.
+
+- Added recap mode at `/recap` with day and query drill-in plus a live recap timeline.
+- Added recap report history in the sidebar and aligned recap controls with the main index UI.
+
+![Recap screen for exporting work](../screenshots/recap.png)
+
+### ⚡ Long Conversation Review
+
+Long sessions are easier to review without getting buried in raw tool output.
+
+- Added diff-style highlighting for timeline tool output and code blocks.
+- Reduced noisy default tool preview lines and added expandable hidden-line previews.
+- Fixed extra blank lines in timeline diff rendering.
 
 ![Diff-style timeline preview](../screenshots/diff-preview.png)
 
@@ -31,7 +51,15 @@ Timeline loading and session attach paths were reworked to improve speed and con
 - Emitted authoritative `session_attached` when attaching loaded threads.
 - Tuned `/server` auto-refresh timing so state snapshots are easier to copy and inspect.
 
-### New Developer Features
+### 🧩 Multi-Session Safety and Reliability
+
+You can run more Codex sessions at once without the UI getting confused, even when sessions reconnect or recover.
+
+- Added automatic recovery for stale pending turn-start sessions.
+- Improved attach behavior by emitting authoritative `session_attached` for loaded thread attach.
+- General cleanup across recap, timeline, and turn lifecycle handling.
+
+### 🛠️ Developer and Integrations
 
 This release adds practical controls for plan collaboration and speech workflows.
 
@@ -40,14 +68,9 @@ This release adds practical controls for plan collaboration and speech workflows
 - Added OpenAI API key management for app flows that require external service calls.
 - Added segmented speech-to-text frontend wiring and recap voice updates in-session.
 
-### Reliability and Recovery Improvements
+### 🧹 Cleanup and Fixes
 
-Recovery logic was hardened across recap, timeline, and turn lifecycle states.
-
-- Added automatic recovery for stale pending turn-start sessions.
 - Fixed speech transcription 400 retry loops and improved single-key lookup behavior.
-- Fixed extra blank lines in timeline diff rendering.
 - Hardened recap routing and binding for hosted base paths and single-session context.
 - Enforced recap workspace defaults for safe read-only/no-approval operation.
 - Tightened tool input modal behavior to require explicit selection.
-
