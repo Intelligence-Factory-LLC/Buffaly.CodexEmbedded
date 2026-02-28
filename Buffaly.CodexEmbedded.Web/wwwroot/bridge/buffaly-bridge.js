@@ -43,7 +43,15 @@
       action: "",
       errorList: "",
       warningList: "",
-      updatedAtIso: ""
+      updatedAtIso: "",
+      notifications: {
+        beginCount: 0,
+        doneCount: 0,
+        errorCount: 0,
+        lastType: "",
+        lastMessage: "",
+        lastAtIso: ""
+      }
     },
     rpc: rpc,
     commands: {
@@ -81,6 +89,7 @@
   var debugPanel;
   var debugOutput;
   var debugStatus;
+  var buildEventBadge;
   var fileLinkInterceptorInstalled = false;
   var webviewMessageInstalled = false;
 
@@ -113,6 +122,84 @@
     badge.style.fontWeight = "600";
     if (document.body) document.body.appendChild(badge);
     return badge;
+  }
+
+  function ensureBuildEventBadge() {
+    if (buildEventBadge) return buildEventBadge;
+    buildEventBadge = document.createElement("div");
+    buildEventBadge.id = "vsBridgeBuildEventBadge";
+    buildEventBadge.style.position = "fixed";
+    buildEventBadge.style.right = "12px";
+    buildEventBadge.style.bottom = "82px";
+    buildEventBadge.style.zIndex = "2147483647";
+    buildEventBadge.style.padding = "6px 10px";
+    buildEventBadge.style.borderRadius = "8px";
+    buildEventBadge.style.border = "1px solid #cbd5e1";
+    buildEventBadge.style.background = "#f8fafc";
+    buildEventBadge.style.color = "#0f172a";
+    buildEventBadge.style.fontFamily = "Segoe UI, sans-serif";
+    buildEventBadge.style.fontSize = "12px";
+    buildEventBadge.style.fontWeight = "600";
+    buildEventBadge.style.maxWidth = "420px";
+    buildEventBadge.style.whiteSpace = "nowrap";
+    buildEventBadge.style.overflow = "hidden";
+    buildEventBadge.style.textOverflow = "ellipsis";
+    buildEventBadge.style.display = "none";
+    if (document.body) document.body.appendChild(buildEventBadge);
+    return buildEventBadge;
+  }
+
+  function renderBuildEventBadge() {
+    var n = bridge.build.notifications;
+    var el = ensureBuildEventBadge();
+    if (!el || !n) return;
+    if (!n.lastType) {
+      el.style.display = "none";
+      return;
+    }
+
+    var label = "Build notify: " + n.lastType;
+    if (n.lastMessage) {
+      label += " | " + n.lastMessage;
+    }
+    label += " | begin " + n.beginCount + " done " + n.doneCount + " err " + n.errorCount;
+    el.textContent = label;
+    el.style.display = "block";
+
+    if (n.lastType === "error" || n.lastType === "error-list") {
+      el.style.background = "#fef2f2";
+      el.style.color = "#991b1b";
+      el.style.borderColor = "#fca5a5";
+    } else if (n.lastType === "done") {
+      el.style.background = "#ecfdf5";
+      el.style.color = "#065f46";
+      el.style.borderColor = "#6ee7b7";
+    } else if (n.lastType === "begin") {
+      el.style.background = "#eff6ff";
+      el.style.color = "#1e40af";
+      el.style.borderColor = "#93c5fd";
+    } else {
+      el.style.background = "#f8fafc";
+      el.style.color = "#0f172a";
+      el.style.borderColor = "#cbd5e1";
+    }
+  }
+
+  function markBuildNotification(type, message) {
+    var n = bridge.build.notifications;
+    if (!n) return;
+    var t = String(type || "").trim().toLowerCase();
+    if (t === "begin") {
+      n.beginCount += 1;
+    } else if (t === "done") {
+      n.doneCount += 1;
+    } else if (t === "error" || t === "error-list") {
+      n.errorCount += 1;
+    }
+    n.lastType = t || "update";
+    n.lastMessage = String(message || "");
+    n.lastAtIso = new Date().toISOString();
+    renderBuildEventBadge();
   }
 
   function ensureDebugButton() {
@@ -311,7 +398,10 @@
     debugStatus.textContent =
       "available: " + String(bridge.available) +
       " | connected: " + String(bridge.connected) +
-      " | build: " + String(bridge.build.state || "idle");
+      " | build: " + String(bridge.build.state || "idle") +
+      " | events: b" + bridge.build.notifications.beginCount +
+      "/d" + bridge.build.notifications.doneCount +
+      "/e" + bridge.build.notifications.errorCount;
     var meta = document.getElementById("vsBridgeDebugMeta");
     if (meta) {
       var urlPart = scriptInfo.url ? (" | src " + scriptInfo.url) : "";
@@ -502,6 +592,7 @@
 
   async function refreshBuildDiagnostics() {
     try {
+      var previousErrors = bridge.build.errorList;
       var results = await Promise.all([
         bridge.commands.getErrorList(),
         bridge.commands.getWarningList()
@@ -509,6 +600,9 @@
       bridge.build.errorList = String(results[0] || "");
       bridge.build.warningList = String(results[1] || "");
       bridge.build.updatedAtIso = new Date().toISOString();
+      if (bridge.build.errorList && bridge.build.errorList !== previousErrors) {
+        markBuildNotification("error-list", "error list refreshed");
+      }
       refreshDebugStatus();
     } catch (e) {
       console.error("[vs-bridge] failed to refresh build diagnostics", e);
@@ -526,6 +620,7 @@
       bridge.build.scope = String(msg.scope || "");
       bridge.build.action = String(msg.action || "");
       bridge.build.updatedAtIso = new Date().toISOString();
+      markBuildNotification("begin", "build started");
       renderStatus(true, "Visual Studio: Connected");
       refreshDebugStatus();
       console.log("[vs-bridge] build.begin", msg);
@@ -539,6 +634,11 @@
       bridge.build.scope = String(msg.scope || "");
       bridge.build.action = String(msg.action || "");
       bridge.build.updatedAtIso = new Date().toISOString();
+      if (bridge.build.errors > 0 || bridge.build.state === "failed") {
+        markBuildNotification("error", "build done with " + bridge.build.errors + " errors");
+      } else {
+        markBuildNotification("done", "build done " + bridge.build.state);
+      }
       renderStatus(true, "Visual Studio: Connected");
       refreshDebugStatus();
       refreshBuildDiagnostics();
@@ -676,6 +776,7 @@
 
   onReady(function () {
     ensureDebugButton();
+    ensureBuildEventBadge();
     installWebViewMessageListener();
     installFileLinkInterceptor();
     refreshScriptFingerprint();
