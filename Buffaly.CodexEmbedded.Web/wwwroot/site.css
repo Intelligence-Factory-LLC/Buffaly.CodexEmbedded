@@ -2028,6 +2028,28 @@ body {
 	padding: 0.55rem 0.75rem 0;
 }
 
+.prompt-selection-indicator {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	margin: 0.5rem 0.75rem 0;
+	padding: 0.45rem 0.65rem;
+	border: 1px solid #c7d2fe;
+	border-radius: 10px;
+	background: #eef2ff;
+	color: #312e81;
+	font-size: 0.82rem;
+	line-height: 1.3;
+}
+
+.prompt-selection-indicator .file {
+	font-weight: 700;
+}
+
+.prompt-selection-indicator .meta {
+	opacity: 0.95;
+}
+
 .composer-image-pill {
 	position: relative;
 	width: 64px;
@@ -3576,6 +3598,12 @@ html[data-theme="dark"] .recap-timeline-column {
 
 html[data-theme="dark"] .prompt-form {
 	border-top-color: #334155;
+}
+
+html[data-theme="dark"] .prompt-selection-indicator {
+	background: #1e1b4b;
+	border-color: #4338ca;
+	color: #c7d2fe;
 }
 
 html[data-theme="dark"] .prompt-form textarea,

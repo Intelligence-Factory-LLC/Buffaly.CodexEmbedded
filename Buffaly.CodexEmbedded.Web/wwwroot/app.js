@@ -97,6 +97,9 @@ let recapSessionId = null;
 let recapSessionEnsureInFlight = false;
 let sidebarProjectSearchQuery = "";
 let sidebarProjectSearchExpanded = false;
+let vsSelectionSnapshot = null; // { filePath, fileName, selectionText, caretLine, caretColumn }
+let vsSelectionPollTimer = null;
+let vsSelectionPollInFlight = false;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -120,6 +123,8 @@ const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
 const SESSION_LIST_SYNC_INTERVAL_MS = 10000;
 const TURN_START_CONFIRM_GRACE_MS = 15000;
+const VS_SELECTION_POLL_INTERVAL_MS = 4000;
+const VS_SELECTION_MAX_PROMPT_CHARS = 4000;
 // Server turn cache is rebuilt from recent JSONL lines, so keep this high enough to capture many complete turns.
 const TIMELINE_INITIAL_WINDOW_DEFAULT = 6000;
 let timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
@@ -158,6 +163,7 @@ const scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
 const contextLeftIndicator = document.getElementById("contextLeftIndicator");
 const permissionLevelIndicator = document.getElementById("permissionLevelIndicator");
 const composerImages = document.getElementById("composerImages");
+const promptSelectionIndicator = document.getElementById("promptSelectionIndicator");
 const imageUploadInput = document.getElementById("imageUploadInput");
 const imageUploadBtn = document.getElementById("imageUploadBtn");
 const speechToTextBtn = document.getElementById("speechToTextBtn");
@@ -4923,6 +4929,177 @@ function renderComposerImages() {
   composerImages.classList.remove("hidden");
 }
 
+function getVsBridgeCommands() {
+  const bridge = window.__vsBridge || window.devAgentBridge;
+  if (!bridge || !bridge.commands || typeof bridge.commands.getContext !== "function") {
+    return null;
+  }
+
+  return bridge.commands;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function getFileNameFromPath(path) {
+  const normalized = String(path || "").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  const slash = Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf("\\"));
+  return slash >= 0 ? normalized.slice(slash + 1) : normalized;
+}
+
+function normalizeVsSelectionSnapshot(rawContext) {
+  if (!rawContext || typeof rawContext !== "object") {
+    return null;
+  }
+
+  const filePath = String(rawContext.activeDocumentPath || "").trim();
+  const selectionText = String(rawContext.selectionText || "");
+  if (!filePath || !selectionText.trim()) {
+    return null;
+  }
+
+  const line = Number(rawContext.caretLine || 0);
+  const column = Number(rawContext.caretColumn || 0);
+  return {
+    filePath,
+    fileName: getFileNameFromPath(filePath),
+    selectionText,
+    caretLine: Number.isFinite(line) ? Math.max(0, Math.floor(line)) : 0,
+    caretColumn: Number.isFinite(column) ? Math.max(0, Math.floor(column)) : 0
+  };
+}
+
+function renderVsSelectionIndicator() {
+  if (!promptSelectionIndicator) {
+    return;
+  }
+
+  const snapshot = vsSelectionSnapshot;
+  if (!snapshot) {
+    promptSelectionIndicator.textContent = "";
+    promptSelectionIndicator.classList.add("hidden");
+    return;
+  }
+
+  const chars = snapshot.selectionText.length;
+  const caretParts = [];
+  if (snapshot.caretLine > 0) {
+    caretParts.push(`line ${snapshot.caretLine}`);
+  }
+  if (snapshot.caretColumn > 0) {
+    caretParts.push(`col ${snapshot.caretColumn}`);
+  }
+  const caretText = caretParts.length > 0 ? ` | ${caretParts.join(", ")}` : "";
+  promptSelectionIndicator.innerHTML =
+    `<span class="file">VS selection: ${escapeHtml(snapshot.fileName || snapshot.filePath)}</span>` +
+    `<span class="meta">${chars} chars${caretText}</span>`;
+  promptSelectionIndicator.classList.remove("hidden");
+}
+
+async function refreshVsSelectionSnapshot(options = {}) {
+  const force = options.force === true;
+  if (vsSelectionPollInFlight && !force) {
+    return vsSelectionSnapshot;
+  }
+
+  const commands = getVsBridgeCommands();
+  if (!commands) {
+    if (vsSelectionSnapshot !== null) {
+      vsSelectionSnapshot = null;
+      renderVsSelectionIndicator();
+    }
+    return null;
+  }
+
+  vsSelectionPollInFlight = true;
+  try {
+    const context = await commands.getContext();
+    const normalized = normalizeVsSelectionSnapshot(context);
+    const changed = JSON.stringify(normalized) !== JSON.stringify(vsSelectionSnapshot);
+    vsSelectionSnapshot = normalized;
+    if (changed || force) {
+      renderVsSelectionIndicator();
+    }
+    return vsSelectionSnapshot;
+  } catch (error) {
+    if (vsSelectionSnapshot !== null) {
+      vsSelectionSnapshot = null;
+      renderVsSelectionIndicator();
+    }
+    return null;
+  } finally {
+    vsSelectionPollInFlight = false;
+  }
+}
+
+function startVsSelectionPolling() {
+  if (vsSelectionPollTimer) {
+    clearInterval(vsSelectionPollTimer);
+  }
+
+  refreshVsSelectionSnapshot({ force: true }).catch(() => {});
+  vsSelectionPollTimer = setInterval(() => {
+    refreshVsSelectionSnapshot().catch(() => {});
+  }, VS_SELECTION_POLL_INTERVAL_MS);
+}
+
+function formatSelectionContextForPrompt(snapshot) {
+  if (!snapshot) {
+    return "";
+  }
+
+  const text = String(snapshot.selectionText || "");
+  if (!text.trim()) {
+    return "";
+  }
+
+  const truncated = text.length > VS_SELECTION_MAX_PROMPT_CHARS
+    ? `${text.slice(0, VS_SELECTION_MAX_PROMPT_CHARS)}\n...[selection truncated]...`
+    : text;
+  const caret = snapshot.caretLine > 0
+    ? `line ${snapshot.caretLine}${snapshot.caretColumn > 0 ? `, col ${snapshot.caretColumn}` : ""}`
+    : "unknown";
+  return [
+    "",
+    "[Visual Studio selection context]",
+    `File: ${snapshot.filePath}`,
+    `Caret: ${caret}`,
+    "Selected code:",
+    "```",
+    truncated,
+    "```"
+  ].join("\n");
+}
+
+async function composePromptWithVsSelection(promptText) {
+  const base = String(promptText || "");
+  if (!base.trim()) {
+    return { prompt: base, includedSelection: false };
+  }
+
+  const snapshot = await refreshVsSelectionSnapshot({ force: true });
+  const contextBlock = formatSelectionContextForPrompt(snapshot);
+  if (!contextBlock) {
+    return { prompt: base, includedSelection: false };
+  }
+
+  return {
+    prompt: `${base}\n${contextBlock}`,
+    includedSelection: true,
+    selection: snapshot
+  };
+}
+
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -8071,6 +8248,11 @@ promptInput.addEventListener("paste", async (event) => {
 
 promptInput.addEventListener("input", () => {
   rememberPromptDraftForState(getActiveSessionState());
+  refreshVsSelectionSnapshot().catch(() => {});
+});
+
+promptInput.addEventListener("focus", () => {
+  refreshVsSelectionSnapshot({ force: true }).catch(() => {});
 });
 
 promptInput.addEventListener("dragover", (event) => {
@@ -8191,7 +8373,13 @@ async function queueCurrentComposerPrompt() {
     return true;
   }
 
-  const queued = await queuePrompt(activeSessionId, prompt, images, { planMode: usePlanMode });
+  const composed = await composePromptWithVsSelection(prompt);
+  if (composed.includedSelection && composed.selection) {
+    appendLog(
+      `[bridge] included VS selection from ${composed.selection.fileName || composed.selection.filePath} (${composed.selection.selectionText.length} chars)`);
+  }
+
+  const queued = await queuePrompt(activeSessionId, composed.prompt, images, { planMode: usePlanMode });
   if (!queued) {
     appendLog(`[queue] failed to queue prompt for session=${activeSessionId}`);
     return true;
@@ -8264,7 +8452,13 @@ promptForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  const started = startTurn(activeSessionId, prompt, images, { planMode: usePlanMode });
+  const composed = await composePromptWithVsSelection(prompt);
+  if (composed.includedSelection && composed.selection) {
+    appendLog(
+      `[bridge] included VS selection from ${composed.selection.fileName || composed.selection.filePath} (${composed.selection.selectionText.length} chars)`);
+  }
+
+  const started = startTurn(activeSessionId, composed.prompt, images, { planMode: usePlanMode });
   if (!started) {
     appendLog(`[turn] failed to send prompt for session=${activeSessionId}`);
     return;
@@ -8439,6 +8633,10 @@ window.addEventListener("resize", () => {
 
 window.addEventListener("beforeunload", () => {
   rememberPromptDraftForState(getActiveSessionState());
+  if (vsSelectionPollTimer) {
+    clearInterval(vsSelectionPollTimer);
+    vsSelectionPollTimer = null;
+  }
   try {
     if (scribeController && typeof scribeController.dispose === "function") {
       scribeController.dispose();
@@ -8449,6 +8647,8 @@ window.addEventListener("beforeunload", () => {
 
 applySavedUiSettings();
 renderComposerImages();
+renderVsSelectionIndicator();
+startVsSelectionPolling();
 renderProjectSidebar();
 updateScrollToBottomButton();
 updateTimelineTruncationNotice();
