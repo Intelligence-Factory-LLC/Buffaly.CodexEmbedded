@@ -56,6 +56,7 @@
   var debugPanel;
   var debugOutput;
   var debugStatus;
+  var fileLinkInterceptorInstalled = false;
 
   function getHost() {
     try {
@@ -272,6 +273,85 @@
     }
   }
 
+  function tryParseLineFromUrl(url) {
+    if (!url) return 0;
+    var query = url.searchParams;
+    var fromLine = Number(query.get("line") || query.get("ln") || 0);
+    if (fromLine > 0) return fromLine;
+    var hash = (url.hash || "").replace(/^#/, "");
+    var lMatch = /^L(\d+)$/i.exec(hash);
+    if (lMatch) return Number(lMatch[1] || 0);
+    var lineMatch = /^line=(\d+)$/i.exec(hash);
+    if (lineMatch) return Number(lineMatch[1] || 0);
+    return 0;
+  }
+
+  function fileUrlToPath(url) {
+    if (!url || url.protocol !== "file:") return "";
+    var path = decodeURIComponent(url.pathname || "");
+    if (/^\/[a-zA-Z]:\//.test(path)) {
+      path = path.substring(1);
+    }
+    return path.replace(/\//g, "\\");
+  }
+
+  async function openFileUrl(href) {
+    var url;
+    try {
+      url = new URL(href);
+    } catch (e) {
+      throw new Error("Invalid file URL: " + href);
+    }
+
+    if (url.protocol !== "file:") {
+      throw new Error("Unsupported protocol: " + url.protocol);
+    }
+
+    var path = fileUrlToPath(url);
+    if (!path) {
+      throw new Error("Could not map file URL to path.");
+    }
+
+    var line = tryParseLineFromUrl(url);
+    await bridge.commands.openFile(path);
+    if (line > 0) {
+      await bridge.commands.goToLine(line);
+    }
+    return { path: path, line: line };
+  }
+
+  function installFileLinkInterceptor() {
+    if (fileLinkInterceptorInstalled) return;
+    fileLinkInterceptorInstalled = true;
+
+    document.addEventListener("click", function (event) {
+      try {
+        var target = event.target;
+        if (!target || typeof target.closest !== "function") return;
+        var anchor = target.closest("a[href]");
+        if (!anchor) return;
+        var href = anchor.getAttribute("href") || "";
+        if (!/^file:\/\//i.test(href)) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        openFileUrl(anchor.href).then(function (result) {
+          console.log("[vs-bridge] opened file link", result);
+          if (debugPanel && debugPanel.style.display !== "none") {
+            writeDebugOutput("OK Open File Link", result);
+          }
+        }).catch(function (err) {
+          console.error("[vs-bridge] failed to open file link", href, err);
+          if (debugPanel && debugPanel.style.display !== "none") {
+            writeDebugOutput("ERR Open File Link", err && err.message ? err.message : String(err));
+          }
+        });
+      } catch (e) {
+        console.error("[vs-bridge] file link interceptor error", e);
+      }
+    }, true);
+  }
+
   function resolveScriptUrl() {
     var scripts = document.getElementsByTagName("script");
     for (var i = scripts.length - 1; i >= 0; i -= 1) {
@@ -430,6 +510,7 @@
 
   onReady(function () {
     ensureDebugButton();
+    installFileLinkInterceptor();
     refreshScriptFingerprint();
     checkConnection();
     setInterval(checkConnection, 5000);
