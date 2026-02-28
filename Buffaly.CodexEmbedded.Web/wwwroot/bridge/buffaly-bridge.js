@@ -14,8 +14,11 @@
     "ide.openDiffFromSelection",
     "ide.v1.openDiffFromSelection"
   ];
-  var DEBUG_PANEL_REV = "2026-02-28a";
   var loadedAtIso = new Date().toISOString();
+  var scriptInfo = {
+    url: "",
+    fingerprint: "pending"
+  };
 
   var bridge = {
     available: false,
@@ -138,7 +141,8 @@
     debugPanel.appendChild(title);
 
     var meta = document.createElement("div");
-    meta.textContent = "rev " + DEBUG_PANEL_REV + " | loaded " + loadedAtIso;
+    meta.id = "vsBridgeDebugMeta";
+    meta.textContent = "loaded " + loadedAtIso + " | " + scriptInfo.fingerprint;
     meta.style.marginTop = "4px";
     meta.style.color = "#475569";
     debugPanel.appendChild(meta);
@@ -261,6 +265,57 @@
     debugStatus.textContent =
       "available: " + String(bridge.available) +
       " | connected: " + String(bridge.connected);
+    var meta = document.getElementById("vsBridgeDebugMeta");
+    if (meta) {
+      var urlPart = scriptInfo.url ? (" | src " + scriptInfo.url) : "";
+      meta.textContent = "loaded " + loadedAtIso + " | " + scriptInfo.fingerprint + urlPart;
+    }
+  }
+
+  function resolveScriptUrl() {
+    var scripts = document.getElementsByTagName("script");
+    for (var i = scripts.length - 1; i >= 0; i -= 1) {
+      var src = scripts[i].src || "";
+      if (src.indexOf("/bridge/buffaly-bridge.js") >= 0) {
+        return src;
+      }
+    }
+    return "";
+  }
+
+  function computeFingerprint(text) {
+    var hash = 2166136261;
+    for (var i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i);
+      hash = (hash * 16777619) >>> 0;
+    }
+    return "fp-" + hash.toString(16).padStart(8, "0") + "-len" + text.length;
+  }
+
+  async function refreshScriptFingerprint() {
+    try {
+      scriptInfo.url = resolveScriptUrl();
+      if (!scriptInfo.url) {
+        scriptInfo.fingerprint = "embedded-or-unknown-src";
+        refreshDebugStatus();
+        return;
+      }
+
+      var base = scriptInfo.url.split("?")[0];
+      var response = await fetch(base + "?v=" + Date.now(), { cache: "no-store" });
+      if (!response.ok) {
+        scriptInfo.fingerprint = "fetch-failed-" + response.status;
+        refreshDebugStatus();
+        return;
+      }
+
+      var text = await response.text();
+      scriptInfo.fingerprint = computeFingerprint(text);
+      refreshDebugStatus();
+    } catch (e) {
+      scriptInfo.fingerprint = "fingerprint-error";
+      refreshDebugStatus();
+    }
   }
 
   function renderStatus(connected, text) {
@@ -375,8 +430,10 @@
 
   onReady(function () {
     ensureDebugButton();
+    refreshScriptFingerprint();
     checkConnection();
     setInterval(checkConnection, 5000);
+    setInterval(refreshScriptFingerprint, 5000);
     console.log("[vs-bridge] installed", bridge);
   });
 })();
