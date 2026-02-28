@@ -264,6 +264,13 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						TryGetTurnImageInputs(root),
 						cancellationToken);
 					return;
+				case "turn_steer":
+					await SteerTurnAsync(
+						TryGetString(root, "sessionId"),
+						TryGetString(root, "text"),
+						TryGetTurnImageInputs(root),
+						cancellationToken);
+					return;
 				case "turn_queue_add":
 				{
 					var hasQueuedModelOverride = root.TryGetProperty("model", out _);
@@ -669,7 +676,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
-		var snapshotBefore = _orchestrator.GetSessionSnapshots().FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
+		var snapshotBefore = _orchestrator.GetSessionSnapshots(includeTurnCacheStats: false).FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
 		var currentModel = string.IsNullOrWhiteSpace(snapshotBefore?.Model) ? null : snapshotBefore.Model.Trim();
 		var currentEffort = WebCodexUtils.NormalizeReasoningEffort(snapshotBefore?.ReasoningEffort);
 		var targetModel = hasModelOverride ? (string.IsNullOrWhiteSpace(model) ? null : model.Trim()) : currentModel;
@@ -684,7 +691,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var normalizedEffort = hasEffortOverride ? targetEffort : null;
 		_orchestrator.TrySetSessionModel(sessionId, normalizedModel, normalizedEffort);
 
-		var snapshot = _orchestrator.GetSessionSnapshots().FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
+		var snapshot = _orchestrator.GetSessionSnapshots(includeTurnCacheStats: false).FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
 		var threadId = snapshot?.ThreadId ?? "unknown";
 
 		await WriteConnectionLogAsync(
@@ -727,7 +734,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
-		var snapshot = _orchestrator.GetSessionSnapshots().FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
+		var snapshot = _orchestrator.GetSessionSnapshots(includeTurnCacheStats: false).FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
 		var threadId = snapshot?.ThreadId ?? "unknown";
 		await WriteConnectionLogAsync(
 			$"[session] permissions updated session={sessionId} thread={threadId} approval={(snapshot?.ApprovalPolicy ?? "(default)")} sandbox={(snapshot?.SandboxPolicy ?? "(default)")}",
@@ -754,7 +761,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 	private async Task SendSessionListAsync(CancellationToken cancellationToken)
 	{
-		var snapshots = _orchestrator.GetSessionSnapshots();
+		var snapshots = _orchestrator.GetSessionSnapshots(includeTurnCacheStats: false);
 		if (!string.IsNullOrWhiteSpace(_activeSessionId) &&
 			!snapshots.Any(x => string.Equals(x.SessionId, _activeSessionId, StringComparison.Ordinal)))
 		{
@@ -875,92 +882,10 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		if (_orchestrator.TryGetTurnState(sessionId, out var isTurnInFlight) && isTurnInFlight)
 		{
-			if (string.Equals(normalizedCollaborationMode?.Mode, "plan", StringComparison.Ordinal))
-			{
-				await QueueTurnAsync(
-					sessionId,
-					normalizedText,
-					normalizedCwd,
-					normalizedModel,
-					normalizedEffort,
-					normalizedApproval,
-					normalizedSandbox,
-					normalizedCollaborationMode,
-					hasModelOverride,
-					hasEffortOverride,
-					hasApprovalOverride,
-					hasSandboxOverride,
-					images,
-					cancellationToken);
-				await SendEventAsync("status", new { sessionId, message = "Plan-mode prompt queued until current turn completes." }, cancellationToken);
-				return;
-			}
-
-			if (_orchestrator.TryGetTurnSteerability(sessionId, out var canSteer) && !canSteer)
-			{
-				await QueueTurnAsync(
-					sessionId,
-					normalizedText,
-					normalizedCwd,
-					normalizedModel,
-					normalizedEffort,
-					normalizedApproval,
-					normalizedSandbox,
-					normalizedCollaborationMode,
-					hasModelOverride,
-					hasEffortOverride,
-					hasApprovalOverride,
-					hasSandboxOverride,
-					images,
-					cancellationToken);
-				await SendEventAsync("status", new { sessionId, message = "Turn appears stale; prompt queued until recovery completes." }, cancellationToken);
-				return;
-			}
-
-			var steer = await _orchestrator.SteerTurnAsync(sessionId, normalizedText, images, cancellationToken);
-			if (!steer.Success)
-			{
-				if (steer.Fallback == SessionOrchestrator.TurnSubmitFallback.StartTurn)
-				{
-					_orchestrator.StartTurn(
-						sessionId,
-						normalizedText,
-						normalizedCwd,
-						normalizedModel,
-						normalizedEffort,
-						normalizedApproval,
-						normalizedSandbox,
-						normalizedCollaborationMode,
-						hasModelOverride,
-						hasEffortOverride,
-						hasApprovalOverride,
-						hasSandboxOverride,
-						images);
-					return;
-				}
-
-				if (steer.Fallback == SessionOrchestrator.TurnSubmitFallback.QueueTurn)
-				{
-					await QueueTurnAsync(
-						sessionId,
-						normalizedText,
-						normalizedCwd,
-						normalizedModel,
-						normalizedEffort,
-						normalizedApproval,
-						normalizedSandbox,
-						normalizedCollaborationMode,
-						hasModelOverride,
-						hasEffortOverride,
-						hasApprovalOverride,
-						hasSandboxOverride,
-						images,
-						cancellationToken);
-					return;
-				}
-
-				await SendEventAsync("error", new { message = steer.ErrorMessage ?? "Failed to steer active turn." }, cancellationToken);
-			}
+			await SendEventAsync(
+				"error",
+				new { message = "A turn is already running. Use turn_steer to send now or turn_queue_add to queue." },
+				cancellationToken);
 			return;
 		}
 
@@ -978,6 +903,52 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			hasApprovalOverride,
 			hasSandboxOverride,
 			images);
+	}
+
+	private async Task SteerTurnAsync(
+		string? sessionId,
+		string? text,
+		IReadOnlyList<CodexUserImageInput>? images,
+		CancellationToken cancellationToken)
+	{
+		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			await SendEventAsync("error", new { message = "No active session. Create/select a session first." }, cancellationToken);
+			return;
+		}
+
+		var normalizedText = text?.Trim() ?? string.Empty;
+		var imageCount = images?.Count ?? 0;
+		if (string.IsNullOrWhiteSpace(normalizedText) && imageCount <= 0)
+		{
+			await SendEventAsync("error", new { message = "Prompt text or at least one image is required." }, cancellationToken);
+			return;
+		}
+
+		if (!_orchestrator.HasSession(sessionId))
+		{
+			await SendEventAsync("error", new { message = $"Unknown session: {sessionId}" }, cancellationToken);
+			return;
+		}
+
+		if (!_orchestrator.TryGetTurnState(sessionId, out var isTurnInFlight) || !isTurnInFlight)
+		{
+			await SendEventAsync("error", new { message = "No running turn is available to steer. Start a new turn instead." }, cancellationToken);
+			return;
+		}
+
+		if (_orchestrator.TryGetTurnSteerability(sessionId, out var canSteer) && !canSteer)
+		{
+			await SendEventAsync("error", new { message = "Active turn is not steerable right now. Use queue to stage the prompt." }, cancellationToken);
+			return;
+		}
+
+		var steer = await _orchestrator.SteerTurnAsync(sessionId, normalizedText, images, cancellationToken);
+		if (!steer.Success)
+		{
+			await SendEventAsync("error", new { message = steer.ErrorMessage ?? "Failed to steer active turn." }, cancellationToken);
+		}
 	}
 
 	private async Task QueueTurnAsync(
@@ -1106,7 +1077,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		if (string.Equals(_activeSessionId, sessionId, StringComparison.Ordinal))
 		{
-			_activeSessionId = _orchestrator.GetSessionSnapshots()
+			_activeSessionId = _orchestrator.GetSessionSnapshots(includeTurnCacheStats: false)
 				.Select(x => x.SessionId)
 				.FirstOrDefault(x => !string.Equals(x, sessionId, StringComparison.Ordinal));
 		}
@@ -1129,7 +1100,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
-		var sessionSnapshot = _orchestrator.GetSessionSnapshots().FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
+		var sessionSnapshot = _orchestrator.GetSessionSnapshots(includeTurnCacheStats: false).FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
 		if (sessionSnapshot is null)
 		{
 			await SendEventAsync("error", new { message = $"Unknown session: {sessionId}" }, cancellationToken);

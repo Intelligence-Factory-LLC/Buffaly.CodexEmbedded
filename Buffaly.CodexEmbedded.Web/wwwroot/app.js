@@ -5439,6 +5439,32 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
   return true;
 }
 
+function steerTurn(sessionId, promptText, images = []) {
+  const normalizedText = String(promptText || "").trim();
+  const outboundText = buildRecapTurnText(normalizedText);
+  const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
+  if (!sessionId || (!outboundText && safeImages.length === 0)) {
+    return false;
+  }
+
+  const payload = {
+    sessionId,
+    text: outboundText,
+    images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" }))
+  };
+  if (!send("turn_steer", payload)) {
+    return false;
+  }
+
+  touchSessionActivity(sessionId);
+  if (normalizedText) {
+    lastSentPromptBySession.set(sessionId, normalizedText);
+  }
+  updatePendingPromptStrip();
+  updateTurnActivityStrip();
+  return true;
+}
+
 function requestQueuedPromptForEditing(sessionId, queueItemId) {
   if (!sessionId) {
     return;
@@ -8458,10 +8484,29 @@ promptForm.addEventListener("submit", async (event) => {
       `[bridge] included VS selection from ${composed.selection.fileName || composed.selection.filePath} (${composed.selection.selectionText.length} chars)`);
   }
 
-  const started = startTurn(activeSessionId, composed.prompt, images, { planMode: usePlanMode });
-  if (!started) {
-    appendLog(`[turn] failed to send prompt for session=${activeSessionId}`);
-    return;
+  const processingActive = isTurnInFlight(activeSessionId);
+  if (processingActive) {
+    if (usePlanMode) {
+      const queued = await queuePrompt(activeSessionId, composed.prompt, images, { planMode: true });
+      if (!queued) {
+        appendLog(`[queue] failed to queue prompt for session=${activeSessionId}`);
+        return;
+      }
+      appendLog(`[turn] queued prompt for session=${activeSessionId}`);
+    } else {
+      const steered = steerTurn(activeSessionId, composed.prompt, images);
+      if (!steered) {
+        appendLog(`[turn] failed to steer prompt for session=${activeSessionId}`);
+        return;
+      }
+      appendLog(`[turn] steer prompt sent for session=${activeSessionId}`);
+    }
+  } else {
+    const started = startTurn(activeSessionId, composed.prompt, images, { planMode: usePlanMode });
+    if (!started) {
+      appendLog(`[turn] failed to send prompt for session=${activeSessionId}`);
+      return;
+    }
   }
 
   promptInput.value = "";

@@ -41,7 +41,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 	}
 
-	public IReadOnlyList<SessionSnapshot> GetSessionSnapshots()
+	public IReadOnlyList<SessionSnapshot> GetSessionSnapshots(bool includeTurnCacheStats = true)
 	{
 		List<ManagedSession> loadedSessions;
 		lock (_sync)
@@ -55,26 +55,35 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			TryExpireStalePendingTurnStart(session.SessionId, session, stalePendingStartAfter);
 		}
 
-		EnsureTurnCacheForSessions(loadedSessions, maxEntries: 6000);
-
-		Dictionary<string, (int TurnCountInMemory, bool IsTurnInFlightInferredFromLogs)> turnStatsByThread;
-		lock (_turnCacheSync)
+		var turnStatsByThread = new Dictionary<string, (int TurnCountInMemory, bool IsTurnInFlightInferredFromLogs)>(StringComparer.Ordinal);
+		if (includeTurnCacheStats)
 		{
-			turnStatsByThread = _turnCacheByThread.ToDictionary(
-				x => x.Key,
-				x => (
-					TurnCountInMemory: x.Value.Turns.Count,
-					IsTurnInFlightInferredFromLogs: x.Value.LastInferredTurnInFlightFromLogs),
-				StringComparer.Ordinal);
+			EnsureTurnCacheForSessions(loadedSessions, maxEntries: 6000);
+
+			lock (_turnCacheSync)
+			{
+				turnStatsByThread = _turnCacheByThread.ToDictionary(
+					x => x.Key,
+					x => (
+						TurnCountInMemory: x.Value.Turns.Count,
+						IsTurnInFlightInferredFromLogs: x.Value.LastInferredTurnInFlightFromLogs),
+					StringComparer.Ordinal);
+			}
 		}
 
 		return loadedSessions
 			.Select(s =>
 			{
-				turnStatsByThread.TryGetValue(s.Session.ThreadId, out var stats);
-				var inferredFromLogs = stats.IsTurnInFlightInferredFromLogs;
+				var turnCountInMemory = 0;
+				var inferredFromLogs = false;
+				if (includeTurnCacheStats && turnStatsByThread.TryGetValue(s.Session.ThreadId, out var stats))
+				{
+					turnCountInMemory = stats.TurnCountInMemory;
+					inferredFromLogs = stats.IsTurnInFlightInferredFromLogs;
+				}
+
 				return s.ToSnapshot(
-					turnCountInMemory: stats.TurnCountInMemory,
+					turnCountInMemory: turnCountInMemory,
 					isTurnInFlightInferredFromLogs: inferredFromLogs,
 					isTurnInFlightLogOnly: s.IsTurnInFlightRecoveredFromLogs);
 			})
