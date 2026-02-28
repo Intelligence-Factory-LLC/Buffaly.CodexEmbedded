@@ -488,28 +488,35 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var cwd = TryGetString(request, "cwd") ?? _defaults.DefaultCwd;
 		var codexPath = TryGetString(request, "codexPath") ?? _defaults.CodexPath;
 
-		var matchingSnapshots = _orchestrator
-			.GetSessionSnapshots()
-			.Where(x => string.Equals(x.ThreadId, threadId, StringComparison.Ordinal))
-			.ToList();
-
-		if (matchingSnapshots.Count > 1)
+		var loadedResolution = _orchestrator.ResolveLoadedSessionForAttach(threadId);
+		if (loadedResolution.Kind == SessionOrchestrator.LoadedSessionAttachResolutionKind.Ambiguous)
 		{
+			var candidateList = loadedResolution.CandidateSessionIds.Count > 0
+				? string.Join(", ", loadedResolution.CandidateSessionIds)
+				: "(none)";
 			await SendEventAsync(
 				"error",
 				new
 				{
-					message = $"Attach is ambiguous: multiple loaded sessions match thread {threadId}. Stop duplicate sessions and retry."
+					message = $"Attach is ambiguous: multiple loaded sessions match thread {threadId}. Candidates: {candidateList}. Stop duplicate sessions and retry."
 				},
 				cancellationToken);
 			return;
 		}
 
-		if (matchingSnapshots.Count == 1)
+		if (loadedResolution.Kind == SessionOrchestrator.LoadedSessionAttachResolutionKind.Unavailable)
 		{
-			var existing = matchingSnapshots[0];
-			var existingSessionId = existing.SessionId;
-			if (string.IsNullOrWhiteSpace(existingSessionId) || !_orchestrator.HasSession(existingSessionId))
+			var reason = string.IsNullOrWhiteSpace(loadedResolution.Reason)
+				? $"Loaded session for thread {threadId} is unavailable for attach."
+				: loadedResolution.Reason;
+			await SendEventAsync("error", new { message = $"Attach failed: {reason}" }, cancellationToken);
+			return;
+		}
+
+		if (loadedResolution.Kind == SessionOrchestrator.LoadedSessionAttachResolutionKind.Resolved)
+		{
+			var existingSessionId = loadedResolution.SessionId;
+			if (string.IsNullOrWhiteSpace(existingSessionId))
 			{
 				await SendEventAsync(
 					"error",
@@ -537,12 +544,12 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			{
 				sessionId = existingSessionId,
 				requestId,
-				threadId = existing.ThreadId,
-				model = existing.Model,
-				reasoningEffort = existing.ReasoningEffort,
-				approvalPolicy = existing.ApprovalPolicy,
-				sandboxPolicy = existing.SandboxPolicy,
-				cwd = existing.Cwd,
+				threadId = loadedResolution.ThreadId,
+				model = loadedResolution.Model,
+				reasoningEffort = loadedResolution.ReasoningEffort,
+				approvalPolicy = loadedResolution.ApprovalPolicy,
+				sandboxPolicy = loadedResolution.SandboxPolicy,
+				cwd = loadedResolution.Cwd,
 				attached = true,
 				logPath = (string?)null
 			}, cancellationToken);
@@ -551,12 +558,12 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			{
 				sessionId = existingSessionId,
 				requestId,
-				threadId = existing.ThreadId,
-				model = existing.Model,
-				reasoningEffort = existing.ReasoningEffort,
-				approvalPolicy = existing.ApprovalPolicy,
-				sandboxPolicy = existing.SandboxPolicy,
-				cwd = existing.Cwd,
+				threadId = loadedResolution.ThreadId,
+				model = loadedResolution.Model,
+				reasoningEffort = loadedResolution.ReasoningEffort,
+				approvalPolicy = loadedResolution.ApprovalPolicy,
+				sandboxPolicy = loadedResolution.SandboxPolicy,
+				cwd = loadedResolution.Cwd,
 				logPath = (string?)null
 			}, cancellationToken);
 			await SendSessionListAsync(cancellationToken);
@@ -747,7 +754,14 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 	private async Task SendSessionListAsync(CancellationToken cancellationToken)
 	{
-		var sessions = _orchestrator.GetSessionSnapshots()
+		var snapshots = _orchestrator.GetSessionSnapshots();
+		if (!string.IsNullOrWhiteSpace(_activeSessionId) &&
+			!snapshots.Any(x => string.Equals(x.SessionId, _activeSessionId, StringComparison.Ordinal)))
+		{
+			_activeSessionId = null;
+		}
+
+		var sessions = snapshots
 			.Select(s => (object)new
 			{
 				sessionId = s.SessionId,

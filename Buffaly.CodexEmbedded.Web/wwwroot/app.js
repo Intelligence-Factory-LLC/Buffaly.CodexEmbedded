@@ -85,6 +85,7 @@ let timelineCacheByThread = new Map(); // threadId -> { turns(summary + hydrated
 let turnDetailFetchInFlight = new Set(); // `${threadId}::${turnId}`
 let turnActivityTickTimer = null;
 let turnStartedAtBySession = new Map(); // sessionId -> epoch ms when running turn started
+let turnStartGraceUntilBySession = new Map(); // sessionId -> epoch ms while waiting for turn_start confirmation
 let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
 let jumpCollapseMode = false;
 let conversationMetaMenuOpen = false;
@@ -118,6 +119,7 @@ const MAX_COMPOSER_IMAGES = 4;
 const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
 const SESSION_LIST_SYNC_INTERVAL_MS = 10000;
+const TURN_START_CONFIRM_GRACE_MS = 15000;
 // Server turn cache is rebuilt from recent JSONL lines, so keep this high enough to capture many complete turns.
 const TIMELINE_INITIAL_WINDOW_DEFAULT = 6000;
 let timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
@@ -717,23 +719,24 @@ function reconcileTurnAndPlanStateFromTurnsWatch(sessionId, turns) {
   }
 
   const latestTurn = turns[turns.length - 1];
-  const watchInFlight = isTurnSnapshotInFlight(latestTurn);
+  const state = ensureSessionState(sessionId);
+  ensurePlanStateShape(state);
+  const watchInFlight = isTurnSnapshotInFlight(latestTurn) || isThreadProcessing(state.threadId || "");
+  const resolvedInFlight = resolveTurnInFlightFromServer(sessionId, watchInFlight);
   const localInFlight = isTurnInFlight(sessionId);
-  if (localInFlight !== watchInFlight) {
-    setTurnInFlight(sessionId, watchInFlight);
-    if (!watchInFlight && sessionId === activeSessionId) {
+  if (localInFlight !== resolvedInFlight) {
+    setTurnInFlight(sessionId, resolvedInFlight);
+    if (!resolvedInFlight && sessionId === activeSessionId) {
       renderPromptQueue();
     }
   }
 
-  const state = ensureSessionState(sessionId);
-  ensurePlanStateShape(state);
   const planText = extractPlanFromTurnSnapshot(latestTurn);
   if (planText) {
     state.isPlanTurn = true;
     state.planText = planText;
     state.planDraftText = planText;
-    state.planStatus = watchInFlight ? "streaming" : "completed";
+    state.planStatus = resolvedInFlight ? "streaming" : "completed";
     state.planUpdatedAt = new Date().toISOString();
     if (sessionId === activeSessionId) {
       updatePlanPanel();
@@ -741,7 +744,7 @@ function reconcileTurnAndPlanStateFromTurnsWatch(sessionId, turns) {
     return;
   }
 
-  if (!watchInFlight && state.isPlanTurn === true && normalizePlanStatus(state.planStatus) === "streaming") {
+  if (!resolvedInFlight && state.isPlanTurn === true && normalizePlanStatus(state.planStatus) === "streaming") {
     const currentText = normalizePlanPayloadText(state.planText || state.planDraftText || "");
     if (currentText) {
       state.planText = currentText;
@@ -1890,27 +1893,51 @@ function mergeTurnWithDetail(baseTurn, detailTurn) {
   return summary;
 }
 
-function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurnDetail) {
+function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurnDetail, options = {}) {
   const incoming = Array.isArray(incomingTurns) ? incomingTurns : [];
-  if (incoming.length === 0) {
-    return [];
-  }
-
+  const preserveMissingExisting = options && options.preserveMissingExisting === true;
   const existingByTurnId = new Map();
+  const existingClones = [];
   if (Array.isArray(existingTurns)) {
     for (const item of existingTurns) {
-      const turnId = readTurnSnapshotTurnId(item);
-      if (!turnId) {
-        continue;
-      }
       const cloned = cloneTurnSnapshot(item);
       if (cloned) {
-        existingByTurnId.set(turnId, cloned);
+        existingClones.push(cloned);
+        const turnId = readTurnSnapshotTurnId(cloned);
+        if (turnId) {
+          existingByTurnId.set(turnId, cloned);
+        }
       }
     }
   }
 
   const activeDetailId = readTurnSnapshotTurnId(activeTurnDetail);
+  if (incoming.length === 0) {
+    if (!activeDetailId) {
+      return existingClones;
+    }
+
+    const detailOnlyTurn = cloneTurnSnapshot(activeTurnDetail);
+    if (!detailOnlyTurn) {
+      return existingClones;
+    }
+
+    let mergedDetail = false;
+    const mergedExisting = existingClones.map((turn) => {
+      if (turn.turnId === activeDetailId) {
+        mergedDetail = true;
+        return mergeTurnWithDetail(turn, detailOnlyTurn);
+      }
+      return turn;
+    });
+
+    if (!mergedDetail) {
+      mergedExisting.push(detailOnlyTurn);
+    }
+
+    return mergedExisting;
+  }
+
   let activeDetailIncluded = false;
   const merged = [];
   for (const turn of incoming) {
@@ -1938,6 +1965,30 @@ function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurn
     const detailOnlyTurn = cloneTurnSnapshot(activeTurnDetail);
     if (detailOnlyTurn) {
       merged.push(detailOnlyTurn);
+    }
+  }
+
+  if (preserveMissingExisting && merged.length > 0 && existingClones.length > 0) {
+    const mergedTurnIds = new Set();
+    for (const turn of merged) {
+      const turnId = readTurnSnapshotTurnId(turn);
+      if (turnId) {
+        mergedTurnIds.add(turnId);
+      }
+    }
+
+    const preservedPriorTurns = [];
+    for (const priorTurn of existingClones) {
+      const priorTurnId = readTurnSnapshotTurnId(priorTurn);
+      if (!priorTurnId || mergedTurnIds.has(priorTurnId)) {
+        continue;
+      }
+
+      preservedPriorTurns.push(priorTurn);
+    }
+
+    if (preservedPriorTurns.length > 0) {
+      return preservedPriorTurns.concat(merged);
     }
   }
 
@@ -4981,6 +5032,58 @@ function isTurnInFlight(sessionId) {
   return turnInFlightBySession.get(sessionId) === true;
 }
 
+function setTurnStartGrace(sessionId, enabled, durationMs = TURN_START_CONFIRM_GRACE_MS) {
+  if (!sessionId) {
+    return;
+  }
+
+  if (!enabled) {
+    turnStartGraceUntilBySession.delete(sessionId);
+    return;
+  }
+
+  const safeDuration = Number.isFinite(durationMs)
+    ? Math.max(1000, Math.floor(durationMs))
+    : TURN_START_CONFIRM_GRACE_MS;
+  turnStartGraceUntilBySession.set(sessionId, Date.now() + safeDuration);
+}
+
+function isTurnStartGraceActive(sessionId) {
+  if (!sessionId) {
+    return false;
+  }
+
+  const until = turnStartGraceUntilBySession.get(sessionId);
+  if (!Number.isFinite(until)) {
+    return false;
+  }
+
+  if (Date.now() > until) {
+    turnStartGraceUntilBySession.delete(sessionId);
+    return false;
+  }
+
+  return true;
+}
+
+function resolveTurnInFlightFromServer(sessionId, serverInFlight) {
+  if (!sessionId) {
+    return !!serverInFlight;
+  }
+
+  if (serverInFlight) {
+    setTurnStartGrace(sessionId, false);
+    return true;
+  }
+
+  if (isTurnStartGraceActive(sessionId)) {
+    return true;
+  }
+
+  setTurnStartGrace(sessionId, false);
+  return false;
+}
+
 function setTurnInFlight(sessionId, value) {
   if (!sessionId) {
     return;
@@ -5001,6 +5104,7 @@ function setTurnInFlight(sessionId, value) {
       }
     } else {
       turnStartedAtBySession.delete(sessionId);
+      setTurnStartGrace(sessionId, false);
     }
 
     renderProjectSidebar();
@@ -5268,6 +5372,7 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
     return false;
   }
 
+  setTurnStartGrace(sessionId, true);
   touchSessionActivity(sessionId);
   setTurnInFlight(sessionId, true);
   if (normalizedText) {
@@ -5288,6 +5393,12 @@ function prunePromptState() {
   for (const key of Array.from(turnInFlightBySession.keys())) {
     if (!validIds.has(key)) {
       turnInFlightBySession.delete(key);
+    }
+  }
+
+  for (const key of Array.from(turnStartGraceUntilBySession.keys())) {
+    if (!validIds.has(key)) {
+      turnStartGraceUntilBySession.delete(key);
     }
   }
 
@@ -5696,6 +5807,12 @@ async function pollTimelineOnce(initial, generation) {
       return;
     }
 
+    const activeStateAfterFetch = getActiveSessionState();
+    const activeThreadIdAfterFetch = normalizeThreadId(activeStateAfterFetch?.threadId || "");
+    if (!activeThreadIdAfterFetch || activeThreadIdAfterFetch !== normalizedThreadId) {
+      return;
+    }
+
     const data = response;
     timelineConnectionIssueShown = false;
     if (generation !== timelinePollGeneration) {
@@ -5718,11 +5835,25 @@ async function pollTimelineOnce(initial, generation) {
     const shouldConsumeFullSnapshot =
       snapshotMode === "full" ||
       (snapshotMode !== "noop" && (forcedFullSnapshot || hasServerPayload));
+    const sessionInFlightOrPending =
+      !!polledSessionId && (isTurnInFlight(polledSessionId) || isTurnStartGraceActive(polledSessionId));
+    const threadProcessing = isThreadProcessing(normalizedThreadId);
+    const preserveMissingExistingTurns =
+      snapshotMode === "full" &&
+      !forcedFullSnapshot &&
+      data.reset !== true &&
+      incomingTurns.length > 0 &&
+      existingTurns.length > incomingTurns.length &&
+      (threadProcessing || sessionInFlightOrPending);
     let turns = existingTurns;
     let hasServerTurns = existingTurns.length > 0;
 
     if (shouldConsumeFullSnapshot) {
-      turns = mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurnDetail);
+      turns = mergeIncomingTurnsWithExisting(
+        incomingTurns,
+        existingTurns,
+        activeTurnDetail,
+        { preserveMissingExisting: preserveMissingExistingTurns });
       hasServerTurns = turns.length > 0;
 
       if (hasServerTurns) {
@@ -5926,7 +6057,7 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     !IS_RECAP_MODE &&
     activeSessionId &&
     sessions.has(activeSessionId) &&
-    isTurnInFlight(activeSessionId)
+    (isTurnInFlight(activeSessionId) || isTurnStartGraceActive(activeSessionId))
       ? activeSessionId
       : null;
   const toSelect = IS_RECAP_MODE
@@ -6769,7 +6900,8 @@ function handleServerEvent(frame) {
           ? Math.max(0, Math.floor(s.turnCountInMemory))
           : Number.isFinite(st.turnCountInMemory) ? st.turnCountInMemory : 0;
 
-        const inFlight = s.isTurnInFlight === true || s.turnInFlight === true;
+        const inFlightFromServer = s.isTurnInFlight === true || s.turnInFlight === true;
+        const inFlight = resolveTurnInFlightFromServer(s.sessionId, inFlightFromServer);
         setTurnInFlight(s.sessionId, inFlight);
         if (inFlight && st.threadId) {
           nextProcessingByThread.set(st.threadId, true);
@@ -6933,6 +7065,7 @@ function handleServerEvent(frame) {
       if (sessionId) {
         turnInFlightBySession.delete(sessionId);
         turnStartedAtBySession.delete(sessionId);
+        turnStartGraceUntilBySession.delete(sessionId);
         lastSentPromptBySession.delete(sessionId);
         rateLimitBySession.delete(sessionId);
         if (pendingToolUserInput && pendingToolUserInput.sessionId === sessionId) {
@@ -7003,6 +7136,7 @@ function handleServerEvent(frame) {
           processingByThread.set(threadId, true);
           sidebarStateChanged = completedUnreadThreadIds.delete(threadId) || sidebarStateChanged;
         }
+        setTurnStartGrace(sessionId, false);
         setTurnInFlight(sessionId, true);
         markPlanTurnStarted(sessionId, isPlanTurn);
       }
@@ -7015,6 +7149,7 @@ function handleServerEvent(frame) {
     case "turn_cancel_requested": {
       const sessionId = payload.sessionId || null;
       if (sessionId) {
+        setTurnStartGrace(sessionId, false);
         if (payload.forcedReset === true || payload.hadTurnInFlight === true) {
           applyTurnOverrideReset(sessionId, { renderSidebar: false });
         }

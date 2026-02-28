@@ -747,18 +747,102 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			attached: true);
 	}
 
-	public string? FindLoadedSessionIdByThreadId(string threadId)
+	public LoadedSessionAttachResolution ResolveLoadedSessionForAttach(string threadId)
 	{
-		if (string.IsNullOrWhiteSpace(threadId))
+		var normalizedThreadId = threadId?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(normalizedThreadId))
 		{
-			return null;
+			return new LoadedSessionAttachResolution(
+				Kind: LoadedSessionAttachResolutionKind.Unavailable,
+				SessionId: null,
+				ThreadId: null,
+				Cwd: null,
+				Model: null,
+				ReasoningEffort: null,
+				ApprovalPolicy: null,
+				SandboxPolicy: null,
+				Reason: "threadId is required to attach.",
+				CandidateSessionIds: Array.Empty<string>());
 		}
 
 		lock (_sync)
 		{
-			var existing = _sessions.Values.FirstOrDefault(x => string.Equals(x.Session.ThreadId, threadId, StringComparison.Ordinal));
-			return existing?.SessionId;
+			var matches = _sessions.Values
+				.Where(x => string.Equals(x.Session.ThreadId, normalizedThreadId, StringComparison.Ordinal))
+				.ToList();
+
+			if (matches.Count == 0)
+			{
+				return new LoadedSessionAttachResolution(
+					Kind: LoadedSessionAttachResolutionKind.NotLoaded,
+					SessionId: null,
+					ThreadId: normalizedThreadId,
+					Cwd: null,
+					Model: null,
+					ReasoningEffort: null,
+					ApprovalPolicy: null,
+					SandboxPolicy: null,
+					Reason: null,
+					CandidateSessionIds: Array.Empty<string>());
+			}
+
+			if (matches.Count > 1)
+			{
+				var candidateIds = matches
+					.Select(x => x.SessionId)
+					.Where(x => !string.IsNullOrWhiteSpace(x))
+					.Distinct(StringComparer.Ordinal)
+					.OrderBy(x => x, StringComparer.Ordinal)
+					.ToArray();
+				return new LoadedSessionAttachResolution(
+					Kind: LoadedSessionAttachResolutionKind.Ambiguous,
+					SessionId: null,
+					ThreadId: normalizedThreadId,
+					Cwd: null,
+					Model: null,
+					ReasoningEffort: null,
+					ApprovalPolicy: null,
+					SandboxPolicy: null,
+					Reason: $"Multiple loaded sessions match thread '{normalizedThreadId}'.",
+					CandidateSessionIds: candidateIds);
+			}
+
+			var match = matches[0];
+			if (match.LifetimeToken.IsCancellationRequested)
+			{
+				return new LoadedSessionAttachResolution(
+					Kind: LoadedSessionAttachResolutionKind.Unavailable,
+					SessionId: match.SessionId,
+					ThreadId: match.Session.ThreadId,
+					Cwd: match.Cwd,
+					Model: match.CurrentModel,
+					ReasoningEffort: match.CurrentReasoningEffort,
+					ApprovalPolicy: match.CurrentApprovalPolicy,
+					SandboxPolicy: match.CurrentSandboxPolicy,
+					Reason: $"Loaded session '{match.SessionId}' is stopping; retry attach after it is fully stopped.",
+					CandidateSessionIds: new[] { match.SessionId });
+			}
+
+			return new LoadedSessionAttachResolution(
+				Kind: LoadedSessionAttachResolutionKind.Resolved,
+				SessionId: match.SessionId,
+				ThreadId: match.Session.ThreadId,
+				Cwd: match.Cwd,
+				Model: match.CurrentModel,
+				ReasoningEffort: match.CurrentReasoningEffort,
+				ApprovalPolicy: match.CurrentApprovalPolicy,
+				SandboxPolicy: match.CurrentSandboxPolicy,
+				Reason: null,
+				CandidateSessionIds: new[] { match.SessionId });
 		}
+	}
+
+	public string? FindLoadedSessionIdByThreadId(string threadId)
+	{
+		var resolution = ResolveLoadedSessionForAttach(threadId);
+		return resolution.Kind == LoadedSessionAttachResolutionKind.Resolved
+			? resolution.SessionId
+			: null;
 	}
 
 	public bool TryGetTurnState(string sessionId, out bool isTurnInFlight)
@@ -769,16 +853,18 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return false;
 		}
 
+		ManagedSession? session;
 		lock (_sync)
 		{
-			if (!_sessions.TryGetValue(sessionId, out var s))
+			if (!_sessions.TryGetValue(sessionId, out session))
 			{
 				return false;
 			}
-
-			isTurnInFlight = s.IsTurnInFlight;
-			return true;
 		}
+
+		RecoverTurnStateFromClientIfNeeded(sessionId, session);
+		isTurnInFlight = session.IsTurnInFlight;
+		return true;
 	}
 
 	public bool TryGetTurnSteerability(string sessionId, out bool canSteer)
@@ -3325,11 +3411,25 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		var roundedSeconds = Math.Round(pendingAge.TotalSeconds);
 		var message = $"Turn start did not confirm after {roundedSeconds:0}s and was reset for recovery.";
-		if (!TryPublishTurnComplete(sessionId, session, status: "interrupted", errorMessage: message))
+		var collaborationMode = session.GetActiveCollaborationMode();
+		var isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal);
+		var reset = session.ForceResetTurnState(clearQueuedTurns: false);
+		if (!reset.HadTurnInFlight)
 		{
 			return false;
 		}
 
+		Broadcast?.Invoke(
+			"turn_complete",
+			new
+			{
+				sessionId,
+				status = "interrupted",
+				errorMessage = message,
+				isPlanTurn,
+				collaborationMode
+			});
+		SessionsChanged?.Invoke();
 		session.Log.Write($"[turn_recovery] expired pending turn/start after {roundedSeconds:0}s");
 		Broadcast?.Invoke("status", new { sessionId, message = "Turn start appeared stuck and was reset." });
 		return true;
@@ -3358,6 +3458,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	{
 		var staleRecoveredAfter = GetRecoveredTurnStaleAfter();
 		var stalePendingStartAfter = GetPendingTurnStartStaleAfter();
+		RecoverTurnStateFromClientIfNeeded(sessionId, session);
 
 		if (session.TryRecoverTurnSlotIfIdle())
 		{
@@ -3399,6 +3500,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		while (DateTimeOffset.UtcNow < deadline && !session.LifetimeToken.IsCancellationRequested)
 		{
+			RecoverTurnStateFromClientIfNeeded(sessionId, session);
+
 			if (session.TryRecoverTurnSlotIfIdle())
 			{
 				session.Log.Write("[turn_gate] recovered stuck idle gate");
@@ -3442,6 +3545,26 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		return false;
 	}
 
+	private void RecoverTurnStateFromClientIfNeeded(string sessionId, ManagedSession session)
+	{
+		if (!session.TryMarkTurnStartedFromClientState(out var recoveredTurnId))
+		{
+			return;
+		}
+
+		session.Log.Write($"[turn_recovery] recovered active turn from client state turnId={recoveredTurnId ?? "(unknown)"}");
+		var collaborationMode = session.GetActiveCollaborationMode();
+		Broadcast?.Invoke(
+			"turn_started",
+			new
+			{
+				sessionId,
+				isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal),
+				collaborationMode
+			});
+		SessionsChanged?.Invoke();
+	}
+
 	public async ValueTask DisposeAsync()
 	{
 		ManagedSession[] sessions;
@@ -3482,6 +3605,26 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string? cwd,
 		string logPath,
 		bool attached);
+
+	internal enum LoadedSessionAttachResolutionKind
+	{
+		NotLoaded,
+		Resolved,
+		Ambiguous,
+		Unavailable
+	}
+
+	internal sealed record LoadedSessionAttachResolution(
+		LoadedSessionAttachResolutionKind Kind,
+		string? SessionId,
+		string? ThreadId,
+		string? Cwd,
+		string? Model,
+		string? ReasoningEffort,
+		string? ApprovalPolicy,
+		string? SandboxPolicy,
+		string? Reason,
+		IReadOnlyList<string> CandidateSessionIds);
 
 	internal sealed record TurnWatchSnapshot(
 		string ThreadId,
@@ -4222,6 +4365,36 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				_activeTurnCts = null;
 				_activeTurnId = normalizedTurnId;
 				SetTurnState(TurnLifecycleState.RunningRecovered);
+				return true;
+			}
+		}
+
+		public bool TryMarkTurnStartedFromClientState(out string? recoveredTurnId)
+		{
+			recoveredTurnId = null;
+			if (!Session.TryGetActiveTurnId(out var activeFromClient) || string.IsNullOrWhiteSpace(activeFromClient))
+			{
+				return false;
+			}
+
+			var normalizedTurnId = activeFromClient.Trim();
+			lock (_turnSync)
+			{
+				if (_turnState != TurnLifecycleState.Idle)
+				{
+					if (string.IsNullOrWhiteSpace(_activeTurnId))
+					{
+						_activeTurnId = normalizedTurnId;
+					}
+
+					recoveredTurnId = _activeTurnId;
+					return false;
+				}
+
+				_activeTurnCts = null;
+				_activeTurnId = normalizedTurnId;
+				SetTurnState(TurnLifecycleState.RunningRecovered);
+				recoveredTurnId = normalizedTurnId;
 				return true;
 			}
 		}
