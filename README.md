@@ -32,6 +32,7 @@ Or start a session in the web UI and manage it from any browser. Use Tailscale t
 
 - [Release Notes - February 23, 2026](docs/release-notes-2026-02-23.md)
 - [Release Notes - February 25, 2026](docs/release-notes-2026-02-25.md)
+- [Release Notes - February 27, 2026](docs/release-notes-2026-02-27.md)
 
 ## ⚡ Quick Start
 
