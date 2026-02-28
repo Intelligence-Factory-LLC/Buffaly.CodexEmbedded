@@ -1865,6 +1865,7 @@ function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurn
   }
 
   const activeDetailId = readTurnSnapshotTurnId(activeTurnDetail);
+  let activeDetailIncluded = false;
   const merged = [];
   for (const turn of incoming) {
     const summary = cloneTurnSnapshot(turn);
@@ -1875,6 +1876,7 @@ function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurn
     const turnId = summary.turnId;
     if (turnId && activeDetailId && turnId === activeDetailId) {
       merged.push(mergeTurnWithDetail(summary, activeTurnDetail));
+      activeDetailIncluded = true;
       continue;
     }
 
@@ -1886,7 +1888,54 @@ function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurn
     merged.push(summary);
   }
 
+  if (!activeDetailIncluded && activeDetailId) {
+    const detailOnlyTurn = cloneTurnSnapshot(activeTurnDetail);
+    if (detailOnlyTurn) {
+      merged.push(detailOnlyTurn);
+    }
+  }
+
   return merged;
+}
+
+function addLocalInFlightTurnFallback(sessionId, turns) {
+  if (!sessionId || !Array.isArray(turns)) {
+    return turns;
+  }
+
+  if (!isTurnInFlight(sessionId)) {
+    return turns;
+  }
+
+  if (turns.some((turn) => isTurnSnapshotInFlight(turn))) {
+    return turns;
+  }
+
+  const pendingPrompt = String(lastSentPromptBySession.get(sessionId) || "").trim();
+  if (!pendingPrompt) {
+    return turns;
+  }
+
+  const syntheticTurn = {
+    turnId: `local-pending-${sessionId}`,
+    user: {
+      role: "user",
+      title: "User",
+      text: pendingPrompt,
+      timestamp: new Date().toISOString(),
+      rawType: "local_pending_turn",
+      compact: false,
+      images: []
+    },
+    assistantFinal: null,
+    intermediate: [],
+    isInFlight: true,
+    hasIntermediate: false,
+    intermediateCount: 0,
+    intermediateLoaded: true
+  };
+
+  return [...turns, syntheticTurn];
 }
 
 function rememberTimelineCache(threadId, payload) {
@@ -5654,7 +5703,8 @@ async function pollTimelineOnce(initial, generation) {
     const existingTurns = Array.isArray(cachedTimeline?.turns)
       ? cachedTimeline.turns
       : [];
-    const turns = mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, data.activeTurnDetail || null);
+    let turns = mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, data.activeTurnDetail || null);
+    turns = addLocalInFlightTurnFallback(polledSessionId, turns);
     const hasIncomingTurns = turns.length > 0;
     const hasVisibleTimelineContent = !!chatMessages && chatMessages.childElementCount > 0;
     const shouldReplaceTurns =
