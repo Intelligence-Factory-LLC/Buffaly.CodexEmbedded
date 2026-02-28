@@ -165,6 +165,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				cursor is null ||
 				cursorAhead ||
 				cursor.Value != version;
+			var snapshotMode = shouldSendFull ? "full" : "noop";
 
 			var turns = shouldSendFull
 				? state.Turns.Select(ToSummaryTurn).ToArray()
@@ -187,6 +188,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				ThreadName: sessionCatalogEntry.ThreadName,
 				SessionFilePath: sessionFilePath,
 				UpdatedAtUtc: sessionCatalogEntry.UpdatedAtUtc,
+				Mode: snapshotMode,
 				Cursor: cursor ?? version,
 				NextCursor: version,
 				Reset: initial || cursorAhead,
@@ -3486,6 +3488,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string? ThreadName,
 		string SessionFilePath,
 		DateTimeOffset? UpdatedAtUtc,
+		// Protocol contract: mode=full is an authoritative snapshot, mode=noop means no
+		// timeline mutation is required for this cursor tick.
+		string Mode,
 		long Cursor,
 		long NextCursor,
 		bool Reset,

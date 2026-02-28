@@ -150,6 +150,8 @@ const promptForm = document.getElementById("promptForm");
 const promptInput = document.getElementById("promptInput");
 const promptQueue = document.getElementById("promptQueue");
 const timelineTruncationNotice = document.getElementById("timelineTruncationNotice");
+const pendingPromptStrip = document.getElementById("pendingPromptStrip");
+const pendingPromptText = document.getElementById("pendingPromptText");
 const scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
 const contextLeftIndicator = document.getElementById("contextLeftIndicator");
 const permissionLevelIndicator = document.getElementById("permissionLevelIndicator");
@@ -342,7 +344,41 @@ function updatePromptActionState() {
   sendPromptBtn.title = processingActive ? "Send now (Enter)" : "Send (Enter)";
   queuePromptBtn.title = "Queue this instruction (Tab)";
   cancelTurnBtn.title = "Stop running turn";
+  updatePendingPromptStrip();
   updateTurnActivityStrip();
+}
+
+function trimPendingPromptPreview(text) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "";
+  }
+
+  if (normalized.length <= 220) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, 220)}...`;
+}
+
+function updatePendingPromptStrip() {
+  if (!pendingPromptStrip || !pendingPromptText) {
+    return;
+  }
+
+  const sessionId = activeSessionId || "";
+  const running = !!sessionId && isTurnInFlight(sessionId);
+  const promptPreview = running
+    ? trimPendingPromptPreview(lastSentPromptBySession.get(sessionId) || "")
+    : "";
+  if (!promptPreview) {
+    pendingPromptStrip.classList.add("hidden");
+    pendingPromptText.textContent = "";
+    return;
+  }
+
+  pendingPromptText.textContent = promptPreview;
+  pendingPromptStrip.classList.remove("hidden");
 }
 
 function formatTurnElapsed(ms) {
@@ -494,7 +530,8 @@ function updateTurnActivityStrip() {
 
   const threadId = normalizeThreadId(getActiveSessionState()?.threadId || "");
   const reasoning = threadId ? normalizeReasoningSummary(lastReasoningByThread.get(threadId) || "") : "";
-  turnActivityReasoning.textContent = reasoning || "Waiting for reasoning update...";
+  const promptPreview = trimPendingPromptPreview(lastSentPromptBySession.get(sessionId) || "");
+  turnActivityReasoning.textContent = reasoning || (promptPreview ? `Prompt sent: ${promptPreview}` : "Waiting for reasoning update...");
   turnActivityStrip.classList.remove("hidden");
   turnActivityStrip.classList.add("running");
 }
@@ -1723,6 +1760,15 @@ function normalizeTimelineMaxEntries(value, fallback = TIMELINE_INITIAL_WINDOW_D
   return numeric;
 }
 
+function normalizeWatchSnapshotMode(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "full" || normalized === "noop") {
+    return normalized;
+  }
+
+  return "";
+}
+
 function readTurnSnapshotTurnId(turn) {
   if (!turn || typeof turn !== "object") {
     return "";
@@ -1896,46 +1942,6 @@ function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurn
   }
 
   return merged;
-}
-
-function addLocalInFlightTurnFallback(sessionId, turns) {
-  if (!sessionId || !Array.isArray(turns)) {
-    return turns;
-  }
-
-  if (!isTurnInFlight(sessionId)) {
-    return turns;
-  }
-
-  if (turns.some((turn) => isTurnSnapshotInFlight(turn))) {
-    return turns;
-  }
-
-  const pendingPrompt = String(lastSentPromptBySession.get(sessionId) || "").trim();
-  if (!pendingPrompt) {
-    return turns;
-  }
-
-  const syntheticTurn = {
-    turnId: `local-pending-${sessionId}`,
-    user: {
-      role: "user",
-      title: "User",
-      text: pendingPrompt,
-      timestamp: new Date().toISOString(),
-      rawType: "local_pending_turn",
-      compact: false,
-      images: []
-    },
-    assistantFinal: null,
-    intermediate: [],
-    isInFlight: true,
-    hasIntermediate: false,
-    intermediateCount: 0,
-    intermediateLoaded: true
-  };
-
-  return [...turns, syntheticTurn];
 }
 
 function rememberTimelineCache(threadId, payload) {
@@ -5699,55 +5705,66 @@ async function pollTimelineOnce(initial, generation) {
     const priorCursor = timelineCursor;
     const nextCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
     const incomingTurns = Array.isArray(data.turns) ? data.turns : [];
+    const snapshotMode = normalizeWatchSnapshotMode(data.mode || data.snapshotMode || "");
+    const activeTurnDetail = data.activeTurnDetail && typeof data.activeTurnDetail === "object"
+      ? data.activeTurnDetail
+      : null;
     const cachedTimeline = timelineCacheByThread.get(normalizedThreadId) || null;
     const existingTurns = Array.isArray(cachedTimeline?.turns)
       ? cachedTimeline.turns
       : [];
-    let turns = mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, data.activeTurnDetail || null);
-    turns = addLocalInFlightTurnFallback(polledSessionId, turns);
-    const hasIncomingTurns = turns.length > 0;
+    const hasServerPayload = incomingTurns.length > 0 || !!activeTurnDetail;
+    const forcedFullSnapshot = isInitialRequest || data.reset === true || priorCursor === null;
+    const shouldConsumeFullSnapshot =
+      snapshotMode === "full" ||
+      (snapshotMode !== "noop" && (forcedFullSnapshot || hasServerPayload));
+    let turns = existingTurns;
+    let hasServerTurns = existingTurns.length > 0;
     const hasVisibleTimelineContent = !!chatMessages && chatMessages.childElementCount > 0;
-    const shouldReplaceTurns =
-      initial ||
-      data.reset === true ||
-      priorCursor === null ||
-      hasIncomingTurns;
 
-    if (shouldReplaceTurns && hasIncomingTurns) {
-      if (typeof timeline.setServerTurns === "function") {
-        timeline.setServerTurns(turns);
-      } else {
-        timeline.clear();
-      }
+    if (shouldConsumeFullSnapshot) {
+      turns = mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurnDetail);
+      hasServerTurns = turns.length > 0;
 
-      if (polledSessionId && sessions.has(polledSessionId)) {
-        reconcileTurnAndPlanStateFromTurnsWatch(polledSessionId, turns);
-      }
-
-      timelineHasTruncatedHead = data.truncated === true;
-      if (data.reset === true) {
-        appendLog("[timeline] session file was reset or rotated");
-      }
-    } else if (isInitialRequest && !hasIncomingTurns) {
-      if (!hasVisibleTimelineContent) {
-        setJumpCollapseMode(false);
-        if (typeof timeline.clear === "function") {
+      if (hasServerTurns) {
+        if (typeof timeline.setServerTurns === "function") {
+          timeline.setServerTurns(turns);
+        } else {
           timeline.clear();
         }
-        if (typeof timeline.enqueueInlineNotice === "function") {
-          timeline.enqueueInlineNotice("No complete turns found yet for this session.");
+
+        if (polledSessionId && sessions.has(polledSessionId)) {
+          reconcileTurnAndPlanStateFromTurnsWatch(polledSessionId, turns);
         }
-        if (typeof timeline.flush === "function") {
-          timeline.flush();
+
+        timelineHasTruncatedHead = data.truncated === true;
+        if (data.reset === true) {
+          appendLog("[timeline] session file was reset or rotated");
         }
-      } else {
-        appendLog("[timeline] keeping existing timeline because bootstrap returned no turns");
+      } else if (forcedFullSnapshot) {
+        if (!hasVisibleTimelineContent) {
+          setJumpCollapseMode(false);
+          if (typeof timeline.clear === "function") {
+            timeline.clear();
+          }
+          if (typeof timeline.enqueueInlineNotice === "function") {
+            timeline.enqueueInlineNotice("No complete turns found yet for this session.");
+          }
+          if (typeof timeline.flush === "function") {
+            timeline.flush();
+          }
+        } else {
+          appendLog("[timeline] keeping existing timeline because full snapshot returned no turns");
+        }
       }
+    } else if (polledSessionId && sessions.has(polledSessionId) && existingTurns.length > 0) {
+      // No-op snapshot means cursor heartbeat only. Keep current timeline and reconcile local state.
+      reconcileTurnAndPlanStateFromTurnsWatch(polledSessionId, existingTurns);
     }
 
     timelineCursor = nextCursor;
     applyTimelineWatchMetadata(state.threadId, data);
-    if (hasIncomingTurns) {
+    if (shouldConsumeFullSnapshot && hasServerTurns) {
       rememberTimelineCache(state.threadId, {
         turns,
         nextCursor,
@@ -5759,7 +5776,7 @@ async function pollTimelineOnce(initial, generation) {
       });
     }
 
-    if (data.truncated === true && !hasIncomingTurns) {
+    if (data.truncated === true && !hasServerTurns) {
       timelineHasTruncatedHead = true;
     }
     updateTimelineTruncationNotice();
@@ -5910,11 +5927,19 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     !!serverActiveState &&
     normalizeThreadId(serverActiveState.threadId || "") === normalizeThreadId(pendingSessionLoadThreadId);
   const preferServerActive = options.preferServerActive === true || pendingThreadMatch;
+  const pinnedActiveSessionId =
+    !IS_RECAP_MODE &&
+    activeSessionId &&
+    sessions.has(activeSessionId) &&
+    isTurnInFlight(activeSessionId)
+      ? activeSessionId
+      : null;
   const toSelect = IS_RECAP_MODE
     ? ((recapSessionId && sessions.has(recapSessionId) ? recapSessionId : null) ||
       recapBestSessionId ||
       null)
-    : (preferServerActive
+    : (pinnedActiveSessionId ||
+      (preferServerActive
       ? (serverActiveId ||
         activeSessionId ||
         current ||
@@ -5926,7 +5951,7 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
         (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
         (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
         serverActiveId ||
-        (ids.length > 0 ? ids[0] : null)));
+        (ids.length > 0 ? ids[0] : null))));
   if (toSelect && sessions.has(toSelect)) {
     const changed = activeSessionId !== toSelect;
     if (IS_RECAP_MODE) {

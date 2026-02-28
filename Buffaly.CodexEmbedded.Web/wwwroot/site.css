@@ -3055,6 +3055,32 @@ body {
 	color: #1f2937;
 }
 
+.pending-prompt-strip {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	margin-bottom: 0.45rem;
+	padding: 0.35rem 0.5rem;
+	border: 1px solid #dbeafe;
+	border-radius: 8px;
+	background: #eff6ff;
+	font-size: 0.82rem;
+	color: #1f2937;
+}
+
+.pending-prompt-strip strong {
+	flex: 0 0 auto;
+	color: #1d4ed8;
+}
+
+.pending-prompt-strip span {
+	flex: 1 1 auto;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
 .watcher-inline-entry {
 	display: flex;
 	align-items: center;
@@ -3230,10 +3256,15 @@ html[data-theme="dark"] .recap-answer,
 html[data-theme="dark"] .recap-report,
 html[data-theme="dark"] .recap-controls,
 html[data-theme="dark"] .server-section-title,
-html[data-theme="dark"] .timeline-truncation-note {
+html[data-theme="dark"] .timeline-truncation-note,
+html[data-theme="dark"] .pending-prompt-strip {
 	background: #0f172a;
 	border-color: #334155;
 	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .pending-prompt-strip strong {
+	color: #93c5fd;
 }
 
 html[data-theme="dark"] .sidebar-logo-btn,
