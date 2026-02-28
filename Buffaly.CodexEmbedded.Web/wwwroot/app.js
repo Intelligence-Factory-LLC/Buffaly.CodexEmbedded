@@ -5720,7 +5720,6 @@ async function pollTimelineOnce(initial, generation) {
       (snapshotMode !== "noop" && (forcedFullSnapshot || hasServerPayload));
     let turns = existingTurns;
     let hasServerTurns = existingTurns.length > 0;
-    const hasVisibleTimelineContent = !!chatMessages && chatMessages.childElementCount > 0;
 
     if (shouldConsumeFullSnapshot) {
       turns = mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurnDetail);
@@ -5742,19 +5741,15 @@ async function pollTimelineOnce(initial, generation) {
           appendLog("[timeline] session file was reset or rotated");
         }
       } else if (forcedFullSnapshot) {
-        if (!hasVisibleTimelineContent) {
-          setJumpCollapseMode(false);
-          if (typeof timeline.clear === "function") {
-            timeline.clear();
-          }
-          if (typeof timeline.enqueueInlineNotice === "function") {
-            timeline.enqueueInlineNotice("No complete turns found yet for this session.");
-          }
-          if (typeof timeline.flush === "function") {
-            timeline.flush();
-          }
-        } else {
-          appendLog("[timeline] keeping existing timeline because full snapshot returned no turns");
+        setJumpCollapseMode(false);
+        if (typeof timeline.clear === "function") {
+          timeline.clear();
+        }
+        if (typeof timeline.enqueueInlineNotice === "function") {
+          timeline.enqueueInlineNotice("No complete turns found yet for this session.");
+        }
+        if (typeof timeline.flush === "function") {
+          timeline.flush();
         }
       }
     } else if (polledSessionId && sessions.has(polledSessionId) && existingTurns.length > 0) {
