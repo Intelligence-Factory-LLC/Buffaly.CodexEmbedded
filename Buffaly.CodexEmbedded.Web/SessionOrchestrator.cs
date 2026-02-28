@@ -90,14 +90,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			.ToList();
 	}
 
-	public int GetTurnCountInMemory()
-	{
-		lock (_turnCacheSync)
-		{
-			return _turnCacheByThread.Values.Sum(x => x.Turns.Count);
-		}
-	}
-
 	public TurnWatchSnapshot WatchTurns(
 		string threadId,
 		int maxEntries,
@@ -846,14 +838,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 	}
 
-	public string? FindLoadedSessionIdByThreadId(string threadId)
-	{
-		var resolution = ResolveLoadedSessionForAttach(threadId);
-		return resolution.Kind == LoadedSessionAttachResolutionKind.Resolved
-			? resolution.SessionId
-			: null;
-	}
-
 	public bool TryGetTurnState(string sessionId, out bool isTurnInFlight)
 	{
 		isTurnInFlight = false;
@@ -1132,11 +1116,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 	}
 
-	public void NotifySessionsChanged()
-	{
-		SessionsChanged?.Invoke();
-	}
-
 	public void StartTurn(
 		string sessionId,
 		string normalizedText,
@@ -1159,22 +1138,16 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return;
 		}
 
-		if (hasModelOverride)
-		{
-			session.SetModel(normalizedModel);
-		}
-		if (hasEffortOverride)
-		{
-			session.SetReasoningEffort(normalizedEffort);
-		}
-		if (hasApprovalOverride)
-		{
-			session.SetApprovalPolicy(normalizedApprovalPolicy);
-		}
-		if (hasSandboxOverride)
-		{
-			session.SetSandboxPolicy(normalizedSandboxPolicy);
-		}
+		ApplySessionTurnOverrides(
+			session,
+			normalizedModel,
+			normalizedEffort,
+			normalizedApprovalPolicy,
+			normalizedSandboxPolicy,
+			hasModelOverride,
+			hasEffortOverride,
+			hasApprovalOverride,
+			hasSandboxOverride);
 
 		var request = new TurnExecutionRequest(
 			Text: normalizedText,
@@ -1183,37 +1156,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			CollaborationMode: normalizedCollaborationMode,
 			QueueItemId: null);
 		LaunchTurnExecution(sessionId, session, request, fromQueue: false);
-	}
-
-	public void QueueTurn(
-		string sessionId,
-		string normalizedText,
-		string? normalizedCwd,
-		string? normalizedModel,
-		string? normalizedEffort,
-		string? normalizedApprovalPolicy,
-		string? normalizedSandboxPolicy,
-		CodexCollaborationMode? normalizedCollaborationMode,
-		bool hasModelOverride,
-		bool hasEffortOverride,
-		bool hasApprovalOverride,
-		bool hasSandboxOverride,
-		IReadOnlyList<CodexUserImageInput>? images)
-	{
-		StartTurn(
-			sessionId,
-			normalizedText,
-			normalizedCwd,
-			normalizedModel,
-			normalizedEffort,
-			normalizedApprovalPolicy,
-			normalizedSandboxPolicy,
-			normalizedCollaborationMode,
-			hasModelOverride,
-			hasEffortOverride,
-			hasApprovalOverride,
-			hasSandboxOverride,
-			images);
 	}
 
 	public bool TryEnqueueTurn(
@@ -1249,22 +1191,16 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return false;
 		}
 
-		if (hasModelOverride)
-		{
-			session.SetModel(normalizedModel);
-		}
-		if (hasEffortOverride)
-		{
-			session.SetReasoningEffort(normalizedEffort);
-		}
-		if (hasApprovalOverride)
-		{
-			session.SetApprovalPolicy(normalizedApprovalPolicy);
-		}
-		if (hasSandboxOverride)
-		{
-			session.SetSandboxPolicy(normalizedSandboxPolicy);
-		}
+		ApplySessionTurnOverrides(
+			session,
+			normalizedModel,
+			normalizedEffort,
+			normalizedApprovalPolicy,
+			normalizedSandboxPolicy,
+			hasModelOverride,
+			hasEffortOverride,
+			hasApprovalOverride,
+			hasSandboxOverride);
 
 		var nextQueueItemId = Guid.NewGuid().ToString("N");
 		session.EnqueueQueuedTurn(new QueuedTurn(
@@ -1282,6 +1218,35 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		SessionsChanged?.Invoke();
 		EnsureQueueDispatcher(sessionId, session);
 		return true;
+	}
+
+	private static void ApplySessionTurnOverrides(
+		ManagedSession session,
+		string? normalizedModel,
+		string? normalizedEffort,
+		string? normalizedApprovalPolicy,
+		string? normalizedSandboxPolicy,
+		bool hasModelOverride,
+		bool hasEffortOverride,
+		bool hasApprovalOverride,
+		bool hasSandboxOverride)
+	{
+		if (hasModelOverride)
+		{
+			session.SetModel(normalizedModel);
+		}
+		if (hasEffortOverride)
+		{
+			session.SetReasoningEffort(normalizedEffort);
+		}
+		if (hasApprovalOverride)
+		{
+			session.SetApprovalPolicy(normalizedApprovalPolicy);
+		}
+		if (hasSandboxOverride)
+		{
+			session.SetSandboxPolicy(normalizedSandboxPolicy);
+		}
 	}
 
 	public bool TryRemoveQueuedTurn(string sessionId, string queueItemId, out string? errorMessage)
