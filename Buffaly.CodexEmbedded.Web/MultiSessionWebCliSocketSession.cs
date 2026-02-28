@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.IO;
-using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -60,7 +59,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		{
 			WriteConnectionLogLocal("[ws] receive loop canceled");
 		}
-		catch (WebSocketException ex) when (IsExpectedWebSocketDisconnect(ex))
+		catch (WebSocketException ex) when (WebSocketDisconnectClassifier.IsExpected(ex))
 		{
 			WriteConnectionLogLocal($"[ws] remote disconnected without close handshake: {ex.Message}");
 		}
@@ -1178,29 +1177,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		{
 			ArrayPool<byte>.Shared.Return(rented);
 		}
-	}
-
-	private static bool IsExpectedWebSocketDisconnect(WebSocketException ex)
-	{
-		if (ex.WebSocketErrorCode == WebSocketError.ConnectionClosedPrematurely)
-		{
-			return true;
-		}
-
-		if (ex.InnerException is SocketException socketEx &&
-			(socketEx.SocketErrorCode == SocketError.ConnectionReset || socketEx.SocketErrorCode == SocketError.OperationAborted))
-		{
-			return true;
-		}
-
-		if (ex.InnerException is IOException ioEx &&
-			ioEx.InnerException is SocketException nestedSocketEx &&
-			(nestedSocketEx.SocketErrorCode == SocketError.ConnectionReset || nestedSocketEx.SocketErrorCode == SocketError.OperationAborted))
-		{
-			return true;
-		}
-
-		return false;
 	}
 
 	public async ValueTask DisposeAsync()
