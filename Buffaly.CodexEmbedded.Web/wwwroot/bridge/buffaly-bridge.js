@@ -14,6 +14,8 @@
     "ide.openDiffFromSelection",
     "ide.v1.openDiffFromSelection"
   ];
+  var DEBUG_PANEL_REV = "2026-02-28a";
+  var loadedAtIso = new Date().toISOString();
 
   var bridge = {
     available: false,
@@ -47,6 +49,10 @@
   window.devAgentBridge = bridge;
 
   var badge;
+  var debugButton;
+  var debugPanel;
+  var debugOutput;
+  var debugStatus;
 
   function getHost() {
     try {
@@ -77,6 +83,184 @@
     badge.style.fontWeight = "600";
     if (document.body) document.body.appendChild(badge);
     return badge;
+  }
+
+  function ensureDebugButton() {
+    if (debugButton) return debugButton;
+    debugButton = document.createElement("button");
+    debugButton.id = "vsBridgeDebugButton";
+    debugButton.type = "button";
+    debugButton.textContent = "VS Bridge Debug";
+    debugButton.style.position = "fixed";
+    debugButton.style.right = "12px";
+    debugButton.style.bottom = "48px";
+    debugButton.style.zIndex = "2147483647";
+    debugButton.style.padding = "6px 10px";
+    debugButton.style.borderRadius = "8px";
+    debugButton.style.border = "1px solid #2563eb";
+    debugButton.style.background = "#dbeafe";
+    debugButton.style.color = "#1e3a8a";
+    debugButton.style.fontFamily = "Segoe UI, sans-serif";
+    debugButton.style.fontSize = "12px";
+    debugButton.style.fontWeight = "600";
+    debugButton.style.cursor = "pointer";
+    debugButton.addEventListener("click", toggleDebugPanel);
+    if (document.body) document.body.appendChild(debugButton);
+    return debugButton;
+  }
+
+  function ensureDebugPanel() {
+    if (debugPanel) return debugPanel;
+    debugPanel = document.createElement("div");
+    debugPanel.id = "vsBridgeDebugPanel";
+    debugPanel.style.position = "fixed";
+    debugPanel.style.right = "12px";
+    debugPanel.style.bottom = "86px";
+    debugPanel.style.width = "360px";
+    debugPanel.style.maxWidth = "calc(100vw - 24px)";
+    debugPanel.style.maxHeight = "60vh";
+    debugPanel.style.overflow = "auto";
+    debugPanel.style.zIndex = "2147483647";
+    debugPanel.style.padding = "10px";
+    debugPanel.style.borderRadius = "10px";
+    debugPanel.style.border = "1px solid #cbd5e1";
+    debugPanel.style.background = "#ffffff";
+    debugPanel.style.boxShadow = "0 10px 30px rgba(2, 6, 23, 0.2)";
+    debugPanel.style.fontFamily = "Segoe UI, sans-serif";
+    debugPanel.style.fontSize = "12px";
+    debugPanel.style.color = "#0f172a";
+    debugPanel.style.display = "none";
+
+    var title = document.createElement("div");
+    title.textContent = "VS Bridge Debug";
+    title.style.fontSize = "13px";
+    title.style.fontWeight = "700";
+    debugPanel.appendChild(title);
+
+    var meta = document.createElement("div");
+    meta.textContent = "rev " + DEBUG_PANEL_REV + " | loaded " + loadedAtIso;
+    meta.style.marginTop = "4px";
+    meta.style.color = "#475569";
+    debugPanel.appendChild(meta);
+
+    debugStatus = document.createElement("div");
+    debugStatus.style.marginTop = "8px";
+    debugStatus.style.fontWeight = "600";
+    debugPanel.appendChild(debugStatus);
+
+    var actions = document.createElement("div");
+    actions.style.display = "grid";
+    actions.style.gridTemplateColumns = "1fr 1fr";
+    actions.style.gap = "6px";
+    actions.style.marginTop = "10px";
+    debugPanel.appendChild(actions);
+
+    addDebugAction(actions, "Ping", async function () {
+      var host = getHost();
+      if (!host) throw new Error("Host missing");
+      var pong = await host.Ping();
+      return { pong: pong };
+    });
+
+    addDebugAction(actions, "Get Context", async function () {
+      return await bridge.commands.getContext();
+    });
+
+    addDebugAction(actions, "Open File", async function () {
+      var context = await bridge.commands.getContext();
+      await bridge.commands.openFile(context.activeDocumentPath || "");
+      return { opened: context.activeDocumentPath || "" };
+    });
+
+    addDebugAction(actions, "Go To Line", async function () {
+      var context = await bridge.commands.getContext();
+      var line = Number(context.caretLine || 1);
+      await bridge.commands.goToLine(line);
+      return { line: line };
+    });
+
+    addDebugAction(actions, "Diff Selection", async function () {
+      var context = await bridge.commands.getContext();
+      var path = context.activeDocumentPath || "selection.txt";
+      var text = (context.selectionText || "").trim();
+      var modified = text ? (text + "\n// Bridge debug marker") : "// Bridge debug marker";
+      await bridge.commands.openDiffFromSelection("Bridge Debug Diff", path, modified);
+      return { path: path, selectionLength: text.length };
+    });
+
+    addDebugAction(actions, "Close Panel", async function () {
+      debugPanel.style.display = "none";
+      return { closed: true };
+    });
+
+    debugOutput = document.createElement("pre");
+    debugOutput.style.marginTop = "10px";
+    debugOutput.style.padding = "8px";
+    debugOutput.style.borderRadius = "8px";
+    debugOutput.style.border = "1px solid #e2e8f0";
+    debugOutput.style.background = "#f8fafc";
+    debugOutput.style.whiteSpace = "pre-wrap";
+    debugOutput.style.wordBreak = "break-word";
+    debugOutput.style.maxHeight = "220px";
+    debugOutput.style.overflow = "auto";
+    debugOutput.textContent = "Ready.";
+    debugPanel.appendChild(debugOutput);
+
+    if (document.body) document.body.appendChild(debugPanel);
+    refreshDebugStatus();
+    return debugPanel;
+  }
+
+  function addDebugAction(container, label, handler) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.style.padding = "6px 8px";
+    button.style.borderRadius = "6px";
+    button.style.border = "1px solid #cbd5e1";
+    button.style.background = "#f8fafc";
+    button.style.color = "#0f172a";
+    button.style.fontSize = "12px";
+    button.style.cursor = "pointer";
+    button.addEventListener("click", async function () {
+      try {
+        var result = await handler();
+        writeDebugOutput("OK " + label, result);
+      } catch (e) {
+        writeDebugOutput("ERR " + label, e && e.message ? e.message : String(e));
+      }
+    });
+    container.appendChild(button);
+  }
+
+  function toggleDebugPanel() {
+    var panel = ensureDebugPanel();
+    if (!panel) return;
+    panel.style.display = panel.style.display === "none" ? "block" : "none";
+    refreshDebugStatus();
+  }
+
+  function writeDebugOutput(title, value) {
+    if (!debugOutput) return;
+    var lines = [];
+    lines.push("[" + new Date().toISOString() + "] " + title);
+    if (typeof value === "string") {
+      lines.push(value);
+    } else {
+      try {
+        lines.push(JSON.stringify(value, null, 2));
+      } catch (e) {
+        lines.push(String(value));
+      }
+    }
+    debugOutput.textContent = lines.join("\n");
+  }
+
+  function refreshDebugStatus() {
+    if (!debugStatus) return;
+    debugStatus.textContent =
+      "available: " + String(bridge.available) +
+      " | connected: " + String(bridge.connected);
   }
 
   function renderStatus(connected, text) {
@@ -168,6 +352,7 @@
       bridge.available = ok;
       bridge.connected = ok;
       renderStatus(ok, ok ? "Visual Studio: Connected" : "Visual Studio: Ping Failed");
+      refreshDebugStatus();
       if (!ok) {
         console.warn("[vs-bridge] unexpected ping response:", pong);
       }
@@ -175,6 +360,7 @@
       bridge.available = false;
       bridge.connected = false;
       renderStatus(false, "Visual Studio: Disconnected");
+      refreshDebugStatus();
       console.error("[vs-bridge] connection check failed", e);
     }
   }
@@ -188,6 +374,7 @@
   }
 
   onReady(function () {
+    ensureDebugButton();
     checkConnection();
     setInterval(checkConnection, 5000);
     console.log("[vs-bridge] installed", bridge);
