@@ -95,7 +95,7 @@ const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
 const SESSION_LIST_SYNC_INTERVAL_MS = 10000;
 const TURN_START_CONFIRM_GRACE_MS = 15000;
-const VS_SELECTION_POLL_INTERVAL_MS = 4000;
+const VS_SELECTION_POLL_INTERVAL_MS = 1500;
 const VS_SELECTION_MAX_PROMPT_CHARS = 4000;
 // Server turn cache is rebuilt from recent JSONL lines, so keep this high enough to capture many complete turns.
 const TIMELINE_INITIAL_WINDOW_DEFAULT = 6000;
@@ -6939,6 +6939,16 @@ window.addEventListener("beforeunload", () => {
       scribeController.dispose();
     }
   } catch {
+  }
+});
+
+window.addEventListener("focus", () => {
+  refreshVsSelectionSnapshot({ force: true }).catch(() => {});
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    refreshVsSelectionSnapshot({ force: true }).catch(() => {});
   }
 });
 
