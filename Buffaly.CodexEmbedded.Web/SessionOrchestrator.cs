@@ -830,53 +830,39 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	public bool TryGetTurnSteerability(string sessionId, out bool canSteer)
 	{
 		canSteer = false;
-		if (string.IsNullOrWhiteSpace(sessionId))
+		var session = TryGetSession(sessionId);
+		if (session is null)
 		{
 			return false;
 		}
 
-		lock (_sync)
+		if (!session.IsTurnInFlight || session.IsTurnInFlightRecoveredFromLogs)
 		{
-			if (!_sessions.TryGetValue(sessionId, out var s))
-			{
-				return false;
-			}
-
-			if (!s.IsTurnInFlight || s.IsTurnInFlightRecoveredFromLogs)
-			{
-				canSteer = false;
-				return true;
-			}
-
-			canSteer = !string.IsNullOrWhiteSpace(s.ResolveActiveTurnId());
+			canSteer = false;
 			return true;
 		}
+
+		canSteer = !string.IsNullOrWhiteSpace(session.ResolveActiveTurnId());
+		return true;
 	}
 
 	public bool TrySetSessionModel(string sessionId, string? model, string? effort)
 	{
-		if (string.IsNullOrWhiteSpace(sessionId))
+		var session = TryGetSession(sessionId);
+		if (session is null)
 		{
 			return false;
 		}
 
-		lock (_sync)
+		if (model is not null)
 		{
-			if (!_sessions.TryGetValue(sessionId, out var s))
-			{
-				return false;
-			}
-
-			if (model is not null)
-			{
-				s.SetModel(model);
-			}
-			if (effort is not null)
-			{
-				s.SetReasoningEffort(effort);
-			}
-			return true;
+			session.SetModel(model);
 		}
+		if (effort is not null)
+		{
+			session.SetReasoningEffort(effort);
+		}
+		return true;
 	}
 
 	public bool TrySetSessionPermissions(
@@ -886,45 +872,28 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		bool hasApprovalOverride,
 		bool hasSandboxOverride)
 	{
-		if (string.IsNullOrWhiteSpace(sessionId))
+		var session = TryGetSession(sessionId);
+		if (session is null)
 		{
 			return false;
 		}
 
-		lock (_sync)
+		if (hasApprovalOverride)
 		{
-			if (!_sessions.TryGetValue(sessionId, out var s))
-			{
-				return false;
-			}
-
-			if (hasApprovalOverride)
-			{
-				s.SetApprovalPolicy(approvalPolicy);
-			}
-
-			if (hasSandboxOverride)
-			{
-				s.SetSandboxPolicy(sandboxPolicy);
-			}
-
-			return true;
+			session.SetApprovalPolicy(approvalPolicy);
 		}
+
+		if (hasSandboxOverride)
+		{
+			session.SetSandboxPolicy(sandboxPolicy);
+		}
+
+		return true;
 	}
 
 	public async Task<IReadOnlyList<CodexModelInfo>> ListModelsAsync(string? sessionId, CancellationToken cancellationToken)
 	{
-		CodexClient? existingClient = null;
-		if (!string.IsNullOrWhiteSpace(sessionId))
-		{
-			lock (_sync)
-			{
-				if (_sessions.TryGetValue(sessionId, out var s))
-				{
-					existingClient = s.Client;
-				}
-			}
-		}
+		var existingClient = TryGetSession(sessionId ?? string.Empty)?.Client;
 
 		if (existingClient is not null)
 		{
@@ -948,11 +917,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return false;
 		}
 
-		ManagedSession? session;
-		lock (_sync)
-		{
-			_sessions.TryGetValue(sessionId, out session);
-		}
+		var session = TryGetSession(sessionId);
 		if (session is null)
 		{
 			return false;
@@ -983,11 +948,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return false;
 		}
 
-		ManagedSession? session;
-		lock (_sync)
-		{
-			_sessions.TryGetValue(sessionId, out session);
-		}
+		var session = TryGetSession(sessionId);
 		if (session is null)
 		{
 			return false;

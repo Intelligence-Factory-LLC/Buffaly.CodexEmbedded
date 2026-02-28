@@ -4785,9 +4785,8 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
     return false;
   }
 
-  const normalizedText = String(promptText || "");
-  const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
-  if (!normalizedText.trim() && safeImages.length === 0) {
+  const turnInput = buildTurnInput(promptText, images, { trimText: false });
+  if (!turnInput.hasContent) {
     return false;
   }
 
@@ -4798,8 +4797,8 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
 
   const payload = {
     sessionId,
-    text: normalizedText,
-    images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" }))
+    text: turnInput.text,
+    images: mapTurnPayloadImages(turnInput.images)
   };
   if (turnCwd) {
     payload.cwd = turnCwd;
@@ -4822,25 +4821,49 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
   return true;
 }
 
+function collectValidTurnImages(images) {
+  if (!Array.isArray(images)) {
+    return [];
+  }
+
+  return images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0);
+}
+
+function mapTurnPayloadImages(images) {
+  return images.map((x) => ({ url: x.url, name: x.name || "image" }));
+}
+
+function buildTurnInput(promptText, images = [], options = {}) {
+  const trimText = options.trimText === true;
+  const rawText = String(promptText || "");
+  const text = trimText ? rawText.trim() : rawText;
+  const validImages = collectValidTurnImages(images);
+  const hasText = text.trim().length > 0;
+  return {
+    text,
+    images: validImages,
+    hasContent: hasText || validImages.length > 0
+  };
+}
+
 function steerTurn(sessionId, promptText, images = []) {
-  const normalizedText = String(promptText || "").trim();
-  const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
-  if (!sessionId || (!normalizedText && safeImages.length === 0)) {
+  const turnInput = buildTurnInput(promptText, images, { trimText: true });
+  if (!sessionId || !turnInput.hasContent) {
     return false;
   }
 
   const payload = {
     sessionId,
-    text: normalizedText,
-    images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" }))
+    text: turnInput.text,
+    images: mapTurnPayloadImages(turnInput.images)
   };
   if (!send("turn_steer", payload)) {
     return false;
   }
 
   touchSessionActivity(sessionId);
-  if (normalizedText) {
-    lastSentPromptBySession.set(sessionId, normalizedText);
+  if (turnInput.text) {
+    lastSentPromptBySession.set(sessionId, turnInput.text);
   }
   updatePendingPromptStrip();
   updateTurnActivityStrip();
@@ -4881,8 +4904,7 @@ function restoreQueuedPromptForEditing(text, images = []) {
   promptInput.value = String(text || "");
   rememberPromptDraftForState(getActiveSessionState());
 
-  pendingComposerImages = images
-    .filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0)
+  pendingComposerImages = collectValidTurnImages(images)
     .slice(0, MAX_COMPOSER_IMAGES)
     .map((x) => ({
     id: nextComposerImageId++,
@@ -4898,19 +4920,18 @@ function restoreQueuedPromptForEditing(text, images = []) {
 }
 
 function startTurn(sessionId, promptText, images = [], options = {}) {
-  const normalizedText = String(promptText || "").trim();
-  const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
+  const turnInput = buildTurnInput(promptText, images, { trimText: true });
   const turnCwd = cwdInput.value.trim();
   const state = sessions.get(sessionId);
   const turnModel = normalizeModelValue(state?.model || "");
-  if (!sessionId || (!normalizedText && safeImages.length === 0)) {
+  if (!sessionId || !turnInput.hasContent) {
     return false;
   }
 
   const payload = {
     sessionId,
-    text: normalizedText,
-    images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" }))
+    text: turnInput.text,
+    images: mapTurnPayloadImages(turnInput.images)
   };
 
   if (state && turnModel) {
@@ -4955,8 +4976,8 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
   setTurnStartGrace(sessionId, true);
   touchSessionActivity(sessionId);
   setTurnInFlight(sessionId, true);
-  if (normalizedText) {
-    lastSentPromptBySession.set(sessionId, normalizedText);
+  if (turnInput.text) {
+    lastSentPromptBySession.set(sessionId, turnInput.text);
   }
 
   if (options.fromQueue === true) {
