@@ -3,28 +3,6 @@ const TURN_ACTIVITY_TICK_INTERVAL_MS = 1000;
 const LOG_FLUSH_INTERVAL_MS = 250;
 const MAX_RENDERED_CLIENT_LOG_LINES = 800;
 const ENABLE_CONSOLE_LOG_FALLBACK = false;
-const NORMALIZED_PATHNAME = (window.location.pathname || "").replace(/\/+$/g, "").toLowerCase();
-const IS_RECAP_MODE = NORMALIZED_PATHNAME === "/recap" || NORMALIZED_PATHNAME.endsWith("/recap");
-const RECAP_APPROVAL_POLICY = "never";
-const RECAP_SANDBOX_MODE = "read-only";
-const RECAP_THREAD_NAME = "Recap";
-const RECAP_PROMPT_MARKER = "[[RECAP_MODE_PROMPT_V1]]";
-const RECAP_DEVELOPER_INSTRUCTIONS = [
-  "You are operating in recap mode.",
-  "Your task is to analyze Codex session files and related logs in the working directory to answer user questions.",
-  "Focus on open-ended recap and research requests such as daily reports, project summaries, and locating where work was implemented.",
-  "Prefer concrete evidence from the files (thread ids, paths, timestamps, snippets) when available.",
-  "If evidence is missing, say what is unknown and suggest the best next query."
-].join(" ");
-const RECAP_PROMPT_PREFIX = [
-  RECAP_PROMPT_MARKER,
-  "You are Recap Assistant for Codex session history analysis.",
-  "Use files in the current working directory as the source of truth.",
-  "Answer user requests like daily summaries, what was implemented, and where changes happened.",
-  "Return concise, evidence-based answers with thread ids, paths, and timestamps when available.",
-  "If evidence is missing, say what is unknown and suggest a better follow-up query.",
-  "User request follows below."
-].join("\n");
 
 let socket = null;
 let socketReadyPromise = null;
@@ -91,9 +69,6 @@ let conversationMetaMenuOpen = false;
 let planModeNextTurn = false;
 let configuredDefaultModel = "";
 let scribeController = null;
-let recapRootPath = "";
-let recapSessionId = null;
-let recapSessionEnsureInFlight = false;
 let sidebarProjectSearchQuery = "";
 let sidebarProjectSearchExpanded = false;
 let vsSelectionSnapshot = null; // { filePath, fileName, selectionText, caretLine, caretColumn }
@@ -183,7 +158,6 @@ const sidebarExtrasToggleBtn = document.getElementById("sidebarExtrasToggleBtn")
 const sidebarExtrasGroup = document.getElementById("sidebarExtrasGroup");
 const aboutModal = document.getElementById("aboutModal");
 const aboutModalCloseBtn = document.getElementById("aboutModalCloseBtn");
-const aboutProjectLine = document.getElementById("aboutProjectLine");
 const aboutVersionLine = document.getElementById("aboutVersionLine");
 
 const newSessionBtn = document.getElementById("newSessionBtn");
@@ -199,21 +173,12 @@ const conversationModelSummary = document.getElementById("conversationModelSumma
 const conversationMetaMenuBtn = document.getElementById("conversationMetaMenuBtn");
 const conversationMetaMenu = document.getElementById("conversationMetaMenu");
 const sessionMetaDetailsBtn = document.getElementById("sessionMetaDetailsBtn");
-const sessionMetaSummaryItem = document.getElementById("sessionMetaSummaryItem");
-const sessionMetaSummaryValue = document.getElementById("sessionMetaSummaryValue");
-const sessionMetaNameItem = document.getElementById("sessionMetaNameItem");
-const sessionMetaNameValue = document.getElementById("sessionMetaNameValue");
-const sessionMetaThreadItem = document.getElementById("sessionMetaThreadItem");
-const sessionMetaThreadValue = document.getElementById("sessionMetaThreadValue");
 const sessionMetaModelItem = document.getElementById("sessionMetaModelItem");
-const sessionMetaCwdItem = document.getElementById("sessionMetaCwdItem");
-const sessionMetaCwdValue = document.getElementById("sessionMetaCwdValue");
 const jumpToBtn = document.getElementById("jumpToBtn");
 const conversationModelSelect = document.getElementById("conversationModelSelect");
 const conversationReasoningSelect = document.getElementById("conversationReasoningSelect");
 const conversationApprovalSelect = document.getElementById("conversationApprovalSelect");
 const conversationSandboxSelect = document.getElementById("conversationSandboxSelect");
-const sessionSidebar = document.getElementById("sessionSidebar");
 const sidebarToggleBtn = document.getElementById("sidebarToggleBtn");
 const projectList = document.getElementById("projectList");
 const projectSearchInput = document.getElementById("projectSearchInput");
@@ -2253,10 +2218,6 @@ function normalizeProjectCwd(cwd) {
 }
 
 function getEffectiveProjectCwd(cwd) {
-  if (IS_RECAP_MODE) {
-    return getRecapWorkingDirectory();
-  }
-
   return normalizeProjectCwd(cwd || "");
 }
 
@@ -2344,10 +2305,6 @@ function loadProjectUiState() {
       .filter((x) => !!x)
     : [];
 
-  if (IS_RECAP_MODE) {
-    customProjects = [];
-    collapsedProjectKeys = new Set();
-  }
 }
 
 function getProjectDisplayName(project) {
@@ -2568,42 +2525,6 @@ function getProjectForSessionState(state) {
 }
 
 function buildSidebarProjectGroups() {
-  if (IS_RECAP_MODE) {
-    const recapCwd = getRecapWorkingDirectory();
-    const recapKey = getProjectKeyFromCwd(recapCwd);
-    const recapGroup = {
-      key: recapKey,
-      cwd: recapCwd,
-      customName: "Recap Source",
-      isCustom: true,
-      sessions: [],
-      latestTick: 0
-    };
-
-    if (activeSessionId && sessions.has(activeSessionId)) {
-      const state = sessions.get(activeSessionId);
-      const tick = state?.lastActivityTick || state?.createdAtTick || 0;
-      recapGroup.latestTick = tick;
-      recapGroup.sessions.push({
-        threadId: state?.threadId || "",
-        threadName: state?.threadName || RECAP_THREAD_NAME,
-        updatedAtUtc: tick > 0 ? new Date(tick).toISOString() : null,
-        sortTick: tick,
-        cwd: recapCwd,
-        model: state?.model || "",
-        reasoningEffort: normalizeReasoningEffort(state?.reasoningEffort || ""),
-        attachedSessionId: activeSessionId,
-        isAttached: true,
-        isProcessing: isTurnInFlight(activeSessionId),
-        hasPendingApproval: !!(state && state.pendingApproval && typeof state.pendingApproval.approvalId === "string" && state.pendingApproval.approvalId.trim()),
-        isArchived: false,
-        hasUnreadCompletion: !!(state?.threadId && hasThreadCompletionUnread(state.threadId))
-      });
-    }
-
-    return [recapGroup];
-  }
-
   const map = new Map();
   const seenThreads = new Set();
 
@@ -2615,7 +2536,7 @@ function buildSidebarProjectGroups() {
       map.set(key, {
         key,
         cwd: normalizedCwd,
-        customName: IS_RECAP_MODE ? "Recap Source" : (custom?.name || ""),
+        customName: custom?.name || "",
         isCustom: !!custom,
         sessions: [],
         latestTick: 0
@@ -2962,144 +2883,16 @@ function formatSessionSubtitle(entry) {
   return parts.join(" | ");
 }
 
-function getRecapWorkingDirectory() {
-  if (!IS_RECAP_MODE) {
-    return normalizeProjectCwd(cwdInput.value.trim());
-  }
-
-  const preferred = normalizeProjectCwd(recapRootPath || "");
-  if (preferred) {
-    return preferred;
-  }
-
-  return normalizeProjectCwd(cwdInput.value.trim());
-}
-
 function buildCollaborationModePayload(planModeEnabled) {
-  if (!IS_RECAP_MODE) {
-    if (planModeEnabled === true) {
-      return { mode: "plan" };
-    }
-
-    return null;
+  if (planModeEnabled === true) {
+    return { mode: "plan" };
   }
 
-  return {
-    mode: planModeEnabled === true ? "plan" : "default",
-    settings: {
-      developerInstructions: RECAP_DEVELOPER_INSTRUCTIONS
-    }
-  };
-}
-
-function buildRecapTurnText(userText) {
-  const raw = String(userText || "").trim();
-  if (!IS_RECAP_MODE || !raw) {
-    return raw;
-  }
-
-  if (raw.includes(RECAP_PROMPT_MARKER)) {
-    return raw;
-  }
-
-  return `${RECAP_PROMPT_PREFIX}\n\n${raw}`;
-}
-
-async function initializeRecapMode() {
-  if (!IS_RECAP_MODE) {
-    return;
-  }
-
-  try {
-    const recapLink = document.querySelector('.sidebar-nav-link[href="recap"]');
-    const codexLink = document.querySelector('.sidebar-nav-link[href="./"]');
-    if (codexLink) {
-      codexLink.classList.remove("active");
-      codexLink.removeAttribute("aria-current");
-    }
-    if (recapLink) {
-      recapLink.classList.add("active");
-      recapLink.setAttribute("aria-current", "page");
-    }
-    if (sidebarExtrasGroup && sidebarExtrasGroup.classList.contains("hidden")) {
-      sidebarExtrasGroup.classList.remove("hidden");
-    }
-    if (sidebarExtrasToggleBtn) {
-      sidebarExtrasToggleBtn.setAttribute("aria-expanded", "true");
-      const icon = sidebarExtrasToggleBtn.querySelector(".sidebar-nav-toggle-icon");
-      if (icon) {
-        icon.classList.add("expanded");
-      }
-    }
-
-    if (newProjectSidebarBtn) {
-      newProjectSidebarBtn.classList.add("hidden");
-    }
-    if (newProjectBtn) {
-      newProjectBtn.classList.add("hidden");
-    }
-    if (attachSessionBtn) {
-      attachSessionBtn.classList.add("hidden");
-    }
-    if (existingSessionSelect) {
-      existingSessionSelect.classList.add("hidden");
-    }
-
-    if (conversationApprovalSelect) {
-      conversationApprovalSelect.value = RECAP_APPROVAL_POLICY;
-      conversationApprovalSelect.disabled = true;
-    }
-    if (conversationSandboxSelect) {
-      conversationSandboxSelect.value = RECAP_SANDBOX_MODE;
-      conversationSandboxSelect.disabled = true;
-    }
-    if (newSessionApprovalSelect) {
-      newSessionApprovalSelect.value = RECAP_APPROVAL_POLICY;
-      newSessionApprovalSelect.disabled = true;
-    }
-    if (newSessionSandboxSelect) {
-      newSessionSandboxSelect.value = RECAP_SANDBOX_MODE;
-      newSessionSandboxSelect.disabled = true;
-    }
-    if (conversationTitle) {
-      conversationTitle.textContent = "Recap Conversation";
-    }
-    if (promptInput) {
-      promptInput.placeholder = "Ask recap questions, for example: what did I finish today by project?";
-    }
-
-    let resolvedRoot = "";
-    try {
-      const response = await fetch("api/logs/sessions?limit=1", { cache: "no-store" });
-      if (response.ok) {
-        const payload = await response.json();
-        resolvedRoot = normalizeProjectCwd(payload?.codexHomePath || "");
-      }
-    } catch {
-    }
-
-    if (!resolvedRoot) {
-      resolvedRoot = normalizeProjectCwd(localStorage.getItem(STORAGE_CWD_KEY) || "");
-    }
-
-    if (resolvedRoot) {
-      recapRootPath = resolvedRoot;
-      cwdInput.value = resolvedRoot;
-      localStorage.setItem(STORAGE_CWD_KEY, resolvedRoot);
-      selectedProjectKey = getProjectKeyFromCwd(resolvedRoot);
-      cwdInput.disabled = true;
-      cwdInput.title = "Recap mode is pinned to the Codex sessions source directory.";
-    }
-
-    await ensureSocket();
-    await ensureRecapSessionBound();
-  } catch (error) {
-    appendLog(`[recap] setup failed: ${error}`);
-  }
+  return null;
 }
 
 async function createSessionForCwd(cwd, options = {}) {
-  const normalizedCwd = normalizeProjectCwd(IS_RECAP_MODE ? getRecapWorkingDirectory() : (cwd || ""));
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
   const hasProvidedName = Object.prototype.hasOwnProperty.call(options, "threadName");
   const shouldPromptName = options.askName === true && !hasProvidedName;
   const rawName = hasProvidedName
@@ -3131,17 +2924,11 @@ async function createSessionForCwd(cwd, options = {}) {
   if (effort) {
     payload.effort = effort;
   }
-  const approvalPolicy = normalizeApprovalPolicy(
-    IS_RECAP_MODE
-      ? RECAP_APPROVAL_POLICY
-      : (options.approvalPolicy ?? selectedApprovalValue() ?? ""));
+  const approvalPolicy = normalizeApprovalPolicy(options.approvalPolicy ?? selectedApprovalValue() ?? "");
   if (approvalPolicy) {
     payload.approvalPolicy = approvalPolicy;
   }
-  const sandboxMode = normalizeSandboxMode(
-    IS_RECAP_MODE
-      ? RECAP_SANDBOX_MODE
-      : (options.sandbox ?? options.sandboxMode ?? selectedSandboxValue() ?? ""));
+  const sandboxMode = normalizeSandboxMode(options.sandbox ?? options.sandboxMode ?? selectedSandboxValue() ?? "");
   if (sandboxMode) {
     payload.sandbox = sandboxMode;
   }
@@ -3186,10 +2973,7 @@ async function attachSessionByThreadId(threadId, cwd, options = {}) {
   if (model) {
     payload.model = model;
   }
-  if (IS_RECAP_MODE) {
-    payload.approvalPolicy = RECAP_APPROVAL_POLICY;
-    payload.sandbox = RECAP_SANDBOX_MODE;
-  } else if (preferredPermission.found) {
+  if (preferredPermission.found) {
     if (preferredPermission.approval) {
       payload.approvalPolicy = preferredPermission.approval;
     }
@@ -3198,7 +2982,7 @@ async function attachSessionByThreadId(threadId, cwd, options = {}) {
     }
   }
 
-  const normalizedCwd = normalizeProjectCwd(IS_RECAP_MODE ? getRecapWorkingDirectory() : (cwd || cwdInput.value.trim()));
+  const normalizedCwd = normalizeProjectCwd(cwd || cwdInput.value.trim());
   if (normalizedCwd) {
     payload.cwd = normalizedCwd;
     cwdInput.value = normalizedCwd;
@@ -5002,20 +4786,19 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
   }
 
   const normalizedText = String(promptText || "");
-  const outboundText = buildRecapTurnText(normalizedText);
   const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
   if (!normalizedText.trim() && safeImages.length === 0) {
     return false;
   }
 
-  const turnCwd = IS_RECAP_MODE ? getRecapWorkingDirectory() : cwdInput.value.trim();
+  const turnCwd = cwdInput.value.trim();
   const state = sessions.get(sessionId);
   const turnModel = normalizeModelValue(state?.model || "");
   const turnEffort = normalizeReasoningEffort(state?.reasoningEffort || "");
 
   const payload = {
     sessionId,
-    text: outboundText,
+    text: normalizedText,
     images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" }))
   };
   if (turnCwd) {
@@ -5026,10 +4809,6 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
   }
   if (turnEffort) {
     payload.effort = turnEffort;
-  }
-  if (IS_RECAP_MODE) {
-    payload.approvalPolicy = RECAP_APPROVAL_POLICY;
-    payload.sandbox = RECAP_SANDBOX_MODE;
   }
   const collaborationMode = buildCollaborationModePayload(options.planMode === true);
   if (collaborationMode) {
@@ -5045,15 +4824,14 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
 
 function steerTurn(sessionId, promptText, images = []) {
   const normalizedText = String(promptText || "").trim();
-  const outboundText = buildRecapTurnText(normalizedText);
   const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
-  if (!sessionId || (!outboundText && safeImages.length === 0)) {
+  if (!sessionId || (!normalizedText && safeImages.length === 0)) {
     return false;
   }
 
   const payload = {
     sessionId,
-    text: outboundText,
+    text: normalizedText,
     images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" }))
   };
   if (!send("turn_steer", payload)) {
@@ -5121,18 +4899,17 @@ function restoreQueuedPromptForEditing(text, images = []) {
 
 function startTurn(sessionId, promptText, images = [], options = {}) {
   const normalizedText = String(promptText || "").trim();
-  const outboundText = buildRecapTurnText(normalizedText);
   const safeImages = Array.isArray(images) ? images.filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0) : [];
-  const turnCwd = IS_RECAP_MODE ? getRecapWorkingDirectory() : cwdInput.value.trim();
+  const turnCwd = cwdInput.value.trim();
   const state = sessions.get(sessionId);
   const turnModel = normalizeModelValue(state?.model || "");
-  if (!sessionId || (!outboundText && safeImages.length === 0)) {
+  if (!sessionId || (!normalizedText && safeImages.length === 0)) {
     return false;
   }
 
   const payload = {
     sessionId,
-    text: outboundText,
+    text: normalizedText,
     images: safeImages.map((x) => ({ url: x.url, name: x.name || "image" }))
   };
 
@@ -5161,10 +4938,6 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
   }
   if (turnEffort) {
     payload.effort = turnEffort;
-  }
-  if (IS_RECAP_MODE) {
-    payload.approvalPolicy = RECAP_APPROVAL_POLICY;
-    payload.sandbox = RECAP_SANDBOX_MODE;
   }
   const collaborationMode = buildCollaborationModePayload(options.planMode === true);
   if (collaborationMode) {
@@ -5245,11 +5018,6 @@ function getStoredLastSessionId() {
 }
 
 async function tryAutoAttachStoredThread() {
-  if (IS_RECAP_MODE) {
-    autoAttachAttempted = true;
-    return;
-  }
-
   if (autoAttachAttempted) {
     return;
   }
@@ -5283,81 +5051,6 @@ async function tryAutoAttachStoredThread() {
   appendLog(`[session] auto-attaching previous thread=${threadId}`);
   const catalogEntry = getCatalogEntryByThreadId(threadId);
   await attachSessionByThreadId(threadId, catalogEntry?.cwd || cwdInput.value.trim());
-}
-
-function findBestRecapSessionId() {
-  const root = getRecapWorkingDirectory();
-  const normalizedRoot = normalizeProjectCwd(root || "");
-  if (!normalizedRoot) {
-    return null;
-  }
-
-  let bestSessionId = null;
-  let bestTick = -1;
-  for (const [sessionId, state] of sessions.entries()) {
-    if (!state) {
-      continue;
-    }
-
-    const stateCwd = normalizeProjectCwd(state.cwd || "");
-    if (stateCwd !== normalizedRoot) {
-      continue;
-    }
-
-    const tick = Number.isFinite(state.lastActivityTick)
-      ? state.lastActivityTick
-      : (Number.isFinite(state.createdAtTick) ? state.createdAtTick : 0);
-    if (tick > bestTick) {
-      bestTick = tick;
-      bestSessionId = sessionId;
-    }
-  }
-
-  return bestSessionId;
-}
-
-async function ensureRecapSessionBound() {
-  if (!IS_RECAP_MODE) {
-    return;
-  }
-
-  const root = getRecapWorkingDirectory();
-  const normalizedRoot = normalizeProjectCwd(root || "");
-  if (!normalizedRoot || recapSessionEnsureInFlight) {
-    return;
-  }
-
-  if (activeSessionId && sessions.has(activeSessionId)) {
-    const active = sessions.get(activeSessionId);
-    if (normalizeProjectCwd(active?.cwd || "") === normalizedRoot) {
-      recapSessionId = activeSessionId;
-      return;
-    }
-  }
-
-  const bestExisting = (recapSessionId && sessions.has(recapSessionId))
-    ? recapSessionId
-    : findBestRecapSessionId();
-  if (bestExisting && sessions.has(bestExisting)) {
-    recapSessionId = bestExisting;
-    if (activeSessionId !== bestExisting) {
-      setActiveSession(bestExisting, { persistSelection: true, restartTimeline: true });
-      send("session_select", { sessionId: bestExisting });
-    }
-    return;
-  }
-
-  recapSessionEnsureInFlight = true;
-  try {
-    await createSessionForCwd(normalizedRoot, {
-      askName: false,
-      threadName: RECAP_THREAD_NAME,
-      approvalPolicy: RECAP_APPROVAL_POLICY,
-      sandbox: RECAP_SANDBOX_MODE
-    });
-  } finally {
-    recapSessionEnsureInFlight = false;
-  }
 }
 
 function syncConversationModelOptions(preferredValue = null) {
@@ -5818,11 +5511,7 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
   }
 
   const ids = Array.from(sessions.keys()).sort();
-  const recapBestSessionId = IS_RECAP_MODE ? (findBestRecapSessionId() || null) : null;
-  const visibleIds = IS_RECAP_MODE
-    ? [((recapSessionId && sessions.has(recapSessionId) ? recapSessionId : null) || recapBestSessionId || "")]
-      .filter((id) => !!id && sessions.has(id))
-    : ids;
+  const visibleIds = ids;
   if (sessionSelect) {
     for (const id of visibleIds) {
       const state = sessions.get(id);
@@ -5850,35 +5539,27 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     normalizeThreadId(serverActiveState.threadId || "") === normalizeThreadId(pendingSessionLoadThreadId);
   const preferServerActive = options.preferServerActive === true || pendingThreadMatch;
   const pinnedActiveSessionId =
-    !IS_RECAP_MODE &&
     activeSessionId &&
     sessions.has(activeSessionId) &&
     (isTurnInFlight(activeSessionId) || isTurnStartGraceActive(activeSessionId))
       ? activeSessionId
       : null;
-  const toSelect = IS_RECAP_MODE
-    ? ((recapSessionId && sessions.has(recapSessionId) ? recapSessionId : null) ||
-      recapBestSessionId ||
-      null)
-    : (pinnedActiveSessionId ||
-      (preferServerActive
-      ? (serverActiveId ||
-        activeSessionId ||
-        current ||
-        (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
-        (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
-        (ids.length > 0 ? ids[0] : null))
-      : (activeSessionId ||
-        current ||
-        (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
-        (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
-        serverActiveId ||
-        (ids.length > 0 ? ids[0] : null))));
+  const toSelect = pinnedActiveSessionId ||
+    (preferServerActive
+    ? (serverActiveId ||
+      activeSessionId ||
+      current ||
+      (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
+      (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
+      (ids.length > 0 ? ids[0] : null))
+    : (activeSessionId ||
+      current ||
+      (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
+      (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
+      serverActiveId ||
+      (ids.length > 0 ? ids[0] : null)));
   if (toSelect && sessions.has(toSelect)) {
     const changed = activeSessionId !== toSelect;
-    if (IS_RECAP_MODE) {
-      recapSessionId = toSelect;
-    }
     setActiveSession(toSelect, { restartTimeline: changed });
   } else {
     clearActiveSession();
@@ -6568,9 +6249,6 @@ function handleServerEvent(frame) {
       }
 
       updateSessionSelect(sessionId, { preferServerActive: true });
-      if (IS_RECAP_MODE) {
-        ensureRecapSessionBound().catch((error) => appendLog(`[recap] bind failed: ${error}`));
-      }
       return;
     }
 
@@ -6732,9 +6410,6 @@ function handleServerEvent(frame) {
       applyProcessingByThread(nextProcessingByThread);
       prunePromptState();
       updateSessionSelect(payload.activeSessionId || null);
-      if (IS_RECAP_MODE) {
-        ensureRecapSessionBound().catch((error) => appendLog(`[recap] bind failed: ${error}`));
-      }
 
       const activeState = getActiveSessionState();
       const activePending = activeState && activeState.pendingApproval ? activeState.pendingApproval : null;
@@ -6843,9 +6518,6 @@ function handleServerEvent(frame) {
       refreshSessionMeta();
       appendLog(`[catalog] loaded ${sessionCatalog.length} existing sessions from ${payload.codexHomePath || "default CODEX_HOME"}`);
       tryAutoAttachStoredThread().catch((error) => appendLog(`[session] auto-attach failed: ${error}`));
-      if (IS_RECAP_MODE) {
-        ensureRecapSessionBound().catch((error) => appendLog(`[recap] bind failed: ${error}`));
-      }
       return;
     }
 
@@ -7701,12 +7373,9 @@ reloadModelsBtn.addEventListener("click", async () => {
 });
 
 cwdInput.addEventListener("change", () => {
-  const normalized = normalizeProjectCwd(IS_RECAP_MODE ? getRecapWorkingDirectory() : cwdInput.value.trim());
+  const normalized = normalizeProjectCwd(cwdInput.value.trim());
   cwdInput.value = normalized;
   localStorage.setItem(STORAGE_CWD_KEY, normalized);
-  if (IS_RECAP_MODE && normalized) {
-    recapRootPath = normalized;
-  }
   if (normalized) {
     selectedProjectKey = getProjectKeyFromCwd(normalized);
   }
@@ -8309,9 +7978,5 @@ loadRuntimeSecurityConfig()
     setSecurityWarningVisible(SECURITY_WARNING_TEXT, ["Security posture could not be loaded from the server."]);
   })
   .finally(() => {
-    initializeRecapMode()
-      .catch((error) => appendLog(`[recap] setup failed: ${error}`))
-      .finally(() => {
-        ensureSocket().catch((error) => appendLog(`[ws] connect failed: ${error}`));
-      });
+    ensureSocket().catch((error) => appendLog(`[ws] connect failed: ${error}`));
   });
