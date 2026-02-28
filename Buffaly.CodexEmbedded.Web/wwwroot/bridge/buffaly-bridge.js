@@ -12,7 +12,17 @@
     "ide.openDiff",
     "ide.v1.openDiff",
     "ide.openDiffFromSelection",
-    "ide.v1.openDiffFromSelection"
+    "ide.v1.openDiffFromSelection",
+    "ide.getBuildState",
+    "ide.v1.getBuildState",
+    "ide.buildSolution",
+    "ide.v1.buildSolution",
+    "ide.buildSolutionAndWait",
+    "ide.v1.buildSolutionAndWait",
+    "ide.getErrorList",
+    "ide.v1.getErrorList",
+    "ide.getWarningList",
+    "ide.v1.getWarningList"
   ];
   var loadedAtIso = new Date().toISOString();
   var scriptInfo = {
@@ -25,11 +35,26 @@
     connected: false,
     version: 1,
     methods: METHODS.slice(0),
+    build: {
+      state: "idle",
+      status: "",
+      errors: 0,
+      scope: "",
+      action: "",
+      errorList: "",
+      warningList: "",
+      updatedAtIso: ""
+    },
     rpc: rpc,
     commands: {
       getContext: function () { return rpc("ide.v1.getContext", {}); },
       openFile: function (path) { return rpc("ide.v1.openFile", { path: path }); },
       goToLine: function (line) { return rpc("ide.v1.goToLine", { line: line }); },
+      getBuildState: function () { return rpc("ide.v1.getBuildState", {}); },
+      buildSolution: function () { return rpc("ide.v1.buildSolution", {}); },
+      buildSolutionAndWait: function (timeoutMs) { return rpc("ide.v1.buildSolutionAndWait", { timeoutMs: timeoutMs }); },
+      getErrorList: function () { return rpc("ide.v1.getErrorList", {}); },
+      getWarningList: function () { return rpc("ide.v1.getWarningList", {}); },
       openDiff: function (title, path, originalText, modifiedText) {
         return rpc("ide.v1.openDiff", {
           title: title,
@@ -57,6 +82,7 @@
   var debugOutput;
   var debugStatus;
   var fileLinkInterceptorInstalled = false;
+  var webviewMessageInstalled = false;
 
   function getHost() {
     try {
@@ -193,6 +219,25 @@
       return { path: path, selectionLength: text.length };
     });
 
+    addDebugAction(actions, "Build State", async function () {
+      return {
+        state: await bridge.commands.getBuildState()
+      };
+    });
+
+    addDebugAction(actions, "Build+Wait", async function () {
+      return {
+        result: await bridge.commands.buildSolutionAndWait(120000)
+      };
+    });
+
+    addDebugAction(actions, "Build Errors", async function () {
+      return {
+        errors: await bridge.commands.getErrorList(),
+        warnings: await bridge.commands.getWarningList()
+      };
+    });
+
     addDebugAction(actions, "Close Panel", async function () {
       debugPanel.style.display = "none";
       return { closed: true };
@@ -265,7 +310,8 @@
     if (!debugStatus) return;
     debugStatus.textContent =
       "available: " + String(bridge.available) +
-      " | connected: " + String(bridge.connected);
+      " | connected: " + String(bridge.connected) +
+      " | build: " + String(bridge.build.state || "idle");
     var meta = document.getElementById("vsBridgeDebugMeta");
     if (meta) {
       var urlPart = scriptInfo.url ? (" | src " + scriptInfo.url) : "";
@@ -401,8 +447,21 @@
   function renderStatus(connected, text) {
     var el = ensureBadge();
     if (!el) return;
+    var buildState = String(bridge.build.state || "idle");
+    var buildSuffix = "";
     if (connected) {
-      el.textContent = text || "Visual Studio: Connected";
+      if (buildState === "building") {
+        buildSuffix = " | Build: Running";
+      } else if (buildState === "failed") {
+        buildSuffix = " | Build: Failed";
+      } else if (buildState === "succeeded") {
+        buildSuffix = " | Build: Succeeded";
+      } else if (buildState === "canceled") {
+        buildSuffix = " | Build: Canceled";
+      }
+    }
+    if (connected) {
+      el.textContent = (text || "Visual Studio: Connected") + buildSuffix;
       el.style.background = "#ecfdf5";
       el.style.color = "#065f46";
       el.style.borderColor = "#6ee7b7";
@@ -421,6 +480,84 @@
     } catch (e) {
       return {};
     }
+  }
+
+  function normalizeBuildState(value) {
+    var raw = String(value || "").trim().toLowerCase();
+    if (raw === "building" || raw === "succeeded" || raw === "failed" || raw === "canceled" || raw === "idle") {
+      return raw;
+    }
+    return "idle";
+  }
+
+  async function refreshBuildStateFromHost() {
+    try {
+      var state = await bridge.commands.getBuildState();
+      bridge.build.state = normalizeBuildState(state);
+      bridge.build.updatedAtIso = new Date().toISOString();
+      refreshDebugStatus();
+    } catch (e) {
+    }
+  }
+
+  async function refreshBuildDiagnostics() {
+    try {
+      var results = await Promise.all([
+        bridge.commands.getErrorList(),
+        bridge.commands.getWarningList()
+      ]);
+      bridge.build.errorList = String(results[0] || "");
+      bridge.build.warningList = String(results[1] || "");
+      bridge.build.updatedAtIso = new Date().toISOString();
+      refreshDebugStatus();
+    } catch (e) {
+      console.error("[vs-bridge] failed to refresh build diagnostics", e);
+    }
+  }
+
+  function handleWebViewMessage(msg) {
+    if (!msg || typeof msg !== "object") return;
+    var type = String(msg.type || "").trim().toLowerCase();
+    if (!type) return;
+
+    if (type === "build.begin") {
+      bridge.build.state = "building";
+      bridge.build.status = "building";
+      bridge.build.scope = String(msg.scope || "");
+      bridge.build.action = String(msg.action || "");
+      bridge.build.updatedAtIso = new Date().toISOString();
+      renderStatus(true, "Visual Studio: Connected");
+      refreshDebugStatus();
+      console.log("[vs-bridge] build.begin", msg);
+      return;
+    }
+
+    if (type === "build.done") {
+      bridge.build.status = String(msg.status || "");
+      bridge.build.state = normalizeBuildState(msg.status || "idle");
+      bridge.build.errors = Number(msg.errors || 0);
+      bridge.build.scope = String(msg.scope || "");
+      bridge.build.action = String(msg.action || "");
+      bridge.build.updatedAtIso = new Date().toISOString();
+      renderStatus(true, "Visual Studio: Connected");
+      refreshDebugStatus();
+      refreshBuildDiagnostics();
+      console.log("[vs-bridge] build.done", msg);
+    }
+  }
+
+  function installWebViewMessageListener() {
+    if (webviewMessageInstalled) return;
+    var webview = window.chrome && window.chrome.webview;
+    if (!webview || typeof webview.addEventListener !== "function") return;
+    webview.addEventListener("message", function (event) {
+      try {
+        handleWebViewMessage(event && event.data ? event.data : null);
+      } catch (e) {
+        console.error("[vs-bridge] message handling failed", e);
+      }
+    });
+    webviewMessageInstalled = true;
   }
 
   async function rpc(method, params) {
@@ -467,6 +604,32 @@
         );
         return {};
 
+      case "ide.getBuildState":
+      case "ide.v1.getBuildState":
+        return String(await host.GetBuildState());
+
+      case "ide.buildSolution":
+      case "ide.v1.buildSolution":
+        await host.BuildSolution();
+        return {};
+
+      case "ide.buildSolutionAndWait":
+      case "ide.v1.buildSolutionAndWait": {
+        var timeoutMs = Number(p.timeoutMs || 120000);
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+          timeoutMs = 120000;
+        }
+        return String(await host.BuildSolutionAndWait(Math.floor(timeoutMs)));
+      }
+
+      case "ide.getErrorList":
+      case "ide.v1.getErrorList":
+        return String(await host.GetErrorList());
+
+      case "ide.getWarningList":
+      case "ide.v1.getWarningList":
+        return String(await host.GetWarningList());
+
       default:
         throw new Error("Unsupported method: " + method);
     }
@@ -486,6 +649,9 @@
       var ok = pong === "connected";
       bridge.available = ok;
       bridge.connected = ok;
+      if (ok) {
+        await refreshBuildStateFromHost();
+      }
       renderStatus(ok, ok ? "Visual Studio: Connected" : "Visual Studio: Ping Failed");
       refreshDebugStatus();
       if (!ok) {
@@ -510,11 +676,14 @@
 
   onReady(function () {
     ensureDebugButton();
+    installWebViewMessageListener();
     installFileLinkInterceptor();
     refreshScriptFingerprint();
     checkConnection();
+    refreshBuildDiagnostics();
     setInterval(checkConnection, 5000);
     setInterval(refreshScriptFingerprint, 5000);
+    setInterval(refreshBuildStateFromHost, 5000);
     console.log("[vs-bridge] installed", bridge);
   });
 })();
