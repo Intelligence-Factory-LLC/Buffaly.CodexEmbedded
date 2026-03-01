@@ -109,7 +109,7 @@
     badge = document.createElement("div");
     badge.id = "vsBridgeStatusBadge";
     badge.style.position = "fixed";
-    badge.style.right = "12px";
+    badge.style.left = "12px";
     badge.style.bottom = "12px";
     badge.style.zIndex = "2147483647";
     badge.style.padding = "6px 10px";
