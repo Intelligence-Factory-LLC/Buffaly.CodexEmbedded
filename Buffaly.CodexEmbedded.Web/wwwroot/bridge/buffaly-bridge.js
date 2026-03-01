@@ -431,6 +431,29 @@
     return path.replace(/\//g, "\\");
   }
 
+  function parseFilePathAndLine(url) {
+    var normalizedPath = fileUrlToPath(url);
+    if (!normalizedPath) {
+      return { path: "", line: 0 };
+    }
+
+    var line = tryParseLineFromUrl(url);
+    var path = normalizedPath;
+    var suffixMatch = /^(.*):(\d+)$/.exec(normalizedPath);
+    if (suffixMatch) {
+      path = suffixMatch[1] || normalizedPath;
+      if (!(line > 0)) {
+        line = Number(suffixMatch[2] || 0);
+      }
+    }
+
+    if (!Number.isFinite(line) || line < 0) {
+      line = 0;
+    }
+
+    return { path: path, line: Math.floor(line) };
+  }
+
   async function openFileUrl(href) {
     var url;
     try {
@@ -443,12 +466,13 @@
       throw new Error("Unsupported protocol: " + url.protocol);
     }
 
-    var path = fileUrlToPath(url);
+    var parsed = parseFilePathAndLine(url);
+    var path = parsed.path;
     if (!path) {
       throw new Error("Could not map file URL to path.");
     }
 
-    var line = tryParseLineFromUrl(url);
+    var line = parsed.line;
     await bridge.commands.openFile(path);
     if (line > 0) {
       await bridge.commands.goToLine(line);
