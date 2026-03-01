@@ -85,11 +85,9 @@
   window.devAgentBridge = bridge;
 
   var badge;
-  var debugButton;
   var debugPanel;
   var debugOutput;
   var debugStatus;
-  var buildEventBadge;
   var fileLinkInterceptorInstalled = false;
   var webviewMessageInstalled = false;
 
@@ -115,74 +113,20 @@
     badge.style.bottom = "12px";
     badge.style.zIndex = "2147483647";
     badge.style.padding = "6px 10px";
-    badge.style.borderRadius = "999px";
+    badge.style.borderRadius = "10px";
     badge.style.border = "1px solid";
     badge.style.fontFamily = "Segoe UI, sans-serif";
     badge.style.fontSize = "12px";
     badge.style.fontWeight = "600";
+    badge.style.cursor = "pointer";
+    badge.style.maxWidth = "45vw";
+    badge.style.whiteSpace = "nowrap";
+    badge.style.overflow = "hidden";
+    badge.style.textOverflow = "ellipsis";
+    badge.title = "Click to open VS bridge debug panel";
+    badge.addEventListener("click", toggleDebugPanel);
     if (document.body) document.body.appendChild(badge);
     return badge;
-  }
-
-  function ensureBuildEventBadge() {
-    if (buildEventBadge) return buildEventBadge;
-    buildEventBadge = document.createElement("div");
-    buildEventBadge.id = "vsBridgeBuildEventBadge";
-    buildEventBadge.style.position = "fixed";
-    buildEventBadge.style.right = "12px";
-    buildEventBadge.style.bottom = "82px";
-    buildEventBadge.style.zIndex = "2147483647";
-    buildEventBadge.style.padding = "6px 10px";
-    buildEventBadge.style.borderRadius = "8px";
-    buildEventBadge.style.border = "1px solid #cbd5e1";
-    buildEventBadge.style.background = "#f8fafc";
-    buildEventBadge.style.color = "#0f172a";
-    buildEventBadge.style.fontFamily = "Segoe UI, sans-serif";
-    buildEventBadge.style.fontSize = "12px";
-    buildEventBadge.style.fontWeight = "600";
-    buildEventBadge.style.maxWidth = "420px";
-    buildEventBadge.style.whiteSpace = "nowrap";
-    buildEventBadge.style.overflow = "hidden";
-    buildEventBadge.style.textOverflow = "ellipsis";
-    buildEventBadge.style.display = "none";
-    if (document.body) document.body.appendChild(buildEventBadge);
-    return buildEventBadge;
-  }
-
-  function renderBuildEventBadge() {
-    var n = bridge.build.notifications;
-    var el = ensureBuildEventBadge();
-    if (!el || !n) return;
-    if (!n.lastType) {
-      el.style.display = "none";
-      return;
-    }
-
-    var label = "Build notify: " + n.lastType;
-    if (n.lastMessage) {
-      label += " | " + n.lastMessage;
-    }
-    label += " | begin " + n.beginCount + " done " + n.doneCount + " err " + n.errorCount;
-    el.textContent = label;
-    el.style.display = "block";
-
-    if (n.lastType === "error" || n.lastType === "error-list") {
-      el.style.background = "#fef2f2";
-      el.style.color = "#991b1b";
-      el.style.borderColor = "#fca5a5";
-    } else if (n.lastType === "done") {
-      el.style.background = "#ecfdf5";
-      el.style.color = "#065f46";
-      el.style.borderColor = "#6ee7b7";
-    } else if (n.lastType === "begin") {
-      el.style.background = "#eff6ff";
-      el.style.color = "#1e40af";
-      el.style.borderColor = "#93c5fd";
-    } else {
-      el.style.background = "#f8fafc";
-      el.style.color = "#0f172a";
-      el.style.borderColor = "#cbd5e1";
-    }
   }
 
   function markBuildNotification(type, message) {
@@ -199,31 +143,8 @@
     n.lastType = t || "update";
     n.lastMessage = String(message || "");
     n.lastAtIso = new Date().toISOString();
-    renderBuildEventBadge();
-  }
-
-  function ensureDebugButton() {
-    if (debugButton) return debugButton;
-    debugButton = document.createElement("button");
-    debugButton.id = "vsBridgeDebugButton";
-    debugButton.type = "button";
-    debugButton.textContent = "VS Bridge Debug";
-    debugButton.style.position = "fixed";
-    debugButton.style.right = "12px";
-    debugButton.style.bottom = "48px";
-    debugButton.style.zIndex = "2147483647";
-    debugButton.style.padding = "6px 10px";
-    debugButton.style.borderRadius = "8px";
-    debugButton.style.border = "1px solid #2563eb";
-    debugButton.style.background = "#dbeafe";
-    debugButton.style.color = "#1e3a8a";
-    debugButton.style.fontFamily = "Segoe UI, sans-serif";
-    debugButton.style.fontSize = "12px";
-    debugButton.style.fontWeight = "600";
-    debugButton.style.cursor = "pointer";
-    debugButton.addEventListener("click", toggleDebugPanel);
-    if (document.body) document.body.appendChild(debugButton);
-    return debugButton;
+    renderStatus(bridge.connected, bridge.connected ? "Visual Studio: Connected" : "Visual Studio: Disconnected");
+    refreshDebugStatus();
   }
 
   function ensureDebugPanel() {
@@ -232,7 +153,7 @@
     debugPanel.id = "vsBridgeDebugPanel";
     debugPanel.style.position = "fixed";
     debugPanel.style.right = "12px";
-    debugPanel.style.bottom = "86px";
+    debugPanel.style.bottom = "52px";
     debugPanel.style.width = "360px";
     debugPanel.style.maxWidth = "calc(100vw - 24px)";
     debugPanel.style.maxHeight = "60vh";
@@ -562,20 +483,13 @@
     var el = ensureBadge();
     if (!el) return;
     var buildState = String(bridge.build.state || "idle");
-    var buildSuffix = "";
+    var n = bridge.build.notifications;
+    var buildSuffix = connected ? (" | build " + buildState) : "";
+    var notifySuffix = (n && (n.beginCount || n.doneCount || n.errorCount))
+      ? (" | b" + n.beginCount + "/d" + n.doneCount + "/e" + n.errorCount)
+      : "";
     if (connected) {
-      if (buildState === "building") {
-        buildSuffix = " | Build: Running";
-      } else if (buildState === "failed") {
-        buildSuffix = " | Build: Failed";
-      } else if (buildState === "succeeded") {
-        buildSuffix = " | Build: Succeeded";
-      } else if (buildState === "canceled") {
-        buildSuffix = " | Build: Canceled";
-      }
-    }
-    if (connected) {
-      el.textContent = (text || "Visual Studio: Connected") + buildSuffix;
+      el.textContent = (text || "Visual Studio: Connected") + buildSuffix + notifySuffix;
       el.style.background = "#ecfdf5";
       el.style.color = "#065f46";
       el.style.borderColor = "#6ee7b7";
@@ -799,8 +713,7 @@
   }
 
   onReady(function () {
-    ensureDebugButton();
-    ensureBuildEventBadge();
+    ensureBadge();
     installWebViewMessageListener();
     installFileLinkInterceptor();
     refreshScriptFingerprint();
