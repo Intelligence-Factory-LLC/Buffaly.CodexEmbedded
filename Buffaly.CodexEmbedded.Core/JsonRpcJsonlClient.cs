@@ -6,6 +6,7 @@ namespace Buffaly.CodexEmbedded.Core;
 
 internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 {
+	private static readonly TimeSpan DefaultSendTimeout = TimeSpan.FromSeconds(5);
 	private readonly IJsonlTransport _transport;
 	private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
 	{
@@ -13,6 +14,7 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 	};
 	private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pending = new(StringComparer.Ordinal);
 	private readonly SemaphoreSlim _sendLock = new(1, 1);
+	private readonly TimeSpan _sendTimeout;
 	private long _nextId;
 	private Task? _stdoutPump;
 	private Task? _stderrPump;
@@ -25,9 +27,12 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 	// Handler returns the JSON element to send as `result`.
 	public Func<string, JsonElement, JsonElement, CancellationToken, Task<JsonElement>>? OnServerRequest;
 
-	public JsonRpcJsonlClient(IJsonlTransport transport)
+	public JsonRpcJsonlClient(IJsonlTransport transport, TimeSpan? sendTimeout = null)
 	{
 		_transport = transport;
+		_sendTimeout = sendTimeout is { } configured && configured > TimeSpan.Zero
+			? configured
+			: DefaultSendTimeout;
 	}
 
 	public Task StartAsync(CancellationToken cancellationToken)
@@ -53,8 +58,6 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 
 		try
 		{
-			OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "debug", "rpc_sent", $"{method} id={idKey}"));
-
 			var payload = new Dictionary<string, object?>
 			{
 				["id"] = id,
@@ -63,16 +66,9 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 			};
 
 			var json = JsonSerializer.Serialize(payload, _jsonOptions);
-
-			await _sendLock.WaitAsync(cancellationToken);
-			try
-			{
-				await _transport.WriteStdinLineAsync(json, cancellationToken);
-			}
-			finally
-			{
-				_sendLock.Release();
-			}
+			var sendContext = $"{method} id={idKey}";
+			await WriteJsonLineWithTimeoutAsync(json, sendContext, cancellationToken);
+			OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "debug", "rpc_sent", sendContext));
 
 			return await tcs.Task.WaitAsync(cancellationToken);
 		}
@@ -100,19 +96,47 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 		};
 
 		var json = JsonSerializer.Serialize(payload, _jsonOptions);
-		await _sendLock.WaitAsync(cancellationToken);
-		try
-		{
-			await _transport.WriteStdinLineAsync(json, cancellationToken);
-		}
-		finally
-		{
-			_sendLock.Release();
-		}
+		await WriteJsonLineWithTimeoutAsync(json, $"response id={idValue}", cancellationToken);
 
 		// Return a dummy element for convenience.
 		using var doc = JsonDocument.Parse("{\"ok\":true}");
 		return doc.RootElement.Clone();
+	}
+
+	private async Task WriteJsonLineWithTimeoutAsync(string json, string context, CancellationToken cancellationToken)
+	{
+		using var sendTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+		sendTimeoutCts.CancelAfter(_sendTimeout);
+		var sendToken = sendTimeoutCts.Token;
+		var lockTaken = false;
+
+		try
+		{
+			await _sendLock.WaitAsync(sendToken);
+			lockTaken = true;
+			await _transport.WriteStdinLineAsync(json, sendToken);
+		}
+		catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && sendTimeoutCts.IsCancellationRequested)
+		{
+			OnEvent?.Invoke(new CodexCoreEvent(
+				DateTimeOffset.UtcNow,
+				"error",
+				"rpc_send_timeout",
+				$"{context} timeout={_sendTimeout.TotalSeconds:0.#}s"));
+			throw new TimeoutException($"JSON-RPC send timed out after {_sendTimeout.TotalSeconds:0.#}s ({context}).", ex);
+		}
+		catch (Exception ex)
+		{
+			OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "error", "rpc_send_failed", $"{context} error={ex.Message}"));
+			throw;
+		}
+		finally
+		{
+			if (lockTaken)
+			{
+				_sendLock.Release();
+			}
+		}
 	}
 
 	private async Task PumpStdoutAsync(CancellationToken cancellationToken)
