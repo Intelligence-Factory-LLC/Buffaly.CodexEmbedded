@@ -138,6 +138,49 @@ body {
 	font-weight: 600;
 }
 
+.connection-status-banner {
+	padding: 0.55rem 0.9rem;
+	background: #eff6ff;
+	border-top: 1px solid #60a5fa;
+	border-bottom: 1px solid #60a5fa;
+	color: #1e3a8a;
+	font-size: 0.84rem;
+	font-weight: 600;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.7rem;
+}
+
+.connection-status-banner[data-state="disconnected"] {
+	background: #fff7ed;
+	border-color: #fb923c;
+	color: #7c2d12;
+}
+
+.connection-status-banner[data-state="error"] {
+	background: #fef2f2;
+	border-color: #f87171;
+	color: #991b1b;
+}
+
+.connection-reconnect-btn {
+	padding: 0.26rem 0.62rem;
+	border: 1px solid #334155;
+	border-radius: 6px;
+	background: #ffffff;
+	color: #0f172a;
+	font-size: 0.78rem;
+	font-weight: 600;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.connection-reconnect-btn:disabled {
+	opacity: 0.6;
+	cursor: wait;
+}
+
 .main {
 	flex: 1;
 	display: grid;
@@ -2437,6 +2480,28 @@ body {
 	color: #64748b;
 }
 
+.server-row-action-btn {
+	padding: 0.18rem 0.5rem;
+	border: 1px solid #93c5fd;
+	border-radius: 6px;
+	background: #eff6ff;
+	color: #1e40af;
+	font-size: 0.72rem;
+	font-weight: 700;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.server-row-action-btn:hover {
+	background: #dbeafe;
+	border-color: #60a5fa;
+}
+
+.server-row-action-btn:disabled {
+	cursor: default;
+	opacity: 0.65;
+}
+
 .server-state-badge {
 	display: inline-flex;
 	align-items: center;
@@ -2707,6 +2772,39 @@ body {
 	background: rgba(15, 23, 42, 0.05);
 	padding: 0.42rem 0.5rem;
 	border-radius: 8px;
+}
+
+.watcher-markdown-table-wrap {
+	overflow-x: auto;
+	margin: 0 0 0.55rem 0;
+}
+
+.watcher-markdown-table-wrap:last-child {
+	margin-bottom: 0;
+}
+
+.watcher-assistant-markdown .watcher-markdown-table,
+.watcher-plan-body .watcher-markdown-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 0.82rem;
+}
+
+.watcher-assistant-markdown .watcher-markdown-table th,
+.watcher-assistant-markdown .watcher-markdown-table td,
+.watcher-plan-body .watcher-markdown-table th,
+.watcher-plan-body .watcher-markdown-table td {
+	padding: 0.38rem 0.5rem;
+	border: 1px solid #dbe3ee;
+	text-align: left;
+	vertical-align: top;
+}
+
+.watcher-assistant-markdown .watcher-markdown-table thead th,
+.watcher-plan-body .watcher-markdown-table thead th {
+	background: #f8fafc;
+	font-weight: 700;
+	color: #334155;
 }
 
 .watcher-tool-body {
@@ -3552,6 +3650,19 @@ html[data-theme="dark"] .watcher-assistant-markdown pre {
 	background: rgba(148, 163, 184, 0.14);
 }
 
+html[data-theme="dark"] .watcher-assistant-markdown .watcher-markdown-table th,
+html[data-theme="dark"] .watcher-assistant-markdown .watcher-markdown-table td,
+html[data-theme="dark"] .watcher-plan-body .watcher-markdown-table th,
+html[data-theme="dark"] .watcher-plan-body .watcher-markdown-table td {
+	border-color: #334155;
+}
+
+html[data-theme="dark"] .watcher-assistant-markdown .watcher-markdown-table thead th,
+html[data-theme="dark"] .watcher-plan-body .watcher-markdown-table thead th {
+	background: #0f172a;
+	color: #cbd5e1;
+}
+
 html[data-theme="dark"] .watcher-plan-body h1,
 html[data-theme="dark"] .watcher-plan-body h2,
 html[data-theme="dark"] .watcher-plan-body h3,
@@ -3902,8 +4013,33 @@ html[data-theme="dark"] .approval-panel,
 html[data-theme="dark"] .server-section,
 html[data-theme="dark"] .logs-status,
 html[data-theme="dark"] .security-warning-banner,
+html[data-theme="dark"] .connection-status-banner,
 html[data-theme="dark"] .sidebar-divider {
 	border-color: #334155;
+}
+
+html[data-theme="dark"] .connection-status-banner {
+	background: #172554;
+	color: #dbeafe;
+	border-color: #1d4ed8;
+}
+
+html[data-theme="dark"] .connection-status-banner[data-state="disconnected"] {
+	background: #431407;
+	color: #fed7aa;
+	border-color: #c2410c;
+}
+
+html[data-theme="dark"] .connection-status-banner[data-state="error"] {
+	background: #450a0a;
+	color: #fecaca;
+	border-color: #b91c1c;
+}
+
+html[data-theme="dark"] .connection-reconnect-btn {
+	background: #0f172a;
+	border-color: #64748b;
+	color: #e2e8f0;
 }
 
 html[data-theme="dark"] .sidebar-divider {
@@ -3927,6 +4063,17 @@ html[data-theme="dark"] .server-table thead th {
 html[data-theme="dark"] .server-table th,
 html[data-theme="dark"] .server-table td {
 	border-bottom-color: #334155;
+}
+
+html[data-theme="dark"] .server-row-action-btn {
+	background: #0f172a;
+	border-color: #475569;
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .server-row-action-btn:hover {
+	background: #1e293b;
+	border-color: #64748b;
 }
 
 @media (max-width: 900px) {

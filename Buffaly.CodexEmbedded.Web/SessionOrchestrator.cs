@@ -638,7 +638,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string? codexPath,
 		bool attached,
 		Func<CodexClient, CancellationToken, Task<CodexSession>> openSessionAsync,
-		CancellationToken cancellationToken)
+		CancellationToken cancellationToken,
+		bool appServerRecovering = false)
 	{
 		var effectiveCodexPath = codexPath ?? _defaults.CodexPath;
 		var effectiveCwd = cwd ?? _defaults.DefaultCwd;
@@ -681,13 +682,15 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			client,
 			session,
 			cwd,
+			effectiveCodexPath,
 			model,
 			effort,
 			sessionLog,
 			pendingApprovals,
 			pendingToolUserInputs,
 			ApprovalPolicy: session.ApprovalPolicy ?? approvalPolicy,
-			SandboxPolicy: session.SandboxMode ?? sandboxMode);
+			SandboxPolicy: session.SandboxMode ?? sandboxMode,
+			AppServerRecovering: appServerRecovering);
 		lock (_sync)
 		{
 			_sessions[sessionId] = managed;
@@ -824,6 +827,24 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		RecoverTurnStateFromClientIfNeeded(sessionId, session);
 		isTurnInFlight = session.IsTurnInFlight;
+		return true;
+	}
+
+	public bool TryGetSessionRecoveryState(string sessionId, out bool isAppServerRecovering)
+	{
+		isAppServerRecovering = false;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			return false;
+		}
+
+		var session = TryGetSession(sessionId);
+		if (session is null)
+		{
+			return false;
+		}
+
+		isAppServerRecovering = session.IsAppServerRecovering;
 		return true;
 	}
 
@@ -1615,6 +1636,62 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		return (interruptSent, localCanceled, fallbackReason);
 	}
 
+	public bool TryResetThreadSession(string sessionId, out string? errorMessage)
+	{
+		errorMessage = null;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			errorMessage = "sessionId is required.";
+			return false;
+		}
+
+		var session = TryGetSession(sessionId);
+		if (session is null)
+		{
+			errorMessage = $"Unknown session: {sessionId}";
+			return false;
+		}
+
+		if (!session.TryBeginAppServerRecovery())
+		{
+			errorMessage = "Session is already recovering.";
+			return false;
+		}
+
+		var mode = session.GetActiveCollaborationMode();
+		var isPlanTurn = string.Equals(mode, "plan", StringComparison.Ordinal);
+		var reset = session.ForceResetTurnState(clearQueuedTurns: false);
+		if (reset.HadTurnInFlight)
+		{
+			Broadcast?.Invoke(
+				"turn_complete",
+				new
+				{
+					sessionId,
+					status = "interrupted",
+					errorMessage = "Turn was interrupted by a manual thread reset.",
+					isPlanTurn,
+					collaborationMode = mode
+				});
+		}
+
+		session.Log.Write("[session_recovery] manual thread reset requested");
+		Broadcast?.Invoke(
+			"session_recovery_state",
+			new
+			{
+				sessionId,
+				state = "recovering",
+				reason = "manual_reset",
+				pendingSeconds = 0
+			});
+		Broadcast?.Invoke("status", new { sessionId, message = "Manual thread reset requested. Restarting app-server session." });
+		SessionsChanged?.Invoke();
+
+		_ = Task.Run(() => RecoverSessionAfterStaleTurnStartAsync(sessionId, session, TimeSpan.Zero), CancellationToken.None);
+		return true;
+	}
+
 	public Task StopSessionAsync(string sessionId, CancellationToken cancellationToken)
 	{
 		_ = cancellationToken;
@@ -1702,6 +1779,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	{
 		while (!session.LifetimeToken.IsCancellationRequested)
 		{
+			if (session.IsAppServerRecovering)
+			{
+				await Task.Delay(250, session.LifetimeToken);
+				continue;
+			}
+
 			if (session.IsTurnInFlight)
 			{
 				await Task.Delay(200, session.LifetimeToken);
@@ -1892,6 +1975,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private void HandleCoreEvent(string sessionId, LocalLogWriter sessionLog, CodexCoreEvent ev)
 	{
 		sessionLog.Write(CodexEventLogging.Format(ev, includeTimestamp: false));
+		TryGetSession(sessionId)?.MarkCoreEventObserved();
 
 		if (IsCoreTransportPumpFailure(ev))
 		{
@@ -3288,24 +3372,41 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	private TimeSpan GetPendingTurnStartStaleAfter()
 	{
-		var seconds = Math.Clamp(_defaults.TurnSlotWaitPollSeconds * 20, 30, 120);
+		var seconds = Math.Clamp(_defaults.TurnStartAckTimeoutSeconds, 5, 120);
+		return TimeSpan.FromSeconds(seconds);
+	}
+
+	private TimeSpan GetStartedLocalTurnStaleAfter()
+	{
+		var seconds = Math.Clamp(_defaults.TurnTimeoutSeconds, 60, 300);
 		return TimeSpan.FromSeconds(seconds);
 	}
 
 	private bool TryExpireStalePendingTurnStart(string sessionId, ManagedSession session, TimeSpan staleAfter)
 	{
+		if (session.IsAppServerRecovering)
+		{
+			return false;
+		}
+
 		if (!session.IsLocalTurnAwaitingStartStale(staleAfter, out var pendingAge))
 		{
 			return false;
 		}
 
+		if (!session.TryBeginAppServerRecovery())
+		{
+			return false;
+		}
+
 		var roundedSeconds = Math.Round(pendingAge.TotalSeconds);
-		var message = $"Turn start did not confirm after {roundedSeconds:0}s and was reset for recovery.";
+		var message = $"Turn start did not confirm after {roundedSeconds:0}s. Restarting session app-server.";
 		var collaborationMode = session.GetActiveCollaborationMode();
 		var isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal);
 		var reset = session.ForceResetTurnState(clearQueuedTurns: false);
 		if (!reset.HadTurnInFlight)
 		{
+			session.MarkAppServerRecoveryComplete();
 			return false;
 		}
 
@@ -3319,10 +3420,215 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				isPlanTurn,
 				collaborationMode
 			});
-		SessionsChanged?.Invoke();
 		session.Log.Write($"[turn_recovery] expired pending turn/start after {roundedSeconds:0}s");
-		Broadcast?.Invoke("status", new { sessionId, message = "Turn start appeared stuck and was reset." });
+		Broadcast?.Invoke("status", new { sessionId, message = "Turn start appeared stuck. Recovering session app-server." });
+		Broadcast?.Invoke(
+			"session_recovery_state",
+			new
+			{
+				sessionId,
+				state = "recovering",
+				reason = "turn_start_stale",
+				pendingSeconds = roundedSeconds
+			});
+		SessionsChanged?.Invoke();
+		_ = Task.Run(() => RecoverSessionAfterStaleTurnStartAsync(sessionId, session, pendingAge), CancellationToken.None);
 		return true;
+	}
+
+	private bool TryExpireStaleStartedLocalTurn(string sessionId, ManagedSession session, TimeSpan staleAfter)
+	{
+		if (session.IsAppServerRecovering)
+		{
+			return false;
+		}
+
+		if (!session.IsLocalStartedTurnStale(staleAfter, out var silentAge))
+		{
+			return false;
+		}
+
+		if (!session.TryBeginAppServerRecovery())
+		{
+			return false;
+		}
+
+		var roundedSeconds = Math.Round(silentAge.TotalSeconds);
+		var message = $"Started turn showed no core activity for {roundedSeconds:0}s. Restarting session app-server.";
+		var collaborationMode = session.GetActiveCollaborationMode();
+		var isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal);
+		var reset = session.ForceResetTurnState(clearQueuedTurns: false);
+		if (!reset.HadTurnInFlight)
+		{
+			session.MarkAppServerRecoveryComplete();
+			return false;
+		}
+
+		Broadcast?.Invoke(
+			"turn_complete",
+			new
+			{
+				sessionId,
+				status = "interrupted",
+				errorMessage = message,
+				isPlanTurn,
+				collaborationMode
+			});
+		session.Log.Write($"[turn_recovery] expired started turn after {roundedSeconds:0}s without core activity");
+		Broadcast?.Invoke("status", new { sessionId, message = "Turn appeared stalled after start. Recovering session app-server." });
+		Broadcast?.Invoke(
+			"session_recovery_state",
+			new
+			{
+				sessionId,
+				state = "recovering",
+				reason = "turn_started_no_activity_stale",
+				pendingSeconds = roundedSeconds
+			});
+		SessionsChanged?.Invoke();
+		_ = Task.Run(() => RecoverSessionAfterStaleTurnStartAsync(sessionId, session, silentAge), CancellationToken.None);
+		return true;
+	}
+
+	private async Task RecoverSessionAfterStaleTurnStartAsync(string sessionId, ManagedSession staleSession, TimeSpan pendingAge)
+	{
+		var roundedSeconds = Math.Round(pendingAge.TotalSeconds);
+		var queuedTurns = staleSession.GetQueuedTurnsSnapshot();
+		var threadId = staleSession.Session.ThreadId;
+		var model = staleSession.CurrentModel ?? _defaults.DefaultModel;
+		var effort = staleSession.CurrentReasoningEffort;
+		var approvalPolicy = staleSession.CurrentApprovalPolicy;
+		var sandboxPolicy = staleSession.CurrentSandboxPolicy;
+		var cwd = string.IsNullOrWhiteSpace(staleSession.Cwd) ? _defaults.DefaultCwd : staleSession.Cwd;
+		var codexPath = string.IsNullOrWhiteSpace(staleSession.CodexPath) ? _defaults.CodexPath : staleSession.CodexPath;
+		ManagedSession? replacement = null;
+		var staleDisposed = false;
+		try
+		{
+			staleSession.CancelLifetime();
+			TryRemoveSession(sessionId, out _);
+			try
+			{
+				await staleSession.Client.DisposeAsync();
+			}
+			catch (Exception ex)
+			{
+				Logs.LogError(ex);
+			}
+
+			try
+			{
+				staleSession.Log.Dispose();
+			}
+			catch
+			{
+			}
+
+			staleDisposed = true;
+
+			var recoveryTimeoutSeconds = Math.Clamp(_defaults.TurnStartAckTimeoutSeconds * 2, 15, 120);
+			using var recoveryCts = new CancellationTokenSource(TimeSpan.FromSeconds(recoveryTimeoutSeconds));
+			await StartManagedSessionAsync(
+				sessionId,
+				model,
+				effort,
+				approvalPolicy,
+				sandboxPolicy,
+				cwd,
+				codexPath,
+				attached: true,
+				(client, ct) => client.AttachToSessionAsync(new CodexSessionAttachOptions
+				{
+					ThreadId = threadId,
+					Cwd = cwd,
+					Model = model,
+					ApprovalPolicy = approvalPolicy,
+					SandboxMode = sandboxPolicy
+				}, ct),
+				recoveryCts.Token,
+				appServerRecovering: true);
+
+			replacement = TryGetSession(sessionId);
+			if (replacement is null || ReferenceEquals(replacement, staleSession))
+			{
+				throw new InvalidOperationException("Recovered session was not available after reattach.");
+			}
+
+			if (queuedTurns.Count > 0)
+			{
+				replacement.ReplaceQueuedTurns(queuedTurns);
+			}
+
+			replacement.MarkAppServerRecoveryComplete();
+			SessionsChanged?.Invoke();
+			if (queuedTurns.Count > 0)
+			{
+				EnsureQueueDispatcher(sessionId, replacement);
+			}
+
+			replacement.Log.Write($"[session_recovery] completed app-server recovery after stale turn/start ({roundedSeconds:0}s)");
+			Broadcast?.Invoke(
+				"session_recovery_state",
+				new
+				{
+					sessionId,
+					state = "recovered",
+					pendingSeconds = roundedSeconds
+				});
+			Broadcast?.Invoke("status", new { sessionId, message = "Session recovered after stalled turn/start." });
+		}
+		catch (Exception ex)
+		{
+			Logs.LogError(ex);
+			var failureMessage = SimplifyRpcErrorMessage(ex.Message) ?? ex.Message;
+			var current = TryGetSession(sessionId);
+			current?.MarkAppServerRecoveryComplete();
+			if (current is null)
+			{
+				Broadcast?.Invoke(
+					"session_stopped",
+					new
+					{
+						sessionId,
+						message = "Session recovery failed and the session was stopped.",
+						clearedQueuedTurnCount = queuedTurns.Count
+					});
+			}
+			SessionsChanged?.Invoke();
+			Broadcast?.Invoke(
+				"session_recovery_state",
+				new
+				{
+					sessionId,
+					state = "failed",
+					errorMessage = failureMessage
+				});
+			Broadcast?.Invoke("error", new { message = $"Session recovery failed: {failureMessage}" });
+		}
+		finally
+		{
+			staleSession.MarkAppServerRecoveryComplete();
+			if (!staleDisposed)
+			{
+				staleSession.CancelLifetime();
+				try
+				{
+					await staleSession.Client.DisposeAsync();
+				}
+				catch (Exception ex)
+				{
+					Logs.LogError(ex);
+				}
+
+				try
+				{
+					staleSession.Log.Dispose();
+				}
+				catch
+				{
+				}
+			}
+		}
 	}
 
 	private bool TryExpireStaleRecoveredTurn(string sessionId, ManagedSession session, TimeSpan staleAfter)
@@ -3359,6 +3665,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string sessionId,
 		ManagedSession session,
 		TimeSpan stalePendingStartAfter,
+		TimeSpan staleStartedLocalAfter,
 		TimeSpan staleRecoveredAfter,
 		bool includeDirectImmediateWait)
 	{
@@ -3370,6 +3677,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		if (TryExpireStalePendingTurnStart(sessionId, session, stalePendingStartAfter) &&
+			await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
+		{
+			return true;
+		}
+
+		if (TryExpireStaleStartedLocalTurn(sessionId, session, staleStartedLocalAfter) &&
 			await session.TryWaitForTurnSlotAsync(timeout: TimeSpan.Zero, cancellationToken: session.LifetimeToken))
 		{
 			return true;
@@ -3396,10 +3709,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	{
 		var staleRecoveredAfter = GetRecoveredTurnStaleAfter();
 		var stalePendingStartAfter = GetPendingTurnStartStaleAfter();
+		var staleStartedLocalAfter = GetStartedLocalTurnStaleAfter();
 		if (await TryRecoverAndAcquireTurnSlotAsync(
 			sessionId,
 			session,
 			stalePendingStartAfter,
+			staleStartedLocalAfter,
 			staleRecoveredAfter,
 			includeDirectImmediateWait: true))
 		{
@@ -3418,6 +3733,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				sessionId,
 				session,
 				stalePendingStartAfter,
+				staleStartedLocalAfter,
 				staleRecoveredAfter,
 				includeDirectImmediateWait: false))
 			{
@@ -3679,7 +3995,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		IReadOnlyList<QueuedTurnSummarySnapshot> QueuedTurns,
 		int TurnCountInMemory,
 		bool IsTurnInFlightInferredFromLogs,
-		bool IsTurnInFlightLogOnly);
+		bool IsTurnInFlightLogOnly,
+		bool IsAppServerRecovering);
 
 	internal sealed record QueuedTurnSummarySnapshot(
 		string QueueItemId,
@@ -3742,13 +4059,15 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		CodexClient Client,
 		CodexSession Session,
 		string? Cwd,
+		string? CodexPath,
 		string? Model,
 		string? ReasoningEffort,
 		LocalLogWriter Log,
 		ConcurrentDictionary<string, TaskCompletionSource<string>> PendingApprovals,
 		ConcurrentDictionary<string, TaskCompletionSource<Dictionary<string, object?>>> PendingToolUserInputs,
 		string? ApprovalPolicy = null,
-		string? SandboxPolicy = null)
+		string? SandboxPolicy = null,
+		bool AppServerRecovering = false)
 	{
 		private enum TurnLifecycleState
 		{
@@ -3772,8 +4091,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		private string? _activeCollaborationMode;
 		private TurnLifecycleState _turnState = TurnLifecycleState.Idle;
 		private DateTimeOffset _turnStateChangedUtc = DateTimeOffset.UtcNow;
+		private DateTimeOffset _lastCoreEventUtc = DateTimeOffset.UtcNow;
 		private bool _queueDispatchRunning;
 		private PendingApprovalSnapshot? _pendingApproval;
+		private bool _isAppServerRecovering = AppServerRecovering;
 
 		public string? PendingApprovalId => PendingApprovals.Keys.FirstOrDefault();
 		public string? PendingToolUserInputId => PendingToolUserInputs.Keys.FirstOrDefault();
@@ -3845,6 +4166,39 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
+		public bool IsAppServerRecovering
+		{
+			get
+			{
+				lock (_turnSync)
+				{
+					return _isAppServerRecovering;
+				}
+			}
+		}
+
+		public bool TryBeginAppServerRecovery()
+		{
+			lock (_turnSync)
+			{
+				if (_isAppServerRecovering)
+				{
+					return false;
+				}
+
+				_isAppServerRecovering = true;
+				return true;
+			}
+		}
+
+		public void MarkAppServerRecoveryComplete()
+		{
+			lock (_turnSync)
+			{
+				_isAppServerRecovering = false;
+			}
+		}
+
 		public string? GetActiveCollaborationMode()
 		{
 			lock (_turnSync)
@@ -3873,7 +4227,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				QueuedTurns: queuedTurns,
 				TurnCountInMemory: turnCountInMemory,
 				IsTurnInFlightInferredFromLogs: isTurnInFlightInferredFromLogs,
-				IsTurnInFlightLogOnly: isTurnInFlightLogOnly);
+				IsTurnInFlightLogOnly: isTurnInFlightLogOnly,
+				IsAppServerRecovering: IsAppServerRecovering);
 		}
 
 		public void SetModel(string? model)
@@ -3965,6 +4320,28 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				queuedTurn = _queuedTurns[0];
 				_queuedTurns.RemoveAt(0);
 				return true;
+			}
+		}
+
+		internal IReadOnlyList<QueuedTurn> GetQueuedTurnsSnapshot()
+		{
+			lock (_queueSync)
+			{
+				return _queuedTurns.ToList();
+			}
+		}
+
+		internal void ReplaceQueuedTurns(IReadOnlyList<QueuedTurn> queuedTurns)
+		{
+			lock (_queueSync)
+			{
+				_queuedTurns.Clear();
+				if (queuedTurns is null || queuedTurns.Count == 0)
+				{
+					return;
+				}
+
+				_queuedTurns.AddRange(queuedTurns);
 			}
 		}
 
@@ -4124,6 +4501,44 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
+		public bool IsLocalStartedTurnStale(TimeSpan staleAfter, out TimeSpan silentAge)
+		{
+			silentAge = TimeSpan.Zero;
+			lock (_turnSync)
+			{
+				if (_turnState != TurnLifecycleState.RunningLocal)
+				{
+					return false;
+				}
+
+				if (string.IsNullOrWhiteSpace(_activeTurnId))
+				{
+					if (Session.TryGetActiveTurnId(out var activeFromClient) && !string.IsNullOrWhiteSpace(activeFromClient))
+					{
+						_activeTurnId = activeFromClient;
+					}
+					else
+					{
+						return false;
+					}
+				}
+
+				var lastActivityUtc = _lastCoreEventUtc > _turnStateChangedUtc
+					? _lastCoreEventUtc
+					: _turnStateChangedUtc;
+				silentAge = DateTimeOffset.UtcNow - lastActivityUtc;
+				return silentAge >= staleAfter;
+			}
+		}
+
+		public void MarkCoreEventObserved()
+		{
+			lock (_turnSync)
+			{
+				_lastCoreEventUtc = DateTimeOffset.UtcNow;
+			}
+		}
+
 		private void SetTurnState(TurnLifecycleState state)
 		{
 			_turnState = state;
@@ -4132,6 +4547,11 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		public async Task<bool> TryWaitForTurnSlotAsync(TimeSpan timeout, CancellationToken cancellationToken)
 		{
+			if (IsAppServerRecovering)
+			{
+				return false;
+			}
+
 			var waitingOnRecoveredExternalTurn = false;
 			lock (_turnSync)
 			{

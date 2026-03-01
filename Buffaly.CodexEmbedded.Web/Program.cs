@@ -371,7 +371,8 @@ app.MapGet("/api/server/state/current", (
 			defaultModel = defaults.DefaultModel,
 			turnTimeoutSeconds = defaults.TurnTimeoutSeconds,
 			turnSlotWaitTimeoutSeconds = defaults.TurnSlotWaitTimeoutSeconds,
-			turnSlotWaitPollSeconds = defaults.TurnSlotWaitPollSeconds
+			turnSlotWaitPollSeconds = defaults.TurnSlotWaitPollSeconds,
+			turnStartAckTimeoutSeconds = defaults.TurnStartAckTimeoutSeconds
 		},
 		totals = new
 		{
@@ -402,6 +403,35 @@ app.MapGet("/api/server/state/current", (
 			turnCountInMemory = row.TurnCountInMemory,
 			pendingApproval = row.PendingApproval
 		}).ToArray()
+	});
+});
+
+app.MapPost("/api/server/session/reset-thread", (
+	ServerThreadResetRequest body,
+	SessionOrchestrator orchestrator) =>
+{
+	var sessionId = body?.SessionId?.Trim() ?? string.Empty;
+	if (string.IsNullOrWhiteSpace(sessionId))
+	{
+		return Results.BadRequest(new { message = "sessionId is required." });
+	}
+
+	if (!orchestrator.TryResetThreadSession(sessionId, out var errorMessage))
+	{
+		var message = string.IsNullOrWhiteSpace(errorMessage) ? "Unable to reset thread session." : errorMessage!;
+		if (message.StartsWith("Unknown session:", StringComparison.Ordinal))
+		{
+			return Results.NotFound(new { message });
+		}
+
+		return Results.BadRequest(new { message });
+	}
+
+	return Results.Ok(new
+	{
+		sessionId,
+		status = "recovering",
+		message = "Manual thread reset requested."
 	});
 });
 

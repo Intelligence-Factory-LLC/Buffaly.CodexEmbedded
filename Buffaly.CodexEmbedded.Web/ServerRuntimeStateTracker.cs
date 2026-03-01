@@ -47,6 +47,8 @@ internal sealed class ServerRuntimeStateTracker
 
 internal sealed record OpenAiKeyUpdateRequest(string? ApiKey);
 
+internal sealed record ServerThreadResetRequest(string? SessionId);
+
 internal sealed record RecapSettingsUpdateRequest(
 	string? ReportsRootPath = null,
 	bool UseDefault = false);

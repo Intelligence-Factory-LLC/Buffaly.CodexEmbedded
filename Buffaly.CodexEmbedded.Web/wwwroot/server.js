@@ -17,6 +17,7 @@ const serverRefreshBtn = document.getElementById("serverRefreshBtn");
 
 let pollTimer = null;
 let refreshInFlight = false;
+const pendingResetSessionIds = new Set();
 
 function setStatus(text) {
   if (!serverStatus) {
@@ -329,7 +330,7 @@ function renderSessionsTable(snapshot) {
   if (sessions.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 13;
+    cell.colSpan = 14;
     cell.className = "server-table-empty";
     cell.textContent = "No active sessions are loaded in the server orchestrator.";
     row.appendChild(cell);
@@ -384,6 +385,25 @@ function renderSessionsTable(snapshot) {
     const approvalCell = document.createElement("td");
     approvalCell.textContent = pendingApproval ? normalizeString(pendingApproval.approvalId) || "(pending)" : "-";
 
+    const actionsCell = document.createElement("td");
+    const sessionId = normalizeString(session.sessionId);
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "server-row-action-btn";
+    resetBtn.dataset.action = "reset-thread";
+    resetBtn.dataset.sessionId = sessionId;
+    resetBtn.dataset.threadId = getSessionThreadId(session);
+    if (!sessionId) {
+      resetBtn.disabled = true;
+      resetBtn.textContent = "Unavailable";
+    } else if (pendingResetSessionIds.has(sessionId)) {
+      resetBtn.disabled = true;
+      resetBtn.textContent = "Resetting...";
+    } else {
+      resetBtn.textContent = "Reset Thread";
+    }
+    actionsCell.appendChild(resetBtn);
+
     row.append(
       stateCell,
       sessionCell,
@@ -397,7 +417,8 @@ function renderSessionsTable(snapshot) {
       inFlightLogOnlyCell,
       queuedCell,
       turnsInMemoryCell,
-      approvalCell
+      approvalCell,
+      actionsCell
     );
 
     serverSessionsBody.appendChild(row);
@@ -451,6 +472,52 @@ async function refreshSnapshot() {
   }
 }
 
+async function requestThreadReset(sessionId, threadId) {
+  const normalizedSessionId = normalizeString(sessionId);
+  if (!normalizedSessionId || pendingResetSessionIds.has(normalizedSessionId)) {
+    return;
+  }
+
+  pendingResetSessionIds.add(normalizedSessionId);
+  const threadLabel = normalizeString(threadId) || "unknown";
+  setStatus(`Resetting thread ${threadLabel} for session ${normalizedSessionId}...`);
+
+  try {
+    const url = new URL("api/server/session/reset-thread", document.baseURI);
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ sessionId: normalizedSessionId })
+    });
+
+    const responseText = await response.text();
+    let payload = null;
+    if (responseText) {
+      try {
+        payload = JSON.parse(responseText);
+      } catch {
+        payload = null;
+      }
+    }
+
+    if (!response.ok) {
+      const detail = normalizeString(payload && payload.message) || normalizeString(responseText) || `status ${response.status}`;
+      throw new Error(detail);
+    }
+
+    const acceptedMessage = normalizeString(payload && payload.message);
+    setStatus(acceptedMessage || `Thread reset requested for session ${normalizedSessionId}.`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setStatus(`Thread reset error: ${message}`);
+  } finally {
+    pendingResetSessionIds.delete(normalizedSessionId);
+    refreshSnapshot().catch(() => {});
+  }
+}
+
 function startPolling() {
   if (pollTimer) {
     clearInterval(pollTimer);
@@ -465,6 +532,26 @@ function wireUiEvents() {
   if (serverRefreshBtn) {
     serverRefreshBtn.addEventListener("click", () => {
       refreshSnapshot().catch(() => {});
+    });
+  }
+
+  if (serverSessionsBody) {
+    serverSessionsBody.addEventListener("click", (event) => {
+      const source = event.target instanceof Element ? event.target : null;
+      const button = source ? source.closest("button[data-action='reset-thread']") : null;
+      if (!(button instanceof HTMLButtonElement)) {
+        return;
+      }
+
+      const sessionId = normalizeString(button.dataset.sessionId);
+      const threadId = normalizeString(button.dataset.threadId);
+      if (!sessionId) {
+        return;
+      }
+
+      button.disabled = true;
+      button.textContent = "Resetting...";
+      requestThreadReset(sessionId, threadId).catch(() => {});
     });
   }
 
