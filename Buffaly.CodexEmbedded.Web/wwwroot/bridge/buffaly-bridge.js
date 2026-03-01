@@ -25,6 +25,7 @@
     "ide.v1.getWarningList"
   ];
   var loadedAtIso = new Date().toISOString();
+  var cacheBustNonce = Date.now().toString(36);
   var scriptInfo = {
     url: "",
     fingerprint: "pending"
@@ -106,11 +107,12 @@
 
   function ensureBadge() {
     if (badge) return badge;
+    var promptForm = document.getElementById("promptForm");
     badge = document.createElement("div");
     badge.id = "vsBridgeStatusBadge";
-    badge.style.position = "fixed";
-    badge.style.left = "14px";
-    badge.style.bottom = "22px";
+    badge.style.position = promptForm ? "absolute" : "fixed";
+    badge.style.left = "10px";
+    badge.style.bottom = promptForm ? "10px" : "22px";
     badge.style.zIndex = "2147483647";
     badge.style.padding = "7px 12px";
     badge.style.borderRadius = "999px";
@@ -124,9 +126,16 @@
     badge.style.whiteSpace = "nowrap";
     badge.style.overflow = "hidden";
     badge.style.textOverflow = "ellipsis";
-    badge.title = "Click to open VS bridge debug panel";
+    badge.title = "Click to open VS bridge debug panel | cb " + cacheBustNonce;
     badge.addEventListener("click", toggleDebugPanel);
-    if (document.body) document.body.appendChild(badge);
+    if (promptForm) {
+      if (window.getComputedStyle(promptForm).position === "static") {
+        promptForm.style.position = "relative";
+      }
+      promptForm.appendChild(badge);
+    } else if (document.body) {
+      document.body.appendChild(badge);
+    }
     return badge;
   }
 
@@ -464,7 +473,7 @@
       }
 
       var base = scriptInfo.url.split("?")[0];
-      var response = await fetch(base + "?v=" + Date.now(), { cache: "no-store" });
+      var response = await fetch(base + "?v=" + Date.now() + "&cb=" + cacheBustNonce, { cache: "no-store" });
       if (!response.ok) {
         scriptInfo.fingerprint = "fetch-failed-" + response.status;
         refreshDebugStatus();
