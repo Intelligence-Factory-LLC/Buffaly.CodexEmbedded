@@ -550,12 +550,12 @@
         return true;
       }
 
-      if (this.isUserAnchorsMode()) {
-        return true;
-      }
-
       if (this.turnCollapsedById.has(turn.turnId)) {
         return this.turnCollapsedById.get(turn.turnId) === true;
+      }
+
+      if (this.isUserAnchorsMode()) {
+        return true;
       }
 
       return turn.isInFlight !== true;

@@ -273,6 +273,14 @@ function updateTimelineTruncationNotice() {
   timelineTruncationNotice.classList.toggle("hidden", !shouldShow);
 }
 
+function isDocumentVisible() {
+  if (typeof document === "undefined") {
+    return true;
+  }
+
+  return document.visibilityState !== "hidden";
+}
+
 function scrollMessagesToBottom(smooth = false) {
   if (!chatMessages) {
     return;
@@ -286,6 +294,31 @@ function scrollMessagesToBottom(smooth = false) {
 
   updateScrollToBottomButton();
   updateTimelineTruncationNotice();
+}
+
+function normalizeSessionCwdForThread(threadId, cwdValue) {
+  const normalizedFromState = normalizeProjectCwd(cwdValue || "");
+  if (normalizedFromState) {
+    return normalizedFromState;
+  }
+
+  const entry = getCatalogEntryByThreadId(threadId || "");
+  return normalizeProjectCwd(entry?.cwd || "");
+}
+
+function syncCwdInputFromSessionState(state, options = {}) {
+  if (!cwdInput || !state) {
+    return;
+  }
+
+  const nextCwd = normalizeSessionCwdForThread(state.threadId || "", state.cwd || "");
+  const force = options.force === true;
+  if (!force && cwdInput.value.trim() === nextCwd) {
+    return;
+  }
+
+  cwdInput.value = nextCwd;
+  localStorage.setItem(STORAGE_CWD_KEY, nextCwd);
 }
 
 function setJumpCollapseMode(enabled) {
@@ -3628,6 +3661,9 @@ function startVsSelectionPolling() {
 
   refreshVsSelectionSnapshot({ force: true }).catch(() => {});
   vsSelectionPollTimer = setInterval(() => {
+    if (!isDocumentVisible()) {
+      return;
+    }
     refreshVsSelectionSnapshot().catch(() => {});
   }, VS_SELECTION_POLL_INTERVAL_MS);
 }
@@ -3993,8 +4029,8 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
     return false;
   }
 
-  const turnCwd = cwdInput.value.trim();
   const state = sessions.get(sessionId);
+  const turnCwd = normalizeSessionCwdForThread(state?.threadId || "", state?.cwd || "") || cwdInput.value.trim();
   const turnModel = normalizeModelValue(state?.model || "");
   const turnEffort = normalizeReasoningEffort(state?.reasoningEffort || "");
 
@@ -4127,8 +4163,8 @@ function restoreQueuedPromptForEditing(text, images = []) {
 
 function startTurn(sessionId, promptText, images = [], options = {}) {
   const turnInput = buildTurnInput(promptText, images, { trimText: true });
-  const turnCwd = cwdInput.value.trim();
   const state = sessions.get(sessionId);
+  const turnCwd = normalizeSessionCwdForThread(state?.threadId || "", state?.cwd || "") || cwdInput.value.trim();
   const turnModel = normalizeModelValue(state?.model || "");
   if (!sessionId || !turnInput.hasContent) {
     return false;
@@ -4474,14 +4510,19 @@ function restartTimelinePolling() {
   }
 
   const shouldInitialLoad = timelineCursor === null;
-  pollTimelineOnce(shouldInitialLoad, generation).catch((error) => {
-    handleTimelinePollError(error);
-  });
+  const runTimelinePoll = (initial) => {
+    if (!isDocumentVisible()) {
+      return;
+    }
 
-  timelinePollTimer = setInterval(() => {
-    pollTimelineOnce(false, generation).catch((error) => {
+    pollTimelineOnce(initial, generation).catch((error) => {
       handleTimelinePollError(error);
     });
+  };
+  runTimelinePoll(shouldInitialLoad);
+
+  timelinePollTimer = setInterval(() => {
+    runTimelinePoll(false);
   }, TIMELINE_POLL_INTERVAL_MS);
 }
 
@@ -4681,6 +4722,9 @@ function setActiveSession(sessionId, options = {}) {
   }
   stopSessionBtn.disabled = false;
   const state = sessions.get(sessionId);
+  if (changed && state) {
+    syncCwdInputFromSessionState(state);
+  }
   markThreadCompletionSeen(state?.threadId || "");
   if (state?.threadId) {
     const preferred = getPreferredModelForThread(state.threadId);
@@ -5174,6 +5218,9 @@ function startSessionListSync() {
   sessionListPollTimer = setInterval(() => {
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       stopSessionListSync();
+      return;
+    }
+    if (!isDocumentVisible()) {
       return;
     }
     send("session_list");
@@ -6030,6 +6077,9 @@ function handleServerEvent(frame) {
               state.cwd = nextCwd;
               sidebarStateChanged = true;
               sessionConfigChanged = true;
+              if (sessionId === activeSessionId) {
+                syncCwdInputFromSessionState(state, { force: true });
+              }
             }
           }
 
@@ -6701,6 +6751,10 @@ cwdInput.addEventListener("change", () => {
   const normalized = normalizeProjectCwd(cwdInput.value.trim());
   cwdInput.value = normalized;
   localStorage.setItem(STORAGE_CWD_KEY, normalized);
+  const activeState = getActiveSessionState();
+  if (activeState) {
+    activeState.cwd = normalized || null;
+  }
   if (normalized) {
     selectedProjectKey = getProjectKeyFromCwd(normalized);
   }
@@ -7306,7 +7360,19 @@ window.addEventListener("focus", () => {
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     refreshVsSelectionSnapshot({ force: true }).catch(() => {});
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      startSessionListSync();
+      send("session_list");
+    }
+    restartTimelinePolling();
+    return;
   }
+
+  if (timelinePollTimer) {
+    clearInterval(timelinePollTimer);
+    timelinePollTimer = null;
+  }
+  stopSessionListSync();
 });
 
 applySavedUiSettings();
