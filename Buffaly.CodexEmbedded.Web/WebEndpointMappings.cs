@@ -12,6 +12,7 @@ internal static class WebEndpointMappings
 		MapStaticHtmlPage(app, "/recap", "recap.html");
 		MapStaticHtmlPage(app, "/server", "server.html");
 		MapStaticHtmlPage(app, "/settings", "settings.html");
+		MapStaticHtmlPage(app, "/help/codex-install", "codex-install-help.html");
 	}
 
 	public static void MapSessionCatalogAndRecapEndpoints(this WebApplication app)

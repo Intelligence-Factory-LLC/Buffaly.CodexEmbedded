@@ -52,6 +52,16 @@ jobs:
         shell: pwsh
         run: ./scripts/release/package.ps1 -Runtime win-x64 -Version "${{ steps.vars.outputs.version }}" -Repository "${{ github.repository }}" -PublishRoot artifacts/publish -OutputRoot artifacts/release
 
+      - name: Setup WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix
+          "$env:USERPROFILE\\.dotnet\\tools" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Build MSI installer
+        shell: pwsh
+        run: ./scripts/release/msi.ps1 -Runtime win-x64 -Version "${{ steps.vars.outputs.version }}" -PublishRoot artifacts/publish -OutputRoot artifacts/release
+
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -59,6 +69,7 @@ jobs:
           path: |
             artifacts/release/*.zip
             artifacts/release/*.txt
+            artifacts/release/*.msi
           if-no-files-found: error
 
       - name: Attach files to GitHub release
@@ -68,3 +79,4 @@ jobs:
           files: |
             artifacts/release/*.zip
             artifacts/release/*.txt
+            artifacts/release/*.msi

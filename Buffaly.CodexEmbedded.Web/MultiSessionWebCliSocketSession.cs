@@ -18,6 +18,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	private string? _activeSessionId;
 	private volatile CodexEventVerbosity _uiLogVerbosity = CodexEventVerbosity.Normal;
 	private int _sessionListPushQueued = 0;
+	private int _forcedDisconnect = 0;
 
 	private readonly LocalLogWriter _connectionLog;
 
@@ -740,6 +741,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				isTurnInFlight = s.IsTurnInFlight,
 				isTurnInFlightInferredFromLogs = s.IsTurnInFlightInferredFromLogs,
 				isTurnInFlightLogOnly = s.IsTurnInFlightLogOnly,
+				isAppServerRecovering = s.IsAppServerRecovering,
 				pendingApproval = s.PendingApproval is { } approval
 					? new
 					{
@@ -838,6 +840,12 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
+		if (_orchestrator.TryGetSessionRecoveryState(requiredSessionId, out var isRecovering) && isRecovering)
+		{
+			await SendEventAsync("error", new { message = "Session is recovering from an app-server disconnect. Wait for recovery to complete and retry." }, cancellationToken);
+			return;
+		}
+
 		if (_orchestrator.TryGetTurnState(requiredSessionId, out var isTurnInFlight) && isTurnInFlight)
 		{
 			await SendEventAsync(
@@ -886,6 +894,12 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		if (!_orchestrator.HasSession(requiredSessionId))
 		{
 			await SendEventAsync("error", new { message = $"Unknown session: {requiredSessionId}" }, cancellationToken);
+			return;
+		}
+
+		if (_orchestrator.TryGetSessionRecoveryState(requiredSessionId, out var isRecovering) && isRecovering)
+		{
+			await SendEventAsync("error", new { message = "Session is recovering from an app-server disconnect. Wait for recovery to complete and retry." }, cancellationToken);
 			return;
 		}
 
@@ -1098,8 +1112,9 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			using var timeoutCts = new CancellationTokenSource(SafeSocketSendTimeout);
 			await SendEventAsync(type, payload, timeoutCts.Token);
 		}
-		catch
+		catch (Exception ex)
 		{
+			HandleSafeSendFailure($"send event '{type}'", ex);
 		}
 	}
 
@@ -1110,8 +1125,39 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			using var timeoutCts = new CancellationTokenSource(SafeSocketSendTimeout);
 			await SendSessionListAsync(timeoutCts.Token);
 		}
-		catch
+		catch (Exception ex)
 		{
+			HandleSafeSendFailure("send session_list", ex);
+		}
+	}
+
+	private void HandleSafeSendFailure(string operation, Exception ex)
+	{
+		var simplified = ex switch
+		{
+			OperationCanceledException => "timed out",
+			WebSocketException wsEx => wsEx.Message,
+			_ => ex.Message
+		};
+		WriteConnectionLogLocal($"[ws_send] {operation} failed ({simplified}) socketState={_socket.State}");
+		if (_socket.State != WebSocketState.Open)
+		{
+			return;
+		}
+
+		if (Interlocked.Exchange(ref _forcedDisconnect, 1) != 0)
+		{
+			return;
+		}
+
+		WriteConnectionLogLocal("[ws_send] forcing websocket abort after send failure");
+		try
+		{
+			_socket.Abort();
+		}
+		catch (Exception abortEx)
+		{
+			WriteConnectionLogLocal($"[ws_send] websocket abort failed: {abortEx.Message}");
 		}
 	}
 

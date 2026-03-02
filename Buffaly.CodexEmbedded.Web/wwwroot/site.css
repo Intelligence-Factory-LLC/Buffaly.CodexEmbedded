@@ -709,6 +709,58 @@ body {
 	font-size: 0.86rem;
 }
 
+.sidebar-star-cta {
+	position: relative;
+	padding: 0.5rem 0.55rem 0.6rem;
+	border-top: 1px solid #e5e7eb;
+	background: transparent;
+}
+
+.sidebar-star-dismiss-btn {
+	position: absolute;
+	top: 0.4rem;
+	right: 0.45rem;
+	width: 1.35rem;
+	height: 1.35rem;
+	padding: 0;
+	border: 1px solid #86efac;
+	border-radius: 999px;
+	background: #dcfce7;
+	color: #166534;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	font-size: 0.66rem;
+}
+
+.sidebar-star-link {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+	width: 100%;
+	padding: 0.58rem 0.6rem;
+	padding-right: 1.9rem;
+	border: 1px solid #86efac;
+	border-radius: 8px;
+	background: #dcfce7;
+	color: #166534;
+	text-decoration: none;
+	font-size: 0.78rem;
+	font-weight: 700;
+	line-height: 1.25;
+}
+
+.sidebar-star-link:hover {
+	background: #bbf7d0;
+	color: #14532d;
+}
+
+.sidebar-star-dismiss-btn:hover {
+	background: #bbf7d0;
+	color: #14532d;
+}
+
 .layout.sidebar-collapsed .codex-main {
 	grid-template-columns: 56px 1fr;
 }
@@ -716,7 +768,8 @@ body {
 .layout.sidebar-collapsed .sidebar-divider,
 .layout.sidebar-collapsed .sidebar-create-row,
 .layout.sidebar-collapsed .sidebar-search-row,
-.layout.sidebar-collapsed .project-list {
+.layout.sidebar-collapsed .project-list,
+.layout.sidebar-collapsed .sidebar-star-cta {
 	display: none;
 }
 
@@ -749,6 +802,56 @@ body {
 .layout.sidebar-collapsed .session-sidebar {
 	width: 56px;
 	min-width: 56px;
+}
+
+.getting-started-panel {
+	margin: 0.7rem 0.8rem 0.25rem;
+	padding: 0.8rem 0.85rem;
+	border: 1px solid #bfdbfe;
+	border-radius: 10px;
+	background: #eff6ff;
+	color: #1e3a8a;
+}
+
+.getting-started-title {
+	font-size: 0.88rem;
+	font-weight: 700;
+}
+
+.getting-started-copy {
+	margin-top: 0.35rem;
+	font-size: 0.82rem;
+	line-height: 1.35;
+}
+
+.getting-started-steps {
+	margin-top: 0.6rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.45rem;
+}
+
+.getting-started-step {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.45rem;
+	font-size: 0.8rem;
+	line-height: 1.35;
+}
+
+.getting-started-step-number {
+	width: 1.05rem;
+	height: 1.05rem;
+	border-radius: 999px;
+	border: 1px solid #60a5fa;
+	background: #dbeafe;
+	color: #1d4ed8;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	font-size: 0.72rem;
+	font-weight: 700;
 }
 
 .panel-title {
@@ -3466,6 +3569,45 @@ html[data-theme="dark"] .new-project-btn:hover {
 html[data-theme="dark"] .sidebar-nav-link.active {
 	background: #1f3556;
 	border-color: #60a5fa;
+	color: #dbeafe;
+}
+
+html[data-theme="dark"] .sidebar-star-cta {
+	border-top-color: #334155;
+	background: transparent;
+}
+
+html[data-theme="dark"] .sidebar-star-link {
+	border-color: #166534;
+	background: #14532d;
+	color: #dcfce7;
+}
+
+html[data-theme="dark"] .sidebar-star-link:hover {
+	background: #166534;
+	color: #ecfccb;
+}
+
+html[data-theme="dark"] .sidebar-star-dismiss-btn {
+	border-color: #166534;
+	background: #14532d;
+	color: #bbf7d0;
+}
+
+html[data-theme="dark"] .sidebar-star-dismiss-btn:hover {
+	background: #166534;
+	color: #ecfccb;
+}
+
+html[data-theme="dark"] .getting-started-panel {
+	border-color: #1d4ed8;
+	background: #0f172a;
+	color: #bfdbfe;
+}
+
+html[data-theme="dark"] .getting-started-step-number {
+	border-color: #1d4ed8;
+	background: #1e3a8a;
 	color: #dbeafe;
 }
 

@@ -16,6 +16,10 @@
 			<span>Projects</span>
 		</button>
 		<div id="securityWarningBanner" class="security-warning-banner hidden" role="alert"></div>
+		<div id="connectionStatusBanner" class="connection-status-banner hidden" role="status" aria-live="polite">
+			<span id="connectionStatusText"></span>
+			<button id="connectionReconnectBtn" class="connection-reconnect-btn hidden" type="button">Reconnect now</button>
+		</div>
 		<main class="main codex-main">
 			<aside id="sessionSidebar" class="panel session-sidebar">
 				<div class="sidebar-shell-header">
@@ -77,6 +81,15 @@
 				</div>
 				<div class="sidebar-divider sidebar-project-divider" aria-hidden="true"></div>
 				<div id="projectList" class="project-list"></div>
+				<div id="sidebarStarCta" class="sidebar-star-cta">
+					<button id="sidebarStarDismissBtn" class="sidebar-star-dismiss-btn" type="button" title="Dismiss GitHub star prompt" aria-label="Dismiss GitHub star prompt">
+						<i class="bi bi-x-lg" aria-hidden="true"></i>
+					</button>
+					<a class="sidebar-star-link" href="https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded" target="_blank" rel="noopener" title="Star this project on GitHub">
+						<i class="bi bi-star-fill" aria-hidden="true"></i>
+						<span>Give us a star on GitHub</span>
+					</a>
+				</div>
 			</aside>
 			<section class="panel chat-panel">
 				<div class="panel-title panel-title-row conversation-title-row">
@@ -130,6 +143,20 @@
 				<div id="pendingPromptStrip" class="pending-prompt-strip hidden" role="status" aria-live="polite">
 					<strong>Pending</strong>
 					<span id="pendingPromptText"></span>
+				</div>
+				<div id="gettingStartedPanel" class="getting-started-panel hidden" role="status" aria-live="polite">
+					<div class="getting-started-title">Getting Started</div>
+					<div class="getting-started-copy">Your existing Codex sessions were imported and are available in the Projects list on the left.</div>
+					<div class="getting-started-steps">
+						<div class="getting-started-step">
+							<span class="getting-started-step-number">1</span>
+							<span>Create a project with <strong>New Project</strong> and choose your working folder.</span>
+						</div>
+						<div class="getting-started-step">
+							<span class="getting-started-step-number">2</span>
+							<span>Create a session inside that project using the <strong>+</strong> button in the project header.</span>
+						</div>
+					</div>
 				</div>
 				<div id="chatMessages" class="watcher-timeline"></div>
 				<div id="turnActivityStrip" class="turn-activity hidden" role="status" aria-live="polite">
@@ -304,6 +331,10 @@
 					<div class="about-line about-link-line">
 						&rarr;
 						<a href="https://buffa.ly/?utm_source=codexembedded&utm_medium=about_modal&utm_campaign=sidebar" target="_blank" rel="noopener">Learn more about Buffaly</a>
+					</div>
+					<div class="about-line about-link-line">
+						&rarr;
+						<a href="https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded" target="_blank" rel="noopener">Like this project? Please star it on GitHub</a>
 					</div>
 					<div class="about-line about-muted">Made with the same care we put into medical-grade agents that power FairPath.ai.</div>
 					<div id="aboutVersionLine" class="about-line about-muted">Version: unknown</div>

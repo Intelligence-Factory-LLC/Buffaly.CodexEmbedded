@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Buffaly Codex Embedded"
+    Manufacturer="Intelligence Factory LLC"
+    Version="__PRODUCT_VERSION__"
+    UpgradeCode="7e91c39d-9d35-49dd-9b6e-0edc17db7e10"
+    Compressed="yes"
+    Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Buffaly Codex Embedded is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="ico_buffaly" SourceFile="Buffaly.CodexEmbedded.Web\wwwroot\images\favicon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="ico_buffaly" />
+
+    <Feature Id="MainFeature" Title="Buffaly Codex Embedded" Level="1">
+      <ComponentGroupRef Id="BinFiles" />
+      <ComponentGroupRef Id="CliFiles" />
+      <ComponentGroupRef Id="WebFiles" />
+      <ComponentRef Id="cmp_env_path" />
+      <ComponentRef Id="cmp_start_menu" />
+    </Feature>
+
+    <StandardDirectory Id="ProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="Buffaly Codex Embedded">
+        <Directory Id="APPSDIR" Name="apps">
+          <Directory Id="CLIDIR" Name="cli" />
+          <Directory Id="WEBDIR" Name="web" />
+        </Directory>
+        <Directory Id="BINDIR" Name="bin" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ProgramMenuDir" Name="Buffaly Codex Embedded" />
+    </StandardDirectory>
+
+    <Component Id="cmp_env_path" Guid="d0e73b9f-364c-49d7-9b7a-2d13a3cc1f78" Directory="INSTALLFOLDER">
+      <Environment
+        Id="env_path"
+        Name="PATH"
+        Value="[BINDIR]"
+        Action="set"
+        Part="last"
+        System="yes" />
+      <RegistryValue Root="HKLM" Key="Software\IntelligenceFactory\BuffalyCodexEmbedded" Name="PathSet" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <Component Id="cmp_start_menu" Guid="4a0b2b80-2768-4f4b-9ecf-4a2c5ecdf6d6" Directory="ProgramMenuDir">
+      <Shortcut
+        Id="sc_web"
+        Name="Buffaly Codex Embedded"
+        Target="[BINDIR]buffaly-codex-web.cmd"
+        Icon="ico_buffaly"
+        WorkingDirectory="WEBDIR" />
+      <RemoveFolder Id="rm_program_menu" Directory="ProgramMenuDir" On="uninstall" />
+      <RegistryValue Root="HKLM" Key="Software\IntelligenceFactory\BuffalyCodexEmbedded" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+  </Package>
+</Wix>

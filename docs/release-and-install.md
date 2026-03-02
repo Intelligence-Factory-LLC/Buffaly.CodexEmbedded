@@ -10,12 +10,14 @@ From repository root:
 ./scripts/release/build.ps1 -Configuration Release
 ./scripts/release/publish.ps1 -Runtime win-x64 -Configuration Release -OutputRoot artifacts/publish
 ./scripts/release/package.ps1 -Runtime win-x64 -Version v1.0.0 -Repository <owner/repo> -PublishRoot artifacts/publish -OutputRoot artifacts/release
+./scripts/release/msi.ps1 -Runtime win-x64 -Version v1.0.0 -PublishRoot artifacts/publish -OutputRoot artifacts/release
 ```
 
 Output:
 
 - `artifacts/release/Buffaly.CodexEmbedded-win-x64-v1.0.0.zip`
 - `artifacts/release/SHA256SUMS-win-x64-v1.0.0.txt`
+- `artifacts/release/Buffaly.CodexEmbedded-win-x64-v1.0.0.msi`
 
 ## Maintainer: GitHub release
 
@@ -33,7 +35,31 @@ git push origin v1.0.0
 
 ## End user: install and run
 
-1. Download latest release zip from GitHub Releases.
+Recommended:
+
+1. Install and authenticate Codex CLI first:
+
+```powershell
+codex --version
+codex login
+```
+
+2. Download the latest `.msi` asset from GitHub Releases.
+3. Run the installer.
+4. Open a new terminal and use:
+
+```powershell
+buffaly-codex run --prompt "Say hello in one sentence"
+buffaly-codex-web
+```
+
+`buffaly-codex-web` opens your browser automatically and reuses a running local server when available.
+Default launch URL is `http://127.0.0.1:5170/` and can be changed with `WebLaunchUrl` in `apps\web\appsettings.json`.
+If Codex is missing at runtime, users are redirected to `CodexInstallHelpUrl` (default `/help/codex-install`).
+
+Portable fallback:
+
+1. Download the latest `.zip` asset from GitHub Releases.
 2. Extract zip.
 3. Run:
 

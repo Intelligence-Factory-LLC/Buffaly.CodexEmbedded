@@ -11,8 +11,10 @@ builder.Logging.AddConsole();
 builder.Logging.AddDebug();
 
 var defaults = WebRuntimeDefaults.Load(builder.Configuration);
+var codexPreflight = CodexPreflightStatus.Evaluate(defaults);
 var userSecretsOptions = UserSecretsOptions.Load(builder.Configuration);
 builder.Services.AddSingleton(defaults);
+builder.Services.AddSingleton(codexPreflight);
 builder.Services.AddSingleton(userSecretsOptions);
 builder.Services.AddSingleton<RecapSettingsStore>();
 builder.Services.AddSingleton<SessionOrchestrator>();
@@ -25,6 +27,25 @@ builder.Services.AddDataProtection();
 builder.Services.AddHttpClient();
 
 var app = builder.Build();
+
+if (!codexPreflight.IsCodexInstalled)
+{
+	Logs.DebugLog.WriteEvent(
+		"Startup",
+		$"Codex preflight failed. configuredPath={codexPreflight.ConfiguredCodexPath} resolvedPath={codexPreflight.ResolvedCodexPath ?? "(missing)"}");
+}
+
+app.Use(async (context, next) =>
+{
+	if (!codexPreflight.IsCodexInstalled && ShouldRedirectToCodexInstallHelp(context.Request.Path))
+	{
+		context.Response.Redirect(defaults.CodexInstallHelpUrl, permanent: false);
+		return;
+	}
+
+	await next();
+});
+
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.UseWebSockets(new WebSocketOptions
@@ -59,6 +80,8 @@ app.MapGet("/api/security/config", (WebRuntimeDefaults defaults) =>
 		notAffiliated = "Not affiliated with OpenAI",
 		securityDocPath = "docs/security.md",
 		webSocketAuthRequired = defaults.WebSocketAuthRequired,
+		webLaunchUrl = defaults.WebLaunchUrl,
+		codexInstallHelpUrl = defaults.CodexInstallHelpUrl,
 		publicExposureEnabled = defaults.PublicExposureEnabled,
 		nonLocalBindConfigured = defaults.NonLocalBindConfigured,
 		unsafeConfigurationDetected = defaults.UnsafeConfigurationDetected,
@@ -406,6 +429,21 @@ app.MapGet("/api/server/state/current", (
 	});
 });
 
+app.MapGet("/api/runtime/codex-preflight", (CodexPreflightStatus preflight) =>
+{
+	return Results.Ok(new
+	{
+		configuredCodexPath = preflight.ConfiguredCodexPath,
+		resolvedCodexPath = preflight.ResolvedCodexPath,
+		codexHomePath = preflight.CodexHomePath,
+		isCodexInstalled = preflight.IsCodexInstalled,
+		isVersionCheckSuccessful = preflight.IsVersionCheckSuccessful,
+		hasAuthArtifacts = preflight.HasAuthArtifacts,
+		isReady = preflight.IsCodexInstalled && preflight.IsVersionCheckSuccessful,
+		messages = preflight.Messages
+	});
+});
+
 app.MapPost("/api/server/session/reset-thread", (
 	ServerThreadResetRequest body,
 	SessionOrchestrator orchestrator) =>
@@ -512,6 +550,28 @@ static bool IsHttpRequestAuthorized(HttpRequest request, WebRuntimeDefaults defa
 	return WebSocketAuthGuard.IsAuthorized(request, defaults.WebSocketAuthToken);
 }
 
+static bool ShouldRedirectToCodexInstallHelp(PathString path)
+{
+	if (!path.HasValue)
+	{
+		return true;
+	}
+
+	var value = path.Value ?? string.Empty;
+	if (string.Equals(value, "/", StringComparison.Ordinal) ||
+		string.Equals(value, "/index.html", StringComparison.OrdinalIgnoreCase) ||
+		string.Equals(value, "/logs", StringComparison.OrdinalIgnoreCase) ||
+		string.Equals(value, "/watcher", StringComparison.OrdinalIgnoreCase) ||
+		string.Equals(value, "/recap", StringComparison.OrdinalIgnoreCase) ||
+		string.Equals(value, "/server", StringComparison.OrdinalIgnoreCase) ||
+		string.Equals(value, "/settings", StringComparison.OrdinalIgnoreCase))
+	{
+		return true;
+	}
+
+	return false;
+}
+
 try
 {
 	Logs.DebugLog.WriteEvent("Startup", "Buffaly.CodexEmbedded.Web starting.");
@@ -533,9 +593,11 @@ static void ConfigureCodexAppLogs(IConfiguration configuration)
 
 	try
 	{
+		logSettings.DebugPath = ResolvePreferredDebugPath(logSettings.DebugPath);
 		if (!string.IsNullOrWhiteSpace(logSettings.DebugPath))
 		{
 			Directory.CreateDirectory(logSettings.DebugPath);
+			EnsureDirectoryWritable(logSettings.DebugPath);
 		}
 
 		Logs.Config(logSettings);
@@ -543,10 +605,58 @@ static void ConfigureCodexAppLogs(IConfiguration configuration)
 	catch (Exception ex)
 	{
 		var originalDebugPath = logSettings.DebugPath;
-		var fallbackPath = Path.Combine(Environment.CurrentDirectory, "logs", "Buffaly.CodexEmbedded.Web");
+		var fallbackPath = ResolveFallbackDebugPath();
 		Directory.CreateDirectory(fallbackPath);
 		logSettings.DebugPath = fallbackPath;
 		Logs.Config(logSettings);
 		Logs.LogError(new InvalidOperationException($"Failed to use LogSettings.DebugPath '{originalDebugPath}'. Fallback '{fallbackPath}' was applied.", ex));
 	}
+}
+
+static string ResolvePreferredDebugPath(string? configuredPath)
+{
+	var baseRoot = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+	if (string.IsNullOrWhiteSpace(baseRoot))
+	{
+		baseRoot = Environment.CurrentDirectory;
+	}
+	else
+	{
+		baseRoot = Path.Combine(baseRoot, "Buffaly.CodexEmbedded");
+	}
+
+	if (string.IsNullOrWhiteSpace(configuredPath))
+	{
+		return Path.Combine(baseRoot, "logs", "Buffaly.CodexEmbedded.Web");
+	}
+
+	var trimmed = configuredPath.Trim();
+	if (Path.IsPathRooted(trimmed))
+	{
+		return trimmed;
+	}
+
+	return Path.Combine(baseRoot, trimmed);
+}
+
+static string ResolveFallbackDebugPath()
+{
+	var baseRoot = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+	if (string.IsNullOrWhiteSpace(baseRoot))
+	{
+		baseRoot = Environment.CurrentDirectory;
+	}
+	else
+	{
+		baseRoot = Path.Combine(baseRoot, "Buffaly.CodexEmbedded");
+	}
+
+	return Path.Combine(baseRoot, "logs", "Buffaly.CodexEmbedded.Web");
+}
+
+static void EnsureDirectoryWritable(string directoryPath)
+{
+	var probePath = Path.Combine(directoryPath, ".write-test.tmp");
+	File.AppendAllText(probePath, "ok");
+	File.Delete(probePath);
 }

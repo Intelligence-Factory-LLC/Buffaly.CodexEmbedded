@@ -5,6 +5,10 @@ const MAX_RENDERED_CLIENT_LOG_LINES = 800;
 
 let socket = null;
 let socketReadyPromise = null;
+let wsReconnectTimer = null;
+let wsReconnectInFlight = false;
+let wsReconnectAttempt = 0;
+let lastSessionListViewKey = "";
 
 let sessions = new Map(); // sessionId -> { threadId, cwd, model, reasoningEffort, approvalPolicy, sandboxPolicy }
 let sessionCatalog = []; // [{ threadId, threadName, updatedAtUtc, cwd, model, reasoningEffort, sessionFilePath }]
@@ -88,13 +92,16 @@ const STORAGE_ARCHIVED_THREADS_KEY = "codex-web-archived-threads";
 const STORAGE_SIDEBAR_COLLAPSED_KEY = "codex-web-sidebar-collapsed";
 const STORAGE_SIDEBAR_EXTRAS_EXPANDED_KEY = "codex-web-sidebar-extras-expanded";
 const STORAGE_CUSTOM_PROJECTS_KEY = "codex-web-custom-projects";
+const STORAGE_GITHUB_STAR_CTA_DISMISSED_KEY = "codex-web-github-star-cta-dismissed-v1";
 const MAX_QUEUE_TEXT_CHARS = 90;
 const MAX_PROJECT_SESSIONS_COLLAPSED = 4;
 const MAX_COMPOSER_IMAGES = 4;
 const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
-const SESSION_LIST_SYNC_INTERVAL_MS = 10000;
+const SESSION_LIST_SYNC_INTERVAL_MS = 5000;
 const TURN_START_CONFIRM_GRACE_MS = 15000;
+const WS_RECONNECT_BASE_DELAY_MS = 1000;
+const WS_RECONNECT_MAX_DELAY_MS = 15000;
 const VS_SELECTION_POLL_INTERVAL_MS = 1500;
 const VS_SELECTION_MAX_PROMPT_CHARS = 4000;
 // Server turn cache is rebuilt from recent JSONL lines, so keep this high enough to capture many complete turns.
@@ -152,6 +159,9 @@ const sendPromptBtn = document.getElementById("sendPromptBtn");
 const mobileProjectsBtn = document.getElementById("mobileProjectsBtn");
 const sidebarBackdrop = document.getElementById("sidebarBackdrop");
 const securityWarningBanner = document.getElementById("securityWarningBanner");
+const connectionStatusBanner = document.getElementById("connectionStatusBanner");
+const connectionStatusText = document.getElementById("connectionStatusText");
+const connectionReconnectBtn = document.getElementById("connectionReconnectBtn");
 const aboutBtn = document.getElementById("aboutBtn");
 const sidebarExtrasToggleBtn = document.getElementById("sidebarExtrasToggleBtn");
 const sidebarExtrasGroup = document.getElementById("sidebarExtrasGroup");
@@ -183,6 +193,11 @@ const projectList = document.getElementById("projectList");
 const projectSearchInput = document.getElementById("projectSearchInput");
 const projectSearchToggleBtn = document.getElementById("projectSearchToggleBtn");
 const sidebarSearchRow = document.getElementById("sidebarSearchRow");
+const sidebarStarCta = document.getElementById("sidebarStarCta");
+const sidebarStarDismissBtn = document.getElementById("sidebarStarDismissBtn");
+const gettingStartedPanel = document.getElementById("gettingStartedPanel");
+const queryParams = new URLSearchParams(window.location.search || "");
+const showGettingStartedOverride = parseBooleanQueryParam(queryParams.get("showGettingStarted"));
 
 const logVerbositySelect = document.getElementById("logVerbositySelect");
 const modelSelect = document.getElementById("modelSelect");
@@ -300,12 +315,18 @@ function updatePromptActionState() {
     return;
   }
 
+  const recoveringActive = !!activeSessionId && isSessionAppServerRecovering(activeSessionId);
   const processingActive = !!activeSessionId && isTurnInFlight(activeSessionId);
+  sendPromptBtn.disabled = recoveringActive;
+  queuePromptBtn.disabled = recoveringActive;
+  cancelTurnBtn.disabled = recoveringActive || !processingActive;
   queuePromptBtn.classList.toggle("hidden", !processingActive);
   cancelTurnBtn.classList.toggle("hidden", !processingActive);
   sendPromptBtn.classList.toggle("queue-mode", processingActive);
   sendPromptBtn.classList.toggle("solo-send", !processingActive);
-  sendPromptBtn.title = processingActive ? "Send now (Enter)" : "Send (Enter)";
+  sendPromptBtn.title = recoveringActive
+    ? "Session is recovering. Sending is temporarily disabled."
+    : (processingActive ? "Send now (Enter)" : "Send (Enter)");
   queuePromptBtn.title = "Queue this instruction (Tab)";
   cancelTurnBtn.title = "Stop running turn";
   updatePendingPromptStrip();
@@ -332,7 +353,9 @@ function updatePendingPromptStrip() {
 
   const sessionId = activeSessionId || "";
   const running = !!sessionId && isTurnInFlight(sessionId);
+  const recovering = !!sessionId && isSessionAppServerRecovering(sessionId);
   const promptPreview = running
+    || recovering
     ? trimPendingPromptPreview(lastSentPromptBySession.get(sessionId) || "")
     : "";
   if (!promptPreview) {
@@ -341,7 +364,9 @@ function updatePendingPromptStrip() {
     return;
   }
 
-  pendingPromptText.textContent = promptPreview;
+  pendingPromptText.textContent = recovering
+    ? `Recovering session while pending prompt is held: ${promptPreview}`
+    : promptPreview;
   pendingPromptStrip.classList.remove("hidden");
 }
 
@@ -2735,6 +2760,202 @@ function wsUrl() {
   return endpoint.toString();
 }
 
+function setConnectionStatusBannerState(state, message, options = {}) {
+  if (!connectionStatusBanner || !connectionStatusText) {
+    return;
+  }
+
+  const normalizedState = typeof state === "string" ? state.trim().toLowerCase() : "";
+  const normalizedMessage = String(message || "").trim();
+  if (!normalizedMessage || normalizedState === "connected") {
+    connectionStatusText.textContent = "";
+    connectionStatusBanner.classList.add("hidden");
+    connectionStatusBanner.dataset.state = "connected";
+    if (connectionReconnectBtn) {
+      connectionReconnectBtn.classList.add("hidden");
+      connectionReconnectBtn.disabled = false;
+    }
+    return;
+  }
+
+  connectionStatusBanner.dataset.state = normalizedState || "disconnected";
+  connectionStatusText.textContent = normalizedMessage;
+  connectionStatusBanner.classList.remove("hidden");
+  if (connectionReconnectBtn) {
+    const showReconnect = options.showReconnect === true;
+    connectionReconnectBtn.classList.toggle("hidden", !showReconnect);
+    connectionReconnectBtn.disabled = wsReconnectInFlight;
+  }
+}
+
+function clearWsReconnectTimer() {
+  if (!wsReconnectTimer) {
+    return;
+  }
+
+  clearTimeout(wsReconnectTimer);
+  wsReconnectTimer = null;
+}
+
+function scheduleWsReconnect(source = "unknown") {
+  if (wsReconnectTimer || wsReconnectInFlight) {
+    return;
+  }
+
+  const delayMs = Math.min(
+    WS_RECONNECT_MAX_DELAY_MS,
+    WS_RECONNECT_BASE_DELAY_MS * Math.pow(2, Math.min(wsReconnectAttempt, 4)));
+  const delaySeconds = Math.max(1, Math.round(delayMs / 1000));
+  setConnectionStatusBannerState(
+    "disconnected",
+    `Disconnected from websocket bridge. Reconnecting in ${delaySeconds}s...`,
+    { showReconnect: true });
+
+  wsReconnectTimer = setTimeout(async () => {
+    wsReconnectTimer = null;
+    wsReconnectInFlight = true;
+    wsReconnectAttempt += 1;
+    let shouldRetry = false;
+    setConnectionStatusBannerState(
+      "reconnecting",
+      "Reconnecting to websocket bridge...",
+      { showReconnect: true });
+
+    try {
+      await ensureSocket();
+    } catch (error) {
+      appendLog(`[ws] reconnect attempt failed (${source}): ${error}`);
+      shouldRetry = true;
+    } finally {
+      wsReconnectInFlight = false;
+      if (connectionReconnectBtn && !connectionReconnectBtn.classList.contains("hidden")) {
+        connectionReconnectBtn.disabled = false;
+      }
+    }
+
+    if (shouldRetry) {
+      scheduleWsReconnect("retry");
+    }
+  }, delayMs);
+}
+
+async function reconnectWebSocketNow() {
+  clearWsReconnectTimer();
+  if (wsReconnectInFlight) {
+    return;
+  }
+
+  wsReconnectInFlight = true;
+  let shouldRetry = false;
+  setConnectionStatusBannerState("reconnecting", "Reconnecting to websocket bridge...", { showReconnect: true });
+  try {
+    await ensureSocket();
+  } catch (error) {
+    appendLog(`[ws] manual reconnect failed: ${error}`);
+    shouldRetry = true;
+  } finally {
+    wsReconnectInFlight = false;
+    if (connectionReconnectBtn && !connectionReconnectBtn.classList.contains("hidden")) {
+      connectionReconnectBtn.disabled = false;
+    }
+  }
+
+  if (shouldRetry) {
+    scheduleWsReconnect("manual");
+  }
+}
+
+function buildSessionListApprovalKey(approval) {
+  if (!approval || typeof approval !== "object" || Array.isArray(approval)) {
+    return "";
+  }
+
+  const approvalId = typeof approval.approvalId === "string" ? approval.approvalId.trim() : "";
+  const requestType = typeof approval.requestType === "string" ? approval.requestType.trim() : "";
+  const summary = typeof approval.summary === "string" ? approval.summary.trim() : "";
+  const reason = typeof approval.reason === "string" ? approval.reason.trim() : "";
+  const cwd = typeof approval.cwd === "string" ? approval.cwd.trim() : "";
+  const createdAtUtc = typeof approval.createdAtUtc === "string" ? approval.createdAtUtc.trim() : "";
+  const actions = Array.isArray(approval.actions)
+    ? approval.actions.map((x) => String(x || "").trim()).filter((x) => x.length > 0).join(",")
+    : "";
+  return `${approvalId}|${requestType}|${summary}|${reason}|${cwd}|${createdAtUtc}|${actions}`;
+}
+
+function buildSessionListQueuedTurnsKey(queuedTurns) {
+  if (!Array.isArray(queuedTurns) || queuedTurns.length === 0) {
+    return "";
+  }
+
+  return queuedTurns
+    .map((queued) => {
+      if (!queued || typeof queued !== "object") {
+        return "";
+      }
+
+      const queueItemId = typeof queued.queueItemId === "string" ? queued.queueItemId.trim() : "";
+      const previewText = typeof queued.previewText === "string" ? queued.previewText.trim() : "";
+      const imageCount = Number.isFinite(queued.imageCount) ? Math.max(0, Math.floor(queued.imageCount)) : 0;
+      const createdAtUtc = typeof queued.createdAtUtc === "string" ? queued.createdAtUtc.trim() : "";
+      return `${queueItemId}|${previewText}|${imageCount}|${createdAtUtc}`;
+    })
+    .join("~");
+}
+
+function buildSessionListViewKey(activeSessionId, list, processingByThread) {
+  const normalizedActiveSessionId = typeof activeSessionId === "string" ? activeSessionId.trim() : "";
+  const normalizedSessions = Array.isArray(list)
+    ? list
+        .filter((s) => s && typeof s === "object")
+        .map((s) => ({
+          sessionId: typeof s.sessionId === "string" ? s.sessionId.trim() : "",
+          threadId: typeof s.threadId === "string" ? s.threadId.trim() : "",
+          cwd: typeof s.cwd === "string" ? s.cwd.trim() : "",
+          model: typeof s.model === "string" ? s.model.trim() : "",
+          reasoningEffort: typeof s.reasoningEffort === "string"
+            ? s.reasoningEffort.trim()
+            : (typeof s.effort === "string" ? s.effort.trim() : ""),
+          approvalPolicy: typeof s.approvalPolicy === "string"
+            ? s.approvalPolicy.trim()
+            : (typeof s.approval_policy === "string" ? s.approval_policy.trim() : ""),
+          sandboxPolicy: typeof s.sandboxPolicy === "string"
+            ? s.sandboxPolicy.trim()
+            : (typeof s.sandbox_policy === "string" ? s.sandbox_policy.trim() : ""),
+          isTurnInFlight: s.isTurnInFlight === true || s.turnInFlight === true,
+          isTurnInFlightInferredFromLogs: s.isTurnInFlightInferredFromLogs === true,
+          isTurnInFlightLogOnly: s.isTurnInFlightLogOnly === true,
+          isAppServerRecovering: s.isAppServerRecovering === true,
+          queuedTurnCount: Number.isFinite(s.queuedTurnCount) ? Math.max(0, Math.floor(s.queuedTurnCount)) : 0,
+          turnCountInMemory: Number.isFinite(s.turnCountInMemory) ? Math.max(0, Math.floor(s.turnCountInMemory)) : 0,
+          pendingApproval: buildSessionListApprovalKey(s.pendingApproval),
+          queuedTurns: buildSessionListQueuedTurnsKey(s.queuedTurns)
+        }))
+        .sort((a, b) => a.sessionId.localeCompare(b.sessionId))
+    : [];
+
+  const normalizedProcessing = [];
+  if (processingByThread && typeof processingByThread === "object" && !Array.isArray(processingByThread)) {
+    for (const [threadId, processing] of Object.entries(processingByThread)) {
+      const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+      if (!normalizedThreadId) {
+        continue;
+      }
+
+      normalizedProcessing.push({
+        threadId: normalizedThreadId,
+        processing: processing === true
+      });
+    }
+    normalizedProcessing.sort((a, b) => a.threadId.localeCompare(b.threadId));
+  }
+
+  return JSON.stringify({
+    activeSessionId: normalizedActiveSessionId,
+    sessions: normalizedSessions,
+    processingByThread: normalizedProcessing
+  });
+}
+
 function appendLog(text) {
   const stamp = new Date().toISOString();
   const line = `${stamp} ${text}`;
@@ -3122,6 +3343,7 @@ function ensureSessionState(sessionId) {
       reasoningEffort: null,
       approvalPolicy: null,
       sandboxPolicy: null,
+      isAppServerRecovering: false,
       isPlanTurn: false,
       planStatus: "idle",
       planText: "",
@@ -3566,6 +3788,15 @@ function isTurnInFlight(sessionId) {
   return turnInFlightBySession.get(sessionId) === true;
 }
 
+function isSessionAppServerRecovering(sessionId) {
+  if (!sessionId) {
+    return false;
+  }
+
+  const state = sessions.get(sessionId);
+  return !!state && state.isAppServerRecovering === true;
+}
+
 function setTurnStartGrace(sessionId, enabled, durationMs = TURN_START_CONFIRM_GRACE_MS) {
   if (!sessionId) {
     return;
@@ -3753,6 +3984,9 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
   if (!sessionId) {
     return false;
   }
+  if (isSessionAppServerRecovering(sessionId)) {
+    return false;
+  }
 
   const turnInput = buildTurnInput(promptText, images, { trimText: false });
   if (!turnInput.hasContent) {
@@ -3818,6 +4052,9 @@ function buildTurnInput(promptText, images = [], options = {}) {
 function steerTurn(sessionId, promptText, images = []) {
   const turnInput = buildTurnInput(promptText, images, { trimText: true });
   if (!sessionId || !turnInput.hasContent) {
+    return false;
+  }
+  if (isSessionAppServerRecovering(sessionId)) {
     return false;
   }
 
@@ -3894,6 +4131,9 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
   const state = sessions.get(sessionId);
   const turnModel = normalizeModelValue(state?.model || "");
   if (!sessionId || !turnInput.hasContent) {
+    return false;
+  }
+  if (isSessionAppServerRecovering(sessionId)) {
     return false;
   }
 
@@ -4119,6 +4359,35 @@ function syncConversationReasoningOptions(preferredValue = null) {
   updateConversationModelSummary();
 }
 
+function parseBooleanQueryParam(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return null;
+}
+
+function updateGettingStartedPanelVisibility() {
+  if (!gettingStartedPanel) {
+    return;
+  }
+
+  if (showGettingStartedOverride !== null) {
+    gettingStartedPanel.classList.toggle("hidden", !showGettingStartedOverride);
+    return;
+  }
+
+  const hasState = !!getActiveSessionState();
+  gettingStartedPanel.classList.toggle("hidden", hasState);
+}
+
 function refreshSessionMeta() {
   if (!sessionMeta || !sessionMetaModelItem) {
     return;
@@ -4143,6 +4412,7 @@ function refreshSessionMeta() {
     updateContextLeftIndicator();
     updatePermissionLevelIndicator();
     updateConversationMetaVisibility();
+    updateGettingStartedPanelVisibility();
     updatePlanPanel();
     return;
   }
@@ -4185,6 +4455,7 @@ function refreshSessionMeta() {
   updateContextLeftIndicator();
   updatePermissionLevelIndicator();
   updateConversationMetaVisibility();
+  updateGettingStartedPanelVisibility();
   updatePlanPanel();
 }
 
@@ -4866,7 +5137,17 @@ function applySavedUiSettings() {
   applySidebarCollapsed(sidebarCollapsed);
   setSidebarExtrasExpanded(sidebarExtrasExpanded, { persist: false });
   setMobileProjectsOpen(false);
+  applyGithubStarCtaVisibility();
   restorePromptDraftForActiveSession();
+}
+
+function applyGithubStarCtaVisibility() {
+  if (!sidebarStarCta) {
+    return;
+  }
+
+  const dismissed = localStorage.getItem(STORAGE_GITHUB_STAR_CTA_DISMISSED_KEY) === "1";
+  sidebarStarCta.classList.toggle("hidden", dismissed);
 }
 
 function getCurrentLogVerbosity() {
@@ -4901,7 +5182,10 @@ function startSessionListSync() {
 
 function ensureSocket() {
   if (socket && socket.readyState === WebSocket.OPEN) {
+    clearWsReconnectTimer();
+    wsReconnectAttempt = 0;
     startSessionListSync();
+    setConnectionStatusBannerState("connected", "");
     return Promise.resolve();
   }
 
@@ -4909,6 +5193,7 @@ function ensureSocket() {
     return socketReadyPromise;
   }
 
+  setConnectionStatusBannerState("reconnecting", "Connecting to websocket bridge...", { showReconnect: true });
   socket = new WebSocket(wsUrl());
   socketReadyPromise = new Promise((resolve, reject) => {
     socket.addEventListener("open", () => resolve(), { once: true });
@@ -4919,11 +5204,14 @@ function ensureSocket() {
   socket.addEventListener("open", () => {
     appendLog("[ws] connected");
     socketReadyPromise = null;
+    clearWsReconnectTimer();
+    wsReconnectAttempt = 0;
     startSessionListSync();
     send("session_list");
     send("session_catalog_list");
     send("models_list");
     sendCurrentLogVerbosity();
+    setConnectionStatusBannerState("connected", "");
   });
   socket.addEventListener("close", () => {
     appendLog("[ws] disconnected");
@@ -4936,9 +5224,18 @@ function ensureSocket() {
     setApprovalVisible(false);
     pendingToolUserInput = null;
     closeToolUserInputModal();
+    setConnectionStatusBannerState(
+      "disconnected",
+      "Disconnected from websocket bridge.",
+      { showReconnect: true });
+    scheduleWsReconnect("close");
   });
   socket.addEventListener("error", () => {
     appendLog("[ws] error");
+    setConnectionStatusBannerState(
+      "error",
+      "Websocket error. Waiting for reconnect.",
+      { showReconnect: true });
   });
   socket.addEventListener("message", (event) => {
     try {
@@ -4955,6 +5252,11 @@ function ensureSocket() {
 function send(type, payload = {}) {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
     appendLog(`[client] cannot send ${type}; websocket is closed`);
+    setConnectionStatusBannerState(
+      "disconnected",
+      "Websocket is disconnected. Reconnect to continue.",
+      { showReconnect: true });
+    scheduleWsReconnect("send");
     return false;
   }
   socket.send(JSON.stringify({ type, ...payload }));
@@ -5126,6 +5428,7 @@ function handleServerEvent(frame) {
       ensurePlanStateShape(state);
       state.threadId = payload.threadId || state.threadId;
       state.cwd = payload.cwd || state.cwd;
+      state.isAppServerRecovering = false;
       let persistedPreferenceUpdated = false;
       let persistedPermissionPreferenceUpdated = false;
       if (state.threadId) {
@@ -5244,6 +5547,12 @@ function handleServerEvent(frame) {
 
     case "session_list": {
       const list = Array.isArray(payload.sessions) ? payload.sessions : [];
+      const nextSessionListViewKey = buildSessionListViewKey(
+        payload.activeSessionId || null,
+        list,
+        payload.processingByThread);
+      const shouldRefreshSessionViews = nextSessionListViewKey !== lastSessionListViewKey;
+      lastSessionListViewKey = nextSessionListViewKey;
       const next = new Map();
       const nextProcessingByThread = new Map();
       let matchedPendingThread = false;
@@ -5259,6 +5568,7 @@ function handleServerEvent(frame) {
             reasoningEffort: null,
             approvalPolicy: null,
             sandboxPolicy: null,
+            isAppServerRecovering: false,
             isPlanTurn: false,
             planStatus: "idle",
             planText: "",
@@ -5363,6 +5673,7 @@ function handleServerEvent(frame) {
         st.turnCountInMemory = Number.isFinite(s.turnCountInMemory)
           ? Math.max(0, Math.floor(s.turnCountInMemory))
           : Number.isFinite(st.turnCountInMemory) ? st.turnCountInMemory : 0;
+        st.isAppServerRecovering = s.isAppServerRecovering === true;
 
         const inFlightFromServer = s.isTurnInFlight === true || s.turnInFlight === true;
         const inFlight = resolveTurnInFlightFromServer(s.sessionId, inFlightFromServer);
@@ -5399,7 +5710,11 @@ function handleServerEvent(frame) {
       pruneRateLimitState(Array.from(next.keys()));
       applyProcessingByThread(nextProcessingByThread);
       prunePromptState();
-      updateSessionSelect(payload.activeSessionId || null);
+      if (shouldRefreshSessionViews) {
+        updateSessionSelect(payload.activeSessionId || null);
+      } else {
+        updatePromptActionState();
+      }
 
       const activeState = getActiveSessionState();
       const activePending = activeState && activeState.pendingApproval ? activeState.pendingApproval : null;
@@ -5615,6 +5930,26 @@ function handleServerEvent(frame) {
       }
       appendLog(
         `[turn] cancel requested for session=${sessionId || "unknown"} interruptSent=${payload.interruptSent === true ? "true" : "false"} forcedReset=${payload.forcedReset === true ? "true" : "false"} clearedQueued=${Number.isFinite(payload.clearedQueuedTurnCount) ? payload.clearedQueuedTurnCount : 0}`);
+      return;
+    }
+
+    case "session_recovery_state": {
+      const sessionId = payload.sessionId || null;
+      if (!sessionId) {
+        return;
+      }
+
+      const state = ensureSessionState(sessionId);
+      const recoveryState = typeof payload.state === "string" ? payload.state.trim().toLowerCase() : "";
+      state.isAppServerRecovering = recoveryState === "recovering";
+      if (sessionId === activeSessionId) {
+        updatePromptActionState();
+      }
+      const errorSuffix = payload.errorMessage ? ` error=${payload.errorMessage}` : "";
+      appendLog(`[session_recovery] session=${sessionId} state=${recoveryState || "unknown"}${errorSuffix}`);
+      if (recoveryState === "recovered" || recoveryState === "failed") {
+        send("session_list");
+      }
       return;
     }
 
@@ -6638,6 +6973,10 @@ async function queueCurrentComposerPrompt() {
     appendLog("[client] no active session; create or attach one first");
     return true;
   }
+  if (isSessionAppServerRecovering(activeSessionId)) {
+    appendLog(`[session_recovery] session=${activeSessionId} is recovering; queue is temporarily disabled`);
+    return true;
+  }
 
   if (!isTurnInFlight(activeSessionId)) {
     appendLog(`[queue] no running turn for session=${activeSessionId}; send directly instead`);
@@ -6720,6 +7059,10 @@ promptForm.addEventListener("submit", async (event) => {
 
   if (!activeSessionId) {
     appendLog("[client] no active session; create or attach one first");
+    return;
+  }
+  if (isSessionAppServerRecovering(activeSessionId)) {
+    appendLog(`[session_recovery] session=${activeSessionId} is recovering; wait and retry`);
     return;
   }
 
@@ -6844,6 +7187,19 @@ if (turnActivityCancelLink) {
   });
 }
 
+if (sidebarStarDismissBtn) {
+  sidebarStarDismissBtn.addEventListener("click", () => {
+    localStorage.setItem(STORAGE_GITHUB_STAR_CTA_DISMISSED_KEY, "1");
+    applyGithubStarCtaVisibility();
+  });
+}
+
+if (connectionReconnectBtn) {
+  connectionReconnectBtn.addEventListener("click", () => {
+    reconnectWebSocketNow().catch((error) => appendLog(`[ws] reconnect button failed: ${error}`));
+  });
+}
+
 approvalPanel.querySelectorAll("button[data-decision]").forEach((button) => {
   button.addEventListener("click", () => {
     const decision = button.getAttribute("data-decision");
@@ -6930,6 +7286,7 @@ window.addEventListener("resize", () => {
 
 window.addEventListener("beforeunload", () => {
   rememberPromptDraftForState(getActiveSessionState());
+  clearWsReconnectTimer();
   if (vsSelectionPollTimer) {
     clearInterval(vsSelectionPollTimer);
     vsSelectionPollTimer = null;
@@ -6966,6 +7323,7 @@ setPlanModeNextTurn(false);
 updatePlanPanel();
 updateMobileProjectsButton();
 updateConversationMetaVisibility();
+updateGettingStartedPanelVisibility();
 
 turnActivityTickTimer = setInterval(() => {
   updateTurnActivityStrip();

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Install Codex CLI - Buffaly Codex Embedded</title>
+  <link rel="icon" type="image/x-icon" href="/images/favicon.ico">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #111827;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #22c55e;
+      --warn: #f59e0b;
+      --border: #1f2937;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, sans-serif;
+      background: radial-gradient(circle at top right, #1f2937 0%, var(--bg) 55%);
+      color: var(--text);
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .card {
+      width: min(860px, 100%);
+      background: color-mix(in srgb, var(--panel) 85%, black 15%);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.5rem, 2vw + 1rem, 2.2rem);
+      line-height: 1.2;
+    }
+
+    .sub {
+      color: var(--muted);
+      margin: 0 0 20px;
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 0.82rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #052e16;
+      background: var(--accent);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-weight: 700;
+      margin-bottom: 14px;
+    }
+
+    .warning {
+      border: 1px solid #78350f;
+      background: rgba(245, 158, 11, 0.12);
+      color: #fde68a;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 20px;
+    }
+
+    ol {
+      margin: 0;
+      padding-left: 20px;
+      display: grid;
+      gap: 8px;
+    }
+
+    code, pre {
+      font-family: Consolas, "Courier New", monospace;
+    }
+
+    pre {
+      margin: 14px 0;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow-x: auto;
+      background: #020617;
+      color: #e2e8f0;
+    }
+
+    .actions {
+      margin-top: 22px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .btn {
+      border: 1px solid var(--border);
+      color: var(--text);
+      text-decoration: none;
+      border-radius: 10px;
+      padding: 10px 14px;
+      background: #111827;
+      font-weight: 600;
+    }
+
+    .btn.primary {
+      border-color: #166534;
+      background: #166534;
+      color: #dcfce7;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="badge">Setup required</div>
+    <h1>Codex CLI is not installed yet</h1>
+    <p class="sub">Buffaly Codex Embedded depends on the Codex CLI to create and run sessions.</p>
+
+    <div class="warning">
+      This machine does not have a working <code>codex</code> command on PATH.
+    </div>
+
+    <ol>
+      <li>Install Codex CLI using your standard method.</li>
+      <li>Authenticate once by running <code>codex login</code>.</li>
+      <li>Verify install by running <code>codex --version</code>.</li>
+      <li>Restart this app and open the home page again.</li>
+    </ol>
+
+    <pre>codex --version
+codex login</pre>
+
+    <div class="actions">
+      <a class="btn primary" href="/">Retry Buffaly Home</a>
+      <a class="btn" href="/settings">Open Settings</a>
+      <a class="btn" href="https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded" target="_blank" rel="noopener">Star on GitHub</a>
+    </div>
+  </main>
+</body>
+</html>

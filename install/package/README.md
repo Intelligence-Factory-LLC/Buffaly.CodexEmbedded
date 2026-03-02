@@ -2,6 +2,8 @@
 
 This folder is a portable release package.
 
+If you want the easiest install, use the `.msi` from GitHub Releases instead.
+
 ## Install (no Visual Studio needed)
 
 1. Open PowerShell 7 in this folder.
@@ -12,6 +14,7 @@ pwsh -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 This installs wrapper commands on your PATH, including `buffaly-codex-web`.
+Install Codex CLI first and run `codex login` so sessions can start successfully.
 
 If you prefer the launcher script, use:
 
@@ -33,7 +36,8 @@ After install, open a new terminal and use:
 buffaly-codex-web
 ```
 
-When web starts, open the URL shown after `Now listening on:`.
+`buffaly-codex-web` opens your browser automatically and reuses a running local server when available.
+Default launch URL is `http://127.0.0.1:5170/`. Change `WebLaunchUrl` in `apps\web\appsettings.json` to customize it.
 
 ## Troubleshooting quick checks
 

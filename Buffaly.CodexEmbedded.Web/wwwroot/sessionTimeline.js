@@ -1962,13 +1962,92 @@
       return value;
     }
 
-    renderPlanMarkdownIntoContainer(container, markdownText) {
+    parseMarkdownTableCells(rawLine) {
+      const line = typeof rawLine === "string" ? rawLine.trim() : "";
+      if (!line || !line.includes("|")) {
+        return null;
+      }
+
+      let normalized = line;
+      if (normalized.startsWith("|")) {
+        normalized = normalized.slice(1);
+      }
+      if (normalized.endsWith("|")) {
+        normalized = normalized.slice(0, -1);
+      }
+
+      const cells = normalized.split("|").map((cell) => cell.trim());
+      if (cells.length < 2) {
+        return null;
+      }
+
+      return cells;
+    }
+
+    isMarkdownTableDivider(rawLine, expectedCellCount) {
+      const cells = this.parseMarkdownTableCells(rawLine);
+      if (!cells) {
+        return false;
+      }
+
+      if (expectedCellCount > 0 && cells.length !== expectedCellCount) {
+        return false;
+      }
+
+      return cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+    }
+
+    appendMarkdownTable(fragment, headerCells, bodyRows) {
+      if (!fragment || !Array.isArray(headerCells) || headerCells.length === 0) {
+        return;
+      }
+
+      const wrap = document.createElement("div");
+      wrap.className = "watcher-markdown-table-wrap";
+
+      const table = document.createElement("table");
+      table.className = "watcher-markdown-table";
+
+      const thead = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+      for (const cellText of headerCells) {
+        const th = document.createElement("th");
+        this.appendPlanInlineMarkdown(th, cellText);
+        headerRow.appendChild(th);
+      }
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+
+      if (Array.isArray(bodyRows) && bodyRows.length > 0) {
+        const tbody = document.createElement("tbody");
+        for (const row of bodyRows) {
+          const normalizedRow = Array.isArray(row) ? row.slice(0, headerCells.length) : [];
+          while (normalizedRow.length < headerCells.length) {
+            normalizedRow.push("");
+          }
+
+          const tr = document.createElement("tr");
+          for (const cellText of normalizedRow) {
+            const td = document.createElement("td");
+            this.appendPlanInlineMarkdown(td, cellText);
+            tr.appendChild(td);
+          }
+          tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+      }
+
+      wrap.appendChild(table);
+      fragment.appendChild(wrap);
+    }
+
+    renderMarkdownIntoContainer(container, markdownText) {
       if (!container) {
         return;
       }
 
       container.textContent = "";
-      const text = this.normalizePlanPayloadText(markdownText || "");
+      const text = typeof markdownText === "string" ? markdownText.trim() : "";
       if (!text) {
         return;
       }
@@ -1996,7 +2075,9 @@
         listType = "";
       };
 
-      for (const rawLine of lines) {
+      let index = 0;
+      while (index < lines.length) {
+        const rawLine = lines[index];
         const line = rawLine.replace(/\s+$/, "");
         const trimmed = line.trim();
 
@@ -2008,6 +2089,7 @@
           } else {
             codeBlockLines.push(line);
           }
+          index += 1;
           continue;
         }
 
@@ -2020,13 +2102,41 @@
           fragment.appendChild(pre);
           codeBlock = code;
           codeBlockLines = [];
+          index += 1;
           continue;
         }
 
         if (!trimmed) {
           flushParagraph();
           clearList();
+          index += 1;
           continue;
+        }
+
+        const tableHeaderCells = this.parseMarkdownTableCells(trimmed);
+        if (tableHeaderCells && index + 1 < lines.length) {
+          const divider = lines[index + 1].replace(/\s+$/, "").trim();
+          if (this.isMarkdownTableDivider(divider, tableHeaderCells.length)) {
+            flushParagraph();
+            clearList();
+
+            const bodyRows = [];
+            index += 2;
+            while (index < lines.length) {
+              const nextLine = lines[index].replace(/\s+$/, "");
+              const nextTrimmed = nextLine.trim();
+              const nextRowCells = this.parseMarkdownTableCells(nextTrimmed);
+              if (!nextTrimmed || !nextRowCells) {
+                break;
+              }
+
+              bodyRows.push(nextRowCells);
+              index += 1;
+            }
+
+            this.appendMarkdownTable(fragment, tableHeaderCells, bodyRows);
+            continue;
+          }
         }
 
         const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
@@ -2037,6 +2147,7 @@
           const heading = document.createElement(`h${level}`);
           this.appendPlanInlineMarkdown(heading, headingMatch[2]);
           fragment.appendChild(heading);
+          index += 1;
           continue;
         }
 
@@ -2051,6 +2162,7 @@
           const item = document.createElement("li");
           this.appendPlanInlineMarkdown(item, unorderedMatch[1]);
           listElement.appendChild(item);
+          index += 1;
           continue;
         }
 
@@ -2065,11 +2177,13 @@
           const item = document.createElement("li");
           this.appendPlanInlineMarkdown(item, orderedMatch[1]);
           listElement.appendChild(item);
+          index += 1;
           continue;
         }
 
         clearList();
         paragraphLines.push(trimmed);
+        index += 1;
       }
 
       if (codeBlock) {
@@ -2078,6 +2192,15 @@
 
       flushParagraph();
       container.appendChild(fragment);
+    }
+
+    renderPlanMarkdownIntoContainer(container, markdownText) {
+      if (!container) {
+        return;
+      }
+
+      const text = this.normalizePlanPayloadText(markdownText || "");
+      this.renderMarkdownIntoContainer(container, text);
     }
 
     normalizeMarkdownText(rawText) {
@@ -2093,120 +2216,8 @@
         return;
       }
 
-      container.textContent = "";
       const text = this.normalizeMarkdownText(markdownText || "");
-      if (!text) {
-        return;
-      }
-
-      const fragment = document.createDocumentFragment();
-      const lines = text.split("\n");
-      let paragraphLines = [];
-      let listElement = null;
-      let listType = "";
-      let codeBlock = null;
-      let codeBlockLines = [];
-
-      const flushParagraph = () => {
-        if (paragraphLines.length === 0) {
-          return;
-        }
-        const paragraph = document.createElement("p");
-        this.appendPlanInlineMarkdown(paragraph, paragraphLines.join(" ").trim());
-        fragment.appendChild(paragraph);
-        paragraphLines = [];
-      };
-
-      const clearList = () => {
-        listElement = null;
-        listType = "";
-      };
-
-      for (const rawLine of lines) {
-        const line = rawLine.replace(/\s+$/, "");
-        const trimmed = line.trim();
-
-        if (codeBlock) {
-          if (trimmed.startsWith("```")) {
-            this.renderTextWithOptionalDiffHighlight(codeBlock, codeBlockLines.join("\n"));
-            codeBlockLines = [];
-            codeBlock = null;
-          } else {
-            codeBlockLines.push(line);
-          }
-          continue;
-        }
-
-        if (trimmed.startsWith("```")) {
-          flushParagraph();
-          clearList();
-          const pre = document.createElement("pre");
-          const code = document.createElement("code");
-          pre.appendChild(code);
-          fragment.appendChild(pre);
-          codeBlock = code;
-          codeBlockLines = [];
-          continue;
-        }
-
-        if (!trimmed) {
-          flushParagraph();
-          clearList();
-          continue;
-        }
-
-        const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
-        if (headingMatch) {
-          flushParagraph();
-          clearList();
-          const level = Math.min(6, headingMatch[1].length);
-          const heading = document.createElement(`h${level}`);
-          this.appendPlanInlineMarkdown(heading, headingMatch[2]);
-          fragment.appendChild(heading);
-          continue;
-        }
-
-        const unorderedMatch = trimmed.match(/^[-*]\s+(.*)$/);
-        if (unorderedMatch) {
-          flushParagraph();
-          if (!listElement || listType !== "ul") {
-            listElement = document.createElement("ul");
-            listType = "ul";
-            fragment.appendChild(listElement);
-          }
-          const item = document.createElement("li");
-          this.appendPlanInlineMarkdown(item, unorderedMatch[1]);
-          listElement.appendChild(item);
-          continue;
-        }
-
-        const orderedMatch = trimmed.match(/^\d+\.\s+(.*)$/);
-        if (orderedMatch) {
-          flushParagraph();
-          if (!listElement || listType !== "ol") {
-            listElement = document.createElement("ol");
-            listType = "ol";
-            fragment.appendChild(listElement);
-          }
-          const item = document.createElement("li");
-          this.appendPlanInlineMarkdown(item, orderedMatch[1]);
-          listElement.appendChild(item);
-          continue;
-        }
-
-        if (listElement) {
-          clearList();
-        }
-
-        paragraphLines.push(trimmed);
-      }
-
-      if (codeBlock) {
-        this.renderTextWithOptionalDiffHighlight(codeBlock, codeBlockLines.join("\n"));
-      }
-
-      flushParagraph();
-      container.appendChild(fragment);
+      this.renderMarkdownIntoContainer(container, text);
     }
 
     renderPlanBodyContent(bodyWrap, entry, bodyText) {

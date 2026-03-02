@@ -100,6 +100,57 @@ exit /b %EXITCODE%
     Set-Content -Path $WrapperPath -Value $content -Encoding ascii
 }
 
+function Write-WebLauncherWrapper([string]$WrapperPath, [string]$ExecutableRelativePath) {
+    $content = @"
+@echo off
+setlocal
+set "ROOT=%~dp0.."
+if not exist "%ROOT%\active-version.txt" (
+  echo Buffaly.CodexEmbedded is not installed. Run install.ps1 again.
+  exit /b 1
+)
+set /p VERSION=<"%ROOT%\active-version.txt"
+set "TARGET=%ROOT%\versions\%VERSION%\$ExecutableRelativePath"
+if not exist "%TARGET%" (
+  echo Missing executable: "%TARGET%"
+  exit /b 1
+)
+
+set "WEB_CONFIG_PATH=%ROOT%\versions\%VERSION%\apps\web\appsettings.json"
+set "BUFFALY_WEB_CONFIG=%WEB_CONFIG_PATH%"
+for /f "usebackq delims=" %%U in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$default='http://127.0.0.1:5170/'; $u=$env:BUFFALY_CODEX_WEB_URL; if([string]::IsNullOrWhiteSpace($u) -and (Test-Path $env:BUFFALY_WEB_CONFIG)){ try { $json=Get-Content -Raw $env:BUFFALY_WEB_CONFIG | ConvertFrom-Json; $u=[string]$json.WebLaunchUrl } catch {} }; if([string]::IsNullOrWhiteSpace($u)){ $u=$default }; $u=$u.Trim(); $parsed=$null; if(-not [Uri]::TryCreate($u,[UriKind]::Absolute,[ref]$parsed)){ $u=$default }; if(($u -notlike 'http://*') -and ($u -notlike 'https://*')){ $u=$default }; if(-not $u.EndsWith('/')){ $u=$u + '/' }; $u"`) do set "WEB_URL=%%U"
+if "%WEB_URL%"=="" set "WEB_URL=http://127.0.0.1:5170/"
+set "BIND_URL=%WEB_URL%"
+if "%BIND_URL:~-1%"=="/" set "BIND_URL=%BIND_URL:~0,-1%"
+
+set "BUFFALY_WEB_URL=%WEB_URL%"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri $env:BUFFALY_WEB_URL -UseBasicParsing -TimeoutSec 1 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>nul
+if %ERRORLEVEL%==0 (
+  start "" "%WEB_URL%"
+  exit /b 0
+)
+
+echo Starting Buffaly Codex Embedded Web UI...
+set "ASPNETCORE_URLS=%BIND_URL%"
+start "" powershell -NoProfile -ExecutionPolicy Bypass -Command "$u=$env:BUFFALY_WEB_URL; for($i=0; $i -lt 80; $i++){ try { Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 1 | Out-Null; Start-Process $u; exit 0 } catch { Start-Sleep -Milliseconds 500 } }; Start-Process $u"
+
+for %%I in ("%TARGET%") do set "APPDIR=%%~dpI"
+pushd "%APPDIR%" >nul
+"%TARGET%" %*
+set "EXITCODE=%ERRORLEVEL%"
+popd >nul
+if not "%EXITCODE%"=="0" (
+  echo.
+  echo Buffaly Codex Embedded Web exited with code %EXITCODE%.
+  echo Check logs under "%LOCALAPPDATA%\Buffaly.CodexEmbedded\logs\Buffaly.CodexEmbedded.Web".
+  pause
+)
+exit /b %EXITCODE%
+"@
+
+    Set-Content -Path $WrapperPath -Value $content -Encoding ascii
+}
+
 function Write-ScriptWrapper([string]$WrapperPath, [string]$ScriptFileName) {
     $content = @"
 @echo off
@@ -337,10 +388,9 @@ Copy-Item -Force (Join-Path $scriptRoot "uninstall.ps1") (Join-Path $InstallRoot
 Write-ExecutableWrapper `
     (Join-Path $binRoot "buffaly-codex.cmd") `
     "apps\cli\Buffaly.CodexEmbedded.Cli.exe"
-Write-ExecutableWrapper `
+Write-WebLauncherWrapper `
     (Join-Path $binRoot "buffaly-codex-web.cmd") `
-    "apps\web\Buffaly.CodexEmbedded.Web.exe" `
-    "Starting Buffaly Codex Embedded Web UI. Open the URL shown below as 'Now listening on:' in your browser."
+    "apps\web\Buffaly.CodexEmbedded.Web.exe"
 Write-ScriptWrapper `
     (Join-Path $binRoot "buffaly-codex-update.cmd") `
     "update.ps1"
@@ -352,7 +402,7 @@ if ($EnableLegacyBuffalyAliases) {
     Write-ExecutableWrapper `
         (Join-Path $binRoot "buffaly.cmd") `
         "apps\cli\Buffaly.CodexEmbedded.Cli.exe"
-    Write-ExecutableWrapper `
+    Write-WebLauncherWrapper `
         (Join-Path $binRoot "buffaly-web.cmd") `
         "apps\web\Buffaly.CodexEmbedded.Web.exe"
     Write-ScriptWrapper `

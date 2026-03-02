@@ -41,21 +41,22 @@ Download:
 
 PRE: Make sure you have the Codex CLI installed and authenticated, and that `codex --version` works in your terminal.
 
-1. Extract the downloaded zip.
-2. Open PowerShell 7 in the extracted package root folder
-3. Run:
+1. Install Codex CLI and verify it works:
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File .\install.ps1
+codex --version
+codex login
 ```
 
+2. Download the latest `.msi` from the release assets (recommended).
+3. Run the installer.
 4. Open a new terminal and run:
 
 ```powershell
 buffaly-codex-web
 ```
 
-5. Open the URL shown after `Now listening on: XXXX`.
+5. `buffaly-codex-web` opens your browser automatically, reuses an already-running local server if one exists, and otherwise starts the server then opens the UI when ready.
 
 That's it. The server will start listening for sessions started by the CLI or the web UI, and you can manage them from either interface.
 
@@ -167,7 +168,7 @@ We built this tool because we use this tool.
 
 ### 1. Prerequisites
 
-- Windows Enviroment with .NET 9.x runtime
+- Windows environment
 - `codex` CLI installed and authenticated
 - Internet access (for updates)
 
@@ -177,35 +178,13 @@ Confirm Codex is ready:
 codex --version
 ```
 
-### 2. Install wrapper commands (recommended)
+### 2. Install using the MSI (recommended)
 
-1. Open **Actions** in this repo.
-2. Open the latest successful `release` workflow run.
-3. Download the artifact `release-win-x64-<version>`.
-4. Extract the zip.
-5. Open PowerShell in the extracted folder.
-6. Run:
+1. Open the latest GitHub Release and download the `.msi` asset.
+2. Run the installer.
+3. Open a new terminal so updated PATH is loaded.
 
-```powershell
-pwsh -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-This installs wrapper commands on your PATH, including `buffaly-codex-web`.
-
-If you prefer the launcher script, use:
-
-```powershell
-.\install.cmd
-```
-
-If PowerShell 7 is not available, use:
-
-```powershell
-C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-Installer preflight checks Codex availability and local auth artifacts.
-If checks fail, install still completes and prints clear warnings with next steps.
+MSI installs `buffaly-codex` and `buffaly-codex-web` onto your PATH and adds a Start Menu shortcut.
 
 ### 3. Launch browser UI after install
 
@@ -215,14 +194,18 @@ After install, open a new terminal:
 buffaly-codex-web
 ```
 
-`buffaly-codex-web` prints `Now listening on:` in the terminal. Open that URL in your browser.
+`buffaly-codex-web` opens your browser automatically and targets `WebLaunchUrl` from `apps\web\appsettings.json` (default `http://127.0.0.1:5170/`).
+If a local server is already running at that URL, it reuses it instead of starting another process.
 
-### 4. Run manually from the package (no install)
+### 4. Install from the zip package (portable fallback)
 
-1. Extract the downloaded zip.
-2. Open `apps\web`.
-3. Run `Buffaly.CodexEmbedded.Web.exe`.
-4. Open the URL shown after `Now listening on:`.
+If you prefer a portable install (or need to run without MSI), download the `.zip` release asset and run:
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+This installs wrapper commands on your PATH, including `buffaly-codex-web`.
 
 ### 5. Run from source (developer)
 
@@ -233,6 +216,9 @@ dotnet restore
 dotnet build
 dotnet run --project Buffaly.CodexEmbedded.Web
 ```
+
+If Codex is missing, the app redirects browser traffic to `/help/codex-install` with setup steps.
+You can override this with `CodexInstallHelpUrl` in `appsettings.json`.
 
 ### 6. Other commands after install
 
@@ -252,6 +238,8 @@ buffaly-codex run --prompt "Refactor the payment service and add tests" --cwd "C
 
 ## Troubleshooting
 
+- Browser opens a Codex setup help page:
+  Codex CLI is missing or not runnable. Install Codex, run `codex login`, then retry `buffaly-codex-web`.
 - `install.ps1` fails with "release-manifest.json was not found":
   Run installer from the extracted package root folder that contains `release-manifest.json`, `apps\`, and `install.ps1`.
 - `powershell` command is not recognized:

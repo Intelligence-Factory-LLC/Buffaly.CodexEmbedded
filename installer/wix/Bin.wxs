@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment>
+    <DirectoryRef Id="BINDIR">
+      <Component Id="cmp_bin_codex" Guid="4fbb4ce8-84b9-4c31-8e2e-0b6d323b7d62">
+        <File Id="fil_bin_codex" Source="installer\wix\bin\buffaly-codex.cmd" KeyPath="yes" />
+      </Component>
+      <Component Id="cmp_bin_web" Guid="c6a37db1-0e37-41d4-b4b0-0c1aa24d27d0">
+        <File Id="fil_bin_web" Source="installer\wix\bin\buffaly-codex-web.cmd" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="BinFiles">
+      <ComponentRef Id="cmp_bin_codex" />
+      <ComponentRef Id="cmp_bin_web" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>
+

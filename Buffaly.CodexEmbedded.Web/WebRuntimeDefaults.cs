@@ -4,10 +4,13 @@ using Microsoft.Extensions.Configuration;
 internal sealed class WebRuntimeDefaults
 {
 	public required string CodexPath { get; init; }
+	public required string WebLaunchUrl { get; init; }
+	public required string CodexInstallHelpUrl { get; init; }
 	public required string DefaultCwd { get; init; }
 	public required int TurnTimeoutSeconds { get; init; }
 	public required int TurnSlotWaitTimeoutSeconds { get; init; }
 	public required int TurnSlotWaitPollSeconds { get; init; }
+	public required int TurnStartAckTimeoutSeconds { get; init; }
 	public required string LogRootPath { get; init; }
 	public string? CodexHomePath { get; init; }
 	public string? DefaultModel { get; init; }
@@ -27,11 +30,14 @@ internal sealed class WebRuntimeDefaults
 	{
 		var defaultModel = LoadModelFromCodexConfig();
 		var codexPath = configuration["CodexPath"];
+		var webLaunchUrl = NormalizeWebLaunchUrl(configuration["WebLaunchUrl"]);
+		var codexInstallHelpUrl = NormalizeCodexInstallHelpUrl(configuration["CodexInstallHelpUrl"]);
 		var defaultCwd = configuration["DefaultCwd"];
 		var codexHomePath = configuration["CodexHomePath"];
 		var timeout = configuration.GetValue<int?>("TurnTimeoutSeconds") ?? 300;
 		var turnSlotWaitTimeoutSeconds = configuration.GetValue<int?>("TurnSlotWaitTimeoutSeconds") ?? timeout;
 		var turnSlotWaitPollSeconds = configuration.GetValue<int?>("TurnSlotWaitPollSeconds") ?? 2;
+		var turnStartAckTimeoutSeconds = configuration.GetValue<int?>("TurnStartAckTimeoutSeconds") ?? 15;
 		var logRoot = configuration["LogRootPath"];
 		var webSocketAuthRequired = configuration.GetValue<bool?>("WebSocketAuthRequired") ?? true;
 		var webSocketAuthToken = ResolveWebSocketAuthToken(configuration["WebSocketAuthToken"], webSocketAuthRequired);
@@ -47,11 +53,14 @@ internal sealed class WebRuntimeDefaults
 		return new WebRuntimeDefaults
 		{
 			CodexPath = string.IsNullOrWhiteSpace(codexPath) ? "codex" : codexPath,
+			WebLaunchUrl = webLaunchUrl,
+			CodexInstallHelpUrl = codexInstallHelpUrl,
 			DefaultCwd = string.IsNullOrWhiteSpace(defaultCwd) ? Environment.CurrentDirectory : defaultCwd,
 			TurnTimeoutSeconds = timeout > 0 ? timeout : 300,
 			TurnSlotWaitTimeoutSeconds = Math.Clamp(turnSlotWaitTimeoutSeconds, 5, 3600),
 			TurnSlotWaitPollSeconds = Math.Clamp(turnSlotWaitPollSeconds, 1, 30),
-			LogRootPath = string.IsNullOrWhiteSpace(logRoot) ? Path.Combine(Environment.CurrentDirectory, "logs", "web") : ResolvePath(logRoot),
+			TurnStartAckTimeoutSeconds = Math.Clamp(turnStartAckTimeoutSeconds, 5, 120),
+			LogRootPath = ResolveLogRootPath(logRoot),
 			CodexHomePath = string.IsNullOrWhiteSpace(codexHomePath) ? null : ResolvePath(codexHomePath),
 			DefaultModel = defaultModel,
 			WebSocketAuthRequired = webSocketAuthRequired,
@@ -75,6 +84,82 @@ internal sealed class WebRuntimeDefaults
 		}
 
 		return Path.Combine(Environment.CurrentDirectory, path);
+	}
+
+	private static string ResolveLogRootPath(string? configuredPath)
+	{
+		var appDataRoot = GetUserWritableAppRoot();
+		if (string.IsNullOrWhiteSpace(configuredPath))
+		{
+			return Path.Combine(appDataRoot, "logs", "web", "sessions");
+		}
+
+		var trimmed = configuredPath.Trim();
+		if (Path.IsPathRooted(trimmed))
+		{
+			return trimmed;
+		}
+
+		return Path.Combine(appDataRoot, trimmed);
+	}
+
+	private static string GetUserWritableAppRoot()
+	{
+		var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+		if (!string.IsNullOrWhiteSpace(localAppData))
+		{
+			return Path.Combine(localAppData, "Buffaly.CodexEmbedded");
+		}
+
+		return Path.Combine(Environment.CurrentDirectory, "working");
+	}
+
+	private static string NormalizeWebLaunchUrl(string? configuredUrl)
+	{
+		const string fallback = "http://127.0.0.1:5170/";
+		if (string.IsNullOrWhiteSpace(configuredUrl))
+		{
+			return fallback;
+		}
+
+		var trimmed = configuredUrl.Trim();
+		if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+		{
+			return fallback;
+		}
+
+		if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
+			!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+		{
+			return fallback;
+		}
+
+		var normalized = uri.ToString();
+		return normalized.EndsWith("/", StringComparison.Ordinal) ? normalized : normalized + "/";
+	}
+
+	private static string NormalizeCodexInstallHelpUrl(string? configuredUrl)
+	{
+		const string fallback = "/help/codex-install";
+		if (string.IsNullOrWhiteSpace(configuredUrl))
+		{
+			return fallback;
+		}
+
+		var trimmed = configuredUrl.Trim();
+		if (trimmed.StartsWith("/", StringComparison.Ordinal))
+		{
+			return trimmed;
+		}
+
+		if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri) &&
+			(string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+			 string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+		{
+			return uri.ToString();
+		}
+
+		return fallback;
 	}
 
 	private static string? ResolveWebSocketAuthToken(string? configuredToken, bool required)
