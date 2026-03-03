@@ -3794,6 +3794,25 @@ function initializeScribeControl() {
   });
 }
 
+async function settleScribeBeforeSubmit() {
+  if (!scribeController) {
+    return;
+  }
+
+  try {
+    if (typeof scribeController.stopAndWaitForIdle === "function") {
+      await scribeController.stopAndWaitForIdle();
+      return;
+    }
+
+    if (scribeController.recording && typeof scribeController.stop === "function") {
+      await scribeController.stop();
+    }
+  } catch (error) {
+    appendLog(`[voice] failed to finalize dictation before send: ${error}`);
+  }
+}
+
 function getQueuedTurnsForSession(sessionId) {
   if (!sessionId) {
     return [];
@@ -7085,6 +7104,7 @@ function cancelCurrentTurn() {
 
 promptForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  await settleScribeBeforeSubmit();
   const prompt = promptInput.value.trim();
   const images = pendingComposerImages.map((x) => ({ ...x }));
   const usePlanMode = planModeNextTurn === true;

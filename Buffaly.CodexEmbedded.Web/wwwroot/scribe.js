@@ -278,6 +278,7 @@
     let disposed = false;
     let recordingContext = null;
     let skipFinalTranscriptionForCapture = false;
+    let idleWaiters = [];
 
     function log(message) {
       if (onLog) {
@@ -295,6 +296,31 @@
         } catch {
         }
       }
+    }
+
+    function resolveIdleWaiters() {
+      if (isRecording || isProcessing || idleWaiters.length === 0) {
+        return;
+      }
+
+      const waiters = idleWaiters;
+      idleWaiters = [];
+      for (const resolve of waiters) {
+        try {
+          resolve();
+        } catch {
+        }
+      }
+    }
+
+    function waitForIdle() {
+      if (!isRecording && !isProcessing) {
+        return Promise.resolve();
+      }
+
+      return new Promise((resolve) => {
+        idleWaiters.push(resolve);
+      });
     }
 
     function setState(state) {
@@ -689,6 +715,7 @@
         isRecording = false;
         recordingContext = null;
         setState("idle");
+        resolveIdleWaiters();
         log(`[voice] unable to start microphone capture: ${error}`);
       }
     }
@@ -765,6 +792,20 @@
       isProcessing = false;
       recordingContext = null;
       setState("idle");
+      resolveIdleWaiters();
+    }
+
+    async function stopAndWaitForIdle() {
+      if (disposed) {
+        return;
+      }
+
+      if (isRecording) {
+        await stopCapture();
+        return;
+      }
+
+      await waitForIdle();
     }
 
     async function onClick() {
@@ -796,6 +837,7 @@
       visualizer.dispose();
       button.classList.remove("speaking");
       setState("idle");
+      resolveIdleWaiters();
       delete button.__scribeController;
     }
 
@@ -804,9 +846,13 @@
     const controller = {
       start: startCapture,
       stop: stopCapture,
+      stopAndWaitForIdle,
       dispose,
       get recording() {
         return isRecording;
+      },
+      get processing() {
+        return isProcessing;
       }
     };
 
