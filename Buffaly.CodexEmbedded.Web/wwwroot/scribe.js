@@ -236,6 +236,7 @@
     const target = options.target;
     const onLog = typeof options.onLog === "function" ? options.onLog : null;
     const onDraftSync = typeof options.onDraftSync === "function" ? options.onDraftSync : null;
+    const beforeStart = typeof options.beforeStart === "function" ? options.beforeStart : null;
     const transcribeUrl = options.transcribeUrl || new URL("api/transcribe", document.baseURI);
 
     if (!button || !target) {
@@ -607,6 +608,17 @@
         setState("disabled");
         log("[voice] speech-to-text is not supported in this browser");
         return;
+      }
+      if (beforeStart) {
+        try {
+          const canStart = await beforeStart();
+          if (canStart === false) {
+            return;
+          }
+        } catch (error) {
+          log(`[voice] unable to start speech-to-text: ${error}`);
+          return;
+        }
       }
 
       queue = [];

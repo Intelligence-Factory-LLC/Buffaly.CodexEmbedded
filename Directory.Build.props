@@ -2,5 +2,7 @@
   <PropertyGroup>
     <!-- Keep NuGet packages in a repo-local cache so restore works in restricted environments. -->
     <RestorePackagesPath>$(MSBuildThisFileDirectory).nuget\packages</RestorePackagesPath>
+    <!-- Generated build outputs can include *.cs files under artifacts/obj; never include them as source. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);**\artifacts\**</DefaultItemExcludes>
   </PropertyGroup>
 </Project>

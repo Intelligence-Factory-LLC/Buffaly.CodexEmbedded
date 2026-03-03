@@ -77,6 +77,7 @@ let sidebarProjectSearchExpanded = false;
 let vsSelectionSnapshot = null; // { filePath, fileName, selectionText, caretLine, caretColumn }
 let vsSelectionPollTimer = null;
 let vsSelectionPollInFlight = false;
+let openAiKeyStatusCache = null; // { hasKey, checkedAtMs }
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -104,6 +105,7 @@ const WS_RECONNECT_BASE_DELAY_MS = 1000;
 const WS_RECONNECT_MAX_DELAY_MS = 15000;
 const VS_SELECTION_POLL_INTERVAL_MS = 1500;
 const VS_SELECTION_MAX_PROMPT_CHARS = 4000;
+const OPENAI_KEY_STATUS_CACHE_MS = 15000;
 // Server turn cache is rebuilt from recent JSONL lines, so keep this high enough to capture many complete turns.
 const TIMELINE_INITIAL_WINDOW_DEFAULT = 6000;
 let timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
@@ -3785,10 +3787,51 @@ function initializeScribeControl() {
     return;
   }
 
+  const ensureVoiceKeyConfigured = async () => {
+    const now = Date.now();
+    if (openAiKeyStatusCache
+      && Number.isFinite(openAiKeyStatusCache.checkedAtMs)
+      && (now - openAiKeyStatusCache.checkedAtMs) <= OPENAI_KEY_STATUS_CACHE_MS) {
+      if (openAiKeyStatusCache.hasKey === true) {
+        return true;
+      }
+
+      appendLog("[voice] OpenAI API key is not configured. Redirecting to Settings.");
+      window.location.assign("settings?focusOpenAiKey=1&reason=voice");
+      return false;
+    }
+
+    let hasKey = false;
+    try {
+      const response = await fetch(new URL("api/settings/openai-key/status", document.baseURI), { cache: "no-store" });
+      if (response.ok) {
+        const payload = await response.json();
+        hasKey = payload && payload.hasKey === true;
+      }
+    } catch (error) {
+      appendLog(`[voice] unable to verify OpenAI key status: ${error}`);
+      return false;
+    } finally {
+      openAiKeyStatusCache = {
+        hasKey,
+        checkedAtMs: now
+      };
+    }
+
+    if (hasKey) {
+      return true;
+    }
+
+    appendLog("[voice] OpenAI API key is required for speech-to-text. Redirecting to Settings.");
+    window.location.assign("settings?focusOpenAiKey=1&reason=voice");
+    return false;
+  };
+
   scribeController = window.initScribe({
     button: speechToTextBtn,
     target,
     transcribeUrl: new URL("api/transcribe", document.baseURI),
+    beforeStart: ensureVoiceKeyConfigured,
     onLog: (message) => appendLog(message),
     onDraftSync: () => rememberPromptDraftForState(getActiveSessionState())
   });

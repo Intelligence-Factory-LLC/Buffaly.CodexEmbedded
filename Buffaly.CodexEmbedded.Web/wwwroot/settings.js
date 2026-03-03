@@ -285,6 +285,24 @@ async function clearOpenAiKey() {
   }
 }
 
+function applyOpenAiKeyQueryHints() {
+  const query = new URLSearchParams(window.location.search || "");
+  if (query.get("focusOpenAiKey") !== "1") {
+    return;
+  }
+
+  if (query.get("reason") === "voice") {
+    setKeyStatusText("Speech-to-text requires an OpenAI API key. Add one below.", "error");
+  }
+
+  if (!openAiKeyInput) {
+    return;
+  }
+
+  openAiKeyInput.focus();
+  openAiKeyInput.select();
+}
+
 if (sidebarToggleBtn) {
   sidebarToggleBtn.addEventListener("click", () => {
     if (isMobileViewport()) {
@@ -365,4 +383,6 @@ applySidebarCollapsed(sidebarCollapsed);
 setMobileProjectsOpen(false);
 refreshThemeModeUi();
 refreshAssistantMarkdownUi();
-loadOpenAiKeyStatus().catch((error) => setKeyStatusText(`Failed to load key status: ${error}`, "error"));
+loadOpenAiKeyStatus()
+  .catch((error) => setKeyStatusText(`Failed to load key status: ${error}`, "error"))
+  .finally(() => applyOpenAiKeyQueryHints());
