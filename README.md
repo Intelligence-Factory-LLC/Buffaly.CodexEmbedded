@@ -50,17 +50,18 @@ codex login
 
 2. Download the latest `.msi` from the release assets (recommended).
 3. Run the installer.
-4. Open a new terminal and run:
+4. Launch `Buffaly Codex Embedded` from the Start Menu icon created by the installer.
+5. Or open a new terminal and run:
 
 ```powershell
 buffaly-codex-web
 ```
 
-5. `buffaly-codex-web` opens your browser automatically, reuses an already-running local server if one exists, and otherwise starts the server then opens the UI when ready.
+`buffaly-codex-web` opens your browser automatically, reuses an already-running local server if one exists, and otherwise starts the server then opens the UI when ready.
 
 That's it. The server will start listening for sessions started by the CLI or the web UI, and you can manage them from either interface.
 
-To run manually or from source, see [Detailed Install and Run Options](#-detailed-install-and-run-options).
+For advanced portable or source-based setup, see [Detailed Install and Run Options](#-detailed-install-and-run-options).
 For install issues, see [Troubleshooting](#troubleshooting).
 
 ## ✨ Major Features
@@ -184,11 +185,14 @@ codex --version
 2. Run the installer.
 3. Open a new terminal so updated PATH is loaded.
 
-MSI installs `buffaly-codex` and `buffaly-codex-web` onto your PATH and adds a Start Menu shortcut.
+MSI installs `buffaly-codex` and `buffaly-codex-web` onto your PATH and adds a Start Menu shortcut for `Buffaly Codex Embedded`.
 
 ### 3. Launch browser UI after install
 
-After install, open a new terminal:
+After install, you can either:
+
+- Open Start Menu and launch `Buffaly Codex Embedded`.
+- Open a new terminal and run:
 
 ```powershell
 buffaly-codex-web
@@ -197,7 +201,7 @@ buffaly-codex-web
 `buffaly-codex-web` opens your browser automatically and targets `WebLaunchUrl` from `apps\web\appsettings.json` (default `http://127.0.0.1:5170/`).
 If a local server is already running at that URL, it reuses it instead of starting another process.
 
-### 4. Install from the zip package (portable fallback)
+### 4. Advanced: install from the zip package (portable fallback)
 
 If you prefer a portable install (or need to run without MSI), download the `.zip` release asset and run:
 
@@ -207,7 +211,7 @@ pwsh -ExecutionPolicy Bypass -File .\install.ps1
 
 This installs wrapper commands on your PATH, including `buffaly-codex-web`.
 
-### 5. Run from source (developer)
+### 5. Advanced: run from source (developer)
 
 From repo root:
 
