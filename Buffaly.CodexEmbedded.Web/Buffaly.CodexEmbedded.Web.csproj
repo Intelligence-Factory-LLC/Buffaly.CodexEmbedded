@@ -25,6 +25,12 @@
     <ProjectReference Include="..\\Buffaly.CodexEmbedded.Core\\Buffaly.CodexEmbedded.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Reference Include="BasicUtilities">
+      <HintPath>..\\lib\\BasicUtilities.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
   <Target Name="PostBuild" AfterTargets="PostBuildEvent" Condition="'$(Configuration)' != 'Release'">
     <PropertyGroup>
       <_DeployDir Condition="'$(SolutionDir)' != '' and '$(SolutionDir)' != '*Undefined*'">$(SolutionDir)Deploy\</_DeployDir>

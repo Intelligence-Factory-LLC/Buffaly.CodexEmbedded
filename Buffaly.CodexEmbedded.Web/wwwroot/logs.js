@@ -1,7 +1,3 @@
-const POLL_INTERVAL_MS = 2000;
-const FLUSH_INTERVAL_MS = 350;
-const SESSION_LIST_REFRESH_MS = 15000;
-const MAX_RENDERED_LINES = 5000;
 const STORAGE_SELECTED_THREAD_KEY = "codex.logs.selectedThread.v1";
 const STORAGE_SELECTED_PROJECT_KEY = "codex.logs.selectedProject.v1";
 const STORAGE_COLLAPSED_PROJECTS_KEY = "codex.logs.collapsedProjects.v1";
@@ -15,7 +11,9 @@ const sidebarBackdrop = document.getElementById("sidebarBackdrop");
 const projectList = document.getElementById("projectList");
 
 const logsStatus = document.getElementById("logsStatus");
-const logsOutput = document.getElementById("logsOutput");
+const logsRefreshBtn = document.getElementById("logsRefreshBtn");
+const messagesSummary = document.getElementById("messagesSummary");
+const messagesList = document.getElementById("messagesList");
 
 let sessions = [];
 let projectGroups = [];
@@ -25,17 +23,8 @@ let activeProjectKey = null;
 let activeThreadId = null;
 let collapsedProjectKeys = new Set();
 
-let cursor = null;
+let messageRows = [];
 
-let renderedLines = [];
-let pendingLines = [];
-let topTruncationNotice = "";
-let autoScrollPinned = true;
-
-let flushTimer = null;
-let pollTimer = null;
-let sessionRefreshTimer = null;
-let pollGeneration = 0;
 let pollInFlight = false;
 
 function setStatus(text) {
@@ -104,68 +93,103 @@ function formatSessionSubtitle(session) {
   return parts.join(" | ");
 }
 
-function clearOutput() {
-  renderedLines = [];
-  pendingLines = [];
-  topTruncationNotice = "";
-  autoScrollPinned = true;
-  if (logsOutput) {
-    logsOutput.textContent = "";
+function valueText(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
   }
 }
 
-function enqueueSystem(text) {
-  pendingLines.push(`${new Date().toISOString()} ${text}`);
-}
-
-function enqueueLines(lines) {
-  for (const line of lines) {
-    pendingLines.push(line);
+function extractMessagePreviewText(row) {
+  if (!row || typeof row !== "object") {
+    return "";
   }
-}
-
-function flushPending() {
-  if (pendingLines.length === 0 || !logsOutput) {
-    return;
+  const role = valueText(row.Role || row.role).trim().toLowerCase();
+  if (role === "event") {
+    const name = valueText(row.Name || row.name).trim();
+    const status = valueText((row.Event && row.Event.Status) || (row.event && row.event.status)).trim();
+    return status ? `${name} (${status})` : name;
   }
 
-  const shouldStickToBottom = autoScrollPinned || isNearBottom(logsOutput);
-  const previousScrollTop = logsOutput.scrollTop;
-  const previousScrollLeft = logsOutput.scrollLeft;
-
-  renderedLines.push(...pendingLines);
-  pendingLines = [];
-
-  if (renderedLines.length > MAX_RENDERED_LINES) {
-    renderedLines = renderedLines.slice(renderedLines.length - MAX_RENDERED_LINES);
-  }
-
-  const outputLines = topTruncationNotice ? [topTruncationNotice, ...renderedLines] : renderedLines;
-  logsOutput.textContent = outputLines.join("\n");
-  logsOutput.scrollLeft = previousScrollLeft;
-  if (shouldStickToBottom) {
-    logsOutput.scrollTop = logsOutput.scrollHeight;
-    autoScrollPinned = true;
+  const content = row.Content ?? row.content;
+  let text = "";
+  if (typeof content === "string") {
+    text = content;
+  } else if (content && typeof content === "object") {
+    const direct = content.message || content.text || content.summary || content.output_text || content.outputText || "";
+    if (typeof direct === "string" && direct.trim()) {
+      text = direct;
+    } else {
+      try {
+        text = JSON.stringify(content);
+      } catch {
+        text = "";
+      }
+    }
   } else {
-    logsOutput.scrollTop = previousScrollTop;
+    text = valueText(content);
+  }
+
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "(no message text)";
+  }
+  return normalized.length > 180 ? `${normalized.slice(0, 180)}...` : normalized;
+}
+
+function clearMessageRows() {
+  messageRows = [];
+  if (messagesSummary) {
+    messagesSummary.textContent = "No message rows loaded.";
+  }
+  if (messagesList) {
+    messagesList.textContent = "";
   }
 }
 
-function isNearBottom(element) {
-  if (!element) {
-    return true;
-  }
-
-  const remaining = element.scrollHeight - (element.scrollTop + element.clientHeight);
-  return remaining <= 20;
-}
-
-function setTopTruncationNotice() {
-  if (topTruncationNotice) {
+function renderMessageRows() {
+  if (!messagesSummary || !messagesList) {
     return;
   }
 
-  topTruncationNotice = `${new Date().toISOString()} [watch] older lines are omitted, showing latest lines`;
+  const rows = Array.isArray(messageRows) ? messageRows : [];
+  messagesSummary.textContent = `Messages: ${rows.length.toLocaleString()}`;
+  messagesList.textContent = "";
+  if (rows.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "logs-message-empty";
+    empty.textContent = "No timeline messages for this session yet.";
+    messagesList.appendChild(empty);
+    return;
+  }
+
+  const output = rows.map((row, index) => {
+    const role = valueText(row && (row.Role || row.role)).trim() || "message";
+    const preview = extractMessagePreviewText(row);
+    let jsonText = "";
+    try {
+      jsonText = JSON.stringify(row, null, 2);
+    } catch {
+      jsonText = valueText(row);
+    }
+
+    return `#${index + 1} ${role} - ${preview}\n${jsonText}`;
+  }).join("\n\n");
+
+  const body = document.createElement("pre");
+  body.className = "logs-message-json";
+  body.textContent = output;
+  messagesList.appendChild(body);
 }
 
 function buildActionIcon(kind) {
@@ -375,9 +399,10 @@ function renderProjectSidebar() {
         localStorage.setItem(STORAGE_SELECTED_PROJECT_KEY, activeProjectKey);
         renderProjectSidebar();
         if (changed) {
-          cursor = null;
-          clearOutput();
-          restartPolling();
+          clearMessageRows();
+          refreshSelectedMessages().catch((error) => {
+            setStatus(`Timeline refresh error: ${error}`);
+          });
         }
 
         if (isMobileViewport()) {
@@ -508,84 +533,43 @@ function pollContextLabel() {
   return activeThreadId;
 }
 
-async function pollOnce(initial, generation) {
+async function refreshSelectedMessages() {
   if (pollInFlight) {
     return;
   }
 
   pollInFlight = true;
   try {
-    if (!activeThreadId) {
-      setStatus("Select a session to view its on-disk logs.");
-      return;
-    }
+  if (!activeThreadId) {
+    setStatus("Select a session to view timeline messages.");
+    clearMessageRows();
+    return;
+  }
 
-    const url = new URL("api/logs/watch", document.baseURI);
-    url.searchParams.set("threadId", activeThreadId);
-    url.searchParams.set("maxLines", "250");
-    if (initial || cursor === null) {
-      url.searchParams.set("initial", "true");
-    } else {
-      url.searchParams.set("cursor", String(cursor));
-    }
+  const url = new URL("api/turns/bootstrap", document.baseURI);
+  url.searchParams.set("threadId", activeThreadId);
+  url.searchParams.set("maxEntries", "6000");
 
-    const response = await fetch(url, { cache: "no-store" });
-    if (generation !== pollGeneration) {
-      return;
-    }
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`messages bootstrap failed (${response.status}): ${await response.text()}`);
+  }
 
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`log watch failed (${response.status}): ${detail}`);
-    }
+  const data = await response.json();
+  messageRows = Array.isArray(data.messages) ? data.messages : [];
 
-    const data = await response.json();
-    if (generation !== pollGeneration) {
-      return;
-    }
-
-    if (initial || data.reset === true) {
-      clearOutput();
-      if (data.reset === true) {
-        enqueueSystem("[watch] session file was reset or rotated");
-      }
-    }
-
-    cursor = typeof data.nextCursor === "number" ? data.nextCursor : cursor;
-    const lines = Array.isArray(data.lines) ? data.lines : [];
-    enqueueLines(lines);
-
-    if (data.truncated === true) {
-      setTopTruncationNotice();
-    }
-
-    const label = pollContextLabel();
-    setStatus(`Session Logs: ${label || "(unknown)"} | update every 2 seconds`);
+  renderMessageRows();
+  const label = pollContextLabel();
+  setStatus(`Session Logs: ${label || "(unknown)"} | manual refresh`);
   } finally {
     pollInFlight = false;
   }
 }
 
-function restartPolling() {
-  pollGeneration += 1;
-  const generation = pollGeneration;
-
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-
-  pollOnce(true, generation).catch((error) => {
-    enqueueSystem(`[error] ${error}`);
-    setStatus("Log watch error.");
-  });
-
-  pollTimer = setInterval(() => {
-    pollOnce(false, generation).catch((error) => {
-      enqueueSystem(`[error] ${error}`);
-      setStatus("Log watch error.");
-    });
-  }, POLL_INTERVAL_MS);
+async function refreshEverything() {
+  setStatus("Refreshing sessions...");
+  await refreshSessionList();
+  await refreshSelectedMessages();
 }
 
 async function refreshSessionList() {
@@ -622,9 +606,11 @@ async function refreshSessionList() {
 }
 
 function wireUiEvents() {
-  if (logsOutput) {
-    logsOutput.addEventListener("scroll", () => {
-      autoScrollPinned = isNearBottom(logsOutput);
+  if (logsRefreshBtn) {
+    logsRefreshBtn.addEventListener("click", () => {
+      refreshEverything().catch((error) => {
+        setStatus(`Refresh failed: ${error}`);
+      });
     });
   }
 
@@ -663,19 +649,6 @@ function wireUiEvents() {
   });
 }
 
-function startBackgroundRefresh() {
-  if (sessionRefreshTimer) {
-    clearInterval(sessionRefreshTimer);
-    sessionRefreshTimer = null;
-  }
-
-  sessionRefreshTimer = setInterval(() => {
-    refreshSessionList().catch((error) => {
-      enqueueSystem(`[error] ${error}`);
-    });
-  }, SESSION_LIST_REFRESH_MS);
-}
-
 function initializeSidebarState() {
   const savedCollapsed = localStorage.getItem(STORAGE_SIDEBAR_COLLAPSED_KEY) === "1";
   applySidebarCollapsed(savedCollapsed);
@@ -683,19 +656,16 @@ function initializeSidebarState() {
   updateMobileProjectsButton();
 }
 
-flushTimer = setInterval(flushPending, FLUSH_INTERVAL_MS);
 loadUiState();
 wireUiEvents();
 initializeSidebarState();
+renderMessageRows();
 
 (async () => {
   setStatus("Loading sessions...");
   try {
-    await refreshSessionList();
-    restartPolling();
-    startBackgroundRefresh();
+    await refreshEverything();
   } catch (error) {
-    enqueueSystem(`[error] ${error}`);
-    setStatus("Logs page initialization failed.");
+    setStatus(`Logs page initialization failed: ${error}`);
   }
 })();

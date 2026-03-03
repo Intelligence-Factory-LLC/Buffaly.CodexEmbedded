@@ -61,8 +61,7 @@ let runtimeSecurityConfig = null;
 let rateLimitBySession = new Map(); // sessionId -> latest rate limit summary payload
 let renderedClientLogLines = [];
 let pendingClientLogLines = [];
-let timelineCacheByThread = new Map(); // threadId -> { turns(summary + hydrated details), nextCursor, truncated, contextUsage, permission, reasoningSummary, maxEntries }
-let turnDetailFetchInFlight = new Set(); // `${threadId}::${turnId}`
+let timelineCacheByThread = new Map(); // threadId -> { messages, nextCursor, truncated, contextUsage, permission, reasoningSummary, maxEntries }
 let turnActivityTickTimer = null;
 let turnStartedAtBySession = new Map(); // sessionId -> epoch ms when running turn started
 let turnStartGraceUntilBySession = new Map(); // sessionId -> epoch ms while waiting for turn_start confirmation
@@ -78,6 +77,7 @@ let vsSelectionSnapshot = null; // { filePath, fileName, selectionText, caretLin
 let vsSelectionPollTimer = null;
 let vsSelectionPollInFlight = false;
 let openAiKeyStatusCache = null; // { hasKey, checkedAtMs }
+let promptSubmitInFlight = false;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -106,8 +106,9 @@ const WS_RECONNECT_MAX_DELAY_MS = 15000;
 const VS_SELECTION_POLL_INTERVAL_MS = 1500;
 const VS_SELECTION_MAX_PROMPT_CHARS = 4000;
 const OPENAI_KEY_STATUS_CACHE_MS = 15000;
-// Server turn cache is rebuilt from recent JSONL lines, so keep this high enough to capture many complete turns.
-const TIMELINE_INITIAL_WINDOW_DEFAULT = 6000;
+// Keep timeline payloads small for responsive session switches.
+const TIMELINE_INITIAL_WINDOW_DEFAULT = 200;
+const TIMELINE_MAX_WINDOW = 200;
 let timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
 const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only.";
 const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
@@ -352,8 +353,8 @@ function updatePromptActionState() {
 
   const recoveringActive = !!activeSessionId && isSessionAppServerRecovering(activeSessionId);
   const processingActive = !!activeSessionId && isTurnInFlight(activeSessionId);
-  sendPromptBtn.disabled = recoveringActive;
-  queuePromptBtn.disabled = recoveringActive;
+  sendPromptBtn.disabled = recoveringActive || promptSubmitInFlight;
+  queuePromptBtn.disabled = recoveringActive || promptSubmitInFlight;
   cancelTurnBtn.disabled = recoveringActive || !processingActive;
   queuePromptBtn.classList.toggle("hidden", !processingActive);
   cancelTurnBtn.classList.toggle("hidden", !processingActive);
@@ -462,13 +463,13 @@ function updateTurnActivityStrip() {
 }
 
 function normalizeTimelineMaxEntries(value, fallback = TIMELINE_INITIAL_WINDOW_DEFAULT) {
-  const fallbackNumeric = Math.max(20, Math.floor(Number(fallback) || TIMELINE_INITIAL_WINDOW_DEFAULT));
+  const fallbackNumeric = Math.min(TIMELINE_MAX_WINDOW, Math.max(20, Math.floor(Number(fallback) || TIMELINE_INITIAL_WINDOW_DEFAULT)));
   const numeric = Math.floor(Number(value));
   if (!Number.isFinite(numeric) || numeric < 20) {
     return fallbackNumeric;
   }
 
-  return numeric;
+  return Math.min(TIMELINE_MAX_WINDOW, numeric);
 }
 
 function normalizeWatchSnapshotMode(value) {
@@ -480,229 +481,6 @@ function normalizeWatchSnapshotMode(value) {
   return "";
 }
 
-function readTurnSnapshotTurnId(turn) {
-  if (!turn || typeof turn !== "object") {
-    return "";
-  }
-
-  if (typeof turn.turnId === "string" && turn.turnId.trim()) {
-    return turn.turnId.trim();
-  }
-
-  if (typeof turn.TurnId === "string" && turn.TurnId.trim()) {
-    return turn.TurnId.trim();
-  }
-
-  return "";
-}
-
-function readTurnSnapshotIntermediate(turn) {
-  if (!turn || typeof turn !== "object") {
-    return [];
-  }
-
-  if (Array.isArray(turn.intermediate)) {
-    return turn.intermediate;
-  }
-
-  if (Array.isArray(turn.Intermediate)) {
-    return turn.Intermediate;
-  }
-
-  return [];
-}
-
-function cloneTurnSnapshotEntry(entry) {
-  if (!entry || typeof entry !== "object") {
-    return null;
-  }
-
-  return {
-    role: typeof entry.role === "string" ? entry.role : (typeof entry.Role === "string" ? entry.Role : ""),
-    title: typeof entry.title === "string" ? entry.title : (typeof entry.Title === "string" ? entry.Title : ""),
-    text: typeof entry.text === "string" ? entry.text : (typeof entry.Text === "string" ? entry.Text : ""),
-    timestamp: entry.timestamp || entry.Timestamp || null,
-    rawType: typeof entry.rawType === "string" ? entry.rawType : (typeof entry.RawType === "string" ? entry.RawType : ""),
-    compact: entry.compact === true || entry.Compact === true,
-    images: Array.isArray(entry.images)
-      ? entry.images.slice()
-      : (Array.isArray(entry.Images) ? entry.Images.slice() : [])
-  };
-}
-
-function cloneTurnSnapshot(turn) {
-  if (!turn || typeof turn !== "object") {
-    return null;
-  }
-
-  const user = cloneTurnSnapshotEntry(turn.user || turn.User || null);
-  const assistantFinal = cloneTurnSnapshotEntry(turn.assistantFinal || turn.AssistantFinal || null);
-  const intermediate = readTurnSnapshotIntermediate(turn)
-    .map((entry) => cloneTurnSnapshotEntry(entry))
-    .filter((entry) => !!entry);
-  const intermediateCountRaw = Number(turn.intermediateCount ?? turn.IntermediateCount ?? intermediate.length);
-  const intermediateCount = Number.isFinite(intermediateCountRaw) && intermediateCountRaw >= 0
-    ? Math.floor(intermediateCountRaw)
-    : intermediate.length;
-  const hasIntermediate = turn.hasIntermediate === true
-    || turn.HasIntermediate === true
-    || intermediateCount > 0
-    || intermediate.length > 0;
-  const intermediateLoaded = turn.intermediateLoaded === true
-    || turn.IntermediateLoaded === true
-    || (hasIntermediate && intermediate.length >= intermediateCount);
-
-  return {
-    turnId: readTurnSnapshotTurnId(turn),
-    user,
-    assistantFinal,
-    intermediate,
-    isInFlight: turn.isInFlight === true || turn.IsInFlight === true,
-    hasIntermediate,
-    intermediateCount,
-    intermediateLoaded
-  };
-}
-
-function mergeTurnWithDetail(baseTurn, detailTurn) {
-  const summary = cloneTurnSnapshot(baseTurn);
-  const detail = cloneTurnSnapshot(detailTurn);
-  if (!summary) {
-    return detail;
-  }
-
-  if (!detail) {
-    return summary;
-  }
-
-  const detailIntermediate = Array.isArray(detail.intermediate) ? detail.intermediate : [];
-  if (detailIntermediate.length > 0 || detail.intermediateLoaded === true) {
-    summary.intermediate = detailIntermediate.slice();
-    summary.intermediateLoaded = true;
-  }
-
-  if (!summary.assistantFinal && detail.assistantFinal) {
-    summary.assistantFinal = detail.assistantFinal;
-  }
-
-  if (detail.hasIntermediate === true || detailIntermediate.length > 0) {
-    summary.hasIntermediate = true;
-  }
-  if (Number.isFinite(detail.intermediateCount) && detail.intermediateCount > summary.intermediateCount) {
-    summary.intermediateCount = detail.intermediateCount;
-  }
-  if (!Number.isFinite(summary.intermediateCount) || summary.intermediateCount < 0) {
-    summary.intermediateCount = summary.intermediate.length;
-  }
-  if (summary.intermediateLoaded === true && summary.intermediateCount < summary.intermediate.length) {
-    summary.intermediateCount = summary.intermediate.length;
-  }
-
-  return summary;
-}
-
-function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurnDetail, options = {}) {
-  const incoming = Array.isArray(incomingTurns) ? incomingTurns : [];
-  const preserveMissingExisting = options && options.preserveMissingExisting === true;
-  const existingByTurnId = new Map();
-  const existingClones = [];
-  if (Array.isArray(existingTurns)) {
-    for (const item of existingTurns) {
-      const cloned = cloneTurnSnapshot(item);
-      if (cloned) {
-        existingClones.push(cloned);
-        const turnId = readTurnSnapshotTurnId(cloned);
-        if (turnId) {
-          existingByTurnId.set(turnId, cloned);
-        }
-      }
-    }
-  }
-
-  const activeDetailId = readTurnSnapshotTurnId(activeTurnDetail);
-  if (incoming.length === 0) {
-    if (!activeDetailId) {
-      return existingClones;
-    }
-
-    const detailOnlyTurn = cloneTurnSnapshot(activeTurnDetail);
-    if (!detailOnlyTurn) {
-      return existingClones;
-    }
-
-    let mergedDetail = false;
-    const mergedExisting = existingClones.map((turn) => {
-      if (turn.turnId === activeDetailId) {
-        mergedDetail = true;
-        return mergeTurnWithDetail(turn, detailOnlyTurn);
-      }
-      return turn;
-    });
-
-    if (!mergedDetail) {
-      mergedExisting.push(detailOnlyTurn);
-    }
-
-    return mergedExisting;
-  }
-
-  let activeDetailIncluded = false;
-  const merged = [];
-  for (const turn of incoming) {
-    const summary = cloneTurnSnapshot(turn);
-    if (!summary) {
-      continue;
-    }
-
-    const turnId = summary.turnId;
-    if (turnId && activeDetailId && turnId === activeDetailId) {
-      merged.push(mergeTurnWithDetail(summary, activeTurnDetail));
-      activeDetailIncluded = true;
-      continue;
-    }
-
-    if (turnId && existingByTurnId.has(turnId)) {
-      merged.push(mergeTurnWithDetail(summary, existingByTurnId.get(turnId)));
-      continue;
-    }
-
-    merged.push(summary);
-  }
-
-  if (!activeDetailIncluded && activeDetailId) {
-    const detailOnlyTurn = cloneTurnSnapshot(activeTurnDetail);
-    if (detailOnlyTurn) {
-      merged.push(detailOnlyTurn);
-    }
-  }
-
-  if (preserveMissingExisting && merged.length > 0 && existingClones.length > 0) {
-    const mergedTurnIds = new Set();
-    for (const turn of merged) {
-      const turnId = readTurnSnapshotTurnId(turn);
-      if (turnId) {
-        mergedTurnIds.add(turnId);
-      }
-    }
-
-    const preservedPriorTurns = [];
-    for (const priorTurn of existingClones) {
-      const priorTurnId = readTurnSnapshotTurnId(priorTurn);
-      if (!priorTurnId || mergedTurnIds.has(priorTurnId)) {
-        continue;
-      }
-
-      preservedPriorTurns.push(priorTurn);
-    }
-
-    if (preservedPriorTurns.length > 0) {
-      return preservedPriorTurns.concat(merged);
-    }
-  }
-
-  return merged;
-}
-
 function rememberTimelineCache(threadId, payload) {
   const normalizedThreadId = normalizeThreadId(threadId);
   if (!normalizedThreadId || !payload || typeof payload !== "object") {
@@ -710,17 +488,17 @@ function rememberTimelineCache(threadId, payload) {
   }
 
   const existing = timelineCacheByThread.get(normalizedThreadId) || null;
-  const incomingTurns = Array.isArray(payload.turns) ? payload.turns : null;
-  const turns = incomingTurns && incomingTurns.length > 0
-    ? incomingTurns
-    : (existing && Array.isArray(existing.turns) ? existing.turns : []);
+  const incomingMessages = Array.isArray(payload.messages) ? payload.messages : null;
+  const messages = incomingMessages && incomingMessages.length > 0
+    ? incomingMessages
+    : (existing && Array.isArray(existing.messages) ? existing.messages : []);
   const nextCursor = typeof payload.nextCursor === "number"
     ? payload.nextCursor
     : (Number.isFinite(existing?.nextCursor) ? existing.nextCursor : null);
   const truncated = payload.truncated === true || (payload.truncated !== false && existing?.truncated === true);
   const maxEntries = normalizeTimelineMaxEntries(payload.maxEntries, existing?.maxEntries);
   timelineCacheByThread.set(normalizedThreadId, {
-    turns,
+    messages,
     nextCursor,
     truncated,
     contextUsage: payload.contextUsage || existing?.contextUsage || null,
@@ -738,14 +516,14 @@ function restoreTimelineFromCache(threadId) {
 
   const cached = timelineCacheByThread.get(normalizedThreadId);
   timelineWatchMaxEntries = normalizeTimelineMaxEntries(cached?.maxEntries, TIMELINE_INITIAL_WINDOW_DEFAULT);
-  if (!cached || !Array.isArray(cached.turns) || cached.turns.length === 0) {
+  if (!cached) {
     return false;
   }
 
-  if (typeof timeline.setServerTurns === "function") {
-    timeline.setServerTurns(cached.turns);
+  if (Array.isArray(cached.messages) && cached.messages.length > 0 && typeof timeline.setServerMessages === "function") {
+    timeline.setServerMessages(cached.messages);
   } else {
-    timeline.clear();
+    return false;
   }
 
   timelineCursor = Number.isFinite(cached.nextCursor) ? cached.nextCursor : null;
@@ -757,82 +535,6 @@ function restoreTimelineFromCache(threadId) {
   });
   updateTimelineTruncationNotice();
   return true;
-}
-
-function applyTurnDetailToThreadCache(threadId, detailTurn) {
-  const normalizedThreadId = normalizeThreadId(threadId);
-  const normalizedDetail = cloneTurnSnapshot(detailTurn);
-  const detailTurnId = readTurnSnapshotTurnId(normalizedDetail);
-  if (!normalizedThreadId || !normalizedDetail || !detailTurnId) {
-    return false;
-  }
-
-  const cached = timelineCacheByThread.get(normalizedThreadId);
-  if (!cached || !Array.isArray(cached.turns) || cached.turns.length === 0) {
-    return false;
-  }
-
-  let changed = false;
-  const nextTurns = cached.turns.map((turn) => {
-    const turnId = readTurnSnapshotTurnId(turn);
-    if (!turnId || turnId !== detailTurnId) {
-      return turn;
-    }
-
-    changed = true;
-    return mergeTurnWithDetail(turn, normalizedDetail);
-  });
-
-  if (!changed) {
-    return false;
-  }
-
-  cached.turns = nextTurns;
-  timelineCacheByThread.set(normalizedThreadId, cached);
-
-  const activeThreadId = normalizeThreadId(getActiveSessionState()?.threadId || "");
-  if (activeThreadId === normalizedThreadId && typeof timeline.setServerTurns === "function") {
-    timeline.setServerTurns(nextTurns);
-  }
-
-  return true;
-}
-
-async function fetchTurnDetailForThread(threadId, turnId) {
-  const normalizedThreadId = normalizeThreadId(threadId);
-  const normalizedTurnId = typeof turnId === "string" ? turnId.trim() : "";
-  if (!normalizedThreadId || !normalizedTurnId) {
-    return;
-  }
-
-  const cacheKey = `${normalizedThreadId}::${normalizedTurnId}`;
-  if (turnDetailFetchInFlight.has(cacheKey)) {
-    return;
-  }
-
-  turnDetailFetchInFlight.add(cacheKey);
-  try {
-    const url = new URL("api/turns/detail", document.baseURI);
-    url.searchParams.set("threadId", normalizedThreadId);
-    url.searchParams.set("turnId", normalizedTurnId);
-    url.searchParams.set("maxEntries", String(normalizeTimelineMaxEntries(timelineWatchMaxEntries, TIMELINE_INITIAL_WINDOW_DEFAULT)));
-    const response = await fetch(url, { cache: "no-store" });
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`turn detail failed (${response.status}): ${detail}`);
-    }
-
-    const payload = await response.json();
-    if (!payload || typeof payload !== "object" || !payload.turn || typeof payload.turn !== "object") {
-      return;
-    }
-
-    applyTurnDetailToThreadCache(normalizedThreadId, payload.turn);
-  } catch (error) {
-    appendLog(`[timeline] turn detail load failed: ${error}`);
-  } finally {
-    turnDetailFetchInFlight.delete(cacheKey);
-  }
 }
 
 function normalizePath(path) {
@@ -1488,14 +1190,30 @@ function beginPendingSessionLoad(threadId, displayName = "") {
   }
   timelineCursor = null;
   timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
-  timeline.clear();
-  timelineHasTruncatedHead = false;
-  updateTimelineTruncationNotice();
+  showTimelineLoadingNotice();
   const title = displayName && displayName.trim().length > 0
     ? `Loading ${displayName.trim()}...`
     : `Loading ${normalizedThreadId}...`;
   appendLog(`[session] ${title}`);
   renderProjectSidebar();
+}
+
+function showTimelineLoadingNotice(message = "Loading timeline messages...") {
+  if (!timeline) {
+    return;
+  }
+
+  if (typeof timeline.clear === "function") {
+    timeline.clear();
+  }
+  if (typeof timeline.enqueueInlineNotice === "function") {
+    timeline.enqueueInlineNotice(message);
+  }
+  if (typeof timeline.flush === "function") {
+    timeline.flush();
+  }
+  timelineHasTruncatedHead = false;
+  updateTimelineTruncationNotice();
 }
 
 function handlePendingSessionLoadFailure() {
@@ -2648,7 +2366,6 @@ function renderProjectSidebar() {
         if (entry.attachedSessionId && sessions.has(entry.attachedSessionId)) {
           clearPendingSessionLoad();
           setActiveSession(entry.attachedSessionId, { persistSelection: true });
-          send("session_select", { sessionId: entry.attachedSessionId });
           return;
         }
 
@@ -4147,6 +3864,33 @@ function buildTurnInput(promptText, images = [], options = {}) {
   };
 }
 
+function renderOptimisticUserTurn(sessionId, turnInput, options = {}) {
+  if (!sessionId || sessionId !== activeSessionId) {
+    return;
+  }
+  if (!timeline || typeof timeline.enqueueOptimisticUserMessage !== "function") {
+    return;
+  }
+  if (options.fromQueue === true) {
+    return;
+  }
+
+  const text = typeof turnInput?.text === "string" ? turnInput.text : "";
+  const imageUrls = Array.isArray(turnInput?.images)
+    ? turnInput.images
+      .map((x) => (x && typeof x.url === "string" ? x.url : ""))
+      .filter((x) => x.length > 0)
+    : [];
+  if (!text.trim() && imageUrls.length === 0) {
+    return;
+  }
+
+  timeline.enqueueOptimisticUserMessage(text, imageUrls);
+  if (typeof timeline.flush === "function") {
+    timeline.flush();
+  }
+}
+
 function steerTurn(sessionId, promptText, images = []) {
   const turnInput = buildTurnInput(promptText, images, { trimText: true });
   if (!sessionId || !turnInput.hasContent) {
@@ -4165,6 +3909,7 @@ function steerTurn(sessionId, promptText, images = []) {
     return false;
   }
 
+  renderOptimisticUserTurn(sessionId, turnInput);
   touchSessionActivity(sessionId);
   if (turnInput.text) {
     lastSentPromptBySession.set(sessionId, turnInput.text);
@@ -4280,6 +4025,7 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
     return false;
   }
 
+  renderOptimisticUserTurn(sessionId, turnInput, options);
   setTurnStartGrace(sessionId, true);
   touchSessionActivity(sessionId);
   setTurnInFlight(sessionId, true);
@@ -4608,7 +4354,6 @@ async function pollTimelineOnce(initial, generation) {
   }
 
   const state = getActiveSessionState();
-  const polledSessionId = activeSessionId;
   if (!state || !state.threadId) {
     return;
   }
@@ -4674,52 +4419,32 @@ async function pollTimelineOnce(initial, generation) {
 
     const priorCursor = timelineCursor;
     const nextCursor = typeof data.nextCursor === "number" ? data.nextCursor : timelineCursor;
-    const incomingTurns = Array.isArray(data.turns) ? data.turns : [];
+    const incomingMessages = Array.isArray(data.messages) ? data.messages : [];
     const snapshotMode = normalizeWatchSnapshotMode(data.mode || data.snapshotMode || "");
-    const activeTurnDetail = data.activeTurnDetail && typeof data.activeTurnDetail === "object"
-      ? data.activeTurnDetail
-      : null;
     const cachedTimeline = timelineCacheByThread.get(normalizedThreadId) || null;
-    const existingTurns = Array.isArray(cachedTimeline?.turns)
-      ? cachedTimeline.turns
-      : [];
-    const hasServerPayload = incomingTurns.length > 0 || !!activeTurnDetail;
+    const hasServerPayload = incomingMessages.length > 0;
     const forcedFullSnapshot = isInitialRequest || data.reset === true || priorCursor === null;
     const shouldConsumeFullSnapshot =
       snapshotMode === "full" ||
       (snapshotMode !== "noop" && (forcedFullSnapshot || hasServerPayload));
-    const sessionInFlightOrPending =
-      !!polledSessionId && (isTurnInFlight(polledSessionId) || isTurnStartGraceActive(polledSessionId));
-    const threadProcessing = isThreadProcessing(normalizedThreadId);
-    const preserveMissingExistingTurns =
-      snapshotMode === "full" &&
-      !forcedFullSnapshot &&
-      data.reset !== true &&
-      incomingTurns.length > 0 &&
-      existingTurns.length > incomingTurns.length &&
-      (threadProcessing || sessionInFlightOrPending);
-    let turns = existingTurns;
-    let hasServerTurns = existingTurns.length > 0;
+    const existingMessages = Array.isArray(cachedTimeline?.messages) ? cachedTimeline.messages : [];
+    let messages = existingMessages;
+    let hasServerMessages = existingMessages.length > 0;
 
     if (shouldConsumeFullSnapshot) {
-      turns = mergeIncomingTurnsWithExisting(
-        incomingTurns,
-        existingTurns,
-        activeTurnDetail,
-        { preserveMissingExisting: preserveMissingExistingTurns });
-      hasServerTurns = turns.length > 0;
+      if (incomingMessages.length > 0) {
+        messages = incomingMessages;
+        hasServerMessages = true;
+      } else {
+        hasServerMessages = existingMessages.length > 0;
+      }
 
-      if (hasServerTurns) {
-        if (typeof timeline.setServerTurns === "function") {
-          timeline.setServerTurns(turns);
+      if (hasServerMessages) {
+        if (typeof timeline.setServerMessages === "function") {
+          timeline.setServerMessages(messages);
         } else {
           timeline.clear();
         }
-
-        if (polledSessionId && sessions.has(polledSessionId)) {
-          reconcileTurnAndPlanStateFromTurnsWatch(polledSessionId, turns);
-        }
-
         timelineHasTruncatedHead = data.truncated === true;
         if (data.reset === true) {
           appendLog("[timeline] session file was reset or rotated");
@@ -4730,22 +4455,19 @@ async function pollTimelineOnce(initial, generation) {
           timeline.clear();
         }
         if (typeof timeline.enqueueInlineNotice === "function") {
-          timeline.enqueueInlineNotice("No complete turns found yet for this session.");
+          timeline.enqueueInlineNotice("No timeline messages found yet for this session.");
         }
         if (typeof timeline.flush === "function") {
           timeline.flush();
         }
       }
-    } else if (polledSessionId && sessions.has(polledSessionId) && existingTurns.length > 0) {
-      // No-op snapshot means cursor heartbeat only. Keep current timeline and reconcile local state.
-      reconcileTurnAndPlanStateFromTurnsWatch(polledSessionId, existingTurns);
     }
 
     timelineCursor = nextCursor;
     applyTimelineWatchMetadata(state.threadId, data);
-    if (shouldConsumeFullSnapshot && hasServerTurns) {
+    if (shouldConsumeFullSnapshot && hasServerMessages) {
       rememberTimelineCache(state.threadId, {
-        turns,
+        messages,
         nextCursor,
         truncated: data.truncated === true,
         contextUsage: data.contextUsage,
@@ -4755,7 +4477,7 @@ async function pollTimelineOnce(initial, generation) {
       });
     }
 
-    if (data.truncated === true && !hasServerTurns) {
+    if (data.truncated === true && !hasServerMessages) {
       timelineHasTruncatedHead = true;
     }
     updateTimelineTruncationNotice();
@@ -4775,7 +4497,6 @@ function setActiveSession(sessionId, options = {}) {
   const previousState = getActiveSessionState();
   if (changed) {
     rememberPromptDraftForState(previousState);
-    setJumpCollapseMode(true);
   }
 
   activeSessionId = sessionId;
@@ -4837,9 +4558,7 @@ function setActiveSession(sessionId, options = {}) {
     if (!restoredFromCache) {
       timelineCursor = null;
       timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
-      timeline.clear();
-      timelineHasTruncatedHead = false;
-      updateTimelineTruncationNotice();
+      showTimelineLoadingNotice();
     }
     restartTimelinePolling();
   }
@@ -5318,7 +5037,11 @@ function ensureSocket() {
     startSessionListSync();
     send("session_list");
     send("session_catalog_list");
-    send("models_list");
+    if (activeSessionId && sessions.has(activeSessionId)) {
+      send("models_list", { sessionId: activeSessionId });
+    } else {
+      appendLog("[models] skipped refresh on connect: no selected session");
+    }
     sendCurrentLogVerbosity();
     setConnectionStatusBannerState("connected", "");
   });
@@ -5657,7 +5380,7 @@ function handleServerEvent(frame) {
     case "session_list": {
       const list = Array.isArray(payload.sessions) ? payload.sessions : [];
       const nextSessionListViewKey = buildSessionListViewKey(
-        payload.activeSessionId || null,
+        null,
         list,
         payload.processingByThread);
       const shouldRefreshSessionViews = nextSessionListViewKey !== lastSessionListViewKey;
@@ -5820,7 +5543,7 @@ function handleServerEvent(frame) {
       applyProcessingByThread(nextProcessingByThread);
       prunePromptState();
       if (shouldRefreshSessionViews) {
-        updateSessionSelect(payload.activeSessionId || null);
+        updateSessionSelect(null);
       } else {
         updatePromptActionState();
       }
@@ -5956,7 +5679,7 @@ function handleServerEvent(frame) {
         }
       }
       appendLog(`[session] stopped id=${sessionId || "unknown"}`);
-      updateSessionSelect(payload.activeSessionId || null, { preferServerActive: true });
+      updateSessionSelect(null, { preferServerActive: true });
       return;
     }
 
@@ -6451,7 +6174,6 @@ if (sessionSelect) {
     if (!sessionId) return;
     if (!sessions.has(sessionId)) return;
     setActiveSession(sessionId, { persistSelection: true });
-    send("session_select", { sessionId });
   });
 }
 
@@ -6806,7 +6528,11 @@ reloadModelsBtn.addEventListener("click", async () => {
     appendLog(`[ws] connect failed: ${error}`);
     return;
   }
-  send("models_list");
+  if (!activeSessionId || !sessions.has(activeSessionId)) {
+    appendLog("[models] select a session before refreshing models");
+    return;
+  }
+  send("models_list", { sessionId: activeSessionId });
 });
 
 cwdInput.addEventListener("change", () => {
@@ -6909,17 +6635,6 @@ if (chatMessages) {
     updateTimelineTruncationNotice();
   });
 
-  chatMessages.addEventListener("codex:turn-detail-request", (event) => {
-    const turnId = event?.detail?.turnId;
-    const activeThreadId = normalizeThreadId(getActiveSessionState()?.threadId || "");
-    if (!activeThreadId || typeof turnId !== "string" || !turnId.trim()) {
-      return;
-    }
-
-    fetchTurnDetailForThread(activeThreadId, turnId.trim()).catch((error) => {
-      appendLog(`[timeline] turn detail request failed: ${error}`);
-    });
-  });
 }
 
 if (scrollToBottomBtn) {
@@ -7034,7 +6749,11 @@ async function tryHandleSlashCommand(inputText) {
 
     try {
       await ensureSocket();
-      send("models_list");
+      if (!activeSessionId || !sessions.has(activeSessionId)) {
+        appendLog("[models] select a session before refreshing models");
+      } else {
+        send("models_list", { sessionId: activeSessionId });
+      }
     } catch (error) {
       appendLog(`[models] refresh failed: ${error}`);
     }
@@ -7147,84 +6866,95 @@ function cancelCurrentTurn() {
 
 promptForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  await settleScribeBeforeSubmit();
-  const prompt = promptInput.value.trim();
-  const images = pendingComposerImages.map((x) => ({ ...x }));
-  const usePlanMode = planModeNextTurn === true;
-  if (pendingToolUserInput) {
-    if (prompt.localeCompare("cancel", undefined, { sensitivity: "accent" }) === 0) {
-      cancelPendingToolUserInput();
+  if (promptSubmitInFlight) {
+    return;
+  }
+
+  promptSubmitInFlight = true;
+  updatePromptActionState();
+  try {
+    await settleScribeBeforeSubmit();
+    const prompt = promptInput.value.trim();
+    const images = pendingComposerImages.map((x) => ({ ...x }));
+    const usePlanMode = planModeNextTurn === true;
+    if (pendingToolUserInput) {
+      if (prompt.localeCompare("cancel", undefined, { sensitivity: "accent" }) === 0) {
+        cancelPendingToolUserInput();
+        promptInput.value = "";
+        clearCurrentPromptDraft();
+        clearComposerImages();
+        return;
+      }
+
+      appendLog("[tool_input] complete the selection dialog and click Submit (or type 'cancel')");
+      return;
+    }
+
+    if (!prompt && images.length === 0) {
+      return;
+    }
+
+    if (images.length === 0 && await tryHandleSlashCommand(prompt)) {
       promptInput.value = "";
       clearCurrentPromptDraft();
-      clearComposerImages();
       return;
     }
 
-    appendLog("[tool_input] complete the selection dialog and click Submit (or type 'cancel')");
-    return;
-  }
+    if (!activeSessionId) {
+      appendLog("[client] no active session; create or attach one first");
+      return;
+    }
+    if (isSessionAppServerRecovering(activeSessionId)) {
+      appendLog(`[session_recovery] session=${activeSessionId} is recovering; wait and retry`);
+      return;
+    }
 
-  if (!prompt && images.length === 0) {
-    return;
-  }
+    try {
+      await ensureSocket();
+    } catch (error) {
+      appendLog(`[ws] connect failed: ${error}`);
+      return;
+    }
 
-  if (images.length === 0 && await tryHandleSlashCommand(prompt)) {
+    const composed = await composePromptWithVsSelection(prompt);
+    if (composed.includedSelection && composed.selection) {
+      appendLog(
+        `[bridge] included VS selection from ${composed.selection.fileName || composed.selection.filePath} (${composed.selection.selectionText.length} chars)`);
+    }
+
+    const processingActive = isTurnInFlight(activeSessionId);
+    if (processingActive) {
+      if (usePlanMode) {
+        const queued = await queuePrompt(activeSessionId, composed.prompt, images, { planMode: true });
+        if (!queued) {
+          appendLog(`[queue] failed to queue prompt for session=${activeSessionId}`);
+          return;
+        }
+        appendLog(`[turn] queued prompt for session=${activeSessionId}`);
+      } else {
+        const steered = steerTurn(activeSessionId, composed.prompt, images);
+        if (!steered) {
+          appendLog(`[turn] failed to steer prompt for session=${activeSessionId}`);
+          return;
+        }
+        appendLog(`[turn] steer prompt sent for session=${activeSessionId}`);
+      }
+    } else {
+      const started = startTurn(activeSessionId, composed.prompt, images, { planMode: usePlanMode });
+      if (!started) {
+        appendLog(`[turn] failed to send prompt for session=${activeSessionId}`);
+        return;
+      }
+    }
+
     promptInput.value = "";
     clearCurrentPromptDraft();
-    return;
+    clearComposerImages();
+    resetPlanModeNextTurn();
+  } finally {
+    promptSubmitInFlight = false;
+    updatePromptActionState();
   }
-
-  if (!activeSessionId) {
-    appendLog("[client] no active session; create or attach one first");
-    return;
-  }
-  if (isSessionAppServerRecovering(activeSessionId)) {
-    appendLog(`[session_recovery] session=${activeSessionId} is recovering; wait and retry`);
-    return;
-  }
-
-  try {
-    await ensureSocket();
-  } catch (error) {
-    appendLog(`[ws] connect failed: ${error}`);
-    return;
-  }
-
-  const composed = await composePromptWithVsSelection(prompt);
-  if (composed.includedSelection && composed.selection) {
-    appendLog(
-      `[bridge] included VS selection from ${composed.selection.fileName || composed.selection.filePath} (${composed.selection.selectionText.length} chars)`);
-  }
-
-  const processingActive = isTurnInFlight(activeSessionId);
-  if (processingActive) {
-    if (usePlanMode) {
-      const queued = await queuePrompt(activeSessionId, composed.prompt, images, { planMode: true });
-      if (!queued) {
-        appendLog(`[queue] failed to queue prompt for session=${activeSessionId}`);
-        return;
-      }
-      appendLog(`[turn] queued prompt for session=${activeSessionId}`);
-    } else {
-      const steered = steerTurn(activeSessionId, composed.prompt, images);
-      if (!steered) {
-        appendLog(`[turn] failed to steer prompt for session=${activeSessionId}`);
-        return;
-      }
-      appendLog(`[turn] steer prompt sent for session=${activeSessionId}`);
-    }
-  } else {
-    const started = startTurn(activeSessionId, composed.prompt, images, { planMode: usePlanMode });
-    if (!started) {
-      appendLog(`[turn] failed to send prompt for session=${activeSessionId}`);
-      return;
-    }
-  }
-
-  promptInput.value = "";
-  clearCurrentPromptDraft();
-  clearComposerImages();
-  resetPlanModeNextTurn();
 });
 
 promptInput.addEventListener("keydown", (event) => {

@@ -254,6 +254,10 @@ internal sealed class TimelineProjectionService
 				var entry = state.CreateEntry("tool", $"Tool Call: {name}", body, timestamp, payloadType, compact: false);
 				entry.Command = command;
 				entry.Details = detailLines;
+				entry.ToolName = name;
+				entry.ToolCallId = callId;
+				entry.ToolArguments = rawArguments;
+				entry.ToolOutput = "(waiting for output)";
 				state.AttachTaskContext(entry);
 				Emit(state, entries, entry);
 				if (!string.IsNullOrWhiteSpace(callId))
@@ -274,11 +278,16 @@ internal sealed class TimelineProjectionService
 					tracked.Text = FormatToolEntryText(tracked.Command, tracked.Details, output);
 					tracked.Timestamp = timestamp ?? tracked.Timestamp;
 					tracked.RawType = payloadType;
+					tracked.ToolCallId = callId;
+					tracked.ToolOutput = output;
 					Emit(state, entries, tracked);
 					return;
 				}
 
 				var entry = state.CreateEntry("tool", "Tool Output", output, timestamp, payloadType, compact: false);
+				entry.ToolCallId = callId;
+				entry.ToolOutput = output;
+				entry.ToolName = TryGetString(payload, "name") ?? "tool";
 				state.AttachTaskContext(entry);
 				Emit(state, entries, entry);
 				return;
@@ -398,6 +407,14 @@ internal sealed class TimelineProjectionService
 			return;
 		}
 
+		if (IsGenericLightweightEventType(eventType))
+		{
+			var entry = state.CreateEntry("system", $"Event: {eventType}", eventType, timestamp, eventType, compact: true);
+			state.AttachTaskContext(entry);
+			Emit(state, entries, entry);
+			return;
+		}
+
 		var genericMessage = TryGetString(payload, "message") ?? TryGetString(payload, "summary");
 		if (!string.IsNullOrWhiteSpace(genericMessage))
 		{
@@ -419,6 +436,23 @@ internal sealed class TimelineProjectionService
 		return string.Equals(eventType, "plan_update", StringComparison.Ordinal) ||
 			string.Equals(eventType, "plan_updated", StringComparison.Ordinal) ||
 			string.Equals(eventType, "turn/plan/updated", StringComparison.Ordinal);
+	}
+
+	private static bool IsGenericLightweightEventType(string eventType)
+	{
+		return string.Equals(eventType, "agent_message_content_delta", StringComparison.Ordinal) ||
+			string.Equals(eventType, "reasoning_content_delta", StringComparison.Ordinal) ||
+			string.Equals(eventType, "reasoning_raw_content_delta", StringComparison.Ordinal) ||
+			string.Equals(eventType, "collab_agent_spawn_begin", StringComparison.Ordinal) ||
+			string.Equals(eventType, "collab_agent_spawn_end", StringComparison.Ordinal) ||
+			string.Equals(eventType, "collab_agent_interaction_begin", StringComparison.Ordinal) ||
+			string.Equals(eventType, "collab_agent_interaction_end", StringComparison.Ordinal) ||
+			string.Equals(eventType, "collab_waiting_begin", StringComparison.Ordinal) ||
+			string.Equals(eventType, "collab_waiting_end", StringComparison.Ordinal) ||
+			string.Equals(eventType, "collab_close_begin", StringComparison.Ordinal) ||
+			string.Equals(eventType, "collab_close_end", StringComparison.Ordinal) ||
+			string.Equals(eventType, "collab_resume_begin", StringComparison.Ordinal) ||
+			string.Equals(eventType, "collab_resume_end", StringComparison.Ordinal);
 	}
 
 	private static string? ExtractPlanText(JsonElement payload)
@@ -1072,6 +1106,10 @@ internal sealed class TimelineProjectedEntry
 	public string[] Images { get; set; } = Array.Empty<string>();
 	public string Command { get; set; } = string.Empty;
 	public List<string> Details { get; set; } = new();
+	public string? ToolCallId { get; set; }
+	public string? ToolName { get; set; }
+	public string? ToolArguments { get; set; }
+	public string? ToolOutput { get; set; }
 
 	public TimelineProjectedEntry Clone()
 	{
@@ -1089,7 +1127,11 @@ internal sealed class TimelineProjectedEntry
 			TaskBoundary = TaskBoundary,
 			Images = Images.ToArray(),
 			Command = Command,
-			Details = Details.ToList()
+			Details = Details.ToList(),
+			ToolCallId = ToolCallId,
+			ToolName = ToolName,
+			ToolArguments = ToolArguments,
+			ToolOutput = ToolOutput
 		};
 	}
 }

@@ -34,19 +34,14 @@
       this.nextTaskGroupId = 1;
       this.activeTaskStack = [];
       this.collapsedTaskIds = new Set();
-      this.latestContextUsage = null; // { usedTokens, contextWindow, percentLeft }
-      this.latestTurnModel = "";
-      this.taskModelById = new Map(); // taskId -> model
       this.currentSessionModel = "";
       this.visibleActionEntryId = null;
       this.liveAssistantEntriesByStreamKey = new Map(); // streamKey -> entry
       this.viewMode = "default";
-      this.turnModeActive = false;
-      this.turns = [];
-      this.turnNodeById = new Map();
-      this.turnCollapsedById = new Map();
       this.expandedToolEntryIds = new Set();
       this.expandedPlanEntryKeys = new Set();
+      this.pinnedAssistantEntryId = null;
+      this.assistantPinEnabled = false;
       this.renderAssistantMarkdown = this.resolveAssistantMarkdownPreference(opts.renderAssistantMarkdown);
       this.imagePreviewOverlay = null;
       this.imagePreviewImage = null;
@@ -261,7 +256,7 @@
         return;
       }
 
-      const isChild = Number.isFinite(entry.taskDepth) && entry.taskDepth > 0 && !entry.taskBoundary;
+      const isChild = Number.isFinite(entry.taskDepth) && entry.taskDepth > 0 && !entry.taskBoundary && entry.taskAnchor !== true;
       node.card.classList.toggle("watcher-task-child", isChild);
       if (isChild) {
         node.card.style.setProperty("--task-depth", String(entry.taskDepth));
@@ -282,11 +277,6 @@
     }
 
     refreshVisibility() {
-      if (this.turnModeActive) {
-        this.refreshTurnVisibility();
-        return;
-      }
-
       this.rebuildTaskContextForRenderedEntries();
 
       for (const node of this.entryNodeById.values()) {
@@ -300,24 +290,16 @@
       }
     }
 
-    setServerTurns(rawTurns) {
-      const safeTurns = this.normalizeServerTurns(rawTurns);
+    setServerMessages(rawMessages) {
+      const safeEntries = this.normalizeServerMessages(rawMessages);
       const shouldStick = this.autoScrollPinned || this.isNearBottom();
-      const livePlanKeys = this.collectPlanStateKeysFromTurns(safeTurns);
+      const livePlanKeys = this.collectPlanStateKeysFromEntries(safeEntries);
       for (const key of Array.from(this.expandedPlanEntryKeys)) {
         if (!livePlanKeys.has(key)) {
           this.expandedPlanEntryKeys.delete(key);
         }
       }
 
-      this.turnModeActive = true;
-      this.turns = safeTurns;
-      const validTurnIds = new Set(safeTurns.map((x) => x.turnId));
-      for (const existingTurnId of Array.from(this.turnCollapsedById.keys())) {
-        if (!validTurnIds.has(existingTurnId)) {
-          this.turnCollapsedById.delete(existingTurnId);
-        }
-      }
       this.pendingEntries = [];
       this.pendingUpdatedEntries.clear();
       this.entryNodeById.clear();
@@ -325,20 +307,25 @@
       this.liveAssistantEntriesByStreamKey.clear();
       this.visibleActionEntryId = null;
       this.container.textContent = "";
-      this.turnNodeById.clear();
       this.expandedToolEntryIds.clear();
+      this.activeTaskStack = [];
+      this.collapsedTaskIds.clear();
+      this.nextTaskGroupId = 1;
+      this.pinnedAssistantEntryId = null;
+      this.assistantPinEnabled = this.hasOpenTaskInEntries(safeEntries);
 
-      for (const turn of safeTurns) {
-        this.appendTurnNode(turn);
+      for (const entry of safeEntries) {
+        this.pendingEntries.push(entry);
       }
 
-      this.refreshTurnVisibility();
+      this.flush();
+      this.refreshVisibility();
       if (shouldStick) {
         this.container.scrollTop = this.container.scrollHeight;
         this.autoScrollPinned = true;
       }
 
-      this.dispatchTimelineEvent("timeline-updated", { mode: "turns", turnCount: safeTurns.length });
+      this.dispatchTimelineEvent("timeline-updated", { mode: "messages", messageCount: safeEntries.length });
       try {
         this.container.dispatchEvent(new CustomEvent("codex:timeline-updated"));
       } catch {
@@ -346,342 +333,475 @@
       }
     }
 
-    collectPlanStateKeysFromTurns(turns) {
+    collectPlanStateKeysFromEntries(entries) {
       const keys = new Set();
-      if (!Array.isArray(turns)) {
+      if (!Array.isArray(entries)) {
         return keys;
       }
 
-      for (const turn of turns) {
-        if (!turn || typeof turn !== "object") {
+      for (const entry of entries) {
+        const bodyText = this.getEntryBodyText(entry);
+        if (!this.shouldUsePlanCollapsedBody(entry, bodyText)) {
           continue;
         }
 
-        const entries = [];
-        if (turn.user) entries.push(turn.user);
-        if (Array.isArray(turn.intermediate)) entries.push(...turn.intermediate);
-        if (turn.assistantFinal) entries.push(turn.assistantFinal);
-
-        for (const entry of entries) {
-          const bodyText = this.getEntryBodyText(entry);
-          if (!this.shouldUsePlanCollapsedBody(entry, bodyText)) {
-            continue;
-          }
-
-          const key = this.getPlanStateKey(entry, bodyText);
-          if (key) {
-            keys.add(key);
-          }
+        const key = this.getPlanStateKey(entry, bodyText);
+        if (key) {
+          keys.add(key);
         }
       }
 
       return keys;
     }
 
-    normalizeServerTurns(rawTurns) {
-      if (!Array.isArray(rawTurns)) {
+    normalizeServerMessages(rawMessages) {
+      if (!Array.isArray(rawMessages)) {
         return [];
       }
 
-      const turns = [];
-      for (let i = 0; i < rawTurns.length; i += 1) {
-        const rawTurn = rawTurns[i];
-        if (!rawTurn || typeof rawTurn !== "object") {
+      const entries = [];
+      this.toolEntriesByCallId.clear();
+      this.activeTaskStack = [];
+      this.nextTaskGroupId = 1;
+
+      for (const row of rawMessages) {
+        const mapped = this.mapBuffalyMessageRowToEntries(row);
+        if (!Array.isArray(mapped) || mapped.length === 0) {
           continue;
         }
-
-        const turnIdRaw = typeof rawTurn.turnId === "string" ? rawTurn.turnId.trim() : "";
-        const turnId = turnIdRaw || `turn-${i + 1}`;
-        const user = this.normalizeTurnEntry(rawTurn.user, "user", "User");
-        const assistantFinal = this.normalizeTurnEntry(rawTurn.assistantFinal, "assistant", "Assistant");
-        const intermediateRaw = Array.isArray(rawTurn.intermediate) ? rawTurn.intermediate : [];
-        const intermediate = [];
-        for (const item of intermediateRaw) {
-          const normalized = this.normalizeTurnEntry(item, "system", "System");
-          if (normalized) {
-            intermediate.push(normalized);
+        for (const entry of mapped) {
+          if (!entry) {
+            continue;
           }
+          this.annotateEntryWithTaskContext(entry);
+          entries.push(entry);
         }
-        const intermediateCountRaw = Number(
-          rawTurn.intermediateCount ?? rawTurn.IntermediateCount ?? intermediate.length
-        );
-        const intermediateCount = Number.isFinite(intermediateCountRaw) && intermediateCountRaw >= 0
-          ? Math.floor(intermediateCountRaw)
-          : intermediate.length;
-        const hasIntermediate = rawTurn.hasIntermediate === true
-          || rawTurn.HasIntermediate === true
-          || intermediateCount > 0
-          || intermediate.length > 0;
-        const intermediateLoaded = rawTurn.intermediateLoaded === true
-          || rawTurn.IntermediateLoaded === true
-          || (hasIntermediate && intermediate.length >= intermediateCount);
-
-        if (!user && !assistantFinal && intermediate.length === 0) {
-          continue;
-        }
-
-        const syntheticUser = user || {
-          role: "user",
-          kind: "",
-          title: "Turn",
-          text: "(history window begins in the middle of a turn)",
-          timestamp: (assistantFinal && assistantFinal.timestamp) || (intermediate[0] && intermediate[0].timestamp) || null,
-          rawType: "turn_window_anchor",
-          compact: true,
-          images: []
-        };
-
-        turns.push({
-          turnId,
-          user: syntheticUser,
-          assistantFinal,
-          intermediate,
-          isInFlight: rawTurn.isInFlight === true,
-          hasIntermediate,
-          intermediateCount,
-          intermediateLoaded
-        });
       }
 
-      return turns;
+      this.assignTaskConversationAnchors(entries);
+      this.repositionTaskStartsAfterFirstUser(entries);
+      return entries;
     }
 
-    normalizeTurnEntry(rawEntry, fallbackRole, fallbackTitle) {
-      if (!rawEntry || typeof rawEntry !== "object") {
+    hasOpenTaskInEntries(entries) {
+      if (!Array.isArray(entries) || entries.length === 0) {
+        return false;
+      }
+
+      const stack = [];
+      for (const entry of entries) {
+        if (!entry || typeof entry.taskBoundary !== "string") {
+          continue;
+        }
+
+        const taskId = typeof entry.taskId === "string" && entry.taskId.trim().length > 0
+          ? entry.taskId
+          : null;
+
+        if (entry.taskBoundary === "start") {
+          stack.push(taskId || `__anon_start_${stack.length}`);
+          continue;
+        }
+
+        if (entry.taskBoundary !== "end" || stack.length === 0) {
+          continue;
+        }
+
+        if (!taskId) {
+          stack.pop();
+          continue;
+        }
+
+        const topTaskId = stack[stack.length - 1];
+        if (topTaskId === taskId) {
+          stack.pop();
+          continue;
+        }
+
+        const fallbackIndex = stack.lastIndexOf(taskId);
+        if (fallbackIndex >= 0) {
+          stack.splice(fallbackIndex, 1);
+        } else {
+          stack.pop();
+        }
+      }
+
+      return stack.length > 0;
+    }
+
+    assignTaskConversationAnchors(entries) {
+      if (!Array.isArray(entries) || entries.length === 0) {
+        return;
+      }
+
+      const byTaskId = new Map();
+      for (const entry of entries) {
+        if (!entry || entry.taskBoundary || !entry.taskId) {
+          continue;
+        }
+
+        const role = typeof entry.role === "string" ? entry.role.toLowerCase() : "";
+        if (role !== "user" && role !== "assistant") {
+          continue;
+        }
+
+        if (!byTaskId.has(entry.taskId)) {
+          byTaskId.set(entry.taskId, { firstUser: null, lastAssistant: null });
+        }
+
+        const taskState = byTaskId.get(entry.taskId);
+        if (role === "user" && !taskState.firstUser) {
+          taskState.firstUser = entry;
+        }
+        if (role === "assistant") {
+          taskState.lastAssistant = entry;
+        }
+      }
+
+      for (const entry of entries) {
+        if (entry && entry.taskAnchor === true) {
+          delete entry.taskAnchor;
+        }
+      }
+
+      for (const taskState of byTaskId.values()) {
+        if (taskState.firstUser) {
+          taskState.firstUser.taskAnchor = true;
+        }
+        if (taskState.lastAssistant) {
+          taskState.lastAssistant.taskAnchor = true;
+        }
+      }
+    }
+
+    repositionTaskStartsAfterFirstUser(entries) {
+      if (!Array.isArray(entries) || entries.length < 2) {
+        return;
+      }
+
+      const firstUserByTaskId = new Map();
+      const startByTaskId = new Map();
+
+      for (let idx = 0; idx < entries.length; idx++) {
+        const entry = entries[idx];
+        if (!entry || !entry.taskId) {
+          continue;
+        }
+
+        if (entry.taskBoundary === "start") {
+          if (!startByTaskId.has(entry.taskId)) {
+            startByTaskId.set(entry.taskId, { index: idx, entry });
+          }
+          continue;
+        }
+
+        if (entry.taskBoundary) {
+          continue;
+        }
+
+        const role = typeof entry.role === "string" ? entry.role.toLowerCase() : "";
+        if (role === "user" && !firstUserByTaskId.has(entry.taskId)) {
+          firstUserByTaskId.set(entry.taskId, { index: idx, entry });
+        }
+      }
+
+      const moves = [];
+      for (const [taskId, startState] of startByTaskId.entries()) {
+        const userState = firstUserByTaskId.get(taskId);
+        if (!userState) {
+          continue;
+        }
+
+        if (startState.index < userState.index) {
+          moves.push({
+            fromIndex: startState.index,
+            toIndex: userState.index
+          });
+        }
+      }
+
+      if (moves.length === 0) {
+        return;
+      }
+
+      moves.sort((a, b) => b.fromIndex - a.fromIndex);
+      for (const move of moves) {
+        if (move.fromIndex < 0 || move.fromIndex >= entries.length) {
+          continue;
+        }
+
+        const [startEntry] = entries.splice(move.fromIndex, 1);
+        const insertIndex = Math.max(0, Math.min(entries.length, move.toIndex));
+        entries.splice(insertIndex, 0, startEntry);
+      }
+    }
+
+    mapBuffalyMessageRowToEntries(row) {
+      if (!row || typeof row !== "object") {
+        return [];
+      }
+
+      const role = this.normalizeText(String(row.Role || row.role || ""));
+      const normalizedRole = role.toLowerCase();
+      const timestamp = this.readSavedTimestamp(row);
+      if (normalizedRole === "event") {
+        return this.mapBuffalyEventRow(row, timestamp);
+      }
+
+      if (normalizedRole === "subagent") {
+        return this.mapBuffalySubAgentRow(row, timestamp);
+      }
+
+      if (normalizedRole === "tools") {
+        return this.mapBuffalyToolsRow(row, timestamp);
+      }
+
+      if (normalizedRole === "assistant") {
+        const tools = this.extractAssistantToolsFromContent(row.Content ?? row.content);
+        if (tools.length > 0) {
+          const toolEntries = tools.map((tool) => this.createToolEntry(
+            `Tool Call: ${tool.toolName || "tool"}`,
+            timestamp,
+            "function_call",
+            tool.toolName || "tool",
+            tool.callId || null,
+            tool.command || "",
+            [],
+            ""
+          ));
+          for (const toolEntry of toolEntries) {
+            if (toolEntry && toolEntry.callId) {
+              this.toolEntriesByCallId.set(toolEntry.callId, toolEntry);
+            }
+          }
+          return toolEntries;
+        }
+
+        return this.mapBuffalyConversationRow("assistant", "Assistant", row, timestamp);
+      }
+
+      if (normalizedRole === "user") {
+        const mapped = this.mapBuffalyConversationRow("user", "User", row, timestamp);
+        if (mapped.length === 1) {
+          const entry = mapped[0];
+          const key = this.createUserMessageKey(entry.text, entry.images || []);
+          if (this.consumeOptimisticUserKey(key)) {
+            return [];
+          }
+        }
+        return mapped;
+      }
+
+      if (normalizedRole === "system") {
+        return this.mapBuffalyConversationRow("system", "System", row, timestamp);
+      }
+
+      return [];
+    }
+
+    mapBuffalyConversationRow(fallbackRole, fallbackTitle, row, timestamp) {
+      const extracted = this.extractMessageTextAndImages(row.Content ?? row.content, row.ContentParts ?? row.contentParts ?? row.content_parts);
+      if (!extracted.text && extracted.images.length === 0) {
+        return [];
+      }
+
+      return [
+        this.createEntry(
+          fallbackRole,
+          fallbackTitle,
+          extracted.text,
+          timestamp,
+          "message",
+          extracted.images
+        )
+      ];
+    }
+
+    mapBuffalyToolsRow(row, timestamp) {
+      const toolName = this.normalizeNullableToken(row.ToolName ?? row.toolName ?? row.Name ?? row.name) || "tool";
+      const callId = this.normalizeNullableToken(row.ToolCallId ?? row.toolCallId ?? row.call_id);
+      const output = this.extractContentText(row.Content ?? row.content) || "";
+      const entry = this.createToolEntry("Tool Output", timestamp, "function_call_output", toolName, callId, "", [], output);
+      if (callId) {
+        const existing = this.toolEntriesByCallId.get(callId) || null;
+        if (existing) {
+          existing.output = output || existing.output;
+          existing.timestamp = timestamp || existing.timestamp;
+          this.queueEntryUpdate(existing);
+          return [];
+        }
+      }
+      return [entry];
+    }
+
+    mapBuffalySubAgentRow(row, timestamp) {
+      const entries = [];
+      const subAgent = (row.SubAgent && typeof row.SubAgent === "object") ? row.SubAgent : (row.subAgent || {});
+      const label = this.normalizeText(subAgent.Label || subAgent.label || row.Name || row.name || "SubAgent");
+      const status = this.normalizeText(subAgent.Status || subAgent.status || "running");
+      const summary = `${label} - ${status}`;
+      const summaryEntry = this.createEntry("system", "SubAgent", summary, timestamp, "subagent");
+      summaryEntry.compact = true;
+      entries.push(summaryEntry);
+
+      const nested = Array.isArray(row.Messages) ? row.Messages : (Array.isArray(row.messages) ? row.messages : []);
+      for (const nestedRow of nested) {
+        const nestedEntries = this.mapBuffalyMessageRowToEntries(nestedRow);
+        for (const nestedEntry of nestedEntries) {
+          if (nestedEntry) {
+            entries.push(nestedEntry);
+          }
+        }
+      }
+
+      return entries;
+    }
+
+    mapBuffalyEventRow(row, timestamp) {
+      const name = this.normalizeText(String(row.Name || row.name || "")).toLowerCase();
+      const eventPayload = (row.Event && typeof row.Event === "object") ? row.Event : (row.event || {});
+      const summary = this.extractContentText(eventPayload.Summary ?? eventPayload.summary ?? row.Content ?? row.content);
+      if (name === "turn_started") {
+        const entry = this.createEntry("system", "Task Started", this.truncateText(summary || "Turn started", 240), timestamp, "task_started");
+        entry.compact = true;
+        return [this.markTaskStart(entry)];
+      }
+
+      if (name === "turn_completed") {
+        const status = this.normalizeText(String(eventPayload.Status || eventPayload.status || "completed")).toLowerCase();
+        const suffix = status && status !== "completed" ? ` (${status})` : "";
+        const entry = this.createEntry("system", "Task Complete", this.truncateText(summary || `Turn completed${suffix}`, 240), timestamp, "task_complete");
+        entry.compact = true;
+        return [this.markTaskEnd(entry)];
+      }
+
+      if (name === "context_compression") {
+        const entry = this.createEntry("system", "Context Compression", this.truncateText(summary || "Context compressed", 240), timestamp, "thread_compacted");
+        entry.compact = true;
+        return [entry];
+      }
+
+      if (name === "plan_updated" || name === "plan_update") {
+        const planText = summary || "Plan updated";
+        const entry = this.createEntry("system", "Plan Updated", this.truncateText(planText, 240), timestamp, "plan_updated");
+        entry.compact = true;
+        return [entry];
+      }
+
+      if (name === "reasoning_summary") {
+        const entry = this.createEntry("reasoning", "Reasoning Summary", this.truncateText(summary || "Reasoning updated", 1200), timestamp, "reasoning");
+        return [entry];
+      }
+
+      const fallbackText = summary || (name ? `Event: ${name}` : "Event");
+      const entry = this.createEntry("system", `Event: ${name || "unknown"}`, this.truncateText(fallbackText, 1200), timestamp, name || "event");
+      entry.compact = true;
+      return [entry];
+    }
+
+    extractAssistantToolsFromContent(content) {
+      if (!content || typeof content !== "object" || Array.isArray(content)) {
+        return [];
+      }
+      const tools = Array.isArray(content.tools) ? content.tools : [];
+      const output = [];
+      for (const tool of tools) {
+        if (!tool || typeof tool !== "object") {
+          continue;
+        }
+        output.push({
+          toolName: this.normalizeNullableToken(tool.tool ?? tool.name),
+          callId: this.normalizeNullableToken(tool.call_id ?? tool.callId),
+          command: this.normalizeText(String(tool.command || "")),
+          arguments: typeof tool.arguments === "string" ? tool.arguments : JSON.stringify(tool.arguments ?? "")
+        });
+      }
+      return output;
+    }
+
+    extractMessageTextAndImages(content, contentParts) {
+      const images = [];
+      if (Array.isArray(contentParts)) {
+        for (const part of contentParts) {
+          if (!part || typeof part !== "object") {
+            continue;
+          }
+          const type = this.normalizeText(String(part.Type || part.type || "")).toLowerCase();
+          const imageUrl = this.normalizeText(String(part.ImageUrl || part.imageUrl || part.image_url || part.url || ""));
+          if (!imageUrl) {
+            continue;
+          }
+          if (type === "imageurl" || type === "image_url" || type === "input_image" || type === "image" || type === "1") {
+            images.push(imageUrl);
+          }
+        }
+      }
+
+      const text = this.extractContentText(content);
+      return { text, images };
+    }
+
+    extractContentText(content) {
+      if (content === null || content === undefined) {
+        return "";
+      }
+      if (typeof content === "string") {
+        return this.normalizeText(content);
+      }
+      if (typeof content === "number" || typeof content === "boolean") {
+        return String(content);
+      }
+      if (Array.isArray(content)) {
+        const parts = [];
+        for (const item of content) {
+          const text = this.extractTextFromUnknownValue(item, 0);
+          if (text) {
+            parts.push(text);
+          }
+        }
+        return this.normalizeText(parts.join("\n"));
+      }
+      if (typeof content === "object") {
+        const fromPayload = this.extractTextFromUnknownValue(content, 0);
+        if (fromPayload) {
+          return this.normalizeText(fromPayload);
+        }
+        try {
+          return this.normalizeText(JSON.stringify(content));
+        } catch {
+          return "";
+        }
+      }
+      return "";
+    }
+
+    readSavedTimestamp(row) {
+      const candidates = [
+        row.Timestamp, row.timestamp, row.CreatedAt, row.createdAt, row.CreatedOn, row.createdOn, row.DateCreated, row.dateCreated, row.Date, row.date
+      ];
+      for (const candidate of candidates) {
+        if (typeof candidate === "string" && candidate.trim().length > 0) {
+          return candidate.trim();
+        }
+      }
+      return null;
+    }
+
+    normalizeNullableToken(value) {
+      if (value === null || value === undefined) {
         return null;
       }
-
-      const role = typeof rawEntry.role === "string" && rawEntry.role.trim().length > 0
-        ? rawEntry.role.trim()
-        : fallbackRole;
-      const title = typeof rawEntry.title === "string" && rawEntry.title.trim().length > 0
-        ? rawEntry.title.trim()
-        : fallbackTitle;
-      const text = this.truncateText(rawEntry.text || "", MAX_TIMELINE_ENTRY_TEXT_CHARS);
-      const images = Array.isArray(rawEntry.images)
-        ? rawEntry.images
-          .filter((x) => typeof x === "string" && x.trim().length > 0)
-          .map((x) => x.trim())
-          .filter((x) => !(x.startsWith("data:") && x.length > MAX_TIMELINE_IMAGE_URL_CHARS))
-        : [];
-      return {
-        role,
-        kind: typeof rawEntry.kind === "string" ? rawEntry.kind : "",
-        title,
-        text,
-        timestamp: rawEntry.timestamp || null,
-        rawType: typeof rawEntry.rawType === "string" ? rawEntry.rawType : "",
-        compact: rawEntry.compact === true,
-        images
-      };
+      const normalized = this.normalizeText(String(value));
+      if (!normalized) {
+        return null;
+      }
+      const lowered = normalized.toLowerCase();
+      if (lowered === "null" || lowered === "\"null\"" || lowered === "undefined") {
+        return null;
+      }
+      return normalized;
     }
 
-    appendTurnNode(turn) {
-      const container = document.createElement("div");
-      container.className = "watcher-turn-block";
-      if (turn.isInFlight) {
-        container.classList.add("watcher-turn-active");
-      }
-
-      const userNode = this.createTurnEntryNode(turn.user, { roleClassOverride: "user", includeToggle: turn.hasIntermediate === true });
-      container.appendChild(userNode.card);
-
-      const intermediateWrap = document.createElement("div");
-      intermediateWrap.className = "watcher-turn-intermediate-wrap";
-      for (const entry of turn.intermediate) {
-        const itemNode = this.createTurnEntryNode(entry, { roleClassOverride: entry.role || "system", intermediate: true });
-        intermediateWrap.appendChild(itemNode.card);
-      }
-      if (turn.hasIntermediate === true && turn.intermediate.length === 0) {
-        const detailText = turn.intermediateLoaded === true
-          ? "(no intermediate events)"
-          : "(details load on demand)";
-        const detailNode = this.createTurnEntryNode(
-          {
-            role: "system",
-            title: "Details",
-            text: detailText,
-            timestamp: null,
-            rawType: "inline_notice",
-            compact: true,
-            images: []
-          },
-          { roleClassOverride: "system", intermediate: true });
-        intermediateWrap.appendChild(detailNode.card);
-      }
-      container.appendChild(intermediateWrap);
-
-      if (turn.assistantFinal) {
-        const assistantNode = this.createTurnEntryNode(turn.assistantFinal, { roleClassOverride: "assistant" });
-        assistantNode.card.classList.add("watcher-turn-final");
-        container.appendChild(assistantNode.card);
-      }
-
-      this.container.appendChild(container);
-      if (turn.isInFlight === true && !this.turnCollapsedById.has(turn.turnId)) {
-        this.turnCollapsedById.set(turn.turnId, false);
-      }
-      this.turnNodeById.set(turn.turnId, {
-        turn,
-        container,
-        toggle: userNode.toggle,
-        intermediateWrap
-      });
-
-      if (userNode.toggle) {
-        userNode.toggle.addEventListener("click", () => {
-          const collapsed = this.isTurnCollapsed(turn);
-          const nextCollapsed = !collapsed;
-          this.turnCollapsedById.set(turn.turnId, nextCollapsed);
-          if (!nextCollapsed &&
-            turn.turnId &&
-            turn.hasIntermediate === true &&
-            turn.intermediateLoaded !== true &&
-            turn.intermediate.length === 0) {
-            this.dispatchTimelineEvent("turn-detail-request", { turnId: turn.turnId });
-          }
-          this.refreshTurnVisibility();
-        });
-      }
-    }
-
-    isTurnCollapsed(turn) {
-      if (!turn || !turn.turnId) {
-        return true;
-      }
-
-      if (this.turnCollapsedById.has(turn.turnId)) {
-        return this.turnCollapsedById.get(turn.turnId) === true;
-      }
-
-      if (this.isUserAnchorsMode()) {
-        return true;
-      }
-
-      return turn.isInFlight !== true;
-    }
-
-    refreshTurnVisibility() {
-      for (const node of this.turnNodeById.values()) {
-        const turn = node.turn;
-        const collapsed = this.isTurnCollapsed(turn);
-        node.intermediateWrap.classList.toggle("watcher-view-hidden", collapsed);
-
-        if (node.toggle) {
-          node.toggle.textContent = collapsed ? "[+]" : "[-]";
-          node.toggle.title = collapsed ? "Expand turn details" : "Collapse turn details";
-          node.toggle.setAttribute("aria-label", node.toggle.title);
-        }
-      }
-    }
-
-    createTurnEntryNode(entry, options = {}) {
-      const isCompactRow = entry.compact === true
-        || entry.rawType === "task_started"
-        || entry.rawType === "task_complete"
-        || entry.rawType === "inline_notice";
-      if (isCompactRow) {
-        const row = document.createElement("div");
-        row.className = "watcher-inline-entry";
-        if (entry.rawType === "inline_notice") {
-          row.classList.add("watcher-inline-note");
-        }
-        if (entry.rawType === "task_started" || entry.rawType === "task_complete") {
-          row.classList.add("watcher-inline-task");
-        }
-        if (options.intermediate === true) {
-          row.classList.add("watcher-turn-intermediate");
-        }
-
-        const title = document.createElement("span");
-        title.className = "watcher-inline-title";
-        title.textContent = entry.title || entry.role || "System";
-
-        const text = document.createElement("span");
-        text.className = "watcher-inline-text";
-        text.textContent = this.getEntryBodyText(entry);
-
-        const time = document.createElement("span");
-        time.className = "watcher-inline-time";
-        time.textContent = this.formatTime(entry.timestamp);
-
-        row.appendChild(title);
-        row.appendChild(text);
-        row.appendChild(time);
-        return { card: row, toggle: null };
-      }
-
-      const card = document.createElement("div");
-      const roleClass = options.roleClassOverride || entry.role || "system";
-      card.className = `watcher-entry ${roleClass}`;
-      if (options.intermediate === true) {
-        card.classList.add("watcher-turn-intermediate");
-      }
-
-      const header = document.createElement("div");
-      header.className = "watcher-entry-header";
-
-      const title = document.createElement("div");
-      title.className = "watcher-entry-title";
-
-      let toggle = null;
-      if (options.includeToggle === true) {
-        toggle = document.createElement("button");
-        toggle.type = "button";
-        toggle.className = "watcher-turn-toggle";
-        toggle.textContent = "[-]";
-        title.appendChild(toggle);
-      }
-
-      const titleText = document.createElement("span");
-      titleText.textContent = entry.title || "System";
-      title.appendChild(titleText);
-
-      const time = document.createElement("div");
-      time.className = "watcher-entry-time";
-      time.textContent = this.formatTime(entry.timestamp);
-
-      header.append(title, time);
-      card.appendChild(header);
-
-      const entryId = Number.isFinite(entry.id) ? Math.floor(entry.id) : this.nextEntryId++;
-      const normalizedEntry = {
-        id: entryId,
-        role: entry.role || roleClass,
-        kind: entry.kind || "",
-        title: entry.title || "System",
-        text: entry.text || "",
-        rawType: entry.rawType || "",
-        compact: entry.compact === true,
-        images: Array.isArray(entry.images) ? entry.images : []
-      };
-      const bodyText = this.getEntryBodyText(normalizedEntry);
-      const bodyNode = this.createBodyNodeForEntry(card, normalizedEntry, bodyText);
-      const body = bodyNode.body;
-
-      const images = Array.isArray(entry.images) ? entry.images : [];
-      const imagesWrap = this.renderEntryImages(card, images);
-
-      let copyActionButton = null;
-      try {
-        copyActionButton = this.createEntryActions(card, normalizedEntry);
-      } catch (error) {
-        copyActionButton = null;
-      }
-
-      this.entryNodeById.set(normalizedEntry.id, {
-        card,
-        body,
-        time,
-        compact: false,
-        imagesWrap,
-        detailsWrap: bodyNode.detailsWrap,
-        copyActionButton,
-        entry: normalizedEntry
-      });
-
-      return { card, toggle };
-    }
 
     formatTime(value) {
       if (!value) {
@@ -819,114 +939,6 @@
       return `${normalized.slice(0, maxLength)}\n... (truncated)`;
     }
 
-    readNonNegativeNumber(value) {
-      const next = Number(value);
-      return Number.isFinite(next) && next >= 0 ? next : null;
-    }
-
-    readTokenCountInfo(payload) {
-      if (!payload || typeof payload !== "object" || payload.type !== "token_count") {
-        return null;
-      }
-
-      const info = payload.info;
-      if (!info || typeof info !== "object") {
-        return null;
-      }
-
-      const contextWindowRaw = info.model_context_window ?? info.modelContextWindow ?? null;
-      const contextWindowNumber = Number(contextWindowRaw);
-      const contextWindow = Number.isFinite(contextWindowNumber) && contextWindowNumber > 0 ? contextWindowNumber : null;
-
-      const lastUsage = info.last_token_usage ?? info.lastTokenUsage ?? info.last ?? null;
-      const totalUsage = info.total_token_usage ?? info.totalTokenUsage ?? info.total ?? null;
-
-      const readInputSideTokens = (usage) => {
-        if (!usage || typeof usage !== "object") {
-          return null;
-        }
-
-        const input = this.readNonNegativeNumber(usage.input_tokens ?? usage.inputTokens);
-        const cachedInput = this.readNonNegativeNumber(usage.cached_input_tokens ?? usage.cachedInputTokens);
-        if (input !== null) {
-          return input;
-        }
-
-        if (cachedInput === null) {
-          return null;
-        }
-
-        return cachedInput;
-      };
-
-      const readTotalTokens = (usage) => {
-        if (!usage || typeof usage !== "object") {
-          return null;
-        }
-
-        return this.readNonNegativeNumber(usage.total_tokens ?? usage.totalTokens);
-      };
-
-      const lastInputSide = readInputSideTokens(lastUsage);
-      const lastTotal = readTotalTokens(lastUsage);
-      const totalInputSide = readInputSideTokens(totalUsage);
-      const cumulativeTotal = readTotalTokens(totalUsage);
-      let usedTokens = null;
-      if (lastInputSide !== null) {
-        usedTokens = lastInputSide;
-      } else if (lastTotal !== null) {
-        usedTokens = lastTotal;
-      } else if (totalInputSide !== null) {
-        usedTokens = totalInputSide;
-      } else if (cumulativeTotal !== null) {
-        usedTokens = cumulativeTotal;
-      }
-
-      if (!Number.isFinite(contextWindow) || contextWindow <= 0 || !Number.isFinite(usedTokens) || usedTokens < 0) {
-        return null;
-      }
-
-      const boundedUsedTokens = Math.min(usedTokens, contextWindow);
-      const ratio = Math.min(1, Math.max(0, boundedUsedTokens / contextWindow));
-      const percentLeft = Math.max(0, Math.min(100, Math.round((1 - ratio) * 100)));
-      return {
-        contextWindow,
-        usedTokens: boundedUsedTokens,
-        percentLeft
-      };
-    }
-
-    updateLatestContextUsageFromPayload(payload) {
-      const parsed = this.readTokenCountInfo(payload);
-      if (parsed) {
-        this.latestContextUsage = parsed;
-        return;
-      }
-
-      const modelContextWindow = Number(payload?.model_context_window ?? payload?.modelContextWindow ?? null);
-      if (!Number.isFinite(modelContextWindow) || modelContextWindow <= 0) {
-        return;
-      }
-
-      const priorUsedTokens = Number.isFinite(this.latestContextUsage?.usedTokens) ? this.latestContextUsage.usedTokens : null;
-      if (priorUsedTokens !== null) {
-        const ratio = Math.min(1, Math.max(0, priorUsedTokens / modelContextWindow));
-        const percentLeft = Math.max(0, Math.min(100, Math.round((1 - ratio) * 100)));
-        this.latestContextUsage = { contextWindow: modelContextWindow, usedTokens: priorUsedTokens, percentLeft };
-      } else {
-        this.latestContextUsage = { contextWindow: modelContextWindow, usedTokens: null, percentLeft: null };
-      }
-    }
-
-    formatLatestContextLeftLabel() {
-      const percent = this.latestContextUsage?.percentLeft;
-      if (!Number.isFinite(percent)) {
-        return "";
-      }
-
-      return `${percent}% context left`;
-    }
-
     setSessionModel(model) {
       this.currentSessionModel = this.normalizeModelName(model);
     }
@@ -938,71 +950,6 @@
       }
 
       return normalized.length > 200 ? normalized.slice(0, 200) : normalized;
-    }
-
-    extractModelFromText(text) {
-      const normalized = typeof text === "string" ? text.trim() : "";
-      if (!normalized) {
-        return "";
-      }
-
-      for (const segment of normalized.split("|")) {
-        const match = segment.match(/model\s*=\s*(.+)$/i);
-        if (match && typeof match[1] === "string") {
-          const extracted = this.normalizeModelName(match[1]);
-          if (extracted) {
-            return extracted;
-          }
-        }
-      }
-
-      const fallbackMatch = normalized.match(/\bmodel\s*=\s*([^\s|]+)/i);
-      if (fallbackMatch && typeof fallbackMatch[1] === "string") {
-        return this.normalizeModelName(fallbackMatch[1]);
-      }
-
-      return "";
-    }
-
-    extractModelFromContextPayload(payload) {
-      if (!payload || typeof payload !== "object") {
-        return "";
-      }
-
-      const directKeys = ["model", "modelName", "model_name", "selectedModel", "selected_model"];
-      for (const key of directKeys) {
-        if (typeof payload[key] === "string" && payload[key].trim()) {
-          return this.normalizeModelName(payload[key]);
-        }
-      }
-
-      const nested = payload.info;
-      if (nested && typeof nested === "object") {
-        for (const key of directKeys) {
-          if (typeof nested[key] === "string" && nested[key].trim()) {
-            return this.normalizeModelName(nested[key]);
-          }
-        }
-      }
-
-      const textKeys = ["summary", "message", "text", "context", "value", "line"];
-      for (const key of textKeys) {
-        if (typeof payload[key] === "string") {
-          const parsed = this.extractModelFromText(payload[key]);
-          if (parsed) {
-            return parsed;
-          }
-        }
-      }
-
-      return "";
-    }
-
-    updateLatestTurnModelFromPayload(payload) {
-      const model = this.extractModelFromContextPayload(payload);
-      if (model) {
-        this.latestTurnModel = model;
-      }
     }
 
     createEntry(role, title, text, timestamp, rawType, images) {
@@ -1052,10 +999,6 @@
       this.pendingUpdatedEntries.clear();
       this.renderCount = 0;
       this.container.textContent = "";
-      this.turnModeActive = false;
-      this.turns = [];
-      this.turnNodeById.clear();
-      this.turnCollapsedById.clear();
       this.expandedToolEntryIds.clear();
       this.entryNodeById.clear();
       this.toolEntriesByCallId.clear();
@@ -1063,16 +1006,105 @@
       this.nextTaskGroupId = 1;
       this.activeTaskStack = [];
       this.collapsedTaskIds.clear();
-      this.latestContextUsage = null;
-      this.latestTurnModel = "";
-      this.taskModelById.clear();
       this.currentSessionModel = "";
       this.autoScrollPinned = true;
       this.visibleActionEntryId = null;
       this.liveAssistantEntriesByStreamKey.clear();
       this.viewMode = "default";
+      this.pinnedAssistantEntryId = null;
+      this.assistantPinEnabled = false;
       this.refreshVisibility();
       this.dispatchTimelineEvent("timeline-cleared");
+    }
+
+    isPinnableAssistantEntry(entry) {
+      return this.assistantPinEnabled === true && !!entry && entry.role === "assistant" && entry.compact !== true;
+    }
+
+    setAssistantPinEnabled(enabled) {
+      const nextEnabled = enabled === true;
+      if (this.assistantPinEnabled === nextEnabled) {
+        return;
+      }
+
+      this.assistantPinEnabled = nextEnabled;
+      if (!nextEnabled) {
+        this.setPinnedAssistantEntryId(null);
+        return;
+      }
+
+      let latestAssistantEntryId = null;
+      for (const node of this.entryNodeById.values()) {
+        const entry = node && node.entry ? node.entry : null;
+        if (entry && entry.role === "assistant" && entry.compact !== true) {
+          latestAssistantEntryId = entry.id;
+        }
+      }
+
+      if (Number.isFinite(latestAssistantEntryId)) {
+        this.setPinnedAssistantEntryId(latestAssistantEntryId);
+      }
+    }
+
+    updateAssistantPinEnabledFromTaskBoundary(entry) {
+      if (!entry || entry.taskBoundary !== "start" && entry.taskBoundary !== "end") {
+        return;
+      }
+
+      if (entry.taskBoundary === "start") {
+        this.setAssistantPinEnabled(true);
+        return;
+      }
+
+      this.setAssistantPinEnabled(this.activeTaskStack.length > 0);
+    }
+
+    setPinnedAssistantEntryId(entryId) {
+      const priorId = Number.isFinite(this.pinnedAssistantEntryId) ? this.pinnedAssistantEntryId : null;
+      if (priorId !== null && priorId !== entryId) {
+        const priorNode = this.entryNodeById.get(priorId);
+        if (priorNode && priorNode.card) {
+          priorNode.card.classList.remove("watcher-entry-assistant-pinned");
+        }
+      }
+
+      const nextId = Number.isFinite(entryId) ? entryId : null;
+      this.pinnedAssistantEntryId = nextId;
+      if (nextId !== null) {
+        const nextNode = this.entryNodeById.get(nextId);
+        if (nextNode && nextNode.card) {
+          nextNode.card.classList.add("watcher-entry-assistant-pinned");
+        }
+      }
+    }
+
+    placeNodeInTimeline(card, entry) {
+      if (!card || !this.container) {
+        return;
+      }
+
+      if (this.assistantPinEnabled !== true) {
+        this.container.appendChild(card);
+        return;
+      }
+
+      const pinnedId = Number.isFinite(this.pinnedAssistantEntryId) ? this.pinnedAssistantEntryId : null;
+      const pinnedNode = pinnedId !== null ? this.entryNodeById.get(pinnedId) : null;
+      const pinnedCard = pinnedNode && pinnedNode.card && pinnedNode.card.parentElement === this.container
+        ? pinnedNode.card
+        : null;
+
+      if (this.isPinnableAssistantEntry(entry)) {
+        this.container.appendChild(card);
+        return;
+      }
+
+      if (pinnedCard && pinnedCard !== card) {
+        this.container.insertBefore(card, pinnedCard);
+        return;
+      }
+
+      this.container.appendChild(card);
     }
 
     isNearBottom() {
@@ -1119,6 +1151,10 @@
 
     isEntryHiddenForCollapsedTask(entry) {
       if (!entry || !Array.isArray(entry.taskPath) || entry.taskPath.length === 0) {
+        return false;
+      }
+
+      if (entry.taskAnchor === true) {
         return false;
       }
 
@@ -1186,6 +1222,9 @@
       const normalizedText = this.normalizeText(text || "");
       const key = this.createUserMessageKey(normalizedText, safeImages);
       if (key) {
+        if (this.pendingOptimisticUserKeys.includes(key)) {
+          return;
+        }
         this.pendingOptimisticUserKeys.push(key);
         if (this.pendingOptimisticUserKeys.length > 40) {
           this.pendingOptimisticUserKeys.shift();
@@ -1255,15 +1294,6 @@
       existing.rawType = "assistant_done";
       this.queueEntryUpdate(existing);
       this.liveAssistantEntriesByStreamKey.delete(streamKey);
-    }
-
-    enqueueParsedLines(lines) {
-      for (const line of lines || []) {
-        const entry = this.parseLine(line);
-        if (entry) {
-          this.pendingEntries.push(entry);
-        }
-      }
     }
 
     normalizeServerEntry(rawEntry) {
@@ -2782,253 +2812,6 @@
       this.pendingUpdatedEntries.set(entry.id, entry);
     }
 
-    parseResponseItem(timestamp, payload) {
-      if (!payload || typeof payload !== "object") {
-        return null;
-      }
-
-      if (payload.type === "message") {
-        const role = payload.role || "system";
-        const parts = this.extractMessageParts(payload.content);
-        const text = parts.text;
-        const images = parts.imageUrls;
-        if (!text && images.length === 0) {
-          return null;
-        }
-
-        if (role === "assistant") {
-          const phase = payload.phase ? ` (${payload.phase})` : "";
-          return this.createEntry("assistant", `Assistant${phase}`, text, timestamp, payload.type, images);
-        }
-
-        if (role === "user") {
-          const key = this.createUserMessageKey(text, images);
-          if (this.consumeOptimisticUserKey(key)) {
-            return null;
-          }
-
-          return this.createEntry("user", "User", text, timestamp, payload.type, images);
-        }
-
-        return null;
-      }
-
-      if (payload.type === "function_call" || payload.type === "custom_tool_call") {
-        const name = payload.name || "tool";
-        const rawArgs = typeof payload.arguments === "string"
-          ? payload.arguments
-          : typeof payload.input === "string"
-            ? payload.input
-            : "";
-        const argsObject = this.tryParseJson(rawArgs);
-
-        const command = this.extractToolCommand(name, argsObject, rawArgs);
-        const details = this.extractToolDetails(argsObject);
-        const entry = this.createToolEntry(`Tool Call: ${name}`, timestamp, payload.type, name, payload.call_id || null, command, details, "");
-
-        if (entry.callId) {
-          this.toolEntriesByCallId.set(entry.callId, entry);
-        }
-        return entry;
-      }
-
-      if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
-        const callId = payload.call_id || null;
-        const rawOutput = payload.output ?? payload.result ?? payload.content ?? null;
-        const output = this.formatToolOutput(null, rawOutput);
-
-        if (callId && this.toolEntriesByCallId.has(callId)) {
-          const entry = this.toolEntriesByCallId.get(callId);
-          if (entry) {
-            entry.output = this.formatToolOutput(entry.toolName, rawOutput) || entry.output;
-            entry.timestamp = timestamp || entry.timestamp;
-            this.queueEntryUpdate(entry);
-          }
-          return null;
-        }
-
-        return this.createToolEntry("Tool Output", timestamp, payload.type, null, callId, "", [], output);
-      }
-
-      if (payload.type === "reasoning") {
-        let summary = "";
-        if (Array.isArray(payload.summary)) {
-          const lines = [];
-          for (const item of payload.summary) {
-            if (item && typeof item.text === "string" && item.text.trim().length > 0) {
-              lines.push(item.text.trim());
-            }
-          }
-          summary = lines.join("\n");
-        }
-
-        if (!summary && typeof payload.content === "string") {
-          summary = payload.content;
-        }
-
-        if (!summary) {
-          return null;
-        }
-
-        return this.createEntry("reasoning", "Reasoning Summary", this.truncateText(summary, 1200), timestamp, payload.type);
-      }
-
-      return null;
-    }
-
-    parseEventMsg(timestamp, payload) {
-      if (!payload || typeof payload !== "object") {
-        return null;
-      }
-
-      const eventType = payload.type || "";
-      if (eventType === "token_count") {
-        this.updateLatestContextUsageFromPayload(payload);
-        return null;
-      }
-
-      if (eventType === "thread_compacted" || eventType === "thread/compacted") {
-        this.updateLatestContextUsageFromPayload(payload);
-        const reclaimedRaw = Number(
-          payload.reclaimedTokens
-          ?? payload.reclaimed_tokens
-          ?? payload.tokensReclaimed
-          ?? payload.tokens_reclaimed
-          ?? NaN
-        );
-        const reclaimed = Number.isFinite(reclaimedRaw) && reclaimedRaw >= 0
-          ? Math.round(reclaimedRaw)
-          : null;
-        const contextLeftLabel = this.formatLatestContextLeftLabel();
-        const parts = [];
-        if (typeof payload.summary === "string" && payload.summary.trim()) {
-          parts.push(payload.summary.trim());
-        } else {
-          parts.push("Context compressed");
-        }
-        if (reclaimed !== null && reclaimed > 0) {
-          parts.push(`${reclaimed.toLocaleString()} tokens reclaimed`);
-        }
-        if (contextLeftLabel) {
-          parts.push(contextLeftLabel);
-        }
-        const entry = this.createEntry("system", "Context Compression", this.truncateText(parts.join(" | "), 240), timestamp, eventType);
-        entry.compact = true;
-        return entry;
-      }
-
-      if (eventType === "agent_message" || eventType === "user_message" || eventType === "agent_reasoning") {
-        return null;
-      }
-
-      if (eventType === "task_started" || eventType === "turn_started") {
-        this.updateLatestContextUsageFromPayload(payload);
-        const summary = payload.title || payload.message || "Task started";
-        const entry = this.createEntry("system", "Task Started", this.truncateText(summary, 240), timestamp, "task_started");
-        entry.compact = true;
-        const started = this.markTaskStart(entry);
-        if (started?.taskId) {
-          const modelForTask = this.latestTurnModel || this.currentSessionModel || "";
-          if (modelForTask) {
-            this.taskModelById.set(started.taskId, modelForTask);
-          }
-        }
-        return started;
-      }
-
-      if (eventType === "task_complete" || eventType === "turn_complete") {
-        const summary = payload.message || "Task complete";
-        const contextLeftLabel = this.formatLatestContextLeftLabel();
-        const taskId = this.activeTaskStack.length > 0 ? this.activeTaskStack[this.activeTaskStack.length - 1] : null;
-        const payloadModel = this.extractModelFromContextPayload(payload);
-        if (payloadModel) {
-          this.latestTurnModel = payloadModel;
-          if (taskId) {
-            this.taskModelById.set(taskId, payloadModel);
-          }
-        }
-
-        const taskModel = taskId
-          ? (this.taskModelById.get(taskId) || this.latestTurnModel || this.currentSessionModel || "")
-          : (this.latestTurnModel || this.currentSessionModel || "");
-        const parts = [summary];
-        if (contextLeftLabel) {
-          parts.push(contextLeftLabel);
-        }
-        if (taskModel) {
-          parts.push(`Model: ${taskModel}`);
-        }
-
-        const displayText = parts.join(" | ");
-        const entry = this.createEntry("system", "Task Complete", this.truncateText(displayText, 240), timestamp, "task_complete");
-        entry.compact = true;
-        const completed = this.markTaskEnd(entry);
-        if (completed?.taskId) {
-          this.taskModelById.delete(completed.taskId);
-        }
-        return completed;
-      }
-
-      if (eventType === "plan_delta" || eventType === "item/plan/delta" || eventType === "codex/event/plan_delta") {
-        return null;
-      }
-
-      if (eventType === "plan_update" || eventType === "plan_updated" || eventType === "turn/plan/updated") {
-        const rawPlan = payload.plan || payload.text || payload.summary || payload.message || "Plan updated";
-        const entry = this.createEntry("system", "Plan Updated", this.truncateText(String(rawPlan), 240), timestamp, eventType);
-        entry.compact = true;
-        return entry;
-      }
-
-      const message = payload.message || payload.summary || "";
-      if (!message) {
-        return null;
-      }
-
-      return this.createEntry("system", `Event: ${eventType || "unknown"}`, this.truncateText(String(message), 1200), timestamp, eventType);
-    }
-
-    parseLine(line) {
-      let root;
-      try {
-        root = JSON.parse(line);
-      } catch {
-        return this.annotateEntryWithTaskContext(
-          this.createEntry("system", "Invalid JSONL Line", this.truncateText(line, 800), null, "invalid_json")
-        );
-      }
-
-      const timestamp = root.timestamp || null;
-      const type = root.type || "";
-
-      if (type === "session_meta") {
-        const payload = root.payload || {};
-        this.updateLatestTurnModelFromPayload(payload);
-        const details = [];
-        if (payload.id) details.push(`thread=${payload.id}`);
-        if (payload.model_provider) details.push(`provider=${payload.model_provider}`);
-        if (payload.cwd) details.push(`cwd=${payload.cwd}`);
-        return this.annotateEntryWithTaskContext(
-          this.createEntry("system", "Session Meta", details.join(" | "), timestamp, type)
-        );
-      }
-
-      if (type === "turn_context") {
-        this.updateLatestTurnModelFromPayload(root.payload || {});
-        return null;
-      }
-
-      if (type === "response_item") {
-        return this.annotateEntryWithTaskContext(this.parseResponseItem(timestamp, root.payload || {}));
-      }
-
-      if (type === "event_msg") {
-        return this.annotateEntryWithTaskContext(this.parseEventMsg(timestamp, root.payload || {}));
-      }
-
-      return null;
-    }
-
     removeToolMappingsForEntryId(entryId) {
       for (const [callId, entry] of this.toolEntriesByCallId.entries()) {
         if (entry.id === entryId) {
@@ -3215,6 +2998,7 @@
 
     appendEntryNode(entry) {
       try {
+      this.updateAssistantPinEnabledFromTaskBoundary(entry);
       if (entry.compact) {
         const row = document.createElement("div");
         row.className = "watcher-inline-entry";
@@ -3224,7 +3008,7 @@
         if (entry.rawType === "task_started" || entry.rawType === "task_complete") {
           row.classList.add("watcher-inline-task");
         }
-        if (entry.taskDepth > 0 && !entry.taskBoundary) {
+        if (entry.taskDepth > 0 && !entry.taskBoundary && entry.taskAnchor !== true) {
           row.classList.add("watcher-task-child");
           row.style.setProperty("--task-depth", String(entry.taskDepth));
         }
@@ -3280,12 +3064,15 @@
         row.appendChild(title);
         row.appendChild(text);
         row.appendChild(time);
-        this.container.appendChild(row);
+        this.placeNodeInTimeline(row, entry);
 
         entry.rendered = true;
         this.renderCount += 1;
         const node = { card: row, body: text, time, compact: true, taskToggle, entry };
         this.entryNodeById.set(entry.id, node);
+        if (this.isPinnableAssistantEntry(entry)) {
+          this.setPinnedAssistantEntryId(entry.id);
+        }
         this.updateTaskToggleState(node, entry);
         this.applyEntryVisibility(node, entry);
         this.trimIfNeeded();
@@ -3311,7 +3098,7 @@
           copyActionButton = null;
         }
 
-        this.container.appendChild(wrap);
+        this.placeNodeInTimeline(wrap, entry);
         entry.rendered = true;
         this.renderCount += 1;
         const node = {
@@ -3325,6 +3112,9 @@
           entry
         };
         this.entryNodeById.set(entry.id, node);
+        if (this.isPinnableAssistantEntry(entry)) {
+          this.setPinnedAssistantEntryId(entry.id);
+        }
         this.updateTaskToggleState(node, entry);
         this.applyEntryVisibility(node, entry);
         this.trimIfNeeded();
@@ -3336,7 +3126,7 @@
 
       const card = document.createElement("article");
       card.className = `watcher-entry ${entry.role}`;
-      if (entry.taskDepth > 0 && !entry.taskBoundary) {
+      if (entry.taskDepth > 0 && !entry.taskBoundary && entry.taskAnchor !== true) {
         card.classList.add("watcher-task-child");
         card.style.setProperty("--task-depth", String(entry.taskDepth));
       }
@@ -3373,7 +3163,7 @@
         copyActionButton = null;
       }
 
-      this.container.appendChild(card);
+      this.placeNodeInTimeline(card, entry);
       entry.rendered = true;
       this.renderCount += 1;
       const node = {
@@ -3387,6 +3177,9 @@
         entry
       };
       this.entryNodeById.set(entry.id, node);
+      if (this.isPinnableAssistantEntry(entry)) {
+        this.setPinnedAssistantEntryId(entry.id);
+      }
       this.updateTaskToggleState(node, entry);
       this.applyEntryVisibility(node, entry);
       this.trimIfNeeded();
@@ -3532,6 +3325,11 @@
       }
       this.updateTaskToggleState(node, entry);
       this.applyEntryVisibility(node, entry);
+      if (this.isPinnableAssistantEntry(entry)) {
+        this.setPinnedAssistantEntryId(entry.id);
+      } else if (this.pinnedAssistantEntryId === entry.id) {
+        this.setPinnedAssistantEntryId(null);
+      }
       this.dispatchTimelineEvent("timeline-entry-updated", {
         entry: this.toEntrySnapshot(entry)
       });

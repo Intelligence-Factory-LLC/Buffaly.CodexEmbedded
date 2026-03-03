@@ -248,66 +248,6 @@ internal static class WebEndpointMappings
 
 	public static void MapTimelineAndRuntimeLogEndpoints(this WebApplication app)
 	{
-		app.MapGet("/api/logs/watch", (HttpRequest request, WebRuntimeDefaults defaults) =>
-		{
-			var threadId = request.Query["threadId"].ToString();
-			if (string.IsNullOrWhiteSpace(threadId))
-			{
-				return Results.BadRequest(new { message = "threadId query parameter is required." });
-			}
-
-			var session = CodexSessionCatalog.ListSessions(defaults.CodexHomePath, limit: 0)
-				.FirstOrDefault(x => string.Equals(x.ThreadId, threadId, StringComparison.Ordinal));
-
-			if (session is null || string.IsNullOrWhiteSpace(session.SessionFilePath))
-			{
-				return Results.NotFound(new { message = $"No session file found for threadId '{threadId}'." });
-			}
-
-			var path = Path.GetFullPath(session.SessionFilePath);
-			if (!File.Exists(path))
-			{
-				return Results.NotFound(new { message = $"Session file does not exist: '{path}'." });
-			}
-
-			var maxLines = QueryValueParser.GetPositiveInt(request.Query["maxLines"], fallback: 200, max: 1000);
-			var initial = QueryValueParser.GetBool(request.Query["initial"]);
-			var cursor = ParseNonNegativeLongQuery(request, "cursor");
-			if (cursor is null && !string.IsNullOrWhiteSpace(request.Query["cursor"]))
-			{
-				return Results.BadRequest(new { message = "cursor must be a non-negative integer." });
-			}
-
-			JsonlWatchResult watchResult;
-			try
-			{
-				watchResult = initial || cursor is null
-					? JsonlFileTailReader.ReadInitial(path, maxLines)
-					: JsonlFileTailReader.ReadFromCursor(path, cursor.Value, maxLines);
-			}
-			catch (Exception ex)
-			{
-				return Results.Problem(
-					statusCode: StatusCodes.Status500InternalServerError,
-					title: "Failed to read session log file.",
-					detail: ex.Message);
-			}
-
-			return Results.Ok(new
-			{
-				threadId = session.ThreadId,
-				threadName = session.ThreadName,
-				sessionFilePath = path,
-				updatedAtUtc = session.UpdatedAtUtc?.ToString("O"),
-				cursor = watchResult.Cursor,
-				nextCursor = watchResult.NextCursor,
-				fileLength = watchResult.FileLength,
-				reset = watchResult.Reset,
-				truncated = watchResult.Truncated,
-				lines = watchResult.Lines
-			});
-		});
-
 		app.MapGet("/api/turns/bootstrap", (HttpRequest request, SessionOrchestrator orchestrator) =>
 		{
 			var threadId = request.Query["threadId"].ToString();
@@ -319,7 +259,7 @@ internal static class WebEndpointMappings
 			var maxEntries = QueryValueParser.GetPositiveInt(request.Query["maxEntries"], fallback: 6000, max: 20000);
 			try
 			{
-				var watch = orchestrator.WatchTurns(threadId, maxEntries, initial: true, cursor: null, includeActiveTurnDetail: false);
+				var watch = orchestrator.WatchTurns(threadId, maxEntries, initial: true, cursor: null);
 				return Results.Ok(new
 				{
 					threadId = watch.ThreadId,
@@ -335,7 +275,7 @@ internal static class WebEndpointMappings
 					contextUsage = watch.ContextUsage,
 					permission = watch.Permission,
 					reasoningSummary = watch.ReasoningSummary,
-					turns = watch.Turns
+					messages = watch.Messages
 				});
 			}
 			catch (FileNotFoundException ex)
@@ -369,7 +309,7 @@ internal static class WebEndpointMappings
 
 			try
 			{
-				var watch = orchestrator.WatchTurns(threadId, maxEntries, initial, cursor, includeActiveTurnDetail: true);
+				var watch = orchestrator.WatchTurns(threadId, maxEntries, initial, cursor);
 				return Results.Ok(new
 				{
 					threadId = watch.ThreadId,
@@ -385,8 +325,7 @@ internal static class WebEndpointMappings
 					contextUsage = watch.ContextUsage,
 					permission = watch.Permission,
 					reasoningSummary = watch.ReasoningSummary,
-					turns = watch.Turns,
-					activeTurnDetail = watch.ActiveTurnDetail
+					messages = watch.Messages
 				});
 			}
 			catch (FileNotFoundException ex)
@@ -398,52 +337,6 @@ internal static class WebEndpointMappings
 				return Results.Problem(
 					statusCode: StatusCodes.Status500InternalServerError,
 					title: "Failed to build turn timeline.",
-					detail: ex.Message);
-			}
-		});
-
-		app.MapGet("/api/turns/detail", (HttpRequest request, SessionOrchestrator orchestrator) =>
-		{
-			var threadId = request.Query["threadId"].ToString();
-			if (string.IsNullOrWhiteSpace(threadId))
-			{
-				return Results.BadRequest(new { message = "threadId query parameter is required." });
-			}
-
-			var turnId = request.Query["turnId"].ToString();
-			if (string.IsNullOrWhiteSpace(turnId))
-			{
-				return Results.BadRequest(new { message = "turnId query parameter is required." });
-			}
-
-			var maxEntries = QueryValueParser.GetPositiveInt(request.Query["maxEntries"], fallback: 6000, max: 20000);
-
-			try
-			{
-				var detail = orchestrator.GetTurnDetail(threadId, turnId, maxEntries);
-				return Results.Ok(new
-				{
-					threadId = threadId.Trim(),
-					turn = detail
-				});
-			}
-			catch (FileNotFoundException ex)
-			{
-				return Results.NotFound(new { message = ex.Message });
-			}
-			catch (KeyNotFoundException ex)
-			{
-				return Results.NotFound(new { message = ex.Message });
-			}
-			catch (InvalidOperationException ex)
-			{
-				return Results.BadRequest(new { message = ex.Message });
-			}
-			catch (Exception ex)
-			{
-				return Results.Problem(
-					statusCode: StatusCodes.Status500InternalServerError,
-					title: "Failed to read turn detail.",
 					detail: ex.Message);
 			}
 		});

@@ -1,5 +1,4 @@
 const POLL_INTERVAL_MS = 2000;
-const FLUSH_INTERVAL_MS = 350;
 const SESSION_LIST_REFRESH_MS = 15000;
 
 const STORAGE_SELECTED_THREAD_KEY = "codex.watcher.selectedThread.v1";
@@ -31,8 +30,7 @@ let activeProjectKey = null;
 let activeThreadId = null;
 let collapsedProjectKeys = new Set();
 
-let cursor = null;
-let flushTimer = null;
+let messagesCursor = null;
 let pollTimer = null;
 let sessionRefreshTimer = null;
 let pollGeneration = 0;
@@ -311,7 +309,7 @@ function renderProjectSidebar() {
         localStorage.setItem(STORAGE_SELECTED_PROJECT_KEY, activeProjectKey);
         renderProjectSidebar();
         if (changed) {
-          cursor = null;
+          messagesCursor = null;
           timeline.clear();
           restartPolling();
         }
@@ -452,17 +450,16 @@ async function pollOnce(initial, generation) {
   pollInFlight = true;
   try {
     if (!activeThreadId) {
-      setStatus("Watcher (Disk): select a session to monitor its on-disk logs.");
+      setStatus("Watcher: select a session to monitor timeline messages.");
       return;
     }
 
-    const url = new URL("api/logs/watch", document.baseURI);
+    const isInitialRequest = initial || messagesCursor === null;
+    const url = new URL(isInitialRequest ? "api/turns/bootstrap" : "api/turns/watch", document.baseURI);
     url.searchParams.set("threadId", activeThreadId);
-    url.searchParams.set("maxLines", "200");
-    if (initial || cursor === null) {
-      url.searchParams.set("initial", "true");
-    } else {
-      url.searchParams.set("cursor", String(cursor));
+    url.searchParams.set("maxEntries", "6000");
+    if (!isInitialRequest) {
+      url.searchParams.set("cursor", String(messagesCursor));
     }
 
     const response = await fetch(url, { cache: "no-store" });
@@ -472,7 +469,7 @@ async function pollOnce(initial, generation) {
 
     if (!response.ok) {
       const detail = await response.text();
-      throw new Error(`watch failed (${response.status}): ${detail}`);
+      throw new Error(`messages watch failed (${response.status}): ${detail}`);
     }
 
     const data = await response.json();
@@ -480,22 +477,36 @@ async function pollOnce(initial, generation) {
       return;
     }
 
-    if (initial || data.reset === true) {
+    if (isInitialRequest || data.reset === true) {
       timeline.clear();
       if (data.reset === true) {
-        timeline.enqueueSystem("session file was reset or rotated");
+        timeline.enqueueSystem("session timeline was reset from log replay");
       }
     }
 
-    cursor = typeof data.nextCursor === "number" ? data.nextCursor : cursor;
-    timeline.enqueueParsedLines(Array.isArray(data.lines) ? data.lines : []);
+    const nextCursor = typeof data.nextCursor === "number" ? data.nextCursor : null;
+    if (Number.isFinite(nextCursor)) {
+      messagesCursor = nextCursor;
+    }
 
-    if (data.truncated === true) {
-      timeline.enqueueInlineNotice("older lines are omitted, showing latest lines");
+    const mode = String(data.mode || "").trim().toLowerCase();
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    if (mode === "full" || isInitialRequest || data.reset === true || messages.length > 0) {
+      if (typeof timeline.setServerMessages === "function") {
+        timeline.setServerMessages(messages);
+      } else {
+        timeline.clear();
+      }
+      if (messages.length === 0 && typeof timeline.enqueueInlineNotice === "function") {
+        timeline.enqueueInlineNotice("No timeline messages found yet for this session.");
+      }
+      if (typeof timeline.flush === "function") {
+        timeline.flush();
+      }
     }
 
     const label = pollContextLabel();
-    setStatus(`Watcher (Disk): ${label || "(unknown)"} | update every 2 seconds`);
+    setStatus(`Watcher (Messages): ${label || "(unknown)"} | update every 2 seconds`);
   } finally {
     pollInFlight = false;
   }
@@ -512,13 +523,13 @@ function restartPolling() {
 
   pollOnce(true, generation).catch((error) => {
     timeline.enqueueSystem(`[error] ${error}`);
-    setStatus("Watcher error.");
+    setStatus("Watcher messages error.");
   });
 
   pollTimer = setInterval(() => {
     pollOnce(false, generation).catch((error) => {
       timeline.enqueueSystem(`[error] ${error}`);
-      setStatus("Watcher error.");
+      setStatus("Watcher messages error.");
     });
   }, POLL_INTERVAL_MS);
 }
@@ -612,7 +623,6 @@ function initializeSidebarState() {
   updateMobileProjectsButton();
 }
 
-flushTimer = setInterval(() => timeline.flush(), FLUSH_INTERVAL_MS);
 loadUiState();
 wireUiEvents();
 initializeSidebarState();
