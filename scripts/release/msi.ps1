@@ -73,6 +73,76 @@ function Convert-TagToMsiVersion([string]$Tag) {
     return "$major.$minor.$build"
 }
 
+function Ensure-WixBinLaunchers([string]$RepoRoot) {
+    $binDir = Join-Path $RepoRoot "installer\\wix\\bin"
+    New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+
+    $cliLauncher = Join-Path $binDir "buffaly-codex.cmd"
+    $webLauncher = Join-Path $binDir "buffaly-codex-web.cmd"
+
+    $cliContent = @'
+@echo off
+setlocal
+set "ROOT=%~dp0.."
+set "TARGET=%ROOT%\apps\cli\Buffaly.CodexEmbedded.Cli.exe"
+if not exist "%TARGET%" (
+  echo Missing executable: "%TARGET%"
+  exit /b 1
+)
+for %%I in ("%TARGET%") do set "APPDIR=%%~dpI"
+pushd "%APPDIR%" >nul
+"%TARGET%" %*
+set "EXITCODE=%ERRORLEVEL%"
+popd >nul
+exit /b %EXITCODE%
+'@
+
+    $webContent = @'
+@echo off
+setlocal
+set "ROOT=%~dp0.."
+set "TARGET=%ROOT%\apps\web\Buffaly.CodexEmbedded.Web.exe"
+if not exist "%TARGET%" (
+  echo Missing executable: "%TARGET%"
+  exit /b 1
+)
+
+set "WEB_CONFIG_PATH=%ROOT%\apps\web\appsettings.json"
+set "BUFFALY_WEB_CONFIG=%WEB_CONFIG_PATH%"
+for /f "usebackq delims=" %%U in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$default='http://127.0.0.1:5170/'; $u=$env:BUFFALY_CODEX_WEB_URL; if([string]::IsNullOrWhiteSpace($u) -and (Test-Path $env:BUFFALY_WEB_CONFIG)){ try { $json=Get-Content -Raw $env:BUFFALY_WEB_CONFIG | ConvertFrom-Json; $u=[string]$json.WebLaunchUrl } catch {} }; if([string]::IsNullOrWhiteSpace($u)){ $u=$default }; $u=$u.Trim(); $parsed=$null; if(-not [Uri]::TryCreate($u,[UriKind]::Absolute,[ref]$parsed)){ $u=$default }; if(($u -notlike 'http://*') -and ($u -notlike 'https://*')){ $u=$default }; if(-not $u.EndsWith('/')){ $u=$u + '/' }; $u"`) do set "WEB_URL=%%U"
+if "%WEB_URL%"=="" set "WEB_URL=http://127.0.0.1:5170/"
+set "BIND_URL=%WEB_URL%"
+if "%BIND_URL:~-1%"=="/" set "BIND_URL=%BIND_URL:~0,-1%"
+
+set "BUFFALY_WEB_URL=%WEB_URL%"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri $env:BUFFALY_WEB_URL -UseBasicParsing -TimeoutSec 1 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>nul
+if %ERRORLEVEL%==0 (
+  start "" "%WEB_URL%"
+  exit /b 0
+)
+
+echo Starting Buffaly Codex Embedded Web UI...
+set "ASPNETCORE_URLS=%BIND_URL%"
+start "" powershell -NoProfile -ExecutionPolicy Bypass -Command "$u=$env:BUFFALY_WEB_URL; for($i=0; $i -lt 80; $i++){ try { Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 1 | Out-Null; Start-Process $u; exit 0 } catch { Start-Sleep -Milliseconds 500 } }; Start-Process $u"
+
+for %%I in ("%TARGET%") do set "APPDIR=%%~dpI"
+pushd "%APPDIR%" >nul
+"%TARGET%" %*
+set "EXITCODE=%ERRORLEVEL%"
+popd >nul
+if not "%EXITCODE%"=="0" (
+  echo.
+  echo Buffaly Codex Embedded Web exited with code %EXITCODE%.
+  echo Check logs under "%LOCALAPPDATA%\Buffaly.CodexEmbedded\logs\Buffaly.CodexEmbedded.Web".
+  pause
+)
+exit /b %EXITCODE%
+'@
+
+    Set-Content -Path $cliLauncher -Value $cliContent -Encoding ascii
+    Set-Content -Path $webLauncher -Value $webContent -Encoding ascii
+}
+
 function Build-DirectoryTree([string[]]$DirectoryPaths) {
     $tree = @{}
     foreach ($dir in $DirectoryPaths) {
@@ -243,6 +313,7 @@ $binWxs = Join-Path $repoRoot "installer\\wix\\Bin.wxs"
 
 if (-not (Test-Path $productTemplate)) { throw "Missing WiX template: $productTemplate" }
 if (-not (Test-Path $binWxs)) { throw "Missing WiX file: $binWxs" }
+Ensure-WixBinLaunchers -RepoRoot $repoRoot
 
 $productXml = Get-Content -Raw -Path $productTemplate
 if ($productXml -notmatch "__PRODUCT_VERSION__") {
