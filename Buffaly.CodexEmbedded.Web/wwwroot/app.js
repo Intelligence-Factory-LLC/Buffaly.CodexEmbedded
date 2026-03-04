@@ -76,6 +76,7 @@ let scribeController = null;
 let sidebarProjectSearchQuery = "";
 let sidebarProjectSearchExpanded = false;
 let vsSelectionSnapshot = null; // { filePath, fileName, selectionText, caretLine, caretColumn }
+let consumedVsSelectionSignature = "";
 let vsSelectionPollTimer = null;
 let vsSelectionPollInFlight = false;
 let openAiKeyStatusCache = null; // { hasKey, checkedAtMs }
@@ -278,14 +279,35 @@ function uiAuditLog(eventName, details = null, level = "info") {
     return;
   }
   const timestamp = new Date().toISOString();
-  const line = `${timestamp} ${eventName}`;
+  const line = `${timestamp} ${eventName}${formatUiAuditDetails(details)}`;
+  logger(line);
+}
 
-  if (details && typeof details === "object") {
-    logger(line, details);
-    return;
+function formatUiAuditDetails(details) {
+  if (!details || typeof details !== "object" || Array.isArray(details)) {
+    return "";
   }
 
-  logger(line);
+  const parts = [];
+  for (const [key, value] of Object.entries(details)) {
+    if (value === null || value === undefined) {
+      continue;
+    }
+
+    if (typeof value === "object") {
+      try {
+        parts.push(`${key}=${JSON.stringify(value)}`);
+      } catch {
+        parts.push(`${key}=[object]`);
+      }
+      continue;
+    }
+
+    const normalized = String(value).replace(/\s+/g, " ").trim();
+    parts.push(`${key}=${normalized}`);
+  }
+
+  return parts.length > 0 ? ` ${parts.join(" ")}` : "";
 }
 
 function summarizeOutgoingAuditPayload(type, payload = {}) {
@@ -1594,7 +1616,7 @@ function handlePendingSessionLoadFailure() {
   const prior = pendingSessionLoadPreviousActiveId;
   clearPendingSessionLoad();
   if (prior && sessions.has(prior)) {
-    setActiveSession(prior, { restartTimeline: true });
+    setActiveSession(prior, { restartTimeline: true, reason: "pending_load_failed_restore_previous" });
     return;
   }
 
@@ -2735,7 +2757,7 @@ function renderProjectSidebar() {
 
         if (entry.attachedSessionId && sessions.has(entry.attachedSessionId)) {
           clearPendingSessionLoad();
-          setActiveSession(entry.attachedSessionId, { persistSelection: true });
+          setActiveSession(entry.attachedSessionId, { persistSelection: true, reason: "sidebar_session_click_already_attached" });
           return;
         }
 
@@ -3673,6 +3695,19 @@ function normalizeVsSelectionSnapshot(rawContext) {
   };
 }
 
+function getVsSelectionSignature(snapshot) {
+  if (!snapshot) {
+    return "";
+  }
+
+  return [
+    String(snapshot.filePath || "").trim(),
+    String(snapshot.selectionText || ""),
+    Number(snapshot.caretLine || 0),
+    Number(snapshot.caretColumn || 0)
+  ].join("||");
+}
+
 function renderVsSelectionIndicator() {
   if (!promptSelectionIndicator) {
     return;
@@ -3680,6 +3715,12 @@ function renderVsSelectionIndicator() {
 
   const snapshot = vsSelectionSnapshot;
   if (!snapshot) {
+    promptSelectionIndicator.textContent = "";
+    promptSelectionIndicator.classList.add("hidden");
+    return;
+  }
+  const signature = getVsSelectionSignature(snapshot);
+  if (signature && signature === consumedVsSelectionSignature) {
     promptSelectionIndicator.textContent = "";
     promptSelectionIndicator.classList.add("hidden");
     return;
@@ -3795,6 +3836,10 @@ async function composePromptWithVsSelection(promptText) {
   }
 
   const snapshot = await refreshVsSelectionSnapshot({ force: true });
+  const signature = getVsSelectionSignature(snapshot);
+  if (signature && signature === consumedVsSelectionSignature) {
+    return { prompt: base, includedSelection: false };
+  }
   const contextBlock = formatSelectionContextForPrompt(snapshot);
   if (!contextBlock) {
     return { prompt: base, includedSelection: false };
@@ -3803,7 +3848,8 @@ async function composePromptWithVsSelection(promptText) {
   return {
     prompt: `${base}\n${contextBlock}`,
     includedSelection: true,
-    selection: snapshot
+    selection: snapshot,
+    selectionSignature: signature
   };
 }
 
@@ -4208,6 +4254,12 @@ async function queuePrompt(sessionId, promptText, images = [], options = {}) {
   if (!send("turn_queue_add", payload)) {
     return false;
   }
+  uiAuditLog("out.message_queued", {
+    sessionId,
+    chars: turnInput.text.trim().length,
+    images: turnInput.images.length,
+    planMode: options.planMode === true
+  });
 
   return true;
 }
@@ -4254,6 +4306,12 @@ function steerTurn(sessionId, promptText, images = []) {
   if (!send("turn_steer", payload)) {
     return false;
   }
+  uiAuditLog("out.message_sent", {
+    via: "turn_steer",
+    sessionId,
+    chars: turnInput.text.trim().length,
+    images: turnInput.images.length
+  });
 
   touchSessionActivity(sessionId);
   if (turnInput.text) {
@@ -4369,6 +4427,14 @@ function startTurn(sessionId, promptText, images = [], options = {}) {
   if (!send("turn_start", payload)) {
     return false;
   }
+  uiAuditLog("out.message_sent", {
+    via: "turn_start",
+    sessionId,
+    chars: turnInput.text.trim().length,
+    images: turnInput.images.length,
+    planMode: options.planMode === true,
+    fromQueue: options.fromQueue === true
+  });
 
   setTurnStartGrace(sessionId, true);
   touchSessionActivity(sessionId);
@@ -4902,6 +4968,9 @@ function setActiveSession(sessionId, options = {}) {
 
   const restartTimeline = options.restartTimeline !== false;
   const persistSelection = options.persistSelection === true;
+  const reason = typeof options.reason === "string" && options.reason.trim()
+    ? options.reason.trim()
+    : "unspecified";
   const changed = activeSessionId !== sessionId;
   const previousSessionId = activeSessionId || null;
   const previousState = getActiveSessionState();
@@ -4946,7 +5015,8 @@ function setActiveSession(sessionId, options = {}) {
     uiAuditLog("ui.active_session_changed", {
       from: previousSessionId,
       to: sessionId,
-      threadId: state?.threadId || null
+      threadId: state?.threadId || null,
+      reason
     });
   }
   if (persistSelection) {
@@ -5051,6 +5121,8 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     (isTurnInFlight(activeSessionId) || isTurnStartGraceActive(activeSessionId))
       ? activeSessionId
       : null;
+  const isStoredSessionCandidate = !!storedSessionId && sessions.has(storedSessionId);
+  const isStoredThreadCandidate = !!sessionForStoredThread && sessions.has(sessionForStoredThread);
   const toSelect = pinnedActiveSessionId ||
     (preferServerActive
     ? (serverActiveId ||
@@ -5065,9 +5137,27 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
       (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
       serverActiveId ||
       (ids.length > 0 ? ids[0] : null)));
+  let selectionReason = "none";
+  if (pinnedActiveSessionId && toSelect === pinnedActiveSessionId) {
+    selectionReason = "keep_inflight_or_pending";
+  } else if (pendingThreadMatch && toSelect === serverActiveId) {
+    selectionReason = "pending_thread_match_server_active";
+  } else if (preferServerActive && toSelect === serverActiveId) {
+    selectionReason = "prefer_server_active";
+  } else if (toSelect && toSelect === activeSessionId) {
+    selectionReason = "preserve_current_active";
+  } else if (toSelect && toSelect === current) {
+    selectionReason = "preserve_selector_value";
+  } else if (toSelect && isStoredSessionCandidate && toSelect === storedSessionId) {
+    selectionReason = "restore_stored_session";
+  } else if (toSelect && isStoredThreadCandidate && toSelect === sessionForStoredThread) {
+    selectionReason = "restore_stored_thread";
+  } else if (toSelect && ids.length > 0 && toSelect === ids[0]) {
+    selectionReason = "fallback_first_session";
+  }
   if (toSelect && sessions.has(toSelect)) {
     const changed = activeSessionId !== toSelect;
-    setActiveSession(toSelect, { restartTimeline: changed });
+    setActiveSession(toSelect, { restartTimeline: changed, reason: `update_session_select:${selectionReason}` });
   } else {
     clearActiveSession();
   }
@@ -6493,7 +6583,7 @@ function handleServerEvent(frame) {
       pendingApproval = sessionId && approvalId ? { sessionId, approvalId } : null;
 
       if (sessionId && sessions.has(sessionId) && sessionId !== activeSessionId) {
-        setActiveSession(sessionId);
+        setActiveSession(sessionId, { reason: "approval_request_focus" });
       }
 
       approvalSummary.textContent = payload.summary || "Approval requested";
@@ -6538,7 +6628,7 @@ function handleServerEvent(frame) {
       }
 
       if (sessionId && sessions.has(sessionId) && sessionId !== activeSessionId) {
-        setActiveSession(sessionId);
+        setActiveSession(sessionId, { reason: "tool_user_input_request_focus" });
       }
 
       pendingToolUserInput = {
@@ -6670,7 +6760,7 @@ if (sessionSelect) {
     const sessionId = sessionSelect.value;
     if (!sessionId) return;
     if (!sessions.has(sessionId)) return;
-    setActiveSession(sessionId, { persistSelection: true });
+    setActiveSession(sessionId, { persistSelection: true, reason: "session_select_dropdown_change" });
   });
 }
 
@@ -7388,6 +7478,10 @@ async function queueCurrentComposerPrompt() {
     appendLog(`[queue] failed to queue prompt for session=${activeSessionId}`);
     return true;
   }
+  if (composed.includedSelection && composed.selectionSignature) {
+    consumedVsSelectionSignature = composed.selectionSignature;
+    renderVsSelectionIndicator();
+  }
 
   promptInput.value = "";
   clearCurrentPromptDraft();
@@ -7476,12 +7570,20 @@ promptForm.addEventListener("submit", async (event) => {
         appendLog(`[queue] failed to queue prompt for session=${activeSessionId}`);
         return;
       }
+      if (composed.includedSelection && composed.selectionSignature) {
+        consumedVsSelectionSignature = composed.selectionSignature;
+        renderVsSelectionIndicator();
+      }
       appendLog(`[turn] queued prompt for session=${activeSessionId}`);
     } else {
       const steered = steerTurn(activeSessionId, promptWithDiffNotes, images);
       if (!steered) {
         appendLog(`[turn] failed to steer prompt for session=${activeSessionId}`);
         return;
+      }
+      if (composed.includedSelection && composed.selectionSignature) {
+        consumedVsSelectionSignature = composed.selectionSignature;
+        renderVsSelectionIndicator();
       }
       appendLog(`[turn] steer prompt sent for session=${activeSessionId}`);
     }
@@ -7490,6 +7592,10 @@ promptForm.addEventListener("submit", async (event) => {
     if (!started) {
       appendLog(`[turn] failed to send prompt for session=${activeSessionId}`);
       return;
+    }
+    if (composed.includedSelection && composed.selectionSignature) {
+      consumedVsSelectionSignature = composed.selectionSignature;
+      renderVsSelectionIndicator();
     }
   }
 
