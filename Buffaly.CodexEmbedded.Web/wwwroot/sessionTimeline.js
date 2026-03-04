@@ -2911,6 +2911,28 @@
         if (!summary && typeof payload.content === "string") {
           summary = payload.content;
         }
+        if (!summary && Array.isArray(payload.content)) {
+          const contentLines = [];
+          for (const item of payload.content) {
+            if (typeof item === "string" && item.trim().length > 0) {
+              contentLines.push(item.trim());
+              continue;
+            }
+            if (item && typeof item === "object") {
+              const text = typeof item.text === "string"
+                ? item.text.trim()
+                : (typeof item.content === "string"
+                  ? item.content.trim()
+                  : (typeof item.value === "string" ? item.value.trim() : ""));
+              if (text) {
+                contentLines.push(text);
+              }
+            }
+          }
+          if (contentLines.length > 0) {
+            summary = contentLines.join("\n");
+          }
+        }
 
         if (!summary) {
           return null;

@@ -616,10 +616,39 @@ internal sealed class TimelineProjectionService
 			return inlineReasoning;
 		}
 
-		var encryptedReasoning = NormalizeText(TryGetString(payload, "encrypted_content"));
-		if (!string.IsNullOrWhiteSpace(encryptedReasoning))
+		if (TryGetProperty(payload, "content") is JsonElement contentElement &&
+			contentElement.ValueKind == JsonValueKind.Array)
 		{
-			return "Reasoning available (encrypted by provider)";
+			var contentParts = new List<string>();
+			foreach (var item in contentElement.EnumerateArray())
+			{
+				if (item.ValueKind == JsonValueKind.String)
+				{
+					var itemText = NormalizeText(item.GetString());
+					if (IsMeaningfulReasoningSummary(itemText))
+					{
+						contentParts.Add(itemText);
+					}
+					continue;
+				}
+
+				if (item.ValueKind == JsonValueKind.Object)
+				{
+					var itemText = NormalizeText(
+						TryGetString(item, "text")
+						?? TryGetString(item, "content")
+						?? TryGetString(item, "value"));
+					if (IsMeaningfulReasoningSummary(itemText))
+					{
+						contentParts.Add(itemText);
+					}
+				}
+			}
+
+			if (contentParts.Count > 0)
+			{
+				return string.Join("\n", contentParts);
+			}
 		}
 
 		return string.Empty;

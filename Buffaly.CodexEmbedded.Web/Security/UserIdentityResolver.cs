@@ -18,6 +18,11 @@ internal sealed class UserIdentityResolver
 			return fromHeader;
 		}
 
+		if (_options.UseSharedLocalUserIdentity)
+		{
+			return _options.SharedLocalUserId;
+		}
+
 		if (context.Request.Cookies.TryGetValue(_options.UserCookieName, out var existingCookie) &&
 			!string.IsNullOrWhiteSpace(existingCookie))
 		{

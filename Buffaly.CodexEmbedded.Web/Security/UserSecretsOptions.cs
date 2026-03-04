@@ -7,6 +7,8 @@ internal sealed class UserSecretsOptions
 	public required string TrustedUserHeaderName { get; init; }
 	public required string UserCookieName { get; init; }
 	public required string UserSecretStoragePath { get; init; }
+	public required bool UseSharedLocalUserIdentity { get; init; }
+	public required string SharedLocalUserId { get; init; }
 
 	public static UserSecretsOptions Load(IConfiguration configuration)
 	{
@@ -14,6 +16,8 @@ internal sealed class UserSecretsOptions
 		var trustedUserHeaderName = configuration["TrustedUserHeaderName"];
 		var userCookieName = configuration["UserIdentityCookieName"];
 		var userSecretStoragePath = configuration["UserSecretStoragePath"];
+		var useSharedLocalUserIdentity = configuration.GetValue<bool?>("UseSharedLocalUserIdentity") ?? true;
+		var sharedLocalUserId = configuration["SharedLocalUserId"];
 		if (string.IsNullOrWhiteSpace(userSecretStoragePath))
 		{
 			var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -25,8 +29,30 @@ internal sealed class UserSecretsOptions
 			EnableUserHeaderIdentity = enableUserHeaderIdentity,
 			TrustedUserHeaderName = string.IsNullOrWhiteSpace(trustedUserHeaderName) ? "X-Buffaly-UserId" : trustedUserHeaderName.Trim(),
 			UserCookieName = string.IsNullOrWhiteSpace(userCookieName) ? "buffaly_user_id" : userCookieName.Trim(),
-			UserSecretStoragePath = Path.GetFullPath(userSecretStoragePath)
+			UserSecretStoragePath = Path.GetFullPath(userSecretStoragePath),
+			UseSharedLocalUserIdentity = useSharedLocalUserIdentity,
+			SharedLocalUserId = NormalizeSharedLocalUserId(sharedLocalUserId)
 		};
+	}
+
+	private static string NormalizeSharedLocalUserId(string? configuredValue)
+	{
+		var value = configuredValue?.Trim();
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return "local_shared_user";
+		}
+
+		var isSafe = value.All(ch =>
+			(ch >= 'a' && ch <= 'z') ||
+			(ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') ||
+			ch == '_' ||
+			ch == '-' ||
+			ch == '.' ||
+			ch == ':' ||
+			ch == '@');
+		return isSafe ? value : "local_shared_user";
 	}
 
 	public static string ComputeStableUserKey(string userId)

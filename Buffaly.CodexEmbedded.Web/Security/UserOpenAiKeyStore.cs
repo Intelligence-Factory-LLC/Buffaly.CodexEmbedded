@@ -84,7 +84,8 @@ internal sealed class UserOpenAiKeyStore
 			return byUser;
 		}
 
-		return await ReadSingleStoredRecordAsync(cancellationToken);
+		return await ReadSingleStoredRecordAsync(cancellationToken)
+			?? await ReadMostRecentStoredRecordAsync(cancellationToken);
 	}
 
 	private async Task<UserOpenAiKeyRecord?> ReadRecordForUserAsync(string userId, CancellationToken cancellationToken)
@@ -118,6 +119,50 @@ internal sealed class UserOpenAiKeyStore
 			}
 
 			return await ReadRecordFromPathAsync(matches[0], cancellationToken);
+		}
+		catch
+		{
+			return null;
+		}
+	}
+
+	private async Task<UserOpenAiKeyRecord?> ReadMostRecentStoredRecordAsync(CancellationToken cancellationToken)
+	{
+		try
+		{
+			var directory = _options.UserSecretStoragePath;
+			if (!Directory.Exists(directory))
+			{
+				return null;
+			}
+
+			var orderedPaths = Directory.EnumerateFiles(directory, "*.json", SearchOption.TopDirectoryOnly)
+				.Select(path =>
+				{
+					DateTime lastWriteUtc;
+					try
+					{
+						lastWriteUtc = File.GetLastWriteTimeUtc(path);
+					}
+					catch
+					{
+						lastWriteUtc = DateTime.MinValue;
+					}
+					return (Path: path, LastWriteUtc: lastWriteUtc);
+				})
+				.OrderByDescending(x => x.LastWriteUtc)
+				.Select(x => x.Path);
+
+			foreach (var path in orderedPaths)
+			{
+				var record = await ReadRecordFromPathAsync(path, cancellationToken);
+				if (!string.IsNullOrWhiteSpace(TryUnprotectApiKey(record)))
+				{
+					return record;
+				}
+			}
+
+			return null;
 		}
 		catch
 		{
