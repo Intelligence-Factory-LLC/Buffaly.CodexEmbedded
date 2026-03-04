@@ -3,6 +3,7 @@ using System.Net.WebSockets;
 using System.Reflection;
 using Buffaly.CodexEmbedded.Core;
 using BasicUtilities;
+using Microsoft.AspNetCore.DataProtection;
 
 var builder = WebApplication.CreateBuilder(args);
 ConfigureCodexAppLogs(builder.Configuration);
@@ -23,7 +24,11 @@ builder.Services.AddSingleton<TimelineProjectionService>();
 builder.Services.AddSingleton<UserIdentityResolver>();
 builder.Services.AddSingleton<UserOpenAiKeyStore>();
 builder.Services.AddSingleton<OpenAiTranscriptionClient>();
-builder.Services.AddDataProtection();
+var dataProtectionKeyPath = ResolveDataProtectionKeyPath();
+Directory.CreateDirectory(dataProtectionKeyPath);
+builder.Services.AddDataProtection()
+	.SetApplicationName("Buffaly.CodexEmbedded")
+	.PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeyPath));
 builder.Services.AddHttpClient();
 
 var app = builder.Build();
@@ -652,6 +657,21 @@ static string ResolveFallbackDebugPath()
 	}
 
 	return Path.Combine(baseRoot, "logs", "Buffaly.CodexEmbedded.Web");
+}
+
+static string ResolveDataProtectionKeyPath()
+{
+	var baseRoot = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+	if (string.IsNullOrWhiteSpace(baseRoot))
+	{
+		baseRoot = Environment.CurrentDirectory;
+	}
+	else
+	{
+		baseRoot = Path.Combine(baseRoot, "Buffaly.CodexEmbedded");
+	}
+
+	return Path.Combine(baseRoot, "secrets", "data-protection-keys");
 }
 
 static void EnsureDirectoryWritable(string directoryPath)
