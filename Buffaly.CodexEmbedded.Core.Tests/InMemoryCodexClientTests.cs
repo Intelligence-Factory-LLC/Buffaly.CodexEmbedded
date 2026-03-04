@@ -121,6 +121,7 @@ public sealed class InMemoryCodexClientTests
 		string? observedMode = null;
 		bool observedSettingsObject = false;
 		string? observedReasoningEffort = null;
+		string? observedReasoningSummary = null;
 
 		await using var transport = new InMemoryJsonlTransport();
 		var server = new FakeAppServer(
@@ -142,6 +143,12 @@ public sealed class InMemoryCodexClientTests
 					modeElement.ValueKind == JsonValueKind.String)
 				{
 					observedMode = modeElement.GetString();
+				}
+
+				if (turnStartParams.TryGetProperty("summary", out var summaryElement) &&
+					summaryElement.ValueKind == JsonValueKind.String)
+				{
+					observedReasoningSummary = summaryElement.GetString();
 				}
 
 				if (collaborationMode.TryGetProperty("settings", out var settingsElement) &&
@@ -180,6 +187,59 @@ public sealed class InMemoryCodexClientTests
 		Assert.AreEqual("plan", observedMode);
 		Assert.IsTrue(observedSettingsObject, "collaborationMode.settings was not emitted.");
 		Assert.AreEqual("medium", observedReasoningEffort);
+		Assert.AreEqual("auto", observedReasoningSummary);
+
+		cts.Cancel();
+		try
+		{
+			await serverTask;
+		}
+		catch
+		{
+		}
+	}
+
+	[TestMethod]
+	public async Task SendMessage_WithReasoningSummaryOverride_SerializesTurnStartSummary()
+	{
+		using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+		string? observedReasoningSummary = null;
+
+		await using var transport = new InMemoryJsonlTransport();
+		var server = new FakeAppServer(
+			transport,
+			onTurnStart: turnStartParams =>
+			{
+				if (turnStartParams.ValueKind != JsonValueKind.Object)
+				{
+					return;
+				}
+
+				if (turnStartParams.TryGetProperty("summary", out var summaryElement) &&
+					summaryElement.ValueKind == JsonValueKind.String)
+				{
+					observedReasoningSummary = summaryElement.GetString();
+				}
+			});
+		var serverTask = server.RunAsync(cts.Token);
+
+		await using var client = await CodexClient.ConnectAsync(transport, cts.Token);
+		var session = await client.CreateSessionAsync(new CodexSessionCreateOptions
+		{
+			Cwd = "C:\\tmp",
+			Model = "fake-model"
+		}, cts.Token);
+
+		var result = await session.SendMessageAsync(
+			"Use concise reasoning summary.",
+			options: new CodexTurnOptions
+			{
+				ReasoningSummary = "concise"
+			},
+			cancellationToken: cts.Token);
+
+		Assert.AreEqual("completed", result.Status);
+		Assert.AreEqual("concise", observedReasoningSummary);
 
 		cts.Cancel();
 		try

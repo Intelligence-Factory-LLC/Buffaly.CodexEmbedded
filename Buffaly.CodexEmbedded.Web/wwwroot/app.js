@@ -540,7 +540,11 @@ function normalizeReasoningSummary(text) {
   if (!normalized) {
     return "";
   }
-  if (normalized.toLowerCase() === "none" || normalized.toLowerCase() === "null") {
+  const lowered = normalized.toLowerCase();
+  if (lowered === "none" || lowered === "null") {
+    return "";
+  }
+  if (lowered.includes("encrypted by provider") && lowered.startsWith("reasoning available")) {
     return "";
   }
 

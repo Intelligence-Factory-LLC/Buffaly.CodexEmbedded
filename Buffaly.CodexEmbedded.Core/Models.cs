@@ -37,6 +37,7 @@ public sealed record CodexTurnOptions
 	public string? Model { get; init; }
 	public string? Cwd { get; init; }
 	public string? ReasoningEffort { get; init; }
+	public string? ReasoningSummary { get; init; }
 	public string? ApprovalPolicy { get; init; }
 	public string? SandboxMode { get; init; }
 	public CodexCollaborationMode? CollaborationMode { get; init; }

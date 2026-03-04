@@ -348,6 +348,8 @@ public sealed class CodexClient : IAsyncDisposable
 		{
 			turnStartParams["effort"] = options.ReasoningEffort;
 		}
+		var reasoningSummary = NormalizeReasoningSummary(options?.ReasoningSummary) ?? "auto";
+		turnStartParams["summary"] = reasoningSummary;
 		if (!string.IsNullOrWhiteSpace(options?.Cwd))
 		{
 			turnStartParams["cwd"] = options.Cwd;
@@ -583,6 +585,24 @@ public sealed class CodexClient : IAsyncDisposable
 			"on-request" => "on-request",
 			"onrequest" => "on-request",
 			"never" => "never",
+			_ => null
+		};
+	}
+
+	private static string? NormalizeReasoningSummary(string? value)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return null;
+		}
+
+		var normalized = value.Trim().ToLowerInvariant();
+		return normalized switch
+		{
+			"auto" => "auto",
+			"concise" => "concise",
+			"detailed" => "detailed",
+			"none" => "none",
 			_ => null
 		};
 	}
