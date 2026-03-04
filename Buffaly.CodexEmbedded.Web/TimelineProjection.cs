@@ -5,7 +5,7 @@ using System.Text.Json;
 internal sealed class TimelineProjectionService
 {
 	private const int MaxMessageTextChars = 20_000;
-	private const int MaxInlineDataImageUrlChars = 8_192;
+	private const int MaxInlineDataImageUrlChars = 2_000_000;
 	private const int SkipHeavyLineParseChars = 250_000;
 
 	private readonly ConcurrentDictionary<string, TimelineProjectionState> _stateByThread = new(StringComparer.Ordinal);
@@ -553,12 +553,31 @@ internal sealed class TimelineProjectionService
 
 	private static string ExtractReasoningSummary(JsonElement payload)
 	{
+		var payloadType = TryGetString(payload, "type") ?? string.Empty;
+		var isReasoningType = string.Equals(payloadType, "reasoning", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(payloadType, "agent_reasoning", StringComparison.OrdinalIgnoreCase);
+
+		if (!isReasoningType)
+		{
+			var explicitReasoning = NormalizeText(
+				TryGetString(payload, "reasoningSummary")
+				?? TryGetString(payload, "reasoning_summary"));
+			return IsMeaningfulReasoningSummary(explicitReasoning)
+				? explicitReasoning
+				: string.Empty;
+		}
+
 		var summary = TryGetProperty(payload, "summary");
 		if (summary is JsonElement summaryElement)
 		{
 			if (summaryElement.ValueKind == JsonValueKind.String)
 			{
-				return NormalizeText(summaryElement.GetString());
+				var singleSummary = NormalizeText(summaryElement.GetString());
+				if (IsMeaningfulReasoningSummary(singleSummary))
+				{
+					return singleSummary;
+				}
+				return string.Empty;
 			}
 			if (summaryElement.ValueKind == JsonValueKind.Array)
 			{
@@ -591,13 +610,31 @@ internal sealed class TimelineProjectionService
 			}
 		}
 
-		var isReasoningType = string.Equals(TryGetString(payload, "type"), "reasoning", StringComparison.OrdinalIgnoreCase);
-		if (isReasoningType)
+		var inlineReasoning = NormalizeText(TryGetString(payload, "message") ?? TryGetString(payload, "content"));
+		if (IsMeaningfulReasoningSummary(inlineReasoning))
 		{
-			return NormalizeText(TryGetString(payload, "message") ?? TryGetString(payload, "content"));
+			return inlineReasoning;
+		}
+
+		var encryptedReasoning = NormalizeText(TryGetString(payload, "encrypted_content"));
+		if (!string.IsNullOrWhiteSpace(encryptedReasoning))
+		{
+			return "Reasoning available (encrypted by provider)";
 		}
 
 		return string.Empty;
+	}
+
+	private static bool IsMeaningfulReasoningSummary(string? value)
+	{
+		var normalized = NormalizeText(value);
+		if (string.IsNullOrWhiteSpace(normalized))
+		{
+			return false;
+		}
+
+		return !string.Equals(normalized, "none", StringComparison.OrdinalIgnoreCase) &&
+			!string.Equals(normalized, "null", StringComparison.OrdinalIgnoreCase);
 	}
 
 	private static string ExtractModel(JsonElement payload)

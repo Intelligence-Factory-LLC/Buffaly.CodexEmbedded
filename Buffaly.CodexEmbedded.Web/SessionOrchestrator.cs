@@ -1420,6 +1420,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			};
 		}
 		var isPlanTurn = string.Equals(collaborationModeKind, "plan", StringComparison.Ordinal);
+		var dispatchId = Guid.NewGuid().ToString("N")[..10];
 		var lockTaken = false;
 		var completionPublished = false;
 		CancellationTokenSource? timeoutCts = null;
@@ -1428,7 +1429,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		try
 		{
 			WriteOrchestratorAudit(
-				$"event=turn_send_dispatching sessionId={sessionId} threadId={session.Session.ThreadId} fromQueue={fromQueue} mode={collaborationModeKind} text={SummarizeTextForAudit(request.Text, request.Images?.Count ?? 0)}");
+				$"event=turn_send_dispatching sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} fromQueue={fromQueue} mode={collaborationModeKind} text={SummarizeTextForAudit(request.Text, request.Images?.Count ?? 0)}");
 			var lockAcquired = await WaitForTurnSlotWithTimeoutAsync(sessionId, session);
 			if (!lockAcquired)
 			{
@@ -1451,7 +1452,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 						sessionId,
 						message = $"Turn did not start because queue wait timed out ({waitSeconds}s)."
 					});
-				WriteOrchestratorAudit($"event=turn_send_queue_timeout sessionId={sessionId} waitSeconds={waitSeconds} fromQueue={fromQueue}");
+				WriteOrchestratorAudit($"event=turn_send_queue_timeout sessionId={sessionId} dispatchId={dispatchId} waitSeconds={waitSeconds} fromQueue={fromQueue}");
 				return TurnExecutionOutcome.QueueTimedOut;
 			}
 
@@ -1461,15 +1462,16 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			timeoutCts.CancelAfter(TimeSpan.FromSeconds(_defaults.TurnTimeoutSeconds));
 			turnCts = CancellationTokenSource.CreateLinkedTokenSource(session.LifetimeToken, timeoutCts.Token);
 			var turnToken = turnCts.Token;
-			if (session.TryMarkTurnStarted(turnCts, collaborationModeKind))
+			if (session.TryMarkTurnStarted(turnCts, collaborationModeKind, dispatchId))
 			{
 				Broadcast?.Invoke("turn_started", new { sessionId, isPlanTurn, collaborationMode = collaborationModeKind });
 				SessionsChanged?.Invoke();
 			}
 			else
 			{
-				session.Log.Write("[turn_state] suppressed duplicate turn_started emit");
+				session.Log.Write($"[turn_state] suppressed duplicate turn_started emit dispatchId={dispatchId}");
 			}
+			session.Log.Write($"[turn_dispatch] dispatchId={dispatchId} start fromQueue={fromQueue} mode={collaborationModeKind}");
 
 			if (fromQueue && !string.IsNullOrWhiteSpace(request.QueueItemId))
 			{
@@ -1497,7 +1499,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			};
 			var turnRpcStopwatch = Stopwatch.StartNew();
 			WriteOrchestratorAudit(
-				$"event=turn_rpc_start sessionId={sessionId} threadId={session.Session.ThreadId} fromQueue={fromQueue} mode={collaborationModeKind} {session.BuildTurnDebugSummary()}");
+				$"event=turn_rpc_start sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} fromQueue={fromQueue} mode={collaborationModeKind} {session.BuildTurnDebugSummary()}");
 			var result = await session.Session.SendMessageAsync(
 				request.Text,
 				images: request.Images,
@@ -1506,7 +1508,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				cancellationToken: turnToken);
 			turnRpcStopwatch.Stop();
 			WriteOrchestratorAudit(
-				$"event=turn_rpc_result sessionId={sessionId} threadId={session.Session.ThreadId} elapsedMs={turnRpcStopwatch.ElapsedMilliseconds} status={result.Status ?? "unknown"} hasError={!string.IsNullOrWhiteSpace(result.ErrorMessage)} {session.BuildTurnDebugSummary()}");
+				$"event=turn_rpc_result sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} elapsedMs={turnRpcStopwatch.ElapsedMilliseconds} status={result.Status ?? "unknown"} hasError={!string.IsNullOrWhiteSpace(result.ErrorMessage)} {session.BuildTurnDebugSummary()}");
 
 			Broadcast?.Invoke("assistant_done", new { sessionId, text = result.Text });
 			completionPublished = TryPublishTurnComplete(
@@ -1515,14 +1517,16 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				result.Status,
 				result.ErrorMessage);
 			WriteOrchestratorAudit(
-				$"event=turn_send_completed sessionId={sessionId} status={result.Status ?? "unknown"} hasError={!string.IsNullOrWhiteSpace(result.ErrorMessage)}");
+				$"event=turn_send_completed sessionId={sessionId} dispatchId={dispatchId} status={result.Status ?? "unknown"} hasError={!string.IsNullOrWhiteSpace(result.ErrorMessage)}");
 		}
 		catch (OperationCanceledException)
 		{
 			WriteOrchestratorAudit(
-				$"event=turn_rpc_canceled sessionId={sessionId} threadId={session.Session.ThreadId} timeout={timeoutCts?.IsCancellationRequested == true} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested} {session.BuildTurnDebugSummary()}");
+				$"event=turn_rpc_canceled sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} timeout={timeoutCts?.IsCancellationRequested == true} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested} {session.BuildTurnDebugSummary()}");
 			WriteOrchestratorAudit(
-				$"event=turn_send_operation_canceled sessionId={sessionId} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested}");
+				$"event=turn_send_operation_canceled sessionId={sessionId} dispatchId={dispatchId} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested}");
+			session.Log.Write(
+				$"[turn_dispatch] dispatchId={dispatchId} canceled timeout={timeoutCts?.IsCancellationRequested == true} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested}");
 			if (session.LifetimeToken.IsCancellationRequested && !lockTaken)
 			{
 				return TurnExecutionOutcome.CanceledByLifetime;
@@ -1545,15 +1549,15 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					errorMessage: "Turn canceled.");
 			}
 			WriteOrchestratorAudit(
-				$"event=turn_send_canceled sessionId={sessionId} timeout={timeoutCts?.IsCancellationRequested == true}");
+				$"event=turn_send_canceled sessionId={sessionId} dispatchId={dispatchId} timeout={timeoutCts?.IsCancellationRequested == true}");
 		}
 		catch (Exception ex)
 		{
 			Logs.LogError(ex);
 			session.Log.Write($"[turn_error] {ex.Message}");
 			WriteOrchestratorAudit(
-				$"event=turn_rpc_failed sessionId={sessionId} threadId={session.Session.ThreadId} error={ex.Message} {session.BuildTurnDebugSummary()}");
-			WriteOrchestratorAudit($"event=turn_send_failed sessionId={sessionId} error={ex.Message}");
+				$"event=turn_rpc_failed sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} error={ex.Message} {session.BuildTurnDebugSummary()}");
+			WriteOrchestratorAudit($"event=turn_send_failed sessionId={sessionId} dispatchId={dispatchId} error={ex.Message}");
 			completionPublished = TryPublishTurnComplete(
 				sessionId,
 				session,
@@ -2067,7 +2071,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private void HandleCoreEvent(string sessionId, LocalLogWriter sessionLog, CodexCoreEvent ev)
 	{
 		sessionLog.Write(CodexEventLogging.Format(ev, includeTimestamp: false));
-		TryGetSession(sessionId)?.MarkCoreEventObserved();
+		TryGetSession(sessionId)?.MarkCoreEventObserved(ev.Type, ev.Message);
 
 		if (string.Equals(ev.Type, "rpc_wait_canceled", StringComparison.Ordinal) ||
 			string.Equals(ev.Type, "rpc_wait_failed", StringComparison.Ordinal) ||
@@ -4211,10 +4215,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		private string? _sandboxPolicy = WebCodexUtils.NormalizeSandboxMode(SandboxPolicy);
 		private CancellationTokenSource? _activeTurnCts;
 		private string? _activeTurnId;
+		private string? _activeDispatchId;
 		private string? _activeCollaborationMode;
 		private TurnLifecycleState _turnState = TurnLifecycleState.Idle;
 		private DateTimeOffset _turnStateChangedUtc = DateTimeOffset.UtcNow;
 		private DateTimeOffset _lastCoreEventUtc = DateTimeOffset.UtcNow;
+		private string? _lastCoreEventType;
+		private string? _lastCoreEventMessage;
 		private bool _queueDispatchRunning;
 		private PendingApprovalSnapshot? _pendingApproval;
 		private bool _isAppServerRecovering = AppServerRecovering;
@@ -4350,8 +4357,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				var nowUtc = DateTimeOffset.UtcNow;
 				var stateAgeSeconds = Math.Round((nowUtc - _turnStateChangedUtc).TotalSeconds);
 				var coreIdleSeconds = Math.Round((nowUtc - _lastCoreEventUtc).TotalSeconds);
+				var lastCoreEventType = string.IsNullOrWhiteSpace(_lastCoreEventType) ? "(none)" : _lastCoreEventType;
+				var lastCoreEventMessage = string.IsNullOrWhiteSpace(_lastCoreEventMessage) ? "(none)" : _lastCoreEventMessage;
 				return
-					$"turnState={_turnState} activeTurnId={_activeTurnId ?? "(none)"} clientActiveTurnId={clientActiveTurnId ?? "(none)"} stateAgeSec={stateAgeSeconds:0} coreIdleSec={coreIdleSeconds:0} gateCount={_turnGate.CurrentCount} recovering={_isAppServerRecovering}";
+					$"turnState={_turnState} dispatchId={_activeDispatchId ?? "(none)"} activeTurnId={_activeTurnId ?? "(none)"} clientActiveTurnId={clientActiveTurnId ?? "(none)"} stateAgeSec={stateAgeSeconds:0} coreIdleSec={coreIdleSeconds:0} lastCoreType={lastCoreEventType} lastCoreMessage={lastCoreEventMessage} gateCount={_turnGate.CurrentCount} recovering={_isAppServerRecovering}";
 			}
 		}
 
@@ -4679,11 +4688,29 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
-		public void MarkCoreEventObserved()
+		private static string? NormalizeCoreDebugValue(string? value, int maxLength)
+		{
+			if (string.IsNullOrWhiteSpace(value))
+			{
+				return null;
+			}
+
+			var normalized = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+			if (normalized.Length > maxLength)
+			{
+				normalized = normalized[..maxLength] + "...";
+			}
+
+			return normalized.Replace(' ', '_');
+		}
+
+		public void MarkCoreEventObserved(string? coreEventType = null, string? coreEventMessage = null)
 		{
 			lock (_turnSync)
 			{
 				_lastCoreEventUtc = DateTimeOffset.UtcNow;
+				_lastCoreEventType = NormalizeCoreDebugValue(coreEventType, 64) ?? _lastCoreEventType;
+				_lastCoreEventMessage = NormalizeCoreDebugValue(coreEventMessage, 140) ?? _lastCoreEventMessage;
 			}
 		}
 
@@ -4782,7 +4809,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
-		public bool TryMarkTurnStarted(CancellationTokenSource turnCts, string? collaborationMode)
+		public bool TryMarkTurnStarted(CancellationTokenSource turnCts, string? collaborationMode, string? dispatchId)
 		{
 			lock (_turnSync)
 			{
@@ -4799,8 +4826,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				}
 
 				_activeTurnCts = turnCts;
+				_activeDispatchId = string.IsNullOrWhiteSpace(dispatchId) ? null : dispatchId.Trim();
 				_activeTurnId = Session.TryGetActiveTurnId(out var activeFromClient) ? activeFromClient : _activeTurnId;
 				_activeCollaborationMode = WebCodexUtils.NormalizeCollaborationMode(collaborationMode);
+				_lastCoreEventUtc = DateTimeOffset.UtcNow;
+				_lastCoreEventType = null;
+				_lastCoreEventMessage = null;
 				SetTurnState(TurnLifecycleState.RunningLocal);
 				return true;
 			}
@@ -4826,6 +4857,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				}
 
 				_activeTurnCts = null;
+				_activeDispatchId = null;
 				_activeTurnId = normalizedTurnId;
 				SetTurnState(TurnLifecycleState.RunningRecovered);
 				return true;
@@ -4855,6 +4887,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				}
 
 				_activeTurnCts = null;
+				_activeDispatchId = null;
 				_activeTurnId = normalizedTurnId;
 				SetTurnState(TurnLifecycleState.RunningRecovered);
 				recoveredTurnId = normalizedTurnId;
@@ -4874,6 +4907,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 				shouldRelease = _turnState == TurnLifecycleState.RunningLocal;
 				_activeTurnCts = null;
+				_activeDispatchId = null;
 				_activeTurnId = null;
 				_activeCollaborationMode = null;
 				SetTurnState(TurnLifecycleState.Idle);
@@ -4926,6 +4960,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				activeTurnCts = _activeTurnCts;
 				hadActiveTurnToken = activeTurnCts is not null;
 				_activeTurnCts = null;
+				_activeDispatchId = null;
 				_activeTurnId = null;
 				_activeCollaborationMode = null;
 				SetTurnState(TurnLifecycleState.Idle);

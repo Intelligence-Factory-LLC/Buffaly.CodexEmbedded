@@ -3276,6 +3276,24 @@ body {
 	color: #0f172a;
 }
 
+.worktree-diff-stat {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	flex: 0 0 auto;
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.7rem;
+	font-weight: 700;
+}
+
+.worktree-diff-stat-add {
+	color: #15803d;
+}
+
+.worktree-diff-stat-remove {
+	color: #b91c1c;
+}
+
 .worktree-diff-detail {
 	padding: 0.28rem 0.46rem 0.42rem;
 	border-top: 1px solid #e2e8f0;
@@ -3657,6 +3675,10 @@ body {
 	margin: 0.3rem 0;
 	padding-right: 2rem;
 	position: relative;
+}
+
+.watcher-embedded-turn-controls {
+	margin-bottom: 0.14rem;
 }
 
 .watcher-embedded-entry .watcher-entry-collapsible {
@@ -4209,6 +4231,14 @@ html[data-theme="dark"] .worktree-diff-code {
 html[data-theme="dark"] .worktree-diff-path,
 html[data-theme="dark"] .worktree-diff-pre {
 	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .worktree-diff-stat-add {
+	color: #86efac;
+}
+
+html[data-theme="dark"] .worktree-diff-stat-remove {
+	color: #fca5a5;
 }
 
 html[data-theme="dark"] .worktree-diff-detail {

@@ -7,7 +7,7 @@
   const TOOL_PREVIEW_MIN_HIDDEN_LINES = 3;
   const STORAGE_RENDER_ASSISTANT_MARKDOWN_KEY = "codex.settings.renderAssistantMarkdown.v1";
   const MAX_TIMELINE_ENTRY_TEXT_CHARS = 20_000;
-  const MAX_TIMELINE_IMAGE_URL_CHARS = 8_192;
+  const MAX_TIMELINE_IMAGE_URL_CHARS = 2_000_000;
 
   class CodexSessionTimeline {
     constructor(options) {
@@ -611,8 +611,66 @@
         return { card: row, toggle: null };
       }
 
-      const card = document.createElement("div");
       const roleClass = options.roleClassOverride || entry.role || "system";
+      const entryId = Number.isFinite(entry.id) ? Math.floor(entry.id) : this.nextEntryId++;
+      const normalizedEntry = {
+        id: entryId,
+        role: entry.role || roleClass,
+        kind: entry.kind || "",
+        title: entry.title || "System",
+        text: entry.text || "",
+        rawType: entry.rawType || "",
+        compact: entry.compact === true,
+        images: Array.isArray(entry.images) ? entry.images : []
+      };
+      const bodyText = this.getEntryBodyText(normalizedEntry);
+
+      if (this.shouldUseEmbeddedInstructionPresentation(normalizedEntry, bodyText)) {
+        const wrap = document.createElement("div");
+        wrap.className = "watcher-embedded-entry";
+        if (options.intermediate === true) {
+          wrap.classList.add("watcher-turn-intermediate");
+        }
+
+        let toggle = null;
+        if (options.includeToggle === true) {
+          const controls = document.createElement("div");
+          controls.className = "watcher-embedded-turn-controls";
+          toggle = document.createElement("button");
+          toggle.type = "button";
+          toggle.className = "watcher-turn-toggle";
+          toggle.textContent = "[-]";
+          controls.appendChild(toggle);
+          wrap.appendChild(controls);
+        }
+
+        const bodyNode = this.createBodyNodeForEntry(wrap, normalizedEntry, bodyText);
+        const body = bodyNode.body;
+        const images = Array.isArray(entry.images) ? entry.images : [];
+        const imagesWrap = this.renderEntryImages(wrap, images);
+
+        let copyActionButton = null;
+        try {
+          copyActionButton = this.createEntryActions(wrap, normalizedEntry);
+        } catch (error) {
+          copyActionButton = null;
+        }
+
+        this.entryNodeById.set(normalizedEntry.id, {
+          card: wrap,
+          body,
+          time: null,
+          compact: false,
+          imagesWrap,
+          detailsWrap: bodyNode.detailsWrap,
+          copyActionButton,
+          entry: normalizedEntry
+        });
+
+        return { card: wrap, toggle };
+      }
+
+      const card = document.createElement("div");
       card.className = `watcher-entry ${roleClass}`;
       if (options.intermediate === true) {
         card.classList.add("watcher-turn-intermediate");
@@ -644,18 +702,6 @@
       header.append(title, time);
       card.appendChild(header);
 
-      const entryId = Number.isFinite(entry.id) ? Math.floor(entry.id) : this.nextEntryId++;
-      const normalizedEntry = {
-        id: entryId,
-        role: entry.role || roleClass,
-        kind: entry.kind || "",
-        title: entry.title || "System",
-        text: entry.text || "",
-        rawType: entry.rawType || "",
-        compact: entry.compact === true,
-        images: Array.isArray(entry.images) ? entry.images : []
-      };
-      const bodyText = this.getEntryBodyText(normalizedEntry);
       const bodyNode = this.createBodyNodeForEntry(card, normalizedEntry, bodyText);
       const body = bodyNode.body;
 

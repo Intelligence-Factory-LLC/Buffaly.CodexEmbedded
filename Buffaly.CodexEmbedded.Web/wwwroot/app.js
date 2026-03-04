@@ -30,6 +30,7 @@ let projectOrderIndexByKey = new Map(); // projectKey -> stable display order in
 let nextProjectOrderIndex = 0;
 let projectOrderInitialized = false;
 let pendingCreateRequests = new Map(); // requestId -> { threadName, cwd }
+let pendingAttachRequests = new Map(); // requestId -> { threadId, requestedAtMs }
 let pendingRenameOnAttach = new Map(); // threadId -> threadName
 let pendingSessionLoadThreadId = null;
 let pendingSessionLoadPreviousActiveId = null;
@@ -537,6 +538,9 @@ function normalizeReasoningSummary(text) {
 
   const normalized = text.replace(/\r/g, "").replace(/\s+/g, " ").trim();
   if (!normalized) {
+    return "";
+  }
+  if (normalized.toLowerCase() === "none" || normalized.toLowerCase() === "null") {
     return "";
   }
 
@@ -2108,6 +2112,12 @@ async function attachSessionByThreadId(threadId, cwd, options = {}) {
   }
 
   const payload = { threadId };
+  const requestId = createRequestId();
+  payload.requestId = requestId;
+  pendingAttachRequests.set(requestId, {
+    threadId: String(threadId || "").trim(),
+    requestedAtMs: Date.now()
+  });
   const preferred = getPreferredModelForThread(threadId);
   const preferredPermission = getPreferredPermissionForThread(threadId);
   const model = preferred.found
@@ -2132,7 +2142,11 @@ async function attachSessionByThreadId(threadId, cwd, options = {}) {
     localStorage.setItem(STORAGE_CWD_KEY, normalizedCwd);
   }
 
-  return send("session_attach", payload);
+  const sent = send("session_attach", payload);
+  if (!sent) {
+    pendingAttachRequests.delete(requestId);
+  }
+  return sent;
 }
 
 async function renameSessionFromSidebar(entry) {
@@ -5825,6 +5839,16 @@ function pruneRateLimitState(validSessionIds) {
   }
 }
 
+function prunePendingAttachRequests() {
+  const expireBefore = Date.now() - 3 * 60 * 1000;
+  for (const [requestId, value] of Array.from(pendingAttachRequests.entries())) {
+    const requestedAtMs = Number.isFinite(value?.requestedAtMs) ? value.requestedAtMs : 0;
+    if (requestedAtMs <= 0 || requestedAtMs < expireBefore) {
+      pendingAttachRequests.delete(requestId);
+    }
+  }
+}
+
 function handleServerEvent(frame) {
   const type = frame.type;
   const payload = frame.payload || {};
@@ -5908,6 +5932,12 @@ function handleServerEvent(frame) {
         pendingCreate = pendingCreateRequests.get(requestId) || null;
         pendingCreateRequests.delete(requestId);
       }
+      prunePendingAttachRequests();
+      let pendingAttach = null;
+      if (requestId && pendingAttachRequests.has(requestId)) {
+        pendingAttach = pendingAttachRequests.get(requestId) || null;
+        pendingAttachRequests.delete(requestId);
+      }
       if (!normalizeProjectCwd(state.cwd || "") && pendingCreate?.cwd) {
         state.cwd = pendingCreate.cwd;
       }
@@ -5960,7 +5990,23 @@ function handleServerEvent(frame) {
         }
       }
 
-      updateSessionSelect(sessionId, { preferServerActive: true });
+      const shouldPreferAttachedSession =
+        !attachedMode ||
+        !!pendingAttach ||
+        !activeSessionId ||
+        !sessions.has(activeSessionId);
+      uiAuditLog("in.session_attached_focus_decision", {
+        sessionId,
+        requestId,
+        mode,
+        initiatedByClient: !!pendingAttach,
+        hadActiveSession: !!activeSessionId,
+        activeSessionExists: !!(activeSessionId && sessions.has(activeSessionId)),
+        preferAttachedSession: shouldPreferAttachedSession
+      });
+      updateSessionSelect(
+        shouldPreferAttachedSession ? sessionId : null,
+        { preferServerActive: shouldPreferAttachedSession });
       return;
     }
 
@@ -7486,11 +7532,17 @@ function appendDiffNotesToPrompt(promptText) {
   }
 }
 
+function hasPendingDiffNotes() {
+  const hasPending = window.codexDiffNotesHasPending;
+  return typeof hasPending === "function" && hasPending() === true;
+}
+
 async function queueCurrentComposerPrompt() {
   const prompt = promptInput.value.trim();
   const images = pendingComposerImages.map((x) => ({ ...x }));
+  const hasDiffNotes = hasPendingDiffNotes();
   const usePlanMode = planModeNextTurn === true;
-  if (!prompt && images.length === 0) {
+  if (!prompt && images.length === 0 && !hasDiffNotes) {
     return false;
   }
 
@@ -7564,6 +7616,7 @@ promptForm.addEventListener("submit", async (event) => {
   await settleScribeBeforeSubmit();
   const prompt = promptInput.value.trim();
   const images = pendingComposerImages.map((x) => ({ ...x }));
+  const hasDiffNotes = hasPendingDiffNotes();
   const usePlanMode = planModeNextTurn === true;
   if (pendingToolUserInput) {
     if (prompt.localeCompare("cancel", undefined, { sensitivity: "accent" }) === 0) {
@@ -7578,7 +7631,7 @@ promptForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  if (!prompt && images.length === 0) {
+  if (!prompt && images.length === 0 && !hasDiffNotes) {
     return;
   }
 
@@ -7656,7 +7709,7 @@ promptForm.addEventListener("submit", async (event) => {
 
 promptInput.addEventListener("keydown", (event) => {
   if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
-    if (!promptInput.value.trim() && pendingComposerImages.length === 0) {
+    if (!promptInput.value.trim() && pendingComposerImages.length === 0 && !hasPendingDiffNotes()) {
       return;
     }
 

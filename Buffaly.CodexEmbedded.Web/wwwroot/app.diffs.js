@@ -291,6 +291,30 @@
     return "";
   }
 
+  function getFileDiffStat(file) {
+    if (!file) {
+      return { added: 0, removed: 0 };
+    }
+
+    const patchText = typeof file.patch === "string" ? file.patch : "";
+    if (!patchText) {
+      return { added: 0, removed: 0 };
+    }
+
+    let added = 0;
+    let removed = 0;
+    const lines = patchText.split(/\r?\n/);
+    for (const line of lines) {
+      if (line.startsWith("+") && !line.startsWith("+++")) {
+        added += 1;
+      } else if (line.startsWith("-") && !line.startsWith("---")) {
+        removed += 1;
+      }
+    }
+
+    return { added, removed };
+  }
+
   function notesForPath(path) {
     return Array.from(notesByKey.values())
       .filter((x) => x.path === path)
@@ -348,6 +372,7 @@
         : "";
       const isBinary = file.isBinary === true;
       const patchText = isBinary ? "" : (typeof file.patch === "string" ? file.patch : "");
+      const diffStat = getFileDiffStat(file);
       const patchLines = patchText ? patchText.split(/\r?\n/) : [];
       const shownLines = patchLines.slice(0, MAX_LINES_PER_FILE);
       const truncated = patchLines.length > shownLines.length;
@@ -376,6 +401,10 @@
           <summary>
             <span class="worktree-diff-code" title="${statusLabel}">${statusCode}</span>
             <span class="worktree-diff-path" title="${pathLabel}">${pathLabel}</span>
+            <span class="worktree-diff-stat" aria-label="Diff stat">
+              <span class="worktree-diff-stat-add">+${diffStat.added}</span>
+              <span class="worktree-diff-stat-remove">-${diffStat.removed}</span>
+            </span>
           </summary>
           <div class="worktree-diff-detail">
             ${originalPath ? `<div class="worktree-diff-truncated">Renamed from ${originalPath}</div>` : ""}
@@ -670,6 +699,7 @@
   }
 
   window.codexDiffNotesConsumePromptMetadata = consumePromptMetadata;
+  window.codexDiffNotesHasPending = () => notesByKey.size > 0;
 
   async function fetchAndRenderDiff(force) {
     if (pollInFlight) {
