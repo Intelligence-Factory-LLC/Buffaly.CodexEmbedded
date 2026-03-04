@@ -422,22 +422,22 @@
       "text-underline-offset:2px;" +
       "}" +
       "a.vs-bridge-file-link::after{" +
-      "content:' VS';" +
+      "content:' ↗';" +
       "display:inline-block;" +
-      "margin-left:4px;" +
-      "padding:0 5px;" +
+      "margin-left:3px;" +
+      "padding:0 2px;" +
       "border-radius:999px;" +
-      "font-size:10px;" +
-      "font-weight:700;" +
+      "font-size:11px;" +
+      "font-weight:600;" +
       "line-height:1.4;" +
       "vertical-align:middle;" +
-      "background:#dbeafe;" +
-      "border:1px solid #93c5fd;" +
+      "background:transparent;" +
+      "border:0;" +
       "color:#1e40af;" +
       "}" +
       "html[data-theme='dark'] a.vs-bridge-file-link::after{" +
-      "background:#1e293b;" +
-      "border-color:#475569;" +
+      "background:transparent;" +
+      "border:0;" +
       "color:#bfdbfe;" +
       "}";
     (document.head || document.documentElement || document.body).appendChild(style);
