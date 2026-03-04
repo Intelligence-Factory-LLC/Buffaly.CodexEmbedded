@@ -74,3 +74,16 @@ public sealed record CodexCoreEvent(
 
 public sealed record CodexModelInfo(string Model, string DisplayName, bool IsDefault, string? Description);
 
+public sealed record CodexRpcPendingRequest(
+	string Id,
+	string Method,
+	double AgeMs);
+
+public sealed record CodexRpcDebugSnapshot(
+	DateTimeOffset CapturedAtUtc,
+	int PendingCount,
+	IReadOnlyList<CodexRpcPendingRequest> PendingRequests,
+	DateTimeOffset? LastStdinWriteUtc,
+	DateTimeOffset? LastStdoutReadUtc,
+	DateTimeOffset? LastStderrReadUtc);
+

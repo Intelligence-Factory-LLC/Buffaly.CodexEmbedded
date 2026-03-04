@@ -88,6 +88,11 @@ public sealed class CodexSession
 	{
 		return _client.SendSteerAsync(ThreadId, expectedTurnId, text, images, cancellationToken);
 	}
+
+	public CodexRpcDebugSnapshot GetRpcDebugSnapshot(int maxPending = 8)
+	{
+		return _client.GetRpcDebugSnapshot(maxPending);
+	}
 }
 
 

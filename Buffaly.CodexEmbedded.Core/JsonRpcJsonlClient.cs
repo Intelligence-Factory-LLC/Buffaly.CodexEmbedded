@@ -12,12 +12,15 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 	{
 		DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
 	};
-	private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _pending = new(StringComparer.Ordinal);
+	private readonly ConcurrentDictionary<string, PendingRpcRequest> _pending = new(StringComparer.Ordinal);
 	private readonly SemaphoreSlim _sendLock = new(1, 1);
 	private long _nextId;
 	private Task? _stdoutPump;
 	private Task? _stderrPump;
 	private CancellationTokenSource? _pumpCts;
+	private DateTimeOffset? _lastStdinWriteUtc;
+	private DateTimeOffset? _lastStdoutReadUtc;
+	private DateTimeOffset? _lastStderrReadUtc;
 
 	public event Action<CodexCoreEvent>? OnEvent;
 	public event Action<string, JsonElement>? OnNotification;
@@ -30,6 +33,11 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 	{
 		_transport = transport;
 	}
+
+	private sealed record PendingRpcRequest(
+		TaskCompletionSource<JsonElement> Completion,
+		string Method,
+		DateTimeOffset SentAtUtc);
 
 	public Task StartAsync(CancellationToken cancellationToken)
 	{
@@ -51,7 +59,7 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 		var stopwatch = Stopwatch.StartNew();
 
 		var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
-		_pending[idKey] = tcs;
+		_pending[idKey] = new PendingRpcRequest(tcs, method, DateTimeOffset.UtcNow);
 
 		try
 		{
@@ -70,6 +78,7 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 			try
 			{
 				await _transport.WriteStdinLineAsync(json, cancellationToken);
+				_lastStdinWriteUtc = DateTimeOffset.UtcNow;
 			}
 			finally
 			{
@@ -118,6 +127,7 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 		try
 		{
 			await _transport.WriteStdinLineAsync(json, cancellationToken);
+			_lastStdinWriteUtc = DateTimeOffset.UtcNow;
 		}
 		finally
 		{
@@ -140,6 +150,7 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 				{
 					break;
 				}
+				_lastStdoutReadUtc = DateTimeOffset.UtcNow;
 
 				OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "debug", "stdout_jsonl", line));
 
@@ -166,19 +177,19 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 							_ => null
 						};
 
-						if (!string.IsNullOrWhiteSpace(idKey) && _pending.TryRemove(idKey!, out var tcs))
+						if (!string.IsNullOrWhiteSpace(idKey) && _pending.TryRemove(idKey!, out var pending))
 						{
 							if (root.TryGetProperty("result", out var resultElement))
 							{
-								tcs.TrySetResult(resultElement.Clone());
+								pending.Completion.TrySetResult(resultElement.Clone());
 							}
 							else if (root.TryGetProperty("error", out var errorElement))
 							{
-								tcs.TrySetException(new InvalidOperationException(errorElement.ToString()));
+								pending.Completion.TrySetException(new InvalidOperationException(errorElement.ToString()));
 							}
 							else
 							{
-								tcs.TrySetException(new InvalidOperationException("Malformed JSON-RPC response."));
+								pending.Completion.TrySetException(new InvalidOperationException("Malformed JSON-RPC response."));
 							}
 
 							continue;
@@ -237,9 +248,9 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 		}
 		finally
 		{
-			foreach (var tcs in _pending.Values)
+			foreach (var pending in _pending.Values)
 			{
-				tcs.TrySetException(new InvalidOperationException("Transport closed before response."));
+				pending.Completion.TrySetException(new InvalidOperationException("Transport closed before response."));
 			}
 			_pending.Clear();
 		}
@@ -256,6 +267,7 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 				{
 					break;
 				}
+				_lastStderrReadUtc = DateTimeOffset.UtcNow;
 
 				OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "debug", "stderr_line", line));
 			}
@@ -267,6 +279,28 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 		{
 			OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "error", "stderr_pump_failed", ex.Message));
 		}
+	}
+
+	public CodexRpcDebugSnapshot GetDebugSnapshot(int maxPending = 8)
+	{
+		var nowUtc = DateTimeOffset.UtcNow;
+		var boundedMax = Math.Clamp(maxPending, 1, 64);
+		var pendingRequests = _pending
+			.OrderBy(x => x.Value.SentAtUtc)
+			.Take(boundedMax)
+			.Select(x => new CodexRpcPendingRequest(
+				Id: x.Key,
+				Method: x.Value.Method,
+				AgeMs: Math.Max(0, (nowUtc - x.Value.SentAtUtc).TotalMilliseconds)))
+			.ToArray();
+
+		return new CodexRpcDebugSnapshot(
+			CapturedAtUtc: nowUtc,
+			PendingCount: _pending.Count,
+			PendingRequests: pendingRequests,
+			LastStdinWriteUtc: _lastStdinWriteUtc,
+			LastStdoutReadUtc: _lastStdoutReadUtc,
+			LastStderrReadUtc: _lastStderrReadUtc);
 	}
 
 	public async ValueTask DisposeAsync()

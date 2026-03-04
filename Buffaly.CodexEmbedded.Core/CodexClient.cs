@@ -233,6 +233,11 @@ public sealed class CodexClient : IAsyncDisposable
 		return true;
 	}
 
+	public CodexRpcDebugSnapshot GetRpcDebugSnapshot(int maxPending = 8)
+	{
+		return _rpc.GetDebugSnapshot(maxPending);
+	}
+
 	public bool TryGetActiveTurnId(string threadId, out string? turnId)
 	{
 		turnId = null;
