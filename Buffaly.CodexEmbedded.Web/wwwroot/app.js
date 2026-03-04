@@ -69,6 +69,7 @@ let turnStartGraceUntilBySession = new Map(); // sessionId -> epoch ms while wai
 let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
 let jumpCollapseMode = false;
 let conversationMetaMenuOpen = false;
+let sessionThreadCopyResetTimer = null;
 let planModeNextTurn = false;
 let configuredDefaultModel = "";
 let scribeController = null;
@@ -106,7 +107,6 @@ const WS_RECONNECT_MAX_DELAY_MS = 15000;
 const VS_SELECTION_POLL_INTERVAL_MS = 1500;
 const VS_SELECTION_MAX_PROMPT_CHARS = 4000;
 const OPENAI_KEY_STATUS_CACHE_MS = 15000;
-const UI_AUDIT_PREFIX = "[UI.Audit]";
 const UI_AUDIT_OUTGOING_TYPES = new Set([
   "session_create",
   "session_attach",
@@ -200,6 +200,9 @@ const sessionMeta = document.getElementById("sessionMeta");
 const conversationModelSummary = document.getElementById("conversationModelSummary");
 const conversationMetaMenuBtn = document.getElementById("conversationMetaMenuBtn");
 const conversationMetaMenu = document.getElementById("conversationMetaMenu");
+const sessionMetaThreadItem = document.getElementById("sessionMetaThreadItem");
+const sessionMetaThreadValue = document.getElementById("sessionMetaThreadValue");
+const sessionMetaThreadCopyBtn = document.getElementById("sessionMetaThreadCopyBtn");
 const sessionMetaDetailsBtn = document.getElementById("sessionMetaDetailsBtn");
 const sessionMetaModelItem = document.getElementById("sessionMetaModelItem");
 const jumpToBtn = document.getElementById("jumpToBtn");
@@ -274,13 +277,15 @@ function uiAuditLog(eventName, details = null, level = "info") {
   if (!logger) {
     return;
   }
+  const timestamp = new Date().toISOString();
+  const line = `${timestamp} ${eventName}`;
 
   if (details && typeof details === "object") {
-    logger(`${UI_AUDIT_PREFIX} ${eventName}`, details);
+    logger(line, details);
     return;
   }
 
-  logger(`${UI_AUDIT_PREFIX} ${eventName}`);
+  logger(line);
 }
 
 function summarizeOutgoingAuditPayload(type, payload = {}) {
@@ -4571,6 +4576,31 @@ function updateGettingStartedPanelVisibility() {
   gettingStartedPanel.classList.toggle("hidden", hasState);
 }
 
+function resetSessionThreadCopyButton() {
+  if (!sessionMetaThreadCopyBtn) {
+    return;
+  }
+
+  sessionMetaThreadCopyBtn.textContent = "Copy";
+  sessionMetaThreadCopyBtn.classList.remove("is-copied");
+}
+
+function setSessionThreadCopyButtonCopied() {
+  if (!sessionMetaThreadCopyBtn) {
+    return;
+  }
+
+  sessionMetaThreadCopyBtn.textContent = "Copied";
+  sessionMetaThreadCopyBtn.classList.add("is-copied");
+  if (sessionThreadCopyResetTimer) {
+    clearTimeout(sessionThreadCopyResetTimer);
+  }
+  sessionThreadCopyResetTimer = setTimeout(() => {
+    sessionThreadCopyResetTimer = null;
+    resetSessionThreadCopyButton();
+  }, 1500);
+}
+
 function refreshSessionMeta() {
   if (!sessionMeta || !sessionMetaModelItem) {
     return;
@@ -4590,6 +4620,14 @@ function refreshSessionMeta() {
     syncConversationModelOptions(modelSelect.value || "");
     syncConversationReasoningOptions("");
     syncConversationPermissionOptions("", "");
+    if (sessionMetaThreadItem) {
+      sessionMetaThreadItem.classList.add("hidden");
+    }
+    if (sessionMetaThreadValue) {
+      sessionMetaThreadValue.textContent = "(none)";
+      sessionMetaThreadValue.title = "";
+    }
+    resetSessionThreadCopyButton();
     sessionMeta.title = "";
     updateConversationModelSummary();
     updateContextLeftIndicator();
@@ -4624,6 +4662,14 @@ function refreshSessionMeta() {
     conversationTitle.title = titleValue;
   }
   sessionMeta.classList.remove("hidden");
+  if (sessionMetaThreadItem) {
+    sessionMetaThreadItem.classList.toggle("hidden", !threadId);
+  }
+  if (sessionMetaThreadValue) {
+    sessionMetaThreadValue.textContent = threadId || "(none)";
+    sessionMetaThreadValue.title = threadId || "";
+  }
+  resetSessionThreadCopyButton();
 
   syncConversationModelOptions(selectedModel);
   syncConversationReasoningOptions(selectedEffort);
@@ -6731,6 +6777,27 @@ if (conversationMetaMenuBtn) {
   conversationMetaMenuBtn.addEventListener("click", (event) => {
     event.preventDefault();
     setConversationMetaMenuOpen(!conversationMetaMenuOpen);
+  });
+}
+
+if (sessionMetaThreadCopyBtn) {
+  sessionMetaThreadCopyBtn.addEventListener("click", async () => {
+    const threadId = (sessionMetaThreadValue?.textContent || "").trim();
+    if (!threadId || threadId === "(none)") {
+      return;
+    }
+
+    try {
+      if (!navigator?.clipboard?.writeText) {
+        throw new Error("clipboard API unavailable");
+      }
+      await navigator.clipboard.writeText(threadId);
+      setSessionThreadCopyButtonCopied();
+      uiAuditLog("ui.thread_id_copied", { threadId });
+    } catch (error) {
+      appendLog(`[copy] failed to copy thread id: ${error}`);
+      uiAuditLog("ui.thread_id_copy_failed", { error: String(error || "") }, "warn");
+    }
   });
 }
 

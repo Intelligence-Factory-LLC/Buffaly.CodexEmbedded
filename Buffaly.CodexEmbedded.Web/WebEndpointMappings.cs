@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Buffaly.CodexEmbedded.Core;
+using BasicUtilities;
 
 internal static class WebEndpointMappings
 {
@@ -453,14 +454,21 @@ internal static class WebEndpointMappings
 			var cwd = request.Query["cwd"].ToString();
 			if (string.IsNullOrWhiteSpace(cwd))
 			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", "event=diff_count_request_rejected reason=missing_cwd");
 				return Results.BadRequest(new { message = "cwd query parameter is required." });
 			}
 
 			var maxFiles = QueryValueParser.GetPositiveInt(request.Query["maxFiles"], fallback: 200, max: 1000);
 			var maxPatchChars = QueryValueParser.GetPositiveInt(request.Query["maxPatchChars"], fallback: 250000, max: 1000000);
+			Logs.DebugLog.WriteEvent(
+				"Audit.Diff",
+				$"event=diff_count_requested cwd={cwd} maxFiles={maxFiles} maxPatchChars={maxPatchChars}");
 			try
 			{
 				var snapshot = gitDiffService.GetSnapshot(cwd, maxFiles, maxPatchChars, cancellationToken);
+				Logs.DebugLog.WriteEvent(
+					"Audit.Diff",
+					$"event=diff_count_completed cwd={cwd} repoRoot={snapshot.RepoRoot ?? "(none)"} isGitRepo={snapshot.IsGitRepo} changeCount={snapshot.ChangeCount} fileCount={snapshot.Files.Count} timedOut={snapshot.IsTimedOut}");
 				return Results.Ok(new
 				{
 					cwd = snapshot.Cwd,
@@ -476,14 +484,17 @@ internal static class WebEndpointMappings
 			}
 			catch (DirectoryNotFoundException ex)
 			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=diff_count_failed cwd={cwd} error={ex.Message}");
 				return Results.NotFound(new { message = ex.Message });
 			}
 			catch (OperationCanceledException)
 			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=diff_count_canceled cwd={cwd}");
 				return Results.BadRequest(new { message = "git diff request was canceled." });
 			}
 			catch (Exception ex)
 			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=diff_count_failed cwd={cwd} error={ex.Message}");
 				return Results.Problem(
 					statusCode: StatusCodes.Status500InternalServerError,
 					title: "Failed to read git worktree diff.",

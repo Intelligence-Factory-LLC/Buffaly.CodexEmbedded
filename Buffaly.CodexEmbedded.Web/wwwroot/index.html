@@ -105,6 +105,13 @@
 							<span class="visually-hidden">Conversation settings</span>
 						</button>
 						<div id="conversationMetaMenu" class="conversation-meta-menu hidden">
+							<div id="sessionMetaThreadItem" class="conversation-meta-menu-row conversation-meta-thread-row conversation-meta-detail hidden">
+								<label for="sessionMetaThreadValue">Thread</label>
+								<div class="conversation-meta-thread-wrap">
+									<code id="sessionMetaThreadValue" class="conversation-meta-thread-value">(none)</code>
+									<button id="sessionMetaThreadCopyBtn" class="conversation-meta-thread-copy-btn" type="button" title="Copy thread id" aria-label="Copy thread id">Copy</button>
+								</div>
+							</div>
 							<div id="sessionMetaModelItem" class="conversation-meta-menu-row conversation-meta-model conversation-meta-detail">
 								<label for="conversationModelSelect">Model</label>
 								<select id="conversationModelSelect"></select>
@@ -418,6 +425,6 @@
 	<script src="scribe.js?v=20260303-openai-key-check1"></script>
 	<script src="app.shared.js?v=20260228-cleanup1"></script>
 	<script src="app.js?v=20260303-openai-key-check1"></script>
-	<script src="app.diffs.js?v=20260304-gitdiff5"></script>
+	<script src="app.diffs.js?v=20260304-gitdiff6"></script>
 </body>
 </html>

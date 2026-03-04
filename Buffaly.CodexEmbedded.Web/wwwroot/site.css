@@ -1063,6 +1063,51 @@ body {
 	font-size: 0.8rem;
 }
 
+.conversation-meta-thread-wrap {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 0.42rem;
+}
+
+.conversation-meta-thread-value {
+	flex: 1;
+	min-width: 0;
+	padding: 0.26rem 0.38rem;
+	border: 1px solid #d1d5db;
+	border-radius: 6px;
+	background: #f8fafc;
+	color: #0f172a;
+	font-size: 0.73rem;
+	line-height: 1.2;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.conversation-meta-thread-copy-btn {
+	flex: 0 0 auto;
+	padding: 0.24rem 0.42rem;
+	border: 1px solid #cbd5e1;
+	border-radius: 6px;
+	background: #ffffff;
+	color: #334155;
+	font-size: 0.72rem;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.conversation-meta-thread-copy-btn:hover {
+	background: #f8fafc;
+}
+
+.conversation-meta-thread-copy-btn.is-copied {
+	border-color: #86efac;
+	background: #f0fdf4;
+	color: #166534;
+}
+
 .conversation-meta-menu-permissions {
 	margin-top: 0.52rem;
 	padding: 0.34rem 0.46rem;
@@ -1540,6 +1585,16 @@ body {
 	font-family: Consolas, "Courier New", monospace;
 	font-size: 0.73rem;
 	word-break: break-word;
+}
+
+.diff-note-modal-card {
+	will-change: transform;
+}
+
+#diffNoteModalTitle,
+.diff-note-modal-path {
+	cursor: move;
+	user-select: none;
 }
 
 .new-project-modal-note {
@@ -4342,6 +4397,22 @@ html[data-theme="dark"] .conversation-meta-menu-row select {
 	background: #0f172a;
 	border-color: #475569;
 	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .conversation-meta-thread-value {
+	background: #0f172a;
+	border-color: #334155;
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .conversation-meta-thread-copy-btn {
+	background: #0f172a;
+	border-color: #334155;
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .conversation-meta-thread-copy-btn:hover {
+	background: #111827;
 }
 
 html[data-theme="dark"] .conversation-meta-menu-permissions {
