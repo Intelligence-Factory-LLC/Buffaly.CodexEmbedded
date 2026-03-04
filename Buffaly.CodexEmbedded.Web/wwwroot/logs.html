@@ -6,7 +6,7 @@
 	<title>Codex Logs</title>
 	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-	<link rel="stylesheet" href="site.css?v=20260303-manualrefresh1">
+	<link rel="stylesheet" href="site.css?v=20260226-mobiletitle1">
 </head>
 <body>
 	<div class="layout">
@@ -56,21 +56,15 @@
 			<section class="panel chat-panel">
 				<div class="panel-title">Session Logs</div>
 				<div class="logs-help-text">
-					Select a project and session on the left to inspect Buffaly timeline messages.
-				</div>
-				<div class="logs-toolbar">
-					<button id="logsRefreshBtn" type="button" class="logs-refresh-btn">Refresh</button>
+					Select a project and session on the left to inspect that session log file from disk.
 				</div>
 				<div id="logsStatus" class="logs-status">Loading sessions...</div>
-				<div class="logs-pane">
-					<div id="messagesSummary" class="logs-messages-summary">No message rows loaded.</div>
-					<div id="messagesList" class="logs-message-list"></div>
-				</div>
+				<pre id="logsOutput" class="log-output"></pre>
 			</section>
 		</main>
 		<button id="sidebarBackdrop" class="sidebar-backdrop hidden" type="button" aria-label="Close projects"></button>
 	</div>
 	<script src="theme.js?v=20260225-settings1"></script>
-	<script src="logs.js?v=20260303-manualrefresh1"></script>
+	<script src="logs.js?v=20260222-logsselector2"></script>
 </body>
 </html>

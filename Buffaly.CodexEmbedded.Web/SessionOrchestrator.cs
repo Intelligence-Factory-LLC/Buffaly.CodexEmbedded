@@ -18,14 +18,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private readonly Dictionary<string, string> _lastThreadNameByThread = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, RateLimitDispatchState> _rateLimitDispatchBySession = new(StringComparer.Ordinal);
 	private static readonly TimeSpan RateLimitCoalesceDelay = TimeSpan.FromMilliseconds(350);
-	private static readonly HashSet<string> AuditedCoreEventTypes = new(StringComparer.Ordinal)
-	{
-		"stdout_pump_failed",
-		"stderr_pump_failed",
-		"stdout_parse_failed",
-		"server_request_handler_failed",
-		"notification_handler_failed"
-	};
 
 	public event Action? SessionsChanged;
 	public event Action<string, object>? Broadcast;
@@ -102,7 +94,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string threadId,
 		int maxEntries,
 		bool initial,
-		long? cursor)
+		long? cursor,
+		bool includeActiveTurnDetail = true)
 	{
 		var normalizedThreadId = threadId?.Trim() ?? string.Empty;
 		if (string.IsNullOrWhiteSpace(normalizedThreadId))
@@ -175,9 +168,21 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				cursor.Value != version;
 			var snapshotMode = shouldSendFull ? "full" : "noop";
 
-			var messages = shouldSendFull
-				? state.Messages.Select(CloneJsonObject).ToArray()
-				: Array.Empty<System.Text.Json.Nodes.JsonObject>();
+			var turns = shouldSendFull
+				? state.Turns.Select(ToSummaryTurn).ToArray()
+				: Array.Empty<ConsolidatedTurnSnapshot>();
+			ConsolidatedTurnSnapshot? activeTurnDetail = null;
+			if (shouldSendFull && includeActiveTurnDetail && state.Turns.Count > 0)
+			{
+				var latest = state.Turns[^1];
+				if (latest.IsInFlight || latest.Intermediate.Count > 0)
+				{
+					activeTurnDetail = latest.Clone();
+					activeTurnDetail.IntermediateLoaded = true;
+					activeTurnDetail.HasIntermediate = activeTurnDetail.Intermediate.Count > 0;
+					activeTurnDetail.IntermediateCount = activeTurnDetail.Intermediate.Count;
+				}
+			}
 
 			return new TurnWatchSnapshot(
 				ThreadId: normalizedThreadId,
@@ -193,7 +198,46 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				ContextUsage: state.ContextUsage,
 				Permission: state.Permission,
 				ReasoningSummary: state.ReasoningSummary,
-				Messages: messages);
+				Turns: turns,
+				ActiveTurnDetail: activeTurnDetail);
+		}
+	}
+
+	public ConsolidatedTurnSnapshot GetTurnDetail(string threadId, string turnId, int maxEntries)
+	{
+		var normalizedThreadId = threadId?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(normalizedThreadId))
+		{
+			throw new InvalidOperationException("threadId is required.");
+		}
+
+		var normalizedTurnId = turnId?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(normalizedTurnId))
+		{
+			throw new InvalidOperationException("turnId is required.");
+		}
+
+		// Ensure the in-memory turn cache is hydrated for this thread and window.
+		WatchTurns(normalizedThreadId, maxEntries, initial: false, cursor: null, includeActiveTurnDetail: false);
+
+		lock (_turnCacheSync)
+		{
+			if (!_turnCacheByThread.TryGetValue(normalizedThreadId, out var state))
+			{
+				throw new FileNotFoundException($"No turn cache found for threadId '{normalizedThreadId}'.");
+			}
+
+			var match = state.Turns.FirstOrDefault(x => string.Equals(x.TurnId, normalizedTurnId, StringComparison.Ordinal));
+			if (match is null)
+			{
+				throw new KeyNotFoundException($"No turn found for turnId '{normalizedTurnId}'.");
+			}
+
+			var detail = match.Clone();
+			detail.IntermediateLoaded = true;
+			detail.HasIntermediate = detail.Intermediate.Count > 0;
+			detail.IntermediateCount = detail.Intermediate.Count;
+			return detail;
 		}
 	}
 
@@ -228,7 +272,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var projected = _timelineProjection.Project(threadId, watch, initial: true);
 		var inFlight = IsTurnInFlightForThread(threadId);
 		var rebuiltTurns = BuildConsolidatedTurns(threadId, projected.Entries, inFlight);
-		var rebuiltMessages = BuildBuffalyMessages(projected.Entries);
 		var inferredTurnInFlightFromLogs = InferTurnInFlightFromLogs(projected.Entries, rebuiltTurns);
 
 		lock (_turnCacheSync)
@@ -258,7 +301,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			state.ReasoningSummary = projected.ReasoningSummary;
 			state.LastIsTurnInFlight = inFlight;
 			state.LastInferredTurnInFlightFromLogs = inferredTurnInFlightFromLogs;
-			state.Messages = rebuiltMessages;
 			state.Turns = rebuiltTurns;
 			state.Version += 1;
 		}
@@ -478,6 +520,23 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		return next;
 	}
 
+	private static ConsolidatedTurnSnapshot ToSummaryTurn(ConsolidatedTurnSnapshot source)
+	{
+		var summary = new ConsolidatedTurnSnapshot
+		{
+			TurnId = source.TurnId,
+			User = source.User.Clone(),
+			AssistantFinal = source.AssistantFinal?.Clone(),
+			Intermediate = new List<TurnEntrySnapshot>(),
+			IsInFlight = source.IsInFlight,
+			HasIntermediate = source.Intermediate.Count > 0,
+			IntermediateCount = source.Intermediate.Count,
+			IntermediateLoaded = false
+		};
+
+		return summary;
+	}
+
 	private static TurnEntrySnapshot ToTurnEntry(TimelineProjectedEntry source)
 	{
 		return new TurnEntrySnapshot(
@@ -488,232 +547,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			source.RawType,
 			source.Compact,
 			source.Images?.ToArray() ?? Array.Empty<string>());
-	}
-
-	private static List<System.Text.Json.Nodes.JsonObject> BuildBuffalyMessages(IReadOnlyList<TimelineProjectedEntry> entries)
-	{
-		var rows = new List<System.Text.Json.Nodes.JsonObject>();
-		if (entries is null || entries.Count == 0)
-		{
-			return rows;
-		}
-
-		foreach (var entry in entries)
-		{
-			if (entry is null)
-			{
-				continue;
-			}
-
-			var rawType = entry.RawType ?? string.Empty;
-			if (string.Equals(entry.Role, "user", StringComparison.OrdinalIgnoreCase) ||
-				string.Equals(entry.Role, "assistant", StringComparison.OrdinalIgnoreCase))
-			{
-				var row = new System.Text.Json.Nodes.JsonObject
-				{
-					["Role"] = string.Equals(entry.Role, "user", StringComparison.OrdinalIgnoreCase) ? "User" : "Assistant",
-					["Content"] = entry.Text ?? string.Empty
-				};
-				AppendTimestamp(row, entry.Timestamp);
-				AppendImageContentParts(row, entry.Images);
-				rows.Add(row);
-				continue;
-			}
-
-			if (string.Equals(entry.Role, "tool", StringComparison.OrdinalIgnoreCase))
-			{
-				if (string.Equals(rawType, "function_call", StringComparison.OrdinalIgnoreCase) ||
-					string.Equals(rawType, "custom_tool_call", StringComparison.OrdinalIgnoreCase))
-				{
-					var toolEnvelope = new System.Text.Json.Nodes.JsonObject
-					{
-						["tool"] = entry.ToolName ?? "tool",
-						["call_id"] = entry.ToolCallId,
-						["command"] = entry.Command ?? string.Empty,
-						["arguments"] = entry.ToolArguments ?? string.Empty
-					};
-					var toolsArray = new System.Text.Json.Nodes.JsonArray { toolEnvelope };
-					var content = new System.Text.Json.Nodes.JsonObject { ["tools"] = toolsArray };
-					var row = new System.Text.Json.Nodes.JsonObject
-					{
-						["Role"] = "Assistant",
-						["Content"] = content
-					};
-					AssignNormalizedNullableString(row, "ToolCallId", entry.ToolCallId);
-					AppendTimestamp(row, entry.Timestamp);
-					rows.Add(row);
-					continue;
-				}
-
-				var toolsRow = new System.Text.Json.Nodes.JsonObject
-				{
-					["Role"] = "Tools",
-					["Content"] = entry.ToolOutput ?? entry.Text ?? string.Empty
-				};
-				AssignNormalizedNullableString(toolsRow, "ToolName", entry.ToolName);
-				AssignNormalizedNullableString(toolsRow, "ToolCallId", entry.ToolCallId);
-				AppendTimestamp(toolsRow, entry.Timestamp);
-				rows.Add(toolsRow);
-				continue;
-			}
-
-			if (string.Equals(rawType, "task_started", StringComparison.OrdinalIgnoreCase) ||
-				string.Equals(rawType, "turn_started", StringComparison.OrdinalIgnoreCase))
-			{
-				rows.Add(BuildEventRow("turn_started", null, entry.Text, entry.Timestamp));
-				continue;
-			}
-
-			if (string.Equals(rawType, "task_complete", StringComparison.OrdinalIgnoreCase) ||
-				string.Equals(rawType, "turn_complete", StringComparison.OrdinalIgnoreCase))
-			{
-				rows.Add(BuildEventRow("turn_completed", InferCompletionStatus(entry.Text), entry.Text, entry.Timestamp));
-				continue;
-			}
-
-			if (string.Equals(rawType, "thread_compacted", StringComparison.OrdinalIgnoreCase) ||
-				string.Equals(rawType, "thread/compacted", StringComparison.OrdinalIgnoreCase))
-			{
-				rows.Add(BuildEventRow("context_compression", null, entry.Text, entry.Timestamp));
-				continue;
-			}
-
-			if (string.Equals(rawType, "reasoning", StringComparison.OrdinalIgnoreCase) ||
-				string.Equals(entry.Role, "reasoning", StringComparison.OrdinalIgnoreCase))
-			{
-				rows.Add(BuildEventRow("reasoning_summary", null, entry.Text, entry.Timestamp));
-				continue;
-			}
-
-			if (string.Equals(rawType, "plan_update", StringComparison.OrdinalIgnoreCase) ||
-				string.Equals(rawType, "plan_updated", StringComparison.OrdinalIgnoreCase) ||
-				string.Equals(rawType, "turn/plan/updated", StringComparison.OrdinalIgnoreCase))
-			{
-				rows.Add(BuildEventRow("plan_updated", null, entry.Text, entry.Timestamp));
-				continue;
-			}
-
-			if (string.Equals(entry.Role, "system", StringComparison.OrdinalIgnoreCase))
-			{
-				if (rawType.StartsWith("collab_", StringComparison.OrdinalIgnoreCase) ||
-					string.Equals(rawType, "agent_message_content_delta", StringComparison.OrdinalIgnoreCase) ||
-					string.Equals(rawType, "reasoning_content_delta", StringComparison.OrdinalIgnoreCase) ||
-					string.Equals(rawType, "reasoning_raw_content_delta", StringComparison.OrdinalIgnoreCase))
-				{
-					rows.Add(BuildEventRow(rawType, null, entry.Text, entry.Timestamp));
-					continue;
-				}
-
-				var systemRow = new System.Text.Json.Nodes.JsonObject
-				{
-					["Role"] = "System",
-					["Content"] = entry.Text ?? string.Empty
-				};
-				AppendTimestamp(systemRow, entry.Timestamp);
-				rows.Add(systemRow);
-			}
-		}
-
-		return rows;
-	}
-
-	private static System.Text.Json.Nodes.JsonObject BuildEventRow(string eventName, string? status, string? summary, string? timestamp)
-	{
-		var eventPayload = new System.Text.Json.Nodes.JsonObject();
-		if (!string.IsNullOrWhiteSpace(status))
-		{
-			eventPayload["Status"] = status;
-		}
-		if (!string.IsNullOrWhiteSpace(summary))
-		{
-			eventPayload["Summary"] = summary;
-		}
-		var row = new System.Text.Json.Nodes.JsonObject
-		{
-			["Role"] = "Event",
-			["Name"] = eventName ?? string.Empty,
-			["Content"] = string.Empty,
-			["Event"] = eventPayload
-		};
-		AppendTimestamp(row, timestamp);
-		return row;
-	}
-
-	private static string InferCompletionStatus(string? text)
-	{
-		var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
-		if (normalized.Contains("cancel", StringComparison.Ordinal))
-		{
-			return "cancelled";
-		}
-		if (normalized.Contains("fail", StringComparison.Ordinal) ||
-			normalized.Contains("error", StringComparison.Ordinal))
-		{
-			return "failed";
-		}
-		return "completed";
-	}
-
-	private static void AppendImageContentParts(System.Text.Json.Nodes.JsonObject row, IReadOnlyList<string>? images)
-	{
-		if (images is null || images.Count == 0)
-		{
-			return;
-		}
-
-		var contentParts = new System.Text.Json.Nodes.JsonArray();
-		foreach (var image in images)
-		{
-			if (string.IsNullOrWhiteSpace(image))
-			{
-				continue;
-			}
-			contentParts.Add(new System.Text.Json.Nodes.JsonObject
-			{
-				["Type"] = "ImageUrl",
-				["ImageUrl"] = image.Trim()
-			});
-		}
-		if (contentParts.Count > 0)
-		{
-			row["ContentParts"] = contentParts;
-		}
-	}
-
-	private static void AppendTimestamp(System.Text.Json.Nodes.JsonObject row, string? timestamp)
-	{
-		if (!string.IsNullOrWhiteSpace(timestamp))
-		{
-			row["Timestamp"] = timestamp;
-		}
-	}
-
-	private static void AssignNormalizedNullableString(System.Text.Json.Nodes.JsonObject row, string fieldName, string? value)
-	{
-		var normalized = NormalizeNullableToken(value);
-		row[fieldName] = normalized is null ? null : normalized;
-	}
-
-	private static string? NormalizeNullableToken(string? value)
-	{
-		var normalized = (value ?? string.Empty).Trim();
-		if (string.IsNullOrWhiteSpace(normalized))
-		{
-			return null;
-		}
-		if (string.Equals(normalized, "null", StringComparison.OrdinalIgnoreCase) ||
-			string.Equals(normalized, "\"null\"", StringComparison.OrdinalIgnoreCase) ||
-			string.Equals(normalized, "undefined", StringComparison.OrdinalIgnoreCase))
-		{
-			return null;
-		}
-		return normalized;
-	}
-
-	private static System.Text.Json.Nodes.JsonObject CloneJsonObject(System.Text.Json.Nodes.JsonObject row)
-	{
-		var clone = System.Text.Json.Nodes.JsonNode.Parse(row.ToJsonString()) as System.Text.Json.Nodes.JsonObject;
-		return clone ?? new System.Text.Json.Nodes.JsonObject();
 	}
 
 	public async Task<SessionCreatedPayload> CreateSessionAsync(
@@ -817,9 +650,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		CodexClient client;
 		CodexSession session;
-		WriteAudit(
-			"Orchestrator",
-			$"event=appserver_session_start_requested sessionId={sessionId} attached={attached} recovering={appServerRecovering} cwd={effectiveCwd} model={model ?? _defaults.DefaultModel ?? "(default)"}");
 		try
 		{
 			var clientOptions = new CodexClientOptions
@@ -840,16 +670,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			};
 
 			session = await openSessionAsync(client, cancellationToken);
-			WriteAudit(
-				"Orchestrator",
-				$"event=appserver_session_started sessionId={sessionId} threadId={session.ThreadId} approval={session.ApprovalPolicy ?? approvalPolicy ?? "(default)"} sandbox={session.SandboxMode ?? sandboxMode ?? "(default)"}");
 		}
-		catch (Exception ex)
+		catch
 		{
 			sessionLog.Dispose();
-			WriteAudit(
-				"Orchestrator",
-				$"event=appserver_session_start_failed sessionId={sessionId} message={SimplifyRpcErrorMessage(ex.Message) ?? ex.Message}");
 			throw;
 		}
 
@@ -1545,7 +1369,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			if (!lockAcquired)
 			{
 				var waitSeconds = _defaults.TurnSlotWaitTimeoutSeconds;
-				WriteAudit("Orchestrator", $"event=turn_send_queue_timeout sessionId={sessionId} waitSeconds={waitSeconds}");
 				session.Log.Write($"[turn_gate] wait timed out after {waitSeconds}s");
 				Broadcast?.Invoke(
 					"turn_complete",
@@ -1607,18 +1430,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				SandboxMode = effectiveSandbox,
 				CollaborationMode = effectiveCollaborationMode
 			};
-			WriteAudit(
-				"Orchestrator",
-				$"event=turn_send_requested sessionId={sessionId} threadId={session.Session.ThreadId} fromQueue={fromQueue} mode={collaborationModeKind}");
 			var result = await session.Session.SendMessageAsync(
 				request.Text,
 				images: request.Images,
 				options: turnOptions,
 				progress: null,
 				cancellationToken: turnToken);
-			WriteAudit(
-				"Orchestrator",
-				$"event=turn_send_completed sessionId={sessionId} status={result.Status ?? "(unknown)"} hasError={!string.IsNullOrWhiteSpace(result.ErrorMessage)}");
 
 			Broadcast?.Invoke("assistant_done", new { sessionId, text = result.Text });
 			completionPublished = TryPublishTurnComplete(
@@ -1650,16 +1467,11 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					status: "interrupted",
 					errorMessage: "Turn canceled.");
 			}
-			WriteAudit("Orchestrator", $"event=turn_send_operation_canceled sessionId={sessionId} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested}");
-			WriteAudit("Orchestrator", $"event=turn_send_canceled sessionId={sessionId} timeout={(timeoutCts?.IsCancellationRequested == true)}");
 		}
 		catch (Exception ex)
 		{
 			Logs.LogError(ex);
 			session.Log.Write($"[turn_error] {ex.Message}");
-			WriteAudit(
-				"Orchestrator",
-				$"event=turn_send_failed sessionId={sessionId} message={SimplifyRpcErrorMessage(ex.Message) ?? ex.Message}");
 			completionPublished = TryPublishTurnComplete(
 				sessionId,
 				session,
@@ -1718,7 +1530,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var session = TryGetSession(sessionId);
 		if (session is null)
 		{
-			WriteAudit("Orchestrator", $"event=turn_cancel_rejected sessionId={sessionId} reason=unknown_session");
 			Broadcast?.Invoke("error", new { message = $"Unknown session: {sessionId}" });
 			return (false, false, "Unknown session.");
 		}
@@ -1759,7 +1570,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		if (!interruptSent && !localCanceled && clearedQueuedTurnCount == 0)
 		{
-			WriteAudit("Orchestrator", $"event=turn_cancel_noop sessionId={sessionId}");
 			Broadcast?.Invoke("status", new { sessionId, message = "No running turn to cancel." });
 			return (false, false, fallbackReason);
 		}
@@ -1832,7 +1642,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		if (string.IsNullOrWhiteSpace(sessionId))
 		{
 			errorMessage = "sessionId is required.";
-			WriteAudit("Orchestrator", "event=session_recovery_manual_rejected reason=missing_session_id");
 			return false;
 		}
 
@@ -1840,14 +1649,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		if (session is null)
 		{
 			errorMessage = $"Unknown session: {sessionId}";
-			WriteAudit("Orchestrator", $"event=session_recovery_manual_rejected sessionId={sessionId} reason=unknown_session");
 			return false;
 		}
 
 		if (!session.TryBeginAppServerRecovery())
 		{
 			errorMessage = "Session is already recovering.";
-			WriteAudit("Orchestrator", $"event=session_recovery_manual_rejected sessionId={sessionId} reason=already_recovering");
 			return false;
 		}
 
@@ -1869,7 +1676,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		session.Log.Write("[session_recovery] manual thread reset requested");
-		WriteAudit("Orchestrator", $"event=session_recovery_manual_requested sessionId={sessionId} threadId={session.Session.ThreadId}");
 		Broadcast?.Invoke(
 			"session_recovery_state",
 			new
@@ -1891,7 +1697,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		_ = cancellationToken;
 		if (!TryRemoveSession(sessionId, out var session) || session is null)
 		{
-			WriteAudit("Orchestrator", $"event=appserver_session_stop_ignored sessionId={sessionId} reason=unknown_session");
 			return Task.CompletedTask;
 		}
 
@@ -1923,9 +1728,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				message = "Session stopped.",
 				clearedQueuedTurnCount = stopReset.ClearedQueuedTurnCount
 			});
-		WriteAudit(
-			"Orchestrator",
-			$"event=appserver_session_stopped sessionId={sessionId} threadId={session.Session.ThreadId} clearedQueued={stopReset.ClearedQueuedTurnCount}");
 
 		_ = Task.Run(async () =>
 		{
@@ -2058,22 +1860,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 	}
 
-	private static void WriteAudit(string category, string message)
-	{
-		Logs.DebugLog.WriteEvent($"Audit.{category}", message);
-	}
-
-	private static string TruncateForAudit(string? text, int maxChars)
-	{
-		var value = text?.Trim() ?? string.Empty;
-		if (value.Length <= maxChars)
-		{
-			return value;
-		}
-
-		return value[..maxChars] + "...";
-	}
-
 	private async Task<object?> HandleServerRequestAsync(
 		string sessionId,
 		LocalLogWriter log,
@@ -2103,9 +1889,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					: "File change requested.";
 
 				log.Write($"[approval_request] session={sessionId} approvalId={key} method={req.Method} cwd={cwd ?? "(n/a)"} reason={reason ?? "(n/a)"}");
-				WriteAudit(
-					"Orchestrator",
-					$"event=appserver_approval_requested sessionId={sessionId} approvalId={key} requestType={requestType} cwd={cwd ?? "(n/a)"}");
 
 				var managed = TryGetSession(sessionId);
 				managed?.SetPendingApproval(new PendingApprovalSnapshot(
@@ -2134,16 +1917,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				{
 					var decision = await tcs.Task.WaitAsync(cancellationToken);
 					log.Write($"[approval_response] session={sessionId} approvalId={key} decision={decision}");
-					WriteAudit(
-						"Orchestrator",
-						$"event=appserver_approval_resolved sessionId={sessionId} approvalId={key} decision={decision}");
 					return new { decision };
 				}
 				catch (OperationCanceledException)
 				{
-					WriteAudit(
-						"Orchestrator",
-						$"event=appserver_approval_resolved sessionId={sessionId} approvalId={key} decision=cancel");
 					return new { decision = "cancel" };
 				}
 				finally
@@ -2160,9 +1937,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				pendingToolUserInputs[requestId] = tcs;
 				var questions = ParseToolUserInputQuestions(req.Params);
 				log.Write($"[tool_user_input_request] session={sessionId} requestId={requestId} questions={questions.Count}");
-				WriteAudit(
-					"Orchestrator",
-					$"event=appserver_tool_input_requested sessionId={sessionId} requestId={requestId} questions={questions.Count}");
 				Broadcast?.Invoke("tool_user_input_request", new
 				{
 					sessionId,
@@ -2174,16 +1948,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				{
 					var answers = await tcs.Task.WaitAsync(cancellationToken);
 					log.Write($"[tool_user_input_response] session={sessionId} requestId={requestId} answers={answers.Count}");
-					WriteAudit(
-						"Orchestrator",
-						$"event=appserver_tool_input_resolved sessionId={sessionId} requestId={requestId} answers={answers.Count}");
 					return new { answers };
 				}
 				catch (OperationCanceledException)
 				{
-					WriteAudit(
-						"Orchestrator",
-						$"event=appserver_tool_input_resolved sessionId={sessionId} requestId={requestId} answers=0 canceled=true");
 					return new { answers = new Dictionary<string, object?>() };
 				}
 				finally
@@ -2194,14 +1962,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				}
 			}
 			case "item/tool/call":
-				WriteAudit("Orchestrator", $"event=appserver_tool_call_rejected sessionId={sessionId} reason=not_supported");
 				return new
 				{
 					success = false,
 					contentItems = new object[] { new { type = "inputText", text = "Dynamic tool calls not supported by web wrapper." } }
 				};
 			default:
-				WriteAudit("Orchestrator", $"event=appserver_request_unhandled sessionId={sessionId} method={req.Method}");
 				return new { };
 		}
 	}
@@ -2210,12 +1976,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	{
 		sessionLog.Write(CodexEventLogging.Format(ev, includeTimestamp: false));
 		TryGetSession(sessionId)?.MarkCoreEventObserved();
-		if (!string.IsNullOrWhiteSpace(ev.Type) && AuditedCoreEventTypes.Contains(ev.Type))
-		{
-			WriteAudit(
-				"Core",
-				$"event={ev.Type} sessionId={sessionId} level={ev.Level} message={TruncateForAudit(SimplifyRpcErrorMessage(ev.Message) ?? ev.Message, 240)}");
-		}
 
 		if (IsCoreTransportPumpFailure(ev))
 		{
@@ -2249,9 +2009,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					if (!string.IsNullOrWhiteSpace(signal.TurnId) &&
 						managed.TryMarkTurnStartedFromCoreSignal(signal.TurnId))
 					{
-						WriteAudit(
-							"Core",
-							$"event=turn_started_signal sessionId={sessionId} turnId={signal.TurnId} source={signal.Source}");
 						sessionLog.Write($"[turn_recovery] marked started from core signal ({signal.Source})");
 						var collaborationMode = managed.GetActiveCollaborationMode();
 						Broadcast?.Invoke(
@@ -2271,9 +2028,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					signal.Status ?? "completed",
 					signal.ErrorMessage))
 				{
-					WriteAudit(
-						"Core",
-						$"event=turn_complete_signal sessionId={sessionId} turnId={signal.TurnId ?? "(unknown)"} status={signal.Status ?? "completed"} source={signal.Source}");
 					sessionLog.Write($"[turn_recovery] marked complete from core signal ({signal.Source})");
 				}
 			}
@@ -2343,9 +2097,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		var normalizedStatus = string.IsNullOrWhiteSpace(status) ? "unknown" : status!;
-		WriteAudit(
-			"Orchestrator",
-			$"event=turn_completion_published sessionId={sessionId} status={normalizedStatus} hasError={!string.IsNullOrWhiteSpace(errorMessage)}");
 		Broadcast?.Invoke("turn_complete", new { sessionId, status = normalizedStatus, errorMessage, isPlanTurn, collaborationMode });
 		SessionsChanged?.Invoke();
 		EnsureQueueDispatcher(sessionId, session);
@@ -3752,9 +3503,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var codexPath = string.IsNullOrWhiteSpace(staleSession.CodexPath) ? _defaults.CodexPath : staleSession.CodexPath;
 		ManagedSession? replacement = null;
 		var staleDisposed = false;
-		WriteAudit(
-			"Orchestrator",
-			$"event=appserver_recovery_requested sessionId={sessionId} threadId={threadId} pendingSeconds={roundedSeconds:0} queuedTurns={queuedTurns.Count}");
 		try
 		{
 			staleSession.CancelLifetime();
@@ -3819,9 +3567,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 
 			replacement.Log.Write($"[session_recovery] completed app-server recovery after stale turn/start ({roundedSeconds:0}s)");
-			WriteAudit(
-				"Orchestrator",
-				$"event=appserver_recovery_completed sessionId={sessionId} threadId={threadId} pendingSeconds={roundedSeconds:0} queuedTurnsRestored={queuedTurns.Count}");
 			Broadcast?.Invoke(
 				"session_recovery_state",
 				new
@@ -3836,9 +3581,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		{
 			Logs.LogError(ex);
 			var failureMessage = SimplifyRpcErrorMessage(ex.Message) ?? ex.Message;
-			WriteAudit(
-				"Orchestrator",
-				$"event=appserver_recovery_failed sessionId={sessionId} threadId={threadId} message={failureMessage}");
 			var current = TryGetSession(sessionId);
 			current?.MarkAppServerRecoveryComplete();
 			if (current is null)
@@ -4111,7 +3853,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		TurnContextUsageSnapshot? ContextUsage,
 		TurnPermissionInfoSnapshot? Permission,
 		string ReasoningSummary,
-		IReadOnlyList<System.Text.Json.Nodes.JsonObject> Messages);
+		IReadOnlyList<ConsolidatedTurnSnapshot> Turns,
+		ConsolidatedTurnSnapshot? ActiveTurnDetail);
 
 	internal sealed record TurnContextUsageSnapshot(
 		double? UsedTokens,
@@ -4196,7 +3939,6 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		public string ReasoningSummary { get; set; } = string.Empty;
 		public TurnContextUsageSnapshot? ContextUsage { get; set; }
 		public TurnPermissionInfoSnapshot? Permission { get; set; }
-		public List<System.Text.Json.Nodes.JsonObject> Messages { get; set; } = new();
 		public List<ConsolidatedTurnSnapshot> Turns { get; set; } = new();
 	}
 

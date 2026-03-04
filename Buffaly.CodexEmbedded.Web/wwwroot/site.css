@@ -2275,101 +2275,6 @@ body {
 	font-size: 0.86rem;
 }
 
-.logs-toolbar {
-	padding: 0.5rem 0.8rem;
-	border-bottom: 1px solid #e5e7eb;
-}
-
-.logs-refresh-btn {
-	padding: 0.34rem 0.62rem;
-	border: 1px solid #cbd5e1;
-	border-radius: 6px;
-	background: #ffffff;
-	color: #1e293b;
-	font-size: 0.8rem;
-	font-weight: 600;
-	cursor: pointer;
-}
-
-.logs-refresh-btn:hover {
-	background: #eff6ff;
-	border-color: #93c5fd;
-	color: #1e3a8a;
-}
-
-.logs-pane {
-	flex: 1;
-	min-height: 0;
-	display: flex;
-	flex-direction: column;
-}
-
-.logs-messages-summary {
-	padding: 0.5rem 0.8rem;
-	border-bottom: 1px solid #e5e7eb;
-	font-size: 0.82rem;
-	color: #475569;
-}
-
-.logs-message-list {
-	flex: 1;
-	min-height: 0;
-	overflow: auto;
-	padding: 0.5rem;
-	display: flex;
-	flex-direction: column;
-	gap: 0.45rem;
-	background: #f8fafc;
-}
-
-.logs-message-empty {
-	padding: 0.65rem;
-	border: 1px dashed #cbd5e1;
-	border-radius: 8px;
-	font-size: 0.82rem;
-	color: #475569;
-	background: #ffffff;
-}
-
-.logs-message-item {
-	border: 1px solid #dbe5ef;
-	border-radius: 8px;
-	background: #ffffff;
-	overflow: hidden;
-}
-
-.logs-message-header {
-	width: 100%;
-	display: block;
-	text-align: left;
-	border: 0;
-	cursor: pointer;
-	padding: 0.48rem 0.62rem;
-	font-size: 0.82rem;
-	font-weight: 600;
-	color: #1e293b;
-	background: #f8fafc;
-}
-
-.logs-message-header:hover {
-	background: #eff6ff;
-}
-
-.logs-message-header[aria-expanded="true"] {
-	border-bottom: 1px solid #e5e7eb;
-}
-
-.logs-message-json {
-	margin: 0;
-	padding: 0.6rem;
-	background: #0f172a;
-	color: #e2e8f0;
-	overflow: auto;
-	font-size: 0.78rem;
-	line-height: 1.3;
-	white-space: pre;
-}
-
 .recap-sidebar-note {
 	padding: 0.6rem 0.7rem;
 	color: #334155;
@@ -2842,13 +2747,6 @@ body {
 
 .watcher-entry.assistant {
 	border-left-color: #10b981;
-}
-
-.watcher-entry.watcher-entry-assistant-pinned {
-	position: sticky;
-	bottom: 0;
-	z-index: 12;
-	box-shadow: 0 -4px 14px rgba(15, 23, 42, 0.08);
 }
 
 .watcher-entry.tool {
@@ -3775,7 +3673,6 @@ html[data-theme="dark"] .more-sessions-btn:hover {
 html[data-theme="dark"] .session-subtitle,
 html[data-theme="dark"] .project-path,
 html[data-theme="dark"] .logs-status,
-html[data-theme="dark"] .logs-messages-summary,
 html[data-theme="dark"] .recap-sidebar-note,
 html[data-theme="dark"] .recap-k,
 html[data-theme="dark"] .watcher-entry-time,
@@ -3877,10 +3774,6 @@ html[data-theme="dark"] .watcher-tool-hidden-toggle:hover {
 	background: #1e293b;
 	border-color: #60a5fa;
 	color: #dbeafe;
-}
-
-html[data-theme="dark"] .watcher-entry.watcher-entry-assistant-pinned {
-	box-shadow: 0 -6px 16px rgba(2, 6, 23, 0.45);
 }
 
 html[data-theme="dark"] .watcher-plan-summary {
@@ -4300,55 +4193,6 @@ html[data-theme="dark"] .panel-title {
 }
 
 html[data-theme="dark"] .log-output {
-	background: #020617;
-	color: #cbd5e1;
-}
-
-html[data-theme="dark"] .logs-message-list {
-	background: #0b1220;
-}
-
-html[data-theme="dark"] .logs-toolbar {
-	border-bottom-color: #334155;
-}
-
-html[data-theme="dark"] .logs-refresh-btn {
-	background: #0f172a;
-	border-color: #475569;
-	color: #cbd5e1;
-}
-
-html[data-theme="dark"] .logs-refresh-btn:hover {
-	background: #1e293b;
-	border-color: #64748b;
-	color: #e2e8f0;
-}
-
-html[data-theme="dark"] .logs-message-empty {
-	background: #0f172a;
-	border-color: #334155;
-	color: #94a3b8;
-}
-
-html[data-theme="dark"] .logs-message-item {
-	background: #0f172a;
-	border-color: #334155;
-}
-
-html[data-theme="dark"] .logs-message-header {
-	background: #111827;
-	color: #dbeafe;
-}
-
-html[data-theme="dark"] .logs-message-header:hover {
-	background: #1e293b;
-}
-
-html[data-theme="dark"] .logs-message-header[aria-expanded="true"] {
-	border-bottom-color: #334155;
-}
-
-html[data-theme="dark"] .logs-message-json {
 	background: #020617;
 	color: #cbd5e1;
 }
