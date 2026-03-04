@@ -551,7 +551,10 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 
 		var sessionId = Guid.NewGuid().ToString("N");
-		WriteAuditEvent($"action=session_attach_requested sessionId={sessionId} threadId={threadId}");
+		var attachContext = _orchestrator.GetSessionSnapshots(includeTurnCacheStats: false);
+		var inFlightSessionCount = attachContext.Count(x => x.IsTurnInFlight);
+		WriteAuditEvent(
+			$"action=session_attach_requested sessionId={sessionId} threadId={threadId} activeSessionId={_activeSessionId ?? "(none)"} inFlightSessions={inFlightSessionCount}");
 		await WriteConnectionLogAsync(
 			$"[session] attaching id={sessionId} threadId={threadId} cwd={cwd} model={model ?? "(default)"} effort={effort ?? "(default)"} approval={approvalPolicy ?? "(default)"} sandbox={sandboxMode ?? "(default)"}",
 			cancellationToken);

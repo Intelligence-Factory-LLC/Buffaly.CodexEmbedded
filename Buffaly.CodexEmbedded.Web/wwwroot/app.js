@@ -282,6 +282,7 @@ function uiAuditLog(eventName, details = null, level = "info") {
   const line = `${timestamp} ${eventName}${formatUiAuditDetails(details)}`;
   logger(line);
 }
+window.uiAuditLog = uiAuditLog;
 
 function formatUiAuditDetails(details) {
   if (!details || typeof details !== "object" || Array.isArray(details)) {
@@ -3512,6 +3513,24 @@ function getActiveSessionState() {
   return sessions.get(activeSessionId) || null;
 }
 
+window.codexDiffGetActiveContext = function codexDiffGetActiveContext() {
+  const state = getActiveSessionState();
+  if (!state) {
+    return null;
+  }
+
+  const cwd = normalizeProjectCwd(state.cwd || "");
+  if (!cwd) {
+    return null;
+  }
+
+  return {
+    sessionId: activeSessionId || "",
+    threadId: state.threadId || "",
+    cwd
+  };
+};
+
 function normalizeThreadId(threadId) {
   return typeof threadId === "string" ? threadId.trim() : "";
 }
@@ -3742,12 +3761,41 @@ function renderVsSelectionIndicator() {
     .filter((line) => line.length > 0)
     .slice(0, 2);
   const previewText = previewLines.length > 0
-    ? escapeHtml(previewLines.join(" "))
+    ? previewLines.join(" ")
     : "(selection is empty)";
-  promptSelectionIndicator.innerHTML =
-    `<div><span class="file">VS selection: ${escapeHtml(snapshot.fileName || snapshot.filePath)}</span>` +
-    `<span class="meta"> ${chars} chars${caretText}</span></div>` +
-    `<div class="preview">${previewText}</div>`;
+
+  const header = document.createElement("div");
+  const file = document.createElement("span");
+  file.className = "file";
+  file.textContent = `VS selection: ${snapshot.fileName || snapshot.filePath}`;
+  header.appendChild(file);
+
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = ` ${chars} chars${caretText}`;
+  header.appendChild(meta);
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "dismiss";
+  dismiss.title = "Dismiss selected code context";
+  dismiss.setAttribute("aria-label", "Dismiss selected code context");
+  dismiss.textContent = "x";
+  dismiss.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    consumedVsSelectionSignature = signature;
+    renderVsSelectionIndicator();
+  });
+  header.appendChild(dismiss);
+
+  const preview = document.createElement("div");
+  preview.className = "preview";
+  preview.textContent = previewText;
+
+  promptSelectionIndicator.textContent = "";
+  promptSelectionIndicator.appendChild(header);
+  promptSelectionIndicator.appendChild(preview);
   promptSelectionIndicator.classList.remove("hidden");
 }
 

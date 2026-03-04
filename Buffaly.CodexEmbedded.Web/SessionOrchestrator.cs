@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using Buffaly.CodexEmbedded.Core;
@@ -938,11 +939,45 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	public async Task<IReadOnlyList<CodexModelInfo>> ListModelsAsync(string? sessionId, CancellationToken cancellationToken)
 	{
-		var existingClient = TryGetSession(sessionId ?? string.Empty)?.Client;
+		var existingSession = TryGetSession(sessionId ?? string.Empty);
+		var existingClient = existingSession?.Client;
 
 		if (existingClient is not null)
 		{
-			return await existingClient.ListModelsAsync(cancellationToken: cancellationToken);
+			var inFlightAtStart = existingSession?.IsTurnInFlight == true;
+			var stopwatch = Stopwatch.StartNew();
+			try
+			{
+				if (inFlightAtStart && existingSession is not null)
+				{
+					WriteOrchestratorAudit(
+						$"event=models_list_during_turn sessionId={sessionId} threadId={existingSession.Session.ThreadId} {existingSession.BuildTurnDebugSummary()}");
+				}
+
+				var models = await existingClient.ListModelsAsync(cancellationToken: cancellationToken);
+				stopwatch.Stop();
+				if (inFlightAtStart || stopwatch.ElapsedMilliseconds >= 1000)
+				{
+					WriteOrchestratorAudit(
+						$"event=models_list_completed sessionId={sessionId} threadId={existingSession?.Session.ThreadId ?? "(none)"} elapsedMs={stopwatch.ElapsedMilliseconds} modelCount={models.Count} inFlightAtStart={inFlightAtStart} {(existingSession is null ? string.Empty : existingSession.BuildTurnDebugSummary())}".Trim());
+				}
+
+				return models;
+			}
+			catch (OperationCanceledException)
+			{
+				stopwatch.Stop();
+				WriteOrchestratorAudit(
+					$"event=models_list_canceled sessionId={sessionId} threadId={existingSession?.Session.ThreadId ?? "(none)"} elapsedMs={stopwatch.ElapsedMilliseconds} inFlightAtStart={inFlightAtStart} {(existingSession is null ? string.Empty : existingSession.BuildTurnDebugSummary())}".Trim());
+				throw;
+			}
+			catch (Exception ex)
+			{
+				stopwatch.Stop();
+				WriteOrchestratorAudit(
+					$"event=models_list_failed sessionId={sessionId} threadId={existingSession?.Session.ThreadId ?? "(none)"} elapsedMs={stopwatch.ElapsedMilliseconds} inFlightAtStart={inFlightAtStart} error={ex.Message} {(existingSession is null ? string.Empty : existingSession.BuildTurnDebugSummary())}".Trim());
+				throw;
+			}
 		}
 
 		await using var client = await CodexClient.StartAsync(new CodexClientOptions
@@ -1460,12 +1495,18 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				SandboxMode = effectiveSandbox,
 				CollaborationMode = effectiveCollaborationMode
 			};
+			var turnRpcStopwatch = Stopwatch.StartNew();
+			WriteOrchestratorAudit(
+				$"event=turn_rpc_start sessionId={sessionId} threadId={session.Session.ThreadId} fromQueue={fromQueue} mode={collaborationModeKind} {session.BuildTurnDebugSummary()}");
 			var result = await session.Session.SendMessageAsync(
 				request.Text,
 				images: request.Images,
 				options: turnOptions,
 				progress: null,
 				cancellationToken: turnToken);
+			turnRpcStopwatch.Stop();
+			WriteOrchestratorAudit(
+				$"event=turn_rpc_result sessionId={sessionId} threadId={session.Session.ThreadId} elapsedMs={turnRpcStopwatch.ElapsedMilliseconds} status={result.Status ?? "unknown"} hasError={!string.IsNullOrWhiteSpace(result.ErrorMessage)} {session.BuildTurnDebugSummary()}");
 
 			Broadcast?.Invoke("assistant_done", new { sessionId, text = result.Text });
 			completionPublished = TryPublishTurnComplete(
@@ -1478,6 +1519,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 		catch (OperationCanceledException)
 		{
+			WriteOrchestratorAudit(
+				$"event=turn_rpc_canceled sessionId={sessionId} threadId={session.Session.ThreadId} timeout={timeoutCts?.IsCancellationRequested == true} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested} {session.BuildTurnDebugSummary()}");
 			WriteOrchestratorAudit(
 				$"event=turn_send_operation_canceled sessionId={sessionId} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested}");
 			if (session.LifetimeToken.IsCancellationRequested && !lockTaken)
@@ -1508,6 +1551,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		{
 			Logs.LogError(ex);
 			session.Log.Write($"[turn_error] {ex.Message}");
+			WriteOrchestratorAudit(
+				$"event=turn_rpc_failed sessionId={sessionId} threadId={session.Session.ThreadId} error={ex.Message} {session.BuildTurnDebugSummary()}");
 			WriteOrchestratorAudit($"event=turn_send_failed sessionId={sessionId} error={ex.Message}");
 			completionPublished = TryPublishTurnComplete(
 				sessionId,
@@ -2023,6 +2068,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	{
 		sessionLog.Write(CodexEventLogging.Format(ev, includeTimestamp: false));
 		TryGetSession(sessionId)?.MarkCoreEventObserved();
+
+		if (string.Equals(ev.Type, "rpc_wait_canceled", StringComparison.Ordinal) ||
+			string.Equals(ev.Type, "rpc_wait_failed", StringComparison.Ordinal) ||
+			string.Equals(ev.Type, "rpc_response_unmatched", StringComparison.Ordinal))
+		{
+			WriteOrchestratorAudit($"event=core_rpc_warning sessionId={sessionId} type={ev.Type} message={ev.Message ?? "(none)"}");
+		}
 
 		if (IsCoreTransportPumpFailure(ev))
 		{
@@ -3457,6 +3509,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		var roundedSeconds = Math.Round(pendingAge.TotalSeconds);
+		WriteOrchestratorAudit(
+			$"event=turn_start_stale_detected sessionId={sessionId} threadId={session.Session.ThreadId} pendingSeconds={roundedSeconds} {session.BuildTurnDebugSummary()}");
 		var message = $"Turn start did not confirm after {roundedSeconds:0}s. Restarting session app-server.";
 		var collaborationMode = session.GetActiveCollaborationMode();
 		var isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal);
@@ -3513,6 +3567,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		var roundedSeconds = Math.Round(silentAge.TotalSeconds);
+		WriteOrchestratorAudit(
+			$"event=turn_started_stale_detected sessionId={sessionId} threadId={session.Session.ThreadId} silentSeconds={roundedSeconds} {session.BuildTurnDebugSummary()}");
 		var message = $"Started turn showed no core activity for {roundedSeconds:0}s. Restarting session app-server.";
 		var collaborationMode = session.GetActiveCollaborationMode();
 		var isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal);
@@ -3564,6 +3620,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var codexPath = string.IsNullOrWhiteSpace(staleSession.CodexPath) ? _defaults.CodexPath : staleSession.CodexPath;
 		ManagedSession? replacement = null;
 		var staleDisposed = false;
+		WriteOrchestratorAudit(
+			$"event=appserver_recovery_begin sessionId={sessionId} threadId={threadId} pendingSeconds={roundedSeconds} queuedTurns={queuedTurns.Count}");
 		try
 		{
 			staleSession.CancelLifetime();
@@ -4269,6 +4327,31 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			lock (_turnSync)
 			{
 				return _activeCollaborationMode;
+			}
+		}
+
+		public string BuildTurnDebugSummary()
+		{
+			string? clientActiveTurnId = null;
+			try
+			{
+				if (!Session.TryGetActiveTurnId(out clientActiveTurnId))
+				{
+					clientActiveTurnId = null;
+				}
+			}
+			catch
+			{
+				clientActiveTurnId = null;
+			}
+
+			lock (_turnSync)
+			{
+				var nowUtc = DateTimeOffset.UtcNow;
+				var stateAgeSeconds = Math.Round((nowUtc - _turnStateChangedUtc).TotalSeconds);
+				var coreIdleSeconds = Math.Round((nowUtc - _lastCoreEventUtc).TotalSeconds);
+				return
+					$"turnState={_turnState} activeTurnId={_activeTurnId ?? "(none)"} clientActiveTurnId={clientActiveTurnId ?? "(none)"} stateAgeSec={stateAgeSeconds:0} coreIdleSec={coreIdleSeconds:0} gateCount={_turnGate.CurrentCount} recovering={_isAppServerRecovering}";
 			}
 		}
 

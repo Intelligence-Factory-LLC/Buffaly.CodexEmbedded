@@ -40,6 +40,34 @@
   let fileOpenStateByPath = new Map();
   let modalOffset = { x: 0, y: 0 };
   let modalDragState = null;
+  let missingContextLogged = false;
+  let lastContextState = "unknown";
+
+  function getActiveContext() {
+    const provider = window.codexDiffGetActiveContext;
+    if (typeof provider !== "function") {
+      if (!missingContextLogged) {
+        missingContextLogged = true;
+        if (typeof window.uiAuditLog === "function") {
+          window.uiAuditLog("diff.context_provider_missing", { provider: "window.codexDiffGetActiveContext" }, "warn");
+        } else if (typeof console !== "undefined" && typeof console.warn === "function") {
+          console.warn(`${new Date().toISOString()} diff.context_provider_missing provider=window.codexDiffGetActiveContext`);
+        }
+      }
+      return null;
+    }
+
+    const context = provider();
+    if (!context || typeof context.cwd !== "string" || !context.cwd.trim()) {
+      return null;
+    }
+
+    return {
+      sessionId: typeof context.sessionId === "string" ? context.sessionId : "",
+      threadId: typeof context.threadId === "string" ? context.threadId : "",
+      cwd: context.cwd.trim()
+    };
+  }
 
   function notesStorageKey(cwd) {
     return `${STORAGE_NOTES_PREFIX}${cwd || ""}`;
@@ -650,6 +678,14 @@
 
     const context = getActiveContext();
     if (!context) {
+      if (lastContextState !== "none") {
+        lastContextState = "none";
+        if (typeof window.uiAuditLog === "function") {
+          window.uiAuditLog("diff.context_unavailable");
+        } else if (typeof console !== "undefined" && typeof console.info === "function") {
+          console.info(`${new Date().toISOString()} diff.context_unavailable`);
+        }
+      }
       hasVisibleChanges = false;
       listNode.innerHTML = "";
       summaryNode.textContent = "No active session";
@@ -661,6 +697,14 @@
       applyPanelState();
       renderComposerNotes();
       return;
+    }
+    if (lastContextState !== "active") {
+      lastContextState = "active";
+      if (typeof window.uiAuditLog === "function") {
+        window.uiAuditLog("diff.context_active", { sessionId: context.sessionId || null, cwd: context.cwd });
+      } else if (typeof console !== "undefined" && typeof console.info === "function") {
+        console.info(`${new Date().toISOString()} diff.context_active sessionId=${context.sessionId || ""} cwd=${context.cwd}`);
+      }
     }
 
     if (context.cwd !== lastCwd) {
@@ -684,7 +728,7 @@
           force: force === true
         });
       } else if (typeof console !== "undefined" && typeof console.info === "function") {
-        console.info(`${new Date().toISOString()} out.diff_count_request`, { cwd: context.cwd, force: force === true });
+        console.info(`${new Date().toISOString()} out.diff_count_request cwd=${context.cwd} force=${force === true}`);
       }
       const response = await fetch(url.toString(), {
         method: "GET",
@@ -718,13 +762,8 @@
           isGitRepo: data.isGitRepo === true
         });
       } else if (typeof console !== "undefined" && typeof console.info === "function") {
-        console.info(`${new Date().toISOString()} in.diff_count_response`, {
-          cwd: context.cwd,
-          changeCount: Number.isFinite(data.changeCount) ? data.changeCount : files.length,
-          fileCount: files.length,
-          timedOut: data.isTimedOut === true,
-          isGitRepo: data.isGitRepo === true
-        });
+        console.info(
+          `${new Date().toISOString()} in.diff_count_response cwd=${context.cwd} changeCount=${Number.isFinite(data.changeCount) ? data.changeCount : files.length} fileCount=${files.length} timedOut=${data.isTimedOut === true} isGitRepo=${data.isGitRepo === true}`);
       }
       currentBranch = typeof data.branch === "string" && data.branch.trim() ? data.branch.trim() : "detached";
 
@@ -754,7 +793,7 @@
       if (typeof window.uiAuditLog === "function") {
         window.uiAuditLog("in.diff_count_response_failed", { cwd: context.cwd, error: message }, "warn");
       } else if (typeof console !== "undefined" && typeof console.warn === "function") {
-        console.warn(`${new Date().toISOString()} in.diff_count_response_failed`, { cwd: context.cwd, error: message });
+        console.warn(`${new Date().toISOString()} in.diff_count_response_failed cwd=${context.cwd} error=${message}`);
       }
       hasVisibleChanges = false;
       currentFiles = [];

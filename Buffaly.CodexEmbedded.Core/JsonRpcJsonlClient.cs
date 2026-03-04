@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 
@@ -47,13 +48,14 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 	{
 		var id = Interlocked.Increment(ref _nextId);
 		var idKey = id.ToString(CultureInfo.InvariantCulture);
+		var stopwatch = Stopwatch.StartNew();
 
 		var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
 		_pending[idKey] = tcs;
 
 		try
 		{
-			OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "debug", "rpc_sent", $"{method} id={idKey}"));
+			OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "debug", "rpc_sent", $"{method} id={idKey} pending={_pending.Count}"));
 
 			var payload = new Dictionary<string, object?>
 			{
@@ -74,10 +76,22 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 				_sendLock.Release();
 			}
 
-			return await tcs.Task.WaitAsync(cancellationToken);
+			var result = await tcs.Task.WaitAsync(cancellationToken);
+			stopwatch.Stop();
+			OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "debug", "rpc_completed", $"{method} id={idKey} elapsedMs={stopwatch.ElapsedMilliseconds} pending={_pending.Count}"));
+			return result;
+		}
+		catch (OperationCanceledException)
+		{
+			stopwatch.Stop();
+			OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "warn", "rpc_wait_canceled", $"{method} id={idKey} elapsedMs={stopwatch.ElapsedMilliseconds} pending={_pending.Count}"));
+			_pending.TryRemove(idKey, out _);
+			throw;
 		}
 		catch
 		{
+			stopwatch.Stop();
+			OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "warn", "rpc_wait_failed", $"{method} id={idKey} elapsedMs={stopwatch.ElapsedMilliseconds} pending={_pending.Count}"));
 			_pending.TryRemove(idKey, out _);
 			throw;
 		}
@@ -168,6 +182,17 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 							}
 
 							continue;
+						}
+						else if (!string.IsNullOrWhiteSpace(idKey) &&
+							!root.TryGetProperty("method", out _))
+						{
+							var hasResult = root.TryGetProperty("result", out _);
+							var hasError = root.TryGetProperty("error", out _);
+							OnEvent?.Invoke(new CodexCoreEvent(
+								DateTimeOffset.UtcNow,
+								"warn",
+								"rpc_response_unmatched",
+								$"id={idKey} hasResult={hasResult} hasError={hasError} pending={_pending.Count}"));
 						}
 
 						// If it has method+id, it's a server request.
