@@ -9,6 +9,8 @@ let wsReconnectTimer = null;
 let wsReconnectInFlight = false;
 let wsReconnectAttempt = 0;
 let lastSessionListViewKey = "";
+let appServerErrorBannerTimer = null;
+let appServerErrorBannerSticky = false;
 
 let sessions = new Map(); // sessionId -> { threadId, cwd, model, reasoningEffort, approvalPolicy, sandboxPolicy }
 let sessionCatalog = []; // [{ threadId, threadName, updatedAtUtc, cwd, model, reasoningEffort, sessionFilePath }]
@@ -106,6 +108,7 @@ const SESSION_LIST_SYNC_INTERVAL_MS = 5000;
 const TURN_START_CONFIRM_GRACE_MS = 15000;
 const WS_RECONNECT_BASE_DELAY_MS = 1000;
 const WS_RECONNECT_MAX_DELAY_MS = 15000;
+const APP_SERVER_ERROR_BANNER_MS = 45000;
 const VS_SELECTION_POLL_INTERVAL_MS = 1500;
 const VS_SELECTION_MAX_PROMPT_CHARS = 4000;
 const OPENAI_KEY_STATUS_CACHE_MS = 15000;
@@ -180,6 +183,9 @@ const sendPromptBtn = document.getElementById("sendPromptBtn");
 const mobileProjectsBtn = document.getElementById("mobileProjectsBtn");
 const sidebarBackdrop = document.getElementById("sidebarBackdrop");
 const securityWarningBanner = document.getElementById("securityWarningBanner");
+const appServerErrorBanner = document.getElementById("appServerErrorBanner");
+const appServerErrorText = document.getElementById("appServerErrorText");
+const appServerErrorDismissBtn = document.getElementById("appServerErrorDismissBtn");
 const connectionStatusBanner = document.getElementById("connectionStatusBanner");
 const connectionStatusText = document.getElementById("connectionStatusText");
 const connectionReconnectBtn = document.getElementById("connectionReconnectBtn");
@@ -2948,6 +2954,63 @@ function setConnectionStatusBannerState(state, message, options = {}) {
     const showReconnect = options.showReconnect === true;
     connectionReconnectBtn.classList.toggle("hidden", !showReconnect);
     connectionReconnectBtn.disabled = wsReconnectInFlight;
+  }
+}
+
+function hideAppServerErrorBanner(options = {}) {
+  if (!appServerErrorBanner || !appServerErrorText) {
+    return;
+  }
+
+  const force = options.force === true;
+  if (appServerErrorBannerSticky && !force) {
+    return;
+  }
+
+  appServerErrorBannerSticky = false;
+  if (appServerErrorBannerTimer) {
+    clearTimeout(appServerErrorBannerTimer);
+    appServerErrorBannerTimer = null;
+  }
+  appServerErrorText.textContent = "";
+  appServerErrorBanner.title = "";
+  appServerErrorBanner.classList.add("hidden");
+}
+
+function showAppServerErrorBanner(message, options = {}) {
+  if (!appServerErrorBanner || !appServerErrorText) {
+    return;
+  }
+
+  const normalizedMessage = String(message || "").trim();
+  if (!normalizedMessage) {
+    hideAppServerErrorBanner({ force: true });
+    return;
+  }
+
+  if (appServerErrorBannerTimer) {
+    clearTimeout(appServerErrorBannerTimer);
+    appServerErrorBannerTimer = null;
+  }
+
+  const detail = typeof options.detail === "string" ? options.detail.trim() : "";
+  const recommendedAction = typeof options.recommendedAction === "string" ? options.recommendedAction.trim() : "";
+  appServerErrorBannerSticky = options.sticky === true;
+  appServerErrorText.textContent = normalizedMessage;
+  const titleParts = [];
+  if (detail) {
+    titleParts.push(detail);
+  }
+  if (recommendedAction) {
+    titleParts.push(`Action: ${recommendedAction}`);
+  }
+  appServerErrorBanner.title = titleParts.join(" | ");
+  appServerErrorBanner.classList.remove("hidden");
+
+  if (!appServerErrorBannerSticky) {
+    appServerErrorBannerTimer = setTimeout(() => {
+      hideAppServerErrorBanner({ force: true });
+    }, APP_SERVER_ERROR_BANNER_MS);
   }
 }
 
@@ -5862,6 +5925,40 @@ function handleServerEvent(frame) {
       appendLog(`[status] ${payload.message || ""}`);
       return;
 
+    case "appserver_error": {
+      const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : null;
+      const code = typeof payload.code === "string" ? payload.code : "unknown";
+      const severity = typeof payload.severity === "string" ? payload.severity : "error";
+      const message = typeof payload.message === "string" && payload.message.trim()
+        ? payload.message.trim()
+        : "Codex app-server reported an error.";
+      const detail = typeof payload.detail === "string" ? payload.detail.trim() : "";
+      const recommendedAction = typeof payload.recommendedAction === "string" ? payload.recommendedAction.trim() : "";
+      const isAuthError = payload.isAuthError === true;
+      const shouldSurfaceBanner = isAuthError || !sessionId || sessionId === activeSessionId;
+
+      uiAuditLog("in.appserver_error", {
+        sessionId: sessionId || null,
+        code,
+        severity,
+        isAuthError
+      }, severity === "warn" ? "warn" : "error");
+      appendLog(
+        `[appserver_error] session=${sessionId || "unknown"} code=${code} severity=${severity} message=${message}${detail ? ` detail=${detail}` : ""}`);
+
+      if (shouldSurfaceBanner) {
+        const bannerMessage = recommendedAction
+          ? `${message} ${recommendedAction}`
+          : message;
+        showAppServerErrorBanner(bannerMessage, {
+          detail,
+          recommendedAction,
+          sticky: isAuthError
+        });
+      }
+      return;
+    }
+
     case "session_created":
     case "session_attached": {
       const sessionId = payload.sessionId;
@@ -7798,6 +7895,12 @@ if (sidebarStarDismissBtn) {
 if (connectionReconnectBtn) {
   connectionReconnectBtn.addEventListener("click", () => {
     reconnectWebSocketNow().catch((error) => appendLog(`[ws] reconnect button failed: ${error}`));
+  });
+}
+
+if (appServerErrorDismissBtn) {
+  appServerErrorDismissBtn.addEventListener("click", () => {
+    hideAppServerErrorBanner({ force: true });
   });
 }
 

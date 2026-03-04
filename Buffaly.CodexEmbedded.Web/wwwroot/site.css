@@ -138,6 +138,32 @@ body {
 	font-weight: 600;
 }
 
+.appserver-error-banner {
+	padding: 0.55rem 0.9rem;
+	background: #fef2f2;
+	border-top: 1px solid #f87171;
+	border-bottom: 1px solid #f87171;
+	color: #991b1b;
+	font-size: 0.84rem;
+	font-weight: 600;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.7rem;
+}
+
+.appserver-error-dismiss-btn {
+	padding: 0.26rem 0.62rem;
+	border: 1px solid #ef4444;
+	border-radius: 6px;
+	background: #ffffff;
+	color: #991b1b;
+	font-size: 0.78rem;
+	font-weight: 600;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
 .connection-status-banner {
 	padding: 0.55rem 0.9rem;
 	background: #eff6ff;
@@ -4699,9 +4725,22 @@ html[data-theme="dark"] .approval-panel,
 html[data-theme="dark"] .server-section,
 html[data-theme="dark"] .logs-status,
 html[data-theme="dark"] .security-warning-banner,
+html[data-theme="dark"] .appserver-error-banner,
 html[data-theme="dark"] .connection-status-banner,
 html[data-theme="dark"] .sidebar-divider {
 	border-color: #334155;
+}
+
+html[data-theme="dark"] .appserver-error-banner {
+	background: #450a0a;
+	color: #fecaca;
+	border-color: #b91c1c;
+}
+
+html[data-theme="dark"] .appserver-error-dismiss-btn {
+	background: #0f172a;
+	color: #fecaca;
+	border-color: #f87171;
 }
 
 html[data-theme="dark"] .connection-status-banner {

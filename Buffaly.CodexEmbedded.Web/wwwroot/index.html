@@ -16,6 +16,10 @@
 			<span>Projects</span>
 		</button>
 		<div id="securityWarningBanner" class="security-warning-banner hidden" role="alert"></div>
+		<div id="appServerErrorBanner" class="appserver-error-banner hidden" role="alert" aria-live="assertive">
+			<span id="appServerErrorText"></span>
+			<button id="appServerErrorDismissBtn" class="appserver-error-dismiss-btn" type="button">Dismiss</button>
+		</div>
 		<div id="connectionStatusBanner" class="connection-status-banner hidden" role="status" aria-live="polite">
 			<span id="connectionStatusText"></span>
 			<button id="connectionReconnectBtn" class="connection-reconnect-btn hidden" type="button">Reconnect now</button>
@@ -424,7 +428,7 @@
 	<script src="sessionTimeline.js?v=20260227-turnanchor2"></script>
 	<script src="scribe.js?v=20260303-openai-key-check1"></script>
 	<script src="app.shared.js?v=20260228-cleanup1"></script>
-	<script src="app.js?v=20260304-ui-audit-reason2"></script>
+	<script src="app.js?v=20260304-appserver-errors1"></script>
 	<script src="app.diffs.js?v=20260304-ui-audit-reason2"></script>
 </body>
 </html>

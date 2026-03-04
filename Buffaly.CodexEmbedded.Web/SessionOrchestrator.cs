@@ -2071,7 +2071,33 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private void HandleCoreEvent(string sessionId, LocalLogWriter sessionLog, CodexCoreEvent ev)
 	{
 		sessionLog.Write(CodexEventLogging.Format(ev, includeTimestamp: false));
-		TryGetSession(sessionId)?.MarkCoreEventObserved(ev.Type, ev.Message);
+		var managedSession = TryGetSession(sessionId);
+		managedSession?.MarkCoreEventObserved(ev.Type, ev.Message);
+
+		if (TryClassifyCoreIssue(ev, out var issue))
+		{
+			var shouldBroadcast = managedSession?.ShouldBroadcastCoreIssue(issue.DedupeKey, TimeSpan.FromSeconds(20)) ?? true;
+			WriteOrchestratorAudit(
+				$"event=core_issue_detected sessionId={sessionId} code={issue.Code} severity={issue.Severity} type={ev.Type} detail={NormalizeAuditValue(issue.Detail, 180)}");
+			if (shouldBroadcast)
+			{
+				Broadcast?.Invoke(
+					"appserver_error",
+					new
+					{
+						sessionId,
+						code = issue.Code,
+						severity = issue.Severity,
+						message = issue.UserMessage,
+						detail = issue.Detail,
+						recommendedAction = issue.RecommendedAction,
+						isAuthError = issue.IsAuthError,
+						isTransient = issue.IsTransient,
+						eventType = ev.Type,
+						occurredAtUtc = DateTimeOffset.UtcNow.ToString("O")
+					});
+			}
+		}
 
 		if (string.Equals(ev.Type, "rpc_wait_canceled", StringComparison.Ordinal) ||
 			string.Equals(ev.Type, "rpc_wait_failed", StringComparison.Ordinal) ||
@@ -2083,13 +2109,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		if (IsCoreTransportPumpFailure(ev))
 		{
 			WriteOrchestratorAudit($"event=core_transport_failure sessionId={sessionId} type={ev.Type} message={ev.Message ?? "(none)"}");
-			var managed = TryGetSession(sessionId);
-			if (managed is not null && managed.IsTurnInFlight)
+			if (managedSession is not null && managedSession.IsTurnInFlight)
 			{
 				var errorMessage = string.IsNullOrWhiteSpace(ev.Message)
 					? "Core transport pump failed while a turn was active."
 					: $"Core transport pump failed while a turn was active: {ev.Message}";
-				if (TryPublishTurnComplete(sessionId, managed, status: "interrupted", errorMessage: errorMessage))
+				if (TryPublishTurnComplete(sessionId, managedSession, status: "interrupted", errorMessage: errorMessage))
 				{
 					sessionLog.Write($"[turn_recovery] closed in-flight turn after core transport failure ({ev.Type})");
 					WriteOrchestratorAudit($"event=turn_recovery_after_transport_failure sessionId={sessionId} type={ev.Type}");
@@ -2192,6 +2217,134 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		return string.Equals(ev.Type, "stdout_pump_failed", StringComparison.Ordinal) ||
 			string.Equals(ev.Type, "stderr_pump_failed", StringComparison.Ordinal);
+	}
+
+	private static bool TryClassifyCoreIssue(CodexCoreEvent ev, out CoreIssueSignal issue)
+	{
+		issue = default!;
+		if (ev is null)
+		{
+			return false;
+		}
+
+		var level = (ev.Level ?? string.Empty).Trim();
+		var type = (ev.Type ?? string.Empty).Trim();
+		var message = NormalizeCoreIssueMessage(ev.Message, maxLength: 320);
+
+		if (ContainsIgnoreCase(message, "refresh token was already used") ||
+			ContainsIgnoreCase(message, "please log out and sign in again"))
+		{
+			issue = new CoreIssueSignal(
+				Code: "auth.refresh_token_reused",
+				Severity: "error",
+				UserMessage: "Codex authentication failed because the refresh token was already used.",
+				Detail: message,
+				RecommendedAction: "Run 'codex logout', then 'codex login', then retry the turn.",
+				IsAuthError: true,
+				IsTransient: false);
+			return true;
+		}
+
+		if (ContainsIgnoreCase(message, "failed to refresh token") ||
+			(ContainsIgnoreCase(message, "401 unauthorized") && ContainsIgnoreCase(message, "auth")))
+		{
+			issue = new CoreIssueSignal(
+				Code: "auth.refresh_failed",
+				Severity: "error",
+				UserMessage: "Codex authentication refresh failed.",
+				Detail: message,
+				RecommendedAction: "Re-authenticate with 'codex logout' and 'codex login', then retry.",
+				IsAuthError: true,
+				IsTransient: false);
+			return true;
+		}
+
+		if (IsCoreTransportPumpFailure(ev))
+		{
+			issue = new CoreIssueSignal(
+				Code: "core.transport_failed",
+				Severity: "error",
+				UserMessage: "Codex app-server transport failed while processing events.",
+				Detail: string.IsNullOrWhiteSpace(message) ? type : message,
+				RecommendedAction: "Retry the turn. If this repeats, restart the affected session.",
+				IsAuthError: false,
+				IsTransient: true);
+			return true;
+		}
+
+		if (string.Equals(type, "rpc_wait_failed", StringComparison.Ordinal))
+		{
+			issue = new CoreIssueSignal(
+				Code: "core.rpc_wait_failed",
+				Severity: "warn",
+				UserMessage: "Codex app-server reported an RPC wait failure.",
+				Detail: string.IsNullOrWhiteSpace(message) ? type : message,
+				RecommendedAction: "Retry the action. If failures persist, restart the session.",
+				IsAuthError: false,
+				IsTransient: true);
+			return true;
+		}
+
+		if (string.Equals(level, "error", StringComparison.OrdinalIgnoreCase))
+		{
+			issue = new CoreIssueSignal(
+				Code: string.IsNullOrWhiteSpace(type) ? "core.error" : $"core.{type}",
+				Severity: "error",
+				UserMessage: "Codex app-server reported an error.",
+				Detail: string.IsNullOrWhiteSpace(message) ? type : message,
+				RecommendedAction: "Open logs for details. Retry the turn or restart the session if needed.",
+				IsAuthError: false,
+				IsTransient: false);
+			return true;
+		}
+
+		return false;
+	}
+
+	private static string NormalizeCoreIssueMessage(string? message, int maxLength)
+	{
+		if (string.IsNullOrWhiteSpace(message))
+		{
+			return string.Empty;
+		}
+
+		var normalized = message
+			.Replace("\u001b", string.Empty, StringComparison.Ordinal)
+			.Replace('\r', ' ')
+			.Replace('\n', ' ')
+			.Trim();
+		if (normalized.Length > maxLength)
+		{
+			normalized = normalized[..maxLength] + "...";
+		}
+
+		return normalized;
+	}
+
+	private static bool ContainsIgnoreCase(string value, string needle)
+	{
+		if (string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(needle))
+		{
+			return false;
+		}
+
+		return value.Contains(needle, StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static string NormalizeAuditValue(string? value, int maxLength)
+	{
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return "(none)";
+		}
+
+		var normalized = value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+		if (normalized.Length > maxLength)
+		{
+			normalized = normalized[..maxLength] + "...";
+		}
+
+		return normalized.Replace(' ', '_');
 	}
 
 	private bool TryPublishTurnComplete(
@@ -3431,6 +3584,18 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			ThreadNameUpdatedSignal is not null;
 	}
 
+	private sealed record CoreIssueSignal(
+		string Code,
+		string Severity,
+		string UserMessage,
+		string Detail,
+		string RecommendedAction,
+		bool IsAuthError,
+		bool IsTransient)
+	{
+		public string DedupeKey => $"{Code}|{Detail}";
+	}
+
 	private sealed record CoreRateLimitsSignal(
 		string? Scope,
 		double? Remaining,
@@ -4222,6 +4387,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		private DateTimeOffset _lastCoreEventUtc = DateTimeOffset.UtcNow;
 		private string? _lastCoreEventType;
 		private string? _lastCoreEventMessage;
+		private string? _lastBroadcastCoreIssueKey;
+		private DateTimeOffset _lastBroadcastCoreIssueUtc = DateTimeOffset.MinValue;
 		private bool _queueDispatchRunning;
 		private PendingApprovalSnapshot? _pendingApproval;
 		private bool _isAppServerRecovering = AppServerRecovering;
@@ -4711,6 +4878,28 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				_lastCoreEventUtc = DateTimeOffset.UtcNow;
 				_lastCoreEventType = NormalizeCoreDebugValue(coreEventType, 64) ?? _lastCoreEventType;
 				_lastCoreEventMessage = NormalizeCoreDebugValue(coreEventMessage, 140) ?? _lastCoreEventMessage;
+			}
+		}
+
+		public bool ShouldBroadcastCoreIssue(string issueKey, TimeSpan minimumInterval)
+		{
+			if (string.IsNullOrWhiteSpace(issueKey))
+			{
+				return false;
+			}
+
+			lock (_turnSync)
+			{
+				var nowUtc = DateTimeOffset.UtcNow;
+				if (string.Equals(_lastBroadcastCoreIssueKey, issueKey, StringComparison.Ordinal) &&
+					nowUtc - _lastBroadcastCoreIssueUtc < minimumInterval)
+				{
+					return false;
+				}
+
+				_lastBroadcastCoreIssueKey = issueKey;
+				_lastBroadcastCoreIssueUtc = nowUtc;
+				return true;
 			}
 		}
 
