@@ -90,6 +90,7 @@
   var debugOutput;
   var debugStatus;
   var fileLinkInterceptorInstalled = false;
+  var fileLinkEnhancementsInstalled = false;
   var webviewMessageInstalled = false;
 
   function getHost() {
@@ -411,9 +412,87 @@
     return { path: path, line: line };
   }
 
+  function ensureFileLinkEnhancementStyle() {
+    if (document.getElementById("vsBridgeFileLinkStyle")) return;
+    var style = document.createElement("style");
+    style.id = "vsBridgeFileLinkStyle";
+    style.textContent =
+      "a.vs-bridge-file-link{" +
+      "text-decoration-thickness:2px;" +
+      "text-underline-offset:2px;" +
+      "}" +
+      "a.vs-bridge-file-link::after{" +
+      "content:' VS';" +
+      "display:inline-block;" +
+      "margin-left:4px;" +
+      "padding:0 5px;" +
+      "border-radius:999px;" +
+      "font-size:10px;" +
+      "font-weight:700;" +
+      "line-height:1.4;" +
+      "vertical-align:middle;" +
+      "background:#dbeafe;" +
+      "border:1px solid #93c5fd;" +
+      "color:#1e40af;" +
+      "}" +
+      "html[data-theme='dark'] a.vs-bridge-file-link::after{" +
+      "background:#1e293b;" +
+      "border-color:#475569;" +
+      "color:#bfdbfe;" +
+      "}";
+    (document.head || document.documentElement || document.body).appendChild(style);
+  }
+
+  function enhanceFileLinks(root) {
+    if (!root || typeof root.querySelectorAll !== "function") return;
+    var anchors = root.querySelectorAll("a[href]");
+    for (var i = 0; i < anchors.length; i += 1) {
+      var a = anchors[i];
+      var href = a.getAttribute("href") || "";
+      if (!/^file:\/\//i.test(href)) continue;
+      if (!a.classList.contains("vs-bridge-file-link")) {
+        a.classList.add("vs-bridge-file-link");
+      }
+      if (!a.hasAttribute("data-vs-bridge-link")) {
+        a.setAttribute("data-vs-bridge-link", "1");
+      }
+      var currentTitle = a.getAttribute("title") || "";
+      if (currentTitle.indexOf("Open in Visual Studio") < 0) {
+        var title = currentTitle ? (currentTitle + " | Open in Visual Studio") : "Open in Visual Studio";
+        a.setAttribute("title", title);
+      }
+    }
+  }
+
+  function installFileLinkEnhancements() {
+    if (fileLinkEnhancementsInstalled) return;
+    fileLinkEnhancementsInstalled = true;
+    ensureFileLinkEnhancementStyle();
+    enhanceFileLinks(document);
+    if (typeof MutationObserver === "function" && document.body) {
+      var observer = new MutationObserver(function (mutations) {
+        for (var i = 0; i < mutations.length; i += 1) {
+          var mutation = mutations[i];
+          if (!mutation.addedNodes) continue;
+          for (var j = 0; j < mutation.addedNodes.length; j += 1) {
+            var node = mutation.addedNodes[j];
+            if (!node || node.nodeType !== 1) continue;
+            if (node.matches && node.matches("a[href]")) {
+              enhanceFileLinks(node.parentElement || document);
+            } else {
+              enhanceFileLinks(node);
+            }
+          }
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+
   function installFileLinkInterceptor() {
     if (fileLinkInterceptorInstalled) return;
     fileLinkInterceptorInstalled = true;
+    installFileLinkEnhancements();
 
     document.addEventListener("click", function (event) {
       try {
@@ -726,6 +805,7 @@
     ensureBadge();
     installWebViewMessageListener();
     installFileLinkInterceptor();
+    installFileLinkEnhancements();
     refreshScriptFingerprint();
     checkConnection();
     refreshBuildDiagnostics();
