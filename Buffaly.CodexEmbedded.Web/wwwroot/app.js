@@ -3765,6 +3765,7 @@ function renderVsSelectionIndicator() {
     : "(selection is empty)";
 
   const header = document.createElement("div");
+  header.className = "header";
   const file = document.createElement("span");
   file.className = "file";
   file.textContent = `VS selection: ${snapshot.fileName || snapshot.filePath}`;
@@ -3780,7 +3781,7 @@ function renderVsSelectionIndicator() {
   dismiss.className = "dismiss";
   dismiss.title = "Dismiss selected code context";
   dismiss.setAttribute("aria-label", "Dismiss selected code context");
-  dismiss.textContent = "x";
+  dismiss.textContent = "\u00D7";
   dismiss.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
