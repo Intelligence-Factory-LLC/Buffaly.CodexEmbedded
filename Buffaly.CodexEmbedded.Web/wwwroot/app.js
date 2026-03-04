@@ -130,7 +130,8 @@ const UI_AUDIT_OUTGOING_TYPES = new Set([
   "turn_cancel",
   "approval_response",
   "tool_user_input_response",
-  "session_recovery_decision"
+  "session_recovery_decision",
+  "turn_retry_decision"
 ]);
 // Server turn cache is rebuilt from recent JSONL lines, so keep this high enough to capture many complete turns.
 const TIMELINE_INITIAL_WINDOW_DEFAULT = 6000;
@@ -375,6 +376,10 @@ function summarizeOutgoingAuditPayload(type, payload = {}) {
   if (type === "session_recovery_decision") {
     summary.offerId = typeof payload.offerId === "string" ? payload.offerId : null;
     summary.recover = payload.recover === true;
+  }
+  if (type === "turn_retry_decision") {
+    summary.offerId = typeof payload.offerId === "string" ? payload.offerId : null;
+    summary.retry = payload.retry === true;
   }
   return summary;
 }
@@ -1748,6 +1753,7 @@ function buildSidebarProjectGroups() {
       isProcessing: attachedSessionId ? isTurnInFlight(attachedSessionId) : isThreadProcessing(entry.threadId),
       hasPendingApproval: !!(attachedState && attachedState.pendingApproval && typeof attachedState.pendingApproval.approvalId === "string" && attachedState.pendingApproval.approvalId.trim()),
       hasPendingRecoveryOffer: !!(attachedState && attachedState.pendingRecoveryOffer && typeof attachedState.pendingRecoveryOffer.offerId === "string" && attachedState.pendingRecoveryOffer.offerId.trim()),
+      hasPendingTurnRetryOffer: !!(attachedState && attachedState.pendingTurnRetryOffer && typeof attachedState.pendingTurnRetryOffer.offerId === "string" && attachedState.pendingTurnRetryOffer.offerId.trim()),
       isArchived: archivedThreadIds.has(entry.threadId),
       hasUnreadCompletion: hasThreadCompletionUnread(entry.threadId)
     });
@@ -1777,6 +1783,7 @@ function buildSidebarProjectGroups() {
       isProcessing: isTurnInFlight(sessionId),
       hasPendingApproval: !!(state.pendingApproval && typeof state.pendingApproval.approvalId === "string" && state.pendingApproval.approvalId.trim()),
       hasPendingRecoveryOffer: !!(state.pendingRecoveryOffer && typeof state.pendingRecoveryOffer.offerId === "string" && state.pendingRecoveryOffer.offerId.trim()),
+      hasPendingTurnRetryOffer: !!(state.pendingTurnRetryOffer && typeof state.pendingTurnRetryOffer.offerId === "string" && state.pendingTurnRetryOffer.offerId.trim()),
       isArchived: archivedThreadIds.has(state.threadId),
       hasUnreadCompletion: hasThreadCompletionUnread(state.threadId)
     });
@@ -2874,6 +2881,24 @@ function renderProjectSidebar() {
         });
         badges.appendChild(recovery);
       }
+      if (entry.hasPendingTurnRetryOffer && entry.attachedSessionId) {
+        const retry = document.createElement("button");
+        retry.type = "button";
+        retry.className = "session-badge recovery-offer";
+        retry.textContent = "Retry";
+        retry.title = "A dropped prompt can be resent. Open retry prompt.";
+        retry.setAttribute("aria-label", "Turn retry available");
+        retry.addEventListener("click", (event) => {
+          event.stopPropagation();
+          if (!entry.attachedSessionId || !sessions.has(entry.attachedSessionId)) {
+            return;
+          }
+
+          setActiveSession(entry.attachedSessionId, { persistSelection: true, reason: "sidebar_turn_retry_offer" });
+          syncSessionRecoveryModal();
+        });
+        badges.appendChild(retry);
+      }
       if (!entry.isProcessing && entry.hasUnreadCompletion) {
         const completed = document.createElement("span");
         completed.className = "session-badge completed-unread";
@@ -3160,6 +3185,21 @@ function buildSessionListRecoveryOfferKey(offer) {
   return `${offerId}|${reason}|${message}|${pendingSeconds}|${createdAtUtc}|${dispatchId}|${activeTurnId}`;
 }
 
+function buildSessionListTurnRetryOfferKey(offer) {
+  if (!offer || typeof offer !== "object" || Array.isArray(offer)) {
+    return "";
+  }
+
+  const offerId = typeof offer.offerId === "string" ? offer.offerId.trim() : "";
+  const message = typeof offer.message === "string" ? offer.message.trim() : "";
+  const pendingSeconds = Number.isFinite(offer.pendingSeconds) ? Math.max(0, Math.round(offer.pendingSeconds)) : 0;
+  const createdAtUtc = typeof offer.createdAtUtc === "string" ? offer.createdAtUtc.trim() : "";
+  const dispatchId = typeof offer.dispatchId === "string" ? offer.dispatchId.trim() : "";
+  const textChars = Number.isFinite(offer.textChars) ? Math.max(0, Math.floor(offer.textChars)) : 0;
+  const imageCount = Number.isFinite(offer.imageCount) ? Math.max(0, Math.floor(offer.imageCount)) : 0;
+  return `${offerId}|${message}|${pendingSeconds}|${createdAtUtc}|${dispatchId}|${textChars}|${imageCount}`;
+}
+
 function normalizeRecoveryOffer(offer) {
   if (!offer || typeof offer !== "object" || Array.isArray(offer)) {
     return null;
@@ -3184,6 +3224,41 @@ function normalizeRecoveryOffer(offer) {
     createdAtUtc,
     dispatchId: dispatchId || null,
     activeTurnId: activeTurnId || null
+  };
+}
+
+function normalizeTurnRetryOffer(offer) {
+  if (!offer || typeof offer !== "object" || Array.isArray(offer)) {
+    return null;
+  }
+
+  const offerId = typeof offer.offerId === "string" ? offer.offerId.trim() : "";
+  if (!offerId) {
+    return null;
+  }
+
+  const message = typeof offer.message === "string" ? offer.message.trim() : "";
+  const pendingSeconds = Number.isFinite(offer.pendingSeconds) ? Math.max(0, Math.round(offer.pendingSeconds)) : 0;
+  const createdAtUtc = typeof offer.createdAtUtc === "string" ? offer.createdAtUtc.trim() : "";
+  const dispatchId = typeof offer.dispatchId === "string" ? offer.dispatchId.trim() : "";
+  const textChars = Number.isFinite(offer.textChars) ? Math.max(0, Math.floor(offer.textChars)) : 0;
+  const imageCount = Number.isFinite(offer.imageCount) ? Math.max(0, Math.floor(offer.imageCount)) : 0;
+  const model = typeof offer.model === "string" ? offer.model.trim() : "";
+  const reasoningEffort = typeof offer.reasoningEffort === "string" ? offer.reasoningEffort.trim() : "";
+  const approvalPolicy = typeof offer.approvalPolicy === "string" ? offer.approvalPolicy.trim() : "";
+  const sandboxPolicy = typeof offer.sandboxPolicy === "string" ? offer.sandboxPolicy.trim() : "";
+  return {
+    offerId,
+    message,
+    pendingSeconds,
+    createdAtUtc,
+    dispatchId: dispatchId || null,
+    textChars,
+    imageCount,
+    model: model || null,
+    reasoningEffort: reasoningEffort || null,
+    approvalPolicy: approvalPolicy || null,
+    sandboxPolicy: sandboxPolicy || null
   };
 }
 
@@ -3234,6 +3309,7 @@ function buildSessionListViewKey(activeSessionId, list, processingByThread) {
           turnCountInMemory: Number.isFinite(s.turnCountInMemory) ? Math.max(0, Math.floor(s.turnCountInMemory)) : 0,
           pendingApproval: buildSessionListApprovalKey(s.pendingApproval),
           pendingRecoveryOffer: buildSessionListRecoveryOfferKey(s.pendingRecoveryOffer),
+          pendingTurnRetryOffer: buildSessionListTurnRetryOfferKey(s.pendingTurnRetryOffer),
           queuedTurns: buildSessionListQueuedTurnsKey(s.queuedTurns)
         }))
         .sort((a, b) => a.sessionId.localeCompare(b.sessionId))
@@ -3658,6 +3734,7 @@ function closeSessionRecoveryModal(options = {}) {
 
   sessionRecoveryModal.dataset.sessionId = "";
   sessionRecoveryModal.dataset.offerId = "";
+  sessionRecoveryModal.dataset.mode = "";
   recoveryOfferModalSessionId = null;
   setSessionRecoveryModalVisible(false);
   if (options.focusPrompt === true) {
@@ -3665,38 +3742,56 @@ function closeSessionRecoveryModal(options = {}) {
   }
 }
 
-function openSessionRecoveryModal(sessionId, offer) {
+function openSessionRecoveryModal(sessionId, offer, mode = "recover") {
   if (!sessionRecoveryModal || !offer || !sessionId) {
     return;
   }
 
+  const modalMode = mode === "turn_retry" ? "turn_retry" : "recover";
   const state = sessions.get(sessionId) || null;
   const threadLabel = state && state.threadId ? state.threadId : "unknown";
   if (sessionRecoveryTitle) {
-    sessionRecoveryTitle.textContent = "Codex session appears stalled";
+    sessionRecoveryTitle.textContent = modalMode === "turn_retry"
+      ? "Retry dropped prompt?"
+      : "Codex session appears stalled";
   }
   if (sessionRecoveryMessage) {
-    const base = offer.message && offer.message.trim()
+    const base = typeof offer.message === "string" && offer.message.trim()
       ? offer.message.trim()
-      : "No response was received from Codex for this turn.";
+      : (modalMode === "turn_retry"
+        ? "Codex disconnected before the previous prompt started."
+        : "No response was received from Codex for this turn.");
     sessionRecoveryMessage.textContent = base;
   }
   if (sessionRecoveryMeta) {
     const parts = [];
     parts.push(`Session: ${sessionId}`);
     parts.push(`Thread: ${threadLabel}`);
-    if (offer.pendingSeconds > 0) {
-      parts.push(`Stalled for ${offer.pendingSeconds}s`);
+    const pendingSeconds = Number.isFinite(offer.pendingSeconds) ? Math.max(0, Math.round(offer.pendingSeconds)) : 0;
+    if (pendingSeconds > 0) {
+      parts.push(modalMode === "turn_retry" ? `Recovered ${pendingSeconds}s ago` : `Stalled for ${pendingSeconds}s`);
     }
-    if (offer.reason) {
+    if (modalMode === "recover" && offer.reason) {
       parts.push(`Reason: ${offer.reason}`);
     }
+    if (modalMode === "turn_retry") {
+      const textChars = Number.isFinite(offer.textChars) ? Math.max(0, Math.floor(offer.textChars)) : 0;
+      const imageCount = Number.isFinite(offer.imageCount) ? Math.max(0, Math.floor(offer.imageCount)) : 0;
+      parts.push(`Prompt: ${textChars} chars, ${imageCount} image(s)`);
+    }
     sessionRecoveryMeta.textContent = parts.join(" | ");
+  }
+  if (sessionRecoveryRecoverBtn) {
+    sessionRecoveryRecoverBtn.textContent = modalMode === "turn_retry" ? "Retry Prompt" : "Recover Session";
+  }
+  if (sessionRecoveryDismissBtn) {
+    sessionRecoveryDismissBtn.textContent = modalMode === "turn_retry" ? "Dismiss" : "Not Now";
   }
 
   recoveryOfferModalSessionId = sessionId;
   sessionRecoveryModal.dataset.sessionId = sessionId;
   sessionRecoveryModal.dataset.offerId = offer.offerId;
+  sessionRecoveryModal.dataset.mode = modalMode;
   setSessionRecoveryModalVisible(true);
   if (sessionRecoveryRecoverBtn) {
     sessionRecoveryRecoverBtn.focus();
@@ -3714,7 +3809,10 @@ function syncSessionRecoveryModal() {
   }
 
   const state = sessions.get(activeSessionId) || null;
-  const offer = state && state.pendingRecoveryOffer ? state.pendingRecoveryOffer : null;
+  const recoveryOffer = state && state.pendingRecoveryOffer ? state.pendingRecoveryOffer : null;
+  const turnRetryOffer = state && state.pendingTurnRetryOffer ? state.pendingTurnRetryOffer : null;
+  const mode = recoveryOffer ? "recover" : (turnRetryOffer ? "turn_retry" : "");
+  const offer = recoveryOffer || turnRetryOffer || null;
   if (!offer) {
     if (recoveryOfferModalSessionId === activeSessionId || isSessionRecoveryModalOpen()) {
       closeSessionRecoveryModal();
@@ -3724,13 +3822,15 @@ function syncSessionRecoveryModal() {
 
   const shownSessionId = sessionRecoveryModal.dataset.sessionId || "";
   const shownOfferId = sessionRecoveryModal.dataset.offerId || "";
+  const shownMode = sessionRecoveryModal.dataset.mode || "";
   if (isSessionRecoveryModalOpen() &&
       shownSessionId === activeSessionId &&
+      shownMode === mode &&
       shownOfferId === offer.offerId) {
     return;
   }
 
-  openSessionRecoveryModal(activeSessionId, offer);
+  openSessionRecoveryModal(activeSessionId, offer, mode);
 }
 
 function submitSessionRecoveryDecision(recover) {
@@ -3741,33 +3841,63 @@ function submitSessionRecoveryDecision(recover) {
   }
 
   const state = sessions.get(activeSessionId) || null;
-  const offer = state && state.pendingRecoveryOffer ? state.pendingRecoveryOffer : null;
+  const mode = sessionRecoveryModal && sessionRecoveryModal.dataset.mode === "turn_retry"
+    ? "turn_retry"
+    : "recover";
+  const offer = mode === "turn_retry"
+    ? (state && state.pendingTurnRetryOffer ? state.pendingTurnRetryOffer : null)
+    : (state && state.pendingRecoveryOffer ? state.pendingRecoveryOffer : null);
   if (!offer || !offer.offerId) {
-    appendLog("[session_recovery] no pending recovery prompt found");
+    appendLog(mode === "turn_retry"
+      ? "[turn_retry] no pending retry prompt found"
+      : "[session_recovery] no pending recovery prompt found");
     closeSessionRecoveryModal();
     return false;
   }
 
-  const decisionRecover = recover === true;
-  if (!send("session_recovery_decision", {
-    sessionId: activeSessionId,
-    offerId: offer.offerId,
-    recover: decisionRecover
-  })) {
-    return false;
+  const decisionAccept = recover === true;
+  if (mode === "turn_retry") {
+    if (!send("turn_retry_decision", {
+      sessionId: activeSessionId,
+      offerId: offer.offerId,
+      retry: decisionAccept
+    })) {
+      return false;
+    }
+  } else {
+    if (!send("session_recovery_decision", {
+      sessionId: activeSessionId,
+      offerId: offer.offerId,
+      recover: decisionAccept
+    })) {
+      return false;
+    }
   }
 
-  appendLog(
-    `[session_recovery] decision=${decisionRecover ? "recover" : "dismiss"} session=${activeSessionId} offerId=${offer.offerId}`);
-  state.pendingRecoveryOffer = null;
-  if (decisionRecover) {
+  appendLog(mode === "turn_retry"
+    ? `[turn_retry] decision=${decisionAccept ? "retry" : "dismiss"} session=${activeSessionId} offerId=${offer.offerId}`
+    : `[session_recovery] decision=${decisionAccept ? "recover" : "dismiss"} session=${activeSessionId} offerId=${offer.offerId}`);
+  if (mode === "turn_retry") {
+    state.pendingTurnRetryOffer = null;
+  } else {
+    state.pendingRecoveryOffer = null;
+  }
+  if (decisionAccept && mode === "recover") {
     state.isAppServerRecovering = true;
   }
-  uiAuditLog("ui.session_recovery_decision_submitted", {
-    sessionId: activeSessionId,
-    offerId: offer.offerId,
-    recover: decisionRecover
-  });
+  uiAuditLog(
+    mode === "turn_retry" ? "ui.turn_retry_decision_submitted" : "ui.session_recovery_decision_submitted",
+    mode === "turn_retry"
+      ? {
+          sessionId: activeSessionId,
+          offerId: offer.offerId,
+          retry: decisionAccept
+        }
+      : {
+          sessionId: activeSessionId,
+          offerId: offer.offerId,
+          recover: decisionAccept
+        });
   closeSessionRecoveryModal({ focusPrompt: false });
   updatePromptActionState();
   renderProjectSidebar();
@@ -3792,6 +3922,7 @@ function ensureSessionState(sessionId) {
       planUpdatedAt: null,
       pendingApproval: null,
       pendingRecoveryOffer: null,
+      pendingTurnRetryOffer: null,
       createdAtTick: now,
       lastActivityTick: now,
     });
@@ -6374,6 +6505,7 @@ function handleServerEvent(frame) {
             planUpdatedAt: null,
             pendingApproval: null,
             pendingRecoveryOffer: null,
+            pendingTurnRetryOffer: null,
             queuedTurns: [],
             queuedTurnCount: 0,
             turnCountInMemory: 0,
@@ -6466,6 +6598,7 @@ function handleServerEvent(frame) {
           s.pendingApproval && typeof s.pendingApproval === "object" && !Array.isArray(s.pendingApproval) ? s.pendingApproval : null;
         st.pendingApproval = pending && typeof pending.approvalId === "string" && pending.approvalId.trim() ? pending : null;
         st.pendingRecoveryOffer = normalizeRecoveryOffer(s.pendingRecoveryOffer);
+        st.pendingTurnRetryOffer = normalizeTurnRetryOffer(s.pendingTurnRetryOffer);
         st.queuedTurns = normalizeQueuedTurnSummaryList(s.queuedTurns || s.queuedMessages || []);
         st.queuedTurnCount = Number.isFinite(s.queuedTurnCount)
           ? Math.max(0, Math.floor(s.queuedTurnCount))
@@ -6776,6 +6909,9 @@ function handleServerEvent(frame) {
       if (recoveryState === "recovering" || recoveryState === "recovered" || recoveryState === "failed") {
         state.pendingRecoveryOffer = null;
       }
+      if (recoveryState === "failed") {
+        state.pendingTurnRetryOffer = null;
+      }
       if (sessionId === activeSessionId) {
         updatePromptActionState();
       }
@@ -6806,6 +6942,7 @@ function handleServerEvent(frame) {
         state.pendingRecoveryOffer = null;
       } else if (offered) {
         state.pendingRecoveryOffer = offered;
+        state.pendingTurnRetryOffer = null;
       } else {
         state.pendingRecoveryOffer = null;
       }
@@ -6815,6 +6952,35 @@ function handleServerEvent(frame) {
         offerId: offered ? offered.offerId : null,
         reason: offered ? offered.reason : null,
         state: offerState || null
+      });
+      syncSessionRecoveryModal();
+      renderProjectSidebar();
+      return;
+    }
+
+    case "turn_retry_offer": {
+      const sessionId = payload.sessionId || null;
+      if (!sessionId) {
+        return;
+      }
+
+      const state = ensureSessionState(sessionId);
+      const offerState = typeof payload.state === "string" ? payload.state.trim().toLowerCase() : "";
+      const offered = normalizeTurnRetryOffer(payload);
+      if (offerState === "dismissed") {
+        state.pendingTurnRetryOffer = null;
+      } else if (offered) {
+        state.pendingTurnRetryOffer = offered;
+      } else {
+        state.pendingTurnRetryOffer = null;
+      }
+
+      uiAuditLog("in.turn_retry_offer", {
+        sessionId,
+        offerId: offered ? offered.offerId : null,
+        state: offerState || null,
+        textChars: offered ? offered.textChars : null,
+        imageCount: offered ? offered.imageCount : null
       });
       syncSessionRecoveryModal();
       renderProjectSidebar();

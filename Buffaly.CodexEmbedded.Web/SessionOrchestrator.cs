@@ -981,6 +981,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 				if (inFlightAtStart && existingSession is not null)
 				{
+					if (existingSession.TryGetCachedModels(out var inFlightCachedModels))
+					{
+						WriteOrchestratorAudit(
+							$"event=models_list_from_cache sessionId={sessionId} reason=turn_in_flight modelCount={inFlightCachedModels.Count} threadId={existingSession.Session.ThreadId} {existingSession.BuildTurnDebugSummary()}");
+						return inFlightCachedModels;
+					}
+
 					WriteOrchestratorAudit(
 						$"event=models_list_during_turn sessionId={sessionId} threadId={existingSession.Session.ThreadId} {existingSession.BuildTurnDebugSummary()}");
 				}
@@ -1127,7 +1134,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 			var collaborationMode = session.GetActiveCollaborationMode();
 			var isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal);
-			var reset = session.ForceResetTurnState(clearQueuedTurns: false);
+			var reset = session.ForceResetTurnState(clearQueuedTurns: false, preserveRecoverableTurn: true);
 			if (reset.HadTurnInFlight)
 			{
 				Broadcast?.Invoke(
@@ -1183,6 +1190,92 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				reason = dismissedRecovery.Reason
 			});
 		Broadcast?.Invoke("status", new { sessionId, message = "Recovery prompt dismissed. Session remains stalled." });
+		SessionsChanged?.Invoke();
+		return true;
+	}
+
+	public bool TryResolveTurnRetryDecision(
+		string sessionId,
+		string? offerId,
+		bool retry,
+		out string? errorMessage)
+	{
+		errorMessage = null;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			errorMessage = "sessionId is required.";
+			return false;
+		}
+
+		var session = TryGetSession(sessionId);
+		if (session is null)
+		{
+			errorMessage = $"Unknown session: {sessionId}";
+			return false;
+		}
+
+		var normalizedOfferId = string.IsNullOrWhiteSpace(offerId) ? null : offerId.Trim();
+		if (retry)
+		{
+			if (session.IsAppServerRecovering)
+			{
+				errorMessage = "Session is still recovering. Wait for recovery to finish, then retry.";
+				return false;
+			}
+
+			if (session.IsTurnInFlight)
+			{
+				errorMessage = "A turn is already running for this session.";
+				return false;
+			}
+
+			if (!session.TryConsumeTurnRetryOffer(normalizedOfferId, out var retryOffer, out var replay) ||
+				retryOffer is null ||
+				replay is null)
+			{
+				errorMessage = "No pending retry prompt was found.";
+				return false;
+			}
+
+			var request = new TurnExecutionRequest(
+				Text: replay.Text,
+				Cwd: replay.Cwd,
+				Images: replay.Images,
+				CollaborationMode: replay.CollaborationMode,
+				QueueItemId: null,
+				ModelOverride: replay.Model,
+				ReasoningEffortOverride: replay.ReasoningEffort,
+				ApprovalPolicyOverride: replay.ApprovalPolicy,
+				SandboxPolicyOverride: replay.SandboxPolicy,
+				ReplaySource: "stale_turn_retry");
+			WriteOrchestratorAudit(
+				$"event=turn_retry_decision_received sessionId={sessionId} threadId={session.Session.ThreadId} offerId={retryOffer.OfferId} decision=retry dispatchId={retryOffer.DispatchId ?? "(none)"} text={SummarizeTextForAudit(request.Text, request.Images.Count)}");
+			session.Log.Write(
+				$"[turn_retry] decision accepted offerId={retryOffer.OfferId} dispatchId={retryOffer.DispatchId ?? "(none)"} text={BuildQueuedTurnPreview(request.Text, request.Images.Count)}");
+			Broadcast?.Invoke("status", new { sessionId, message = "Retry accepted. Resending last prompt." });
+			SessionsChanged?.Invoke();
+			LaunchTurnExecution(sessionId, session, request, fromQueue: false);
+			return true;
+		}
+
+		if (!session.TryDismissTurnRetryOffer(normalizedOfferId, out var dismissedOffer) || dismissedOffer is null)
+		{
+			errorMessage = "No pending retry prompt was found.";
+			return false;
+		}
+
+		WriteOrchestratorAudit(
+			$"event=turn_retry_decision_received sessionId={sessionId} threadId={session.Session.ThreadId} offerId={dismissedOffer.OfferId} decision=dismiss dispatchId={dismissedOffer.DispatchId ?? "(none)"}");
+		session.Log.Write($"[turn_retry] decision dismissed offerId={dismissedOffer.OfferId}");
+		Broadcast?.Invoke(
+			"turn_retry_offer",
+			new
+			{
+				sessionId,
+				state = "dismissed",
+				offerId = dismissedOffer.OfferId
+			});
+		Broadcast?.Invoke("status", new { sessionId, message = "Retry prompt dismissed." });
 		SessionsChanged?.Invoke();
 		return true;
 	}
@@ -1615,14 +1708,32 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 
 			Broadcast?.Invoke("status", new { sessionId, message = "Turn started." });
-			var effectiveModel = session.ResolveTurnModel(_defaults.DefaultModel);
-			var effectiveEffort = session.CurrentReasoningEffort;
-			var effectiveApproval = session.CurrentApprovalPolicy;
-			var effectiveSandbox = session.CurrentSandboxPolicy;
+			var effectiveModel = string.IsNullOrWhiteSpace(request.ModelOverride)
+				? session.ResolveTurnModel(_defaults.DefaultModel)
+				: request.ModelOverride;
+			var effectiveEffort = string.IsNullOrWhiteSpace(request.ReasoningEffortOverride)
+				? session.CurrentReasoningEffort
+				: request.ReasoningEffortOverride;
+			var effectiveApproval = string.IsNullOrWhiteSpace(request.ApprovalPolicyOverride)
+				? session.CurrentApprovalPolicy
+				: request.ApprovalPolicyOverride;
+			var effectiveSandbox = string.IsNullOrWhiteSpace(request.SandboxPolicyOverride)
+				? session.CurrentSandboxPolicy
+				: request.SandboxPolicyOverride;
 			var imageCount = request.Images?.Count ?? 0;
 			session.Log.Write(
 				$"[prompt] {(string.IsNullOrWhiteSpace(request.Text) ? "(no text)" : request.Text)} images={imageCount} cwd={request.Cwd ?? session.Cwd ?? "(default)"} model={effectiveModel ?? "(default)"} effort={effectiveEffort ?? "(default)"} approval={effectiveApproval ?? "(default)"} sandbox={effectiveSandbox ?? "(default)"} collaboration={collaborationModeKind ?? "(default)"}");
 			Broadcast?.Invoke("assistant_response_started", new { sessionId });
+			session.RememberRecoverableTurn(
+				dispatchId,
+				request.Text,
+				request.Cwd,
+				request.Images,
+				request.CollaborationMode,
+				effectiveModel,
+				effectiveEffort,
+				effectiveApproval,
+				effectiveSandbox);
 
 			var turnOptions = new CodexTurnOptions
 			{
@@ -1652,23 +1763,30 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				session,
 				result.Status,
 				result.ErrorMessage);
+			session.ClearRecoverableTurn(dispatchId);
 			WriteOrchestratorAudit(
 				$"event=turn_send_completed sessionId={sessionId} dispatchId={dispatchId} status={result.Status ?? "unknown"} hasError={!string.IsNullOrWhiteSpace(result.ErrorMessage)}");
 		}
 		catch (OperationCanceledException)
 		{
+			var timedOut = timeoutCts?.IsCancellationRequested == true;
+			var lifetimeCanceled = session.LifetimeToken.IsCancellationRequested;
+			var staleStartCanceled =
+				!timedOut &&
+				!lifetimeCanceled &&
+				session.TryMarkRecoverableTurnStaleStartCanceled(dispatchId, out _);
 			WriteOrchestratorAudit(
-				$"event=turn_rpc_canceled sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} timeout={timeoutCts?.IsCancellationRequested == true} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested} {session.BuildTurnDebugSummary()} {session.BuildRpcDebugSummary()}");
+				$"event=turn_rpc_canceled sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} timeout={timedOut} lifetimeCanceled={lifetimeCanceled} staleStartCanceled={staleStartCanceled} {session.BuildTurnDebugSummary()} {session.BuildRpcDebugSummary()}");
 			WriteOrchestratorAudit(
-				$"event=turn_send_operation_canceled sessionId={sessionId} dispatchId={dispatchId} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested}");
+				$"event=turn_send_operation_canceled sessionId={sessionId} dispatchId={dispatchId} lifetimeCanceled={lifetimeCanceled}");
 			session.Log.Write(
-				$"[turn_dispatch] dispatchId={dispatchId} canceled timeout={timeoutCts?.IsCancellationRequested == true} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested}");
-			if (session.LifetimeToken.IsCancellationRequested && !lockTaken)
+				$"[turn_dispatch] dispatchId={dispatchId} canceled timeout={timedOut} lifetimeCanceled={lifetimeCanceled} staleStartCanceled={staleStartCanceled}");
+			if (lifetimeCanceled && !lockTaken)
 			{
 				return TurnExecutionOutcome.CanceledByLifetime;
 			}
 
-			if (timeoutCts?.IsCancellationRequested == true)
+			if (timedOut)
 			{
 				completionPublished = TryPublishTurnComplete(
 					sessionId,
@@ -1682,10 +1800,35 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					sessionId,
 					session,
 					status: "interrupted",
-					errorMessage: "Turn canceled.");
+					errorMessage: staleStartCanceled
+						? "Turn start did not acknowledge before recovery."
+						: "Turn canceled.");
+			}
+
+			if (!completionPublished && staleStartCanceled)
+			{
+				var fallbackReset = session.ForceResetTurnState(clearQueuedTurns: false, preserveRecoverableTurn: true);
+				Broadcast?.Invoke(
+					"turn_complete",
+					new
+					{
+						sessionId,
+						status = "interrupted",
+						errorMessage = "Turn start did not acknowledge before recovery.",
+						isPlanTurn,
+						collaborationMode = collaborationModeKind
+					});
+				WriteOrchestratorAudit(
+					$"event=turn_completion_fallback_published sessionId={sessionId} dispatchId={dispatchId} reason=stale_turn_start_cancel hadTurnInFlight={fallbackReset.HadTurnInFlight}");
+				completionPublished = true;
+			}
+
+			if (!staleStartCanceled)
+			{
+				session.ClearRecoverableTurn(dispatchId);
 			}
 			WriteOrchestratorAudit(
-				$"event=turn_send_canceled sessionId={sessionId} dispatchId={dispatchId} timeout={timeoutCts?.IsCancellationRequested == true}");
+				$"event=turn_send_canceled sessionId={sessionId} dispatchId={dispatchId} timeout={timedOut} staleStartCanceled={staleStartCanceled}");
 		}
 		catch (Exception ex)
 		{
@@ -1699,6 +1842,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				session,
 				status: "failed",
 				errorMessage: ex.Message);
+			session.ClearRecoverableTurn(dispatchId);
 		}
 		finally
 		{
@@ -1888,7 +2032,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		var mode = session.GetActiveCollaborationMode();
 		var isPlanTurn = string.Equals(mode, "plan", StringComparison.Ordinal);
-		var reset = session.ForceResetTurnState(clearQueuedTurns: false);
+		var reset = session.ForceResetTurnState(clearQueuedTurns: false, preserveRecoverableTurn: true);
 		if (reset.HadTurnInFlight)
 		{
 			Broadcast?.Invoke(
@@ -3878,6 +4022,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	{
 		var roundedSeconds = Math.Round(pendingAge.TotalSeconds);
 		var queuedTurns = staleSession.GetQueuedTurnsSnapshot();
+		var recoverableTurn = staleSession.GetRecoverableTurnSnapshot();
 		var threadId = staleSession.Session.ThreadId;
 		var model = staleSession.CurrentModel ?? _defaults.DefaultModel;
 		var effort = staleSession.CurrentReasoningEffort;
@@ -3944,6 +4089,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			{
 				replacement.ReplaceQueuedTurns(queuedTurns);
 			}
+			replacement.RestoreRecoverableTurnSnapshot(recoverableTurn);
 
 			replacement.MarkAppServerRecoveryComplete();
 			SessionsChanged?.Invoke();
@@ -3963,6 +4109,31 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				});
 			WriteOrchestratorAudit(
 				$"event=appserver_recovery_completed sessionId={sessionId} threadId={replacement.Session.ThreadId} pendingSeconds={roundedSeconds} queuedTurnsRestored={queuedTurns.Count}");
+			if (replacement.TryCreateTurnRetryOfferAfterRecovery(out var retryOffer) && retryOffer is not null)
+			{
+				WriteOrchestratorAudit(
+					$"event=turn_retry_offer_created sessionId={sessionId} threadId={replacement.Session.ThreadId} offerId={retryOffer.OfferId} dispatchId={retryOffer.DispatchId ?? "(none)"} textChars={retryOffer.TextChars} imageCount={retryOffer.ImageCount}");
+				replacement.Log.Write(
+					$"[turn_retry] offer created offerId={retryOffer.OfferId} dispatchId={retryOffer.DispatchId ?? "(none)"}");
+				Broadcast?.Invoke(
+					"turn_retry_offer",
+					new
+					{
+						sessionId,
+						offerId = retryOffer.OfferId,
+						message = retryOffer.Message,
+						pendingSeconds = retryOffer.PendingSeconds,
+						createdAtUtc = retryOffer.CreatedAtUtc,
+						dispatchId = retryOffer.DispatchId,
+						textChars = retryOffer.TextChars,
+						imageCount = retryOffer.ImageCount,
+						model = retryOffer.Model,
+						reasoningEffort = retryOffer.ReasoningEffort,
+						approvalPolicy = retryOffer.ApprovalPolicy,
+						sandboxPolicy = retryOffer.SandboxPolicy
+					});
+				Broadcast?.Invoke("status", new { sessionId, message = "Recovery completed. Retry the dropped prompt if needed." });
+			}
 			Broadcast?.Invoke("status", new { sessionId, message = "Session recovered after stalled turn/start." });
 		}
 		catch (Exception ex)
@@ -4382,6 +4553,7 @@ internal sealed record SessionSnapshot(
 	bool IsTurnInFlight,
 	PendingApprovalSnapshot? PendingApproval,
 	RecoveryOfferSnapshot? PendingRecoveryOffer,
+	TurnRetryOfferSnapshot? PendingTurnRetryOffer,
 	int QueuedTurnCount,
 	IReadOnlyList<QueuedTurnSummarySnapshot> QueuedTurns,
 	int TurnCountInMemory,
@@ -4419,7 +4591,12 @@ internal sealed record SessionSnapshot(
 		string? Cwd,
 		IReadOnlyList<CodexUserImageInput> Images,
 		CodexCollaborationMode? CollaborationMode,
-		string? QueueItemId);
+		string? QueueItemId,
+		string? ModelOverride = null,
+		string? ReasoningEffortOverride = null,
+		string? ApprovalPolicyOverride = null,
+		string? SandboxPolicyOverride = null,
+		string? ReplaySource = null);
 
 	internal sealed record QueuedTurn(
 		string QueueItemId,
@@ -4453,6 +4630,35 @@ internal sealed record SessionSnapshot(
 		DateTimeOffset CreatedAtUtc,
 		string? DispatchId,
 		string? ActiveTurnId);
+
+	internal sealed record TurnRetryOfferSnapshot(
+		string OfferId,
+		string Message,
+		double PendingSeconds,
+		DateTimeOffset CreatedAtUtc,
+		string? DispatchId,
+		int TextChars,
+		int ImageCount,
+		string? Model,
+		string? ReasoningEffort,
+		string? ApprovalPolicy,
+		string? SandboxPolicy);
+
+	internal sealed record RecoverableTurnReplaySnapshot(
+		string DispatchId,
+		string Text,
+		string? Cwd,
+		IReadOnlyList<CodexUserImageInput> Images,
+		CodexCollaborationMode? CollaborationMode,
+		string? Model,
+		string? ReasoningEffort,
+		string? ApprovalPolicy,
+		string? SandboxPolicy,
+		bool StartAcknowledged,
+		bool StaleStartCanceled,
+		DateTimeOffset CreatedAtUtc,
+		DateTimeOffset? StaleCanceledAtUtc,
+		bool RetryOffered);
 
 	internal sealed record ManagedSession(
 		string SessionId,
@@ -4503,6 +4709,8 @@ internal sealed record SessionSnapshot(
 		private bool _queueDispatchRunning;
 		private PendingApprovalSnapshot? _pendingApproval;
 		private RecoveryOfferSnapshot? _pendingRecoveryOffer;
+		private TurnRetryOfferSnapshot? _pendingTurnRetryOffer;
+		private RecoverableTurnReplaySnapshot? _recoverableTurn;
 		private DateTimeOffset _lastRecoveryOfferDismissedUtc = DateTimeOffset.MinValue;
 		private bool _isAppServerRecovering = AppServerRecovering;
 
@@ -4722,6 +4930,7 @@ internal sealed record SessionSnapshot(
 				IsTurnInFlight: IsTurnInFlight,
 				PendingApproval: GetPendingApproval(),
 				PendingRecoveryOffer: GetPendingRecoveryOffer(),
+				PendingTurnRetryOffer: GetPendingTurnRetryOffer(),
 				QueuedTurnCount: queuedTurns.Count,
 				QueuedTurns: queuedTurns,
 				TurnCountInMemory: turnCountInMemory,
@@ -5192,11 +5401,17 @@ internal sealed record SessionSnapshot(
 				_activeTurnCts = turnCts;
 				_activeDispatchId = string.IsNullOrWhiteSpace(dispatchId) ? null : dispatchId.Trim();
 				_activeTurnId = Session.TryGetActiveTurnId(out var activeFromClient) ? activeFromClient : _activeTurnId;
+				if (!string.IsNullOrWhiteSpace(_activeTurnId))
+				{
+					MarkRecoverableTurnStartAcknowledged(_activeDispatchId);
+				}
 				_activeCollaborationMode = WebCodexUtils.NormalizeCollaborationMode(collaborationMode);
 				_lastCoreEventUtc = DateTimeOffset.UtcNow;
 				_lastCoreEventType = null;
 				_lastCoreEventMessage = null;
 				_pendingRecoveryOffer = null;
+				_pendingTurnRetryOffer = null;
+				_recoverableTurn = null;
 				SetTurnState(TurnLifecycleState.RunningLocal);
 				return true;
 			}
@@ -5218,6 +5433,7 @@ internal sealed record SessionSnapshot(
 					{
 						_activeTurnId = normalizedTurnId;
 					}
+					MarkRecoverableTurnStartAcknowledged(_activeDispatchId);
 					return false;
 				}
 
@@ -5225,6 +5441,9 @@ internal sealed record SessionSnapshot(
 				_activeDispatchId = null;
 				_activeTurnId = normalizedTurnId;
 				_pendingRecoveryOffer = null;
+				_pendingTurnRetryOffer = null;
+				_recoverableTurn = null;
+				MarkRecoverableTurnStartAcknowledged();
 				SetTurnState(TurnLifecycleState.RunningRecovered);
 				return true;
 			}
@@ -5247,6 +5466,7 @@ internal sealed record SessionSnapshot(
 					{
 						_activeTurnId = normalizedTurnId;
 					}
+					MarkRecoverableTurnStartAcknowledged(_activeDispatchId);
 
 					recoveredTurnId = _activeTurnId;
 					return false;
@@ -5256,6 +5476,9 @@ internal sealed record SessionSnapshot(
 				_activeDispatchId = null;
 				_activeTurnId = normalizedTurnId;
 				_pendingRecoveryOffer = null;
+				_pendingTurnRetryOffer = null;
+				_recoverableTurn = null;
+				MarkRecoverableTurnStartAcknowledged();
 				SetTurnState(TurnLifecycleState.RunningRecovered);
 				recoveredTurnId = normalizedTurnId;
 				return true;
@@ -5278,6 +5501,8 @@ internal sealed record SessionSnapshot(
 				_activeTurnId = null;
 				_activeCollaborationMode = null;
 				_pendingRecoveryOffer = null;
+				_pendingTurnRetryOffer = null;
+				_recoverableTurn = null;
 				SetTurnState(TurnLifecycleState.Idle);
 			}
 
@@ -5314,7 +5539,7 @@ internal sealed record SessionSnapshot(
 			}
 		}
 
-		public (bool HadTurnInFlight, bool HadActiveTurnToken, int ClearedQueuedTurnCount) ForceResetTurnState(bool clearQueuedTurns)
+		public (bool HadTurnInFlight, bool HadActiveTurnToken, int ClearedQueuedTurnCount) ForceResetTurnState(bool clearQueuedTurns, bool preserveRecoverableTurn = false)
 		{
 			CancellationTokenSource? activeTurnCts = null;
 			var shouldRelease = false;
@@ -5332,6 +5557,11 @@ internal sealed record SessionSnapshot(
 				_activeTurnId = null;
 				_activeCollaborationMode = null;
 				_pendingRecoveryOffer = null;
+				if (!preserveRecoverableTurn)
+				{
+					_pendingTurnRetryOffer = null;
+					_recoverableTurn = null;
+				}
 				SetTurnState(TurnLifecycleState.Idle);
 			}
 
@@ -5415,6 +5645,263 @@ internal sealed record SessionSnapshot(
 			lock (_turnSync)
 			{
 				return _pendingRecoveryOffer;
+			}
+		}
+
+		public TurnRetryOfferSnapshot? GetPendingTurnRetryOffer()
+		{
+			lock (_turnSync)
+			{
+				return _pendingTurnRetryOffer;
+			}
+		}
+
+		public void RememberRecoverableTurn(
+			string dispatchId,
+			string text,
+			string? cwd,
+			IReadOnlyList<CodexUserImageInput>? images,
+			CodexCollaborationMode? collaborationMode,
+			string? model,
+			string? reasoningEffort,
+			string? approvalPolicy,
+			string? sandboxPolicy)
+		{
+			var normalizedDispatchId = dispatchId?.Trim();
+			if (string.IsNullOrWhiteSpace(normalizedDispatchId))
+			{
+				return;
+			}
+
+			var safeText = text ?? string.Empty;
+			var safeCwd = string.IsNullOrWhiteSpace(cwd) ? null : cwd.Trim();
+			var safeImages = images is null
+				? Array.Empty<CodexUserImageInput>()
+				: images
+					.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Url))
+					.Select(x => new CodexUserImageInput(x.Url))
+					.ToArray();
+			var safeCollaborationMode = collaborationMode is null
+				? null
+				: new CodexCollaborationMode
+				{
+					Mode = collaborationMode.Mode
+				};
+
+			lock (_turnSync)
+			{
+				_recoverableTurn = new RecoverableTurnReplaySnapshot(
+					DispatchId: normalizedDispatchId,
+					Text: safeText,
+					Cwd: safeCwd,
+					Images: safeImages,
+					CollaborationMode: safeCollaborationMode,
+					Model: string.IsNullOrWhiteSpace(model) ? null : model.Trim(),
+					ReasoningEffort: string.IsNullOrWhiteSpace(reasoningEffort) ? null : reasoningEffort.Trim(),
+					ApprovalPolicy: string.IsNullOrWhiteSpace(approvalPolicy) ? null : approvalPolicy.Trim(),
+					SandboxPolicy: string.IsNullOrWhiteSpace(sandboxPolicy) ? null : sandboxPolicy.Trim(),
+					StartAcknowledged: false,
+					StaleStartCanceled: false,
+					CreatedAtUtc: DateTimeOffset.UtcNow,
+					StaleCanceledAtUtc: null,
+					RetryOffered: false);
+				_pendingTurnRetryOffer = null;
+			}
+		}
+
+		public void MarkRecoverableTurnStartAcknowledged(string? dispatchId = null)
+		{
+			lock (_turnSync)
+			{
+				if (_recoverableTurn is null)
+				{
+					return;
+				}
+
+				if (!string.IsNullOrWhiteSpace(dispatchId) &&
+					!string.Equals(_recoverableTurn.DispatchId, dispatchId.Trim(), StringComparison.Ordinal))
+				{
+					return;
+				}
+
+				_recoverableTurn = _recoverableTurn with
+				{
+					StartAcknowledged = true
+				};
+			}
+		}
+
+		public bool TryMarkRecoverableTurnStaleStartCanceled(string dispatchId, out RecoverableTurnReplaySnapshot? snapshot)
+		{
+			snapshot = null;
+			var normalizedDispatchId = dispatchId?.Trim();
+			if (string.IsNullOrWhiteSpace(normalizedDispatchId))
+			{
+				return false;
+			}
+
+			lock (_turnSync)
+			{
+				if (_recoverableTurn is null)
+				{
+					return false;
+				}
+
+				if (!string.Equals(_recoverableTurn.DispatchId, normalizedDispatchId, StringComparison.Ordinal))
+				{
+					return false;
+				}
+
+				if (_recoverableTurn.StartAcknowledged)
+				{
+					return false;
+				}
+
+				_recoverableTurn = _recoverableTurn with
+				{
+					StaleStartCanceled = true,
+					StaleCanceledAtUtc = DateTimeOffset.UtcNow
+				};
+				snapshot = _recoverableTurn;
+				return true;
+			}
+		}
+
+		public RecoverableTurnReplaySnapshot? GetRecoverableTurnSnapshot()
+		{
+			lock (_turnSync)
+			{
+				return _recoverableTurn;
+			}
+		}
+
+		public void RestoreRecoverableTurnSnapshot(RecoverableTurnReplaySnapshot? snapshot)
+		{
+			lock (_turnSync)
+			{
+				_recoverableTurn = snapshot;
+				if (snapshot is null)
+				{
+					_pendingTurnRetryOffer = null;
+				}
+			}
+		}
+
+		public bool TryCreateTurnRetryOfferAfterRecovery(out TurnRetryOfferSnapshot? offer)
+		{
+			offer = null;
+			lock (_turnSync)
+			{
+				if (_recoverableTurn is null)
+				{
+					return false;
+				}
+
+				if (_recoverableTurn.StartAcknowledged || !_recoverableTurn.StaleStartCanceled)
+				{
+					return false;
+				}
+
+				if (_pendingTurnRetryOffer is not null)
+				{
+					offer = _pendingTurnRetryOffer;
+					return false;
+				}
+
+				if (_recoverableTurn.RetryOffered)
+				{
+					return false;
+				}
+
+				var pendingSeconds = _recoverableTurn.StaleCanceledAtUtc.HasValue
+					? Math.Max(0, Math.Round((DateTimeOffset.UtcNow - _recoverableTurn.StaleCanceledAtUtc.Value).TotalSeconds))
+					: 0;
+				offer = new TurnRetryOfferSnapshot(
+					OfferId: Guid.NewGuid().ToString("N"),
+					Message: "Codex disconnected before the turn started. Retry the last prompt now?",
+					PendingSeconds: pendingSeconds,
+					CreatedAtUtc: DateTimeOffset.UtcNow,
+					DispatchId: _recoverableTurn.DispatchId,
+					TextChars: string.IsNullOrWhiteSpace(_recoverableTurn.Text) ? 0 : _recoverableTurn.Text.Trim().Length,
+					ImageCount: _recoverableTurn.Images.Count,
+					Model: _recoverableTurn.Model,
+					ReasoningEffort: _recoverableTurn.ReasoningEffort,
+					ApprovalPolicy: _recoverableTurn.ApprovalPolicy,
+					SandboxPolicy: _recoverableTurn.SandboxPolicy);
+				_pendingTurnRetryOffer = offer;
+				_recoverableTurn = _recoverableTurn with
+				{
+					RetryOffered = true
+				};
+				return true;
+			}
+		}
+
+		public bool TryConsumeTurnRetryOffer(string? offerId, out TurnRetryOfferSnapshot? offer, out RecoverableTurnReplaySnapshot? replay)
+		{
+			offer = null;
+			replay = null;
+			lock (_turnSync)
+			{
+				if (_pendingTurnRetryOffer is null || _recoverableTurn is null)
+				{
+					return false;
+				}
+
+				if (!string.IsNullOrWhiteSpace(offerId) &&
+					!string.Equals(_pendingTurnRetryOffer.OfferId, offerId.Trim(), StringComparison.Ordinal))
+				{
+					return false;
+				}
+
+				offer = _pendingTurnRetryOffer;
+				replay = _recoverableTurn;
+				_pendingTurnRetryOffer = null;
+				return true;
+			}
+		}
+
+		public bool TryDismissTurnRetryOffer(string? offerId, out TurnRetryOfferSnapshot? offer)
+		{
+			offer = null;
+			lock (_turnSync)
+			{
+				if (_pendingTurnRetryOffer is null)
+				{
+					return false;
+				}
+
+				if (!string.IsNullOrWhiteSpace(offerId) &&
+					!string.Equals(_pendingTurnRetryOffer.OfferId, offerId.Trim(), StringComparison.Ordinal))
+				{
+					return false;
+				}
+
+				offer = _pendingTurnRetryOffer;
+				_pendingTurnRetryOffer = null;
+				_recoverableTurn = null;
+				return true;
+			}
+		}
+
+		public void ClearRecoverableTurn(string? dispatchId = null)
+		{
+			lock (_turnSync)
+			{
+				if (_recoverableTurn is null)
+				{
+					_pendingTurnRetryOffer = null;
+					return;
+				}
+
+				if (!string.IsNullOrWhiteSpace(dispatchId) &&
+					!string.Equals(_recoverableTurn.DispatchId, dispatchId.Trim(), StringComparison.Ordinal))
+				{
+					return;
+				}
+
+				_pendingTurnRetryOffer = null;
+				_recoverableTurn = null;
 			}
 		}
 

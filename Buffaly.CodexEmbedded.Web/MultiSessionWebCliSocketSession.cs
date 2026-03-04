@@ -322,6 +322,28 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						await ResolveSessionRecoveryDecisionAsync(sessionId, offerId, recover, cancellationToken);
 					}
 					return;
+				case "turn_retry_decision":
+					{
+						var sessionId = await RequireKnownSessionIdAsync(
+							TryGetString(root, "sessionId"),
+							"sessionId is required for turn_retry_decision.",
+							cancellationToken);
+						if (string.IsNullOrWhiteSpace(sessionId))
+						{
+							return;
+						}
+
+						if (!TryGetBoolean(root, "retry", out var retry))
+						{
+							WriteAuditEvent($"action=turn_retry_decision_rejected sessionId={sessionId} reason=invalid_retry_flag");
+							await SendEventAsync("error", new { message = "retry must be true or false." }, cancellationToken);
+							return;
+						}
+
+						var offerId = TryGetString(root, "offerId");
+						await ResolveTurnRetryDecisionAsync(sessionId, offerId, retry, cancellationToken);
+					}
+					return;
 				case "tool_user_input_response":
 					{
 						var sessionId = await RequireProvidedSessionIdAsync(
@@ -803,6 +825,22 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						activeTurnId = recoveryOffer.ActiveTurnId
 					}
 					: null,
+				pendingTurnRetryOffer = s.PendingTurnRetryOffer is { } retryOffer
+					? new
+					{
+						offerId = retryOffer.OfferId,
+						message = retryOffer.Message,
+						pendingSeconds = retryOffer.PendingSeconds,
+						createdAtUtc = retryOffer.CreatedAtUtc.ToString("O"),
+						dispatchId = retryOffer.DispatchId,
+						textChars = retryOffer.TextChars,
+						imageCount = retryOffer.ImageCount,
+						model = retryOffer.Model,
+						reasoningEffort = retryOffer.ReasoningEffort,
+						approvalPolicy = retryOffer.ApprovalPolicy,
+						sandboxPolicy = retryOffer.SandboxPolicy
+					}
+					: null,
 				queuedTurnCount = s.QueuedTurnCount,
 				turnCountInMemory = s.TurnCountInMemory,
 				queuedTurns = s.QueuedTurns.Select(queued => new
@@ -1154,6 +1192,38 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				message = recover
 					? "Recovery accepted. Restarting session app-server."
 					: "Recovery prompt dismissed."
+			},
+			cancellationToken);
+	}
+
+	private async Task ResolveTurnRetryDecisionAsync(
+		string sessionId,
+		string? offerId,
+		bool retry,
+		CancellationToken cancellationToken)
+	{
+		var normalizedOfferId = string.IsNullOrWhiteSpace(offerId) ? null : offerId.Trim();
+		WriteAuditEvent(
+			$"action=turn_retry_decision sessionId={sessionId} offerId={normalizedOfferId ?? "(null)"} retry={retry}");
+		if (!_orchestrator.TryResolveTurnRetryDecision(sessionId, normalizedOfferId, retry, out var errorMessage))
+		{
+			WriteAuditEvent(
+				$"action=turn_retry_decision_rejected sessionId={sessionId} offerId={normalizedOfferId ?? "(null)"} retry={retry} reason={errorMessage ?? "(none)"}");
+			await SendEventAsync(
+				"error",
+				new { message = errorMessage ?? "Failed to apply retry decision." },
+				cancellationToken);
+			return;
+		}
+
+		await SendEventAsync(
+			"status",
+			new
+			{
+				sessionId,
+				message = retry
+					? "Retry accepted. Resending last prompt."
+					: "Retry prompt dismissed."
 			},
 			cancellationToken);
 	}
