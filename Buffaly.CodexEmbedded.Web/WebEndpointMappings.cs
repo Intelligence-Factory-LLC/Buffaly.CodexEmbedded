@@ -448,6 +448,49 @@ internal static class WebEndpointMappings
 			}
 		});
 
+		app.MapGet("/api/worktree/diff/current", (HttpRequest request, GitWorktreeDiffService gitDiffService, CancellationToken cancellationToken) =>
+		{
+			var cwd = request.Query["cwd"].ToString();
+			if (string.IsNullOrWhiteSpace(cwd))
+			{
+				return Results.BadRequest(new { message = "cwd query parameter is required." });
+			}
+
+			var maxFiles = QueryValueParser.GetPositiveInt(request.Query["maxFiles"], fallback: 200, max: 1000);
+			var maxPatchChars = QueryValueParser.GetPositiveInt(request.Query["maxPatchChars"], fallback: 250000, max: 1000000);
+			try
+			{
+				var snapshot = gitDiffService.GetSnapshot(cwd, maxFiles, maxPatchChars, cancellationToken);
+				return Results.Ok(new
+				{
+					cwd = snapshot.Cwd,
+					repoRoot = snapshot.RepoRoot,
+					branch = snapshot.Branch,
+					headSha = snapshot.HeadSha,
+					isGitRepo = snapshot.IsGitRepo,
+					isTimedOut = snapshot.IsTimedOut,
+					generatedAtUtc = snapshot.GeneratedAtUtc.ToString("O"),
+					changeCount = snapshot.ChangeCount,
+					files = snapshot.Files
+				});
+			}
+			catch (DirectoryNotFoundException ex)
+			{
+				return Results.NotFound(new { message = ex.Message });
+			}
+			catch (OperationCanceledException)
+			{
+				return Results.BadRequest(new { message = "git diff request was canceled." });
+			}
+			catch (Exception ex)
+			{
+				return Results.Problem(
+					statusCode: StatusCodes.Status500InternalServerError,
+					title: "Failed to read git worktree diff.",
+					detail: ex.Message);
+			}
+		});
+
 		app.MapGet("/api/logs/realtime/current", (HttpRequest request, WebRuntimeDefaults defaults) =>
 		{
 			var maxLines = QueryValueParser.GetPositiveInt(request.Query["maxLines"], fallback: 200, max: 1000);

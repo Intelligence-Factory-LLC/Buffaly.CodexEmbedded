@@ -96,6 +96,10 @@
 					<span id="conversationTitle" class="conversation-title-text">Conversation</span>
 					<div id="sessionMeta" class="conversation-meta">
 						<span id="conversationModelSummary" class="conversation-model-summary">default | default</span>
+						<button id="worktreeDiffIndicatorBtn" class="worktree-diff-indicator-btn hidden" type="button" title="Open working tree diff" aria-label="Open working tree diff">
+							<i class="bi bi-file-earmark-diff" aria-hidden="true"></i>
+							<span id="worktreeDiffIndicatorCount" class="worktree-diff-indicator-count">0</span>
+						</button>
 						<button id="conversationMetaMenuBtn" class="conversation-meta-menu-btn" type="button" title="Conversation settings" aria-label="Conversation settings" aria-haspopup="true" aria-expanded="false">
 							<i class="bi bi-sliders" aria-hidden="true"></i>
 							<span class="visually-hidden">Conversation settings</span>
@@ -158,6 +162,19 @@
 						</div>
 					</div>
 				</div>
+				<section id="worktreeDiffPanel" class="worktree-diff-panel hidden" aria-label="Working tree diff">
+					<div class="worktree-diff-header">
+						<div class="worktree-diff-title-wrap">
+							<span class="worktree-diff-title">Working Tree Diff</span>
+							<span id="worktreeDiffSummary" class="worktree-diff-summary">No active session</span>
+						</div>
+						<div class="worktree-diff-actions">
+							<button id="worktreeDiffToggleBtn" class="worktree-diff-refresh-btn" type="button">Close</button>
+							<button id="worktreeDiffRefreshBtn" class="worktree-diff-refresh-btn" type="button">Refresh</button>
+						</div>
+					</div>
+					<div id="worktreeDiffList" class="worktree-diff-list"></div>
+				</section>
 				<div id="chatMessages" class="watcher-timeline"></div>
 				<div id="turnActivityStrip" class="turn-activity hidden" role="status" aria-live="polite">
 					<div class="turn-activity-header">
@@ -192,6 +209,7 @@
 				<div id="promptQueue" class="prompt-queue hidden"></div>
 				<div id="composerImages" class="composer-images hidden"></div>
 				<div id="promptSelectionIndicator" class="prompt-selection-indicator hidden" role="status" aria-live="polite"></div>
+				<div id="diffNotesComposer" class="diff-notes-composer hidden" role="status" aria-live="polite"></div>
 				<form id="promptForm" class="prompt-form">
 					<textarea id="promptInput" autocomplete="off" rows="4" placeholder="Type a prompt..."></textarea>
 					<div class="prompt-actions">
@@ -359,6 +377,22 @@
 			</div>
 		</div>
 
+		<div id="diffNoteModal" class="command-modal hidden" role="dialog" aria-modal="true" aria-labelledby="diffNoteModalTitle">
+			<div class="command-modal-card diff-note-modal-card">
+				<div id="diffNoteModalTitle" class="command-modal-title">Diff Line Note</div>
+				<div class="command-modal-body">
+					<div id="diffNoteModalPath" class="diff-note-modal-path"></div>
+					<label for="diffNoteModalTextarea">Note</label>
+					<textarea id="diffNoteModalTextarea" rows="5" placeholder="Describe what should change on this line"></textarea>
+				</div>
+				<div class="command-modal-actions">
+					<button id="diffNoteModalSaveBtn" type="button">Save</button>
+					<button id="diffNoteModalRemoveBtn" type="button">Remove</button>
+					<button id="diffNoteModalCancelBtn" type="button">Cancel</button>
+				</div>
+			</div>
+		</div>
+
 		<div class="hidden legacy-session-controls" aria-hidden="true">
 			<button id="newSessionBtn" type="button">New Session</button>
 			<button id="newProjectBtn" type="button">New Project</button>
@@ -384,5 +418,6 @@
 	<script src="scribe.js?v=20260303-openai-key-check1"></script>
 	<script src="app.shared.js?v=20260228-cleanup1"></script>
 	<script src="app.js?v=20260303-openai-key-check1"></script>
+	<script src="app.diffs.js?v=20260304-gitdiff5"></script>
 </body>
 </html>

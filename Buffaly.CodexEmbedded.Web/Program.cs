@@ -24,6 +24,7 @@ builder.Services.AddSingleton<TimelineProjectionService>();
 builder.Services.AddSingleton<UserIdentityResolver>();
 builder.Services.AddSingleton<UserOpenAiKeyStore>();
 builder.Services.AddSingleton<OpenAiTranscriptionClient>();
+builder.Services.AddSingleton<GitWorktreeDiffService>();
 var dataProtectionKeyPath = ResolveDataProtectionKeyPath();
 Directory.CreateDirectory(dataProtectionKeyPath);
 builder.Services.AddDataProtection()

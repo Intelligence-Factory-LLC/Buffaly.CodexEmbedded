@@ -957,6 +957,36 @@ body {
 	align-items: center;
 }
 
+.worktree-diff-indicator-btn {
+	height: 1.95rem;
+	border: 1px solid #fbbf24;
+	border-radius: 999px;
+	background: #fffbeb;
+	color: #92400e;
+	display: inline-flex;
+	align-items: center;
+	gap: 0.28rem;
+	padding: 0 0.52rem;
+	cursor: pointer;
+	font-size: 0.78rem;
+	font-weight: 700;
+}
+
+.worktree-diff-indicator-btn:hover {
+	background: #fef3c7;
+}
+
+.worktree-diff-indicator-count {
+	min-width: 1.2rem;
+	padding: 0.02rem 0.28rem;
+	border-radius: 999px;
+	background: #f59e0b;
+	color: #ffffff;
+	font-size: 0.69rem;
+	line-height: 1.2;
+	text-align: center;
+}
+
 .conversation-model-summary {
 	max-width: min(44vw, 420px);
 	overflow: hidden;
@@ -1461,7 +1491,7 @@ body {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	z-index: 20;
+	z-index: 120;
 	padding: 1rem;
 }
 
@@ -1487,11 +1517,29 @@ body {
 }
 
 .command-modal-body select,
-.command-modal-body input {
+.command-modal-body input,
+.command-modal-body textarea {
 	padding: 0.5rem 0.6rem;
 	border: 1px solid #d1d5db;
 	border-radius: 6px;
 	font: inherit;
+}
+
+.command-modal-body textarea {
+	resize: vertical;
+	min-height: 6rem;
+}
+
+.diff-note-modal-path {
+	margin-bottom: 0.45rem;
+	padding: 0.38rem 0.5rem;
+	border: 1px solid #dbe3ee;
+	border-radius: 8px;
+	background: #f8fafc;
+	color: #334155;
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.73rem;
+	word-break: break-word;
 }
 
 .new-project-modal-note {
@@ -2172,6 +2220,61 @@ body {
 	flex-wrap: wrap;
 	gap: 0.45rem;
 	padding: 0.55rem 0.75rem 0;
+}
+
+.diff-notes-composer {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.36rem;
+	padding: 0.4rem 0.75rem 0;
+}
+
+.diff-notes-composer-label {
+	font-size: 0.72rem;
+	font-weight: 700;
+	color: #92400e;
+}
+
+.diff-notes-composer-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.28rem;
+	border: 1px solid #fcd34d;
+	border-radius: 999px;
+	background: #fffbeb;
+	color: #92400e;
+	font-size: 0.68rem;
+	font-weight: 700;
+	padding: 0.1rem 0.46rem;
+	max-width: 44ch;
+}
+
+.diff-notes-composer-pill-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.diff-notes-composer-pill-remove {
+	border: 0;
+	background: transparent;
+	color: inherit;
+	padding: 0;
+	margin: 0;
+	font-size: 0.74rem;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.diff-notes-composer-clear {
+	border: 1px solid #fcd34d;
+	border-radius: 999px;
+	background: #ffffff;
+	color: #92400e;
+	font-size: 0.68rem;
+	font-weight: 700;
+	padding: 0.08rem 0.5rem;
 }
 
 .prompt-selection-indicator {
@@ -2944,6 +3047,199 @@ body {
 	background: rgba(96, 165, 250, 0.14);
 }
 
+.worktree-diff-panel {
+	margin: 0.35rem 0.45rem 0;
+	border: 1px solid #dbe3ee;
+	border-radius: 8px;
+	background: #f8fafc;
+	display: flex;
+	flex-direction: column;
+	max-height: 36vh;
+	min-height: 88px;
+}
+
+.worktree-diff-panel.worktree-diff-fullscreen {
+	position: fixed;
+	inset: 0.5rem;
+	margin: 0;
+	z-index: 80;
+	max-height: none;
+	min-height: 0;
+	box-shadow: 0 18px 56px rgba(15, 23, 42, 0.28);
+}
+
+.worktree-diff-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+	padding: 0.38rem 0.48rem;
+	border-bottom: 1px solid #e2e8f0;
+}
+
+.worktree-diff-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+}
+
+.worktree-diff-title-wrap {
+	display: flex;
+	align-items: baseline;
+	gap: 0.45rem;
+	min-width: 0;
+}
+
+.worktree-diff-title {
+	font-size: 0.72rem;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+	text-transform: uppercase;
+	color: #0f172a;
+}
+
+.worktree-diff-summary {
+	font-size: 0.72rem;
+	color: #475569;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.worktree-diff-refresh-btn {
+	border: 1px solid #cbd5e1;
+	border-radius: 6px;
+	background: #ffffff;
+	color: #0f172a;
+	font-size: 0.72rem;
+	font-weight: 600;
+	padding: 0.18rem 0.48rem;
+}
+
+.worktree-diff-refresh-btn:disabled {
+	opacity: 0.6;
+	cursor: wait;
+}
+
+.worktree-diff-list {
+	padding: 0.34rem 0.42rem 0.42rem;
+	overflow: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 0.28rem;
+}
+
+.worktree-diff-panel.worktree-diff-collapsed .worktree-diff-list {
+	display: none;
+}
+
+.worktree-diff-panel.worktree-diff-fullscreen .worktree-diff-list {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.worktree-diff-empty {
+	font-size: 0.78rem;
+	color: #475569;
+	padding: 0.2rem 0.1rem 0.15rem;
+}
+
+.worktree-diff-file {
+	border: 1px solid #dbe3ee;
+	border-radius: 8px;
+	background: #ffffff;
+}
+
+.worktree-diff-file > summary {
+	list-style: none;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	gap: 0.38rem;
+	padding: 0.34rem 0.46rem;
+	font-size: 0.76rem;
+}
+
+.worktree-diff-file > summary::-webkit-details-marker {
+	display: none;
+}
+
+.worktree-diff-code {
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.7rem;
+	font-weight: 700;
+	color: #1e293b;
+	background: #f1f5f9;
+	border: 1px solid #e2e8f0;
+	border-radius: 999px;
+	padding: 0.02rem 0.38rem;
+}
+
+.worktree-diff-path {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: #0f172a;
+}
+
+.worktree-diff-detail {
+	padding: 0.28rem 0.46rem 0.42rem;
+	border-top: 1px solid #e2e8f0;
+}
+
+.worktree-diff-pre {
+	margin: 0;
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-size: 0.72rem;
+	line-height: 1.25;
+	font-family: Consolas, "Courier New", monospace;
+	color: #0f172a;
+}
+
+.worktree-diff-line-clickable {
+	cursor: pointer;
+}
+
+.worktree-diff-line-clickable:hover {
+	outline: 1px dashed #60a5fa;
+	outline-offset: -1px;
+}
+
+.worktree-diff-line-noted {
+	border-left: 3px solid #f59e0b;
+	padding-left: 0.3rem;
+}
+
+.worktree-diff-note-list {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.3rem;
+	margin: 0 0 0.35rem;
+}
+
+.worktree-diff-note-pill {
+	border: 1px solid #fcd34d;
+	border-radius: 999px;
+	background: #fffbeb;
+	color: #92400e;
+	font-size: 0.68rem;
+	font-weight: 700;
+	padding: 0.08rem 0.45rem;
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.worktree-diff-truncated {
+	margin: 0.22rem 0 0;
+	font-size: 0.7rem;
+	color: #64748b;
+}
+
 .watcher-tool-body-hidden {
 	padding-left: 0.55rem;
 	border-left: 2px dashed #cbd5e1;
@@ -3512,6 +3808,17 @@ html[data-theme="dark"] .conversation-meta-menu-btn {
 	color: #dbeafe;
 }
 
+html[data-theme="dark"] .worktree-diff-indicator-btn {
+	background: rgba(245, 158, 11, 0.16);
+	border-color: rgba(245, 158, 11, 0.58);
+	color: #fcd34d;
+}
+
+html[data-theme="dark"] .worktree-diff-indicator-count {
+	background: #d97706;
+	color: #ffffff;
+}
+
 html[data-theme="dark"] .sidebar-search-input {
 	background: #0f172a;
 	border-color: #334155;
@@ -3764,6 +4071,85 @@ html[data-theme="dark"] .watcher-diff-header {
 	background: rgba(59, 130, 246, 0.22);
 }
 
+html[data-theme="dark"] .worktree-diff-panel {
+	background: #111827;
+	border-color: #334155;
+}
+
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-fullscreen {
+	box-shadow: 0 20px 60px rgba(2, 6, 23, 0.7);
+}
+
+html[data-theme="dark"] .worktree-diff-header {
+	border-bottom-color: #334155;
+}
+
+html[data-theme="dark"] .worktree-diff-title {
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .worktree-diff-summary,
+html[data-theme="dark"] .worktree-diff-empty,
+html[data-theme="dark"] .worktree-diff-truncated {
+	color: #94a3b8;
+}
+
+html[data-theme="dark"] .worktree-diff-refresh-btn {
+	background: #0f172a;
+	border-color: #334155;
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .worktree-diff-file {
+	background: #0f172a;
+	border-color: #334155;
+}
+
+html[data-theme="dark"] .worktree-diff-code {
+	background: #1e293b;
+	border-color: #334155;
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .worktree-diff-path,
+html[data-theme="dark"] .worktree-diff-pre {
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .worktree-diff-detail {
+	border-top-color: #334155;
+}
+
+html[data-theme="dark"] .worktree-diff-line-clickable:hover {
+	outline-color: #3b82f6;
+}
+
+html[data-theme="dark"] .worktree-diff-line-noted {
+	border-left-color: #f59e0b;
+}
+
+html[data-theme="dark"] .worktree-diff-note-pill {
+	background: rgba(245, 158, 11, 0.16);
+	border-color: rgba(245, 158, 11, 0.55);
+	color: #fcd34d;
+}
+
+html[data-theme="dark"] .diff-notes-composer-label,
+html[data-theme="dark"] .diff-notes-composer-pill,
+html[data-theme="dark"] .diff-notes-composer-clear {
+	color: #fcd34d;
+}
+
+html[data-theme="dark"] .diff-notes-composer-pill {
+	background: rgba(245, 158, 11, 0.16);
+	border-color: rgba(245, 158, 11, 0.55);
+}
+
+html[data-theme="dark"] .diff-notes-composer-clear {
+	background: #111827;
+	border-color: rgba(245, 158, 11, 0.55);
+}
+
 html[data-theme="dark"] .watcher-tool-hidden-toggle {
 	background: #0f172a;
 	border-color: #475569;
@@ -3876,11 +4262,18 @@ html[data-theme="dark"] .prompt-selection-indicator .preview {
 html[data-theme="dark"] .prompt-form textarea,
 html[data-theme="dark"] .command-modal-body select,
 html[data-theme="dark"] .command-modal-body input,
+html[data-theme="dark"] .command-modal-body textarea,
 html[data-theme="dark"] .approval-actions button,
 html[data-theme="dark"] .prompt-queue-item {
 	background: #0f172a;
 	border-color: #475569;
 	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .diff-note-modal-path {
+	background: #111827;
+	border-color: #334155;
+	color: #cbd5e1;
 }
 
 html[data-theme="dark"] .new-session-modal-card .command-modal-body label {

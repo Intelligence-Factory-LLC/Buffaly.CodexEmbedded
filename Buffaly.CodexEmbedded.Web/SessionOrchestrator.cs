@@ -28,6 +28,17 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		_timelineProjection = timelineProjection;
 	}
 
+	private static void WriteOrchestratorAudit(string message)
+	{
+		Logs.DebugLog.WriteEvent("Audit.Orchestrator", message);
+	}
+
+	private static string SummarizeTextForAudit(string? text, int imageCount)
+	{
+		var count = string.IsNullOrWhiteSpace(text) ? 0 : text.Trim().Length;
+		return $"chars={count} images={imageCount}";
+	}
+
 	public bool HasSession(string sessionId)
 	{
 		if (string.IsNullOrWhiteSpace(sessionId))
@@ -652,6 +663,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		CodexSession session;
 		try
 		{
+			WriteOrchestratorAudit(
+				$"event=appserver_session_start_requested sessionId={sessionId} attached={attached} recovering={appServerRecovering} cwd={effectiveCwd} model={model ?? "(default)"}");
 			var clientOptions = new CodexClientOptions
 			{
 				CodexPath = effectiveCodexPath,
@@ -670,9 +683,20 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			};
 
 			session = await openSessionAsync(client, cancellationToken);
+			WriteOrchestratorAudit(
+				$"event=appserver_session_started sessionId={sessionId} threadId={session.ThreadId} approval={session.ApprovalPolicy ?? approvalPolicy ?? "(default)"} sandbox={session.SandboxMode ?? sandboxMode ?? "(default)"}");
+		}
+		catch (OperationCanceledException ex)
+		{
+			WriteOrchestratorAudit(
+				$"event=appserver_session_start_canceled sessionId={sessionId} attached={attached} recovering={appServerRecovering} detail={ex.Message}");
+			sessionLog.Dispose();
+			throw;
 		}
 		catch
 		{
+			WriteOrchestratorAudit(
+				$"event=appserver_session_start_failed sessionId={sessionId} attached={attached} recovering={appServerRecovering}");
 			sessionLog.Dispose();
 			throw;
 		}
@@ -1083,6 +1107,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var session = TryGetSession(sessionId);
 		if (session is null)
 		{
+			WriteOrchestratorAudit($"event=turn_send_rejected sessionId={sessionId} reason=unknown_session");
 			Broadcast?.Invoke("error", new { message = $"Unknown session: {sessionId}" });
 			return;
 		}
@@ -1104,6 +1129,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			Images: images is null ? Array.Empty<CodexUserImageInput>() : images.ToArray(),
 			CollaborationMode: normalizedCollaborationMode,
 			QueueItemId: null);
+		WriteOrchestratorAudit(
+			$"event=turn_send_requested sessionId={sessionId} threadId={session.Session.ThreadId} fromQueue=False mode={WebCodexUtils.NormalizeCollaborationMode(normalizedCollaborationMode?.Mode) ?? "default"} text={SummarizeTextForAudit(normalizedText, request.Images.Count)}");
 		LaunchTurnExecution(sessionId, session, request, fromQueue: false);
 	}
 
@@ -1365,6 +1392,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		try
 		{
+			WriteOrchestratorAudit(
+				$"event=turn_send_dispatching sessionId={sessionId} threadId={session.Session.ThreadId} fromQueue={fromQueue} mode={collaborationModeKind} text={SummarizeTextForAudit(request.Text, request.Images?.Count ?? 0)}");
 			var lockAcquired = await WaitForTurnSlotWithTimeoutAsync(sessionId, session);
 			if (!lockAcquired)
 			{
@@ -1387,6 +1416,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 						sessionId,
 						message = $"Turn did not start because queue wait timed out ({waitSeconds}s)."
 					});
+				WriteOrchestratorAudit($"event=turn_send_queue_timeout sessionId={sessionId} waitSeconds={waitSeconds} fromQueue={fromQueue}");
 				return TurnExecutionOutcome.QueueTimedOut;
 			}
 
@@ -1443,9 +1473,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				session,
 				result.Status,
 				result.ErrorMessage);
+			WriteOrchestratorAudit(
+				$"event=turn_send_completed sessionId={sessionId} status={result.Status ?? "unknown"} hasError={!string.IsNullOrWhiteSpace(result.ErrorMessage)}");
 		}
 		catch (OperationCanceledException)
 		{
+			WriteOrchestratorAudit(
+				$"event=turn_send_operation_canceled sessionId={sessionId} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested}");
 			if (session.LifetimeToken.IsCancellationRequested && !lockTaken)
 			{
 				return TurnExecutionOutcome.CanceledByLifetime;
@@ -1467,11 +1501,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					status: "interrupted",
 					errorMessage: "Turn canceled.");
 			}
+			WriteOrchestratorAudit(
+				$"event=turn_send_canceled sessionId={sessionId} timeout={timeoutCts?.IsCancellationRequested == true}");
 		}
 		catch (Exception ex)
 		{
 			Logs.LogError(ex);
 			session.Log.Write($"[turn_error] {ex.Message}");
+			WriteOrchestratorAudit($"event=turn_send_failed sessionId={sessionId} error={ex.Message}");
 			completionPublished = TryPublishTurnComplete(
 				sessionId,
 				session,
@@ -1530,6 +1567,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var session = TryGetSession(sessionId);
 		if (session is null)
 		{
+			WriteOrchestratorAudit($"event=turn_cancel_rejected sessionId={sessionId} reason=unknown_session");
 			Broadcast?.Invoke("error", new { message = $"Unknown session: {sessionId}" });
 			return (false, false, "Unknown session.");
 		}
@@ -1537,6 +1575,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var activeMode = session.GetActiveCollaborationMode();
 		var isPlanTurn = string.Equals(activeMode, "plan", StringComparison.Ordinal);
 		var hadTurnInFlightAtRequest = session.IsTurnInFlight;
+		WriteOrchestratorAudit(
+			$"event=turn_cancel_requested sessionId={sessionId} hadTurnInFlight={hadTurnInFlightAtRequest} queuedTurns={session.GetQueuedTurnsSnapshot().Count}");
 		var interruptSent = false;
 		string? fallbackReason = null;
 		var forcedResetApplied = false;
@@ -1570,6 +1610,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		if (!interruptSent && !localCanceled && clearedQueuedTurnCount == 0)
 		{
+			WriteOrchestratorAudit($"event=turn_cancel_noop sessionId={sessionId}");
 			Broadcast?.Invoke("status", new { sessionId, message = "No running turn to cancel." });
 			return (false, false, fallbackReason);
 		}
@@ -1632,6 +1673,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		{
 			EnsureQueueDispatcher(sessionId, session);
 		}
+		WriteOrchestratorAudit(
+			$"event=turn_cancel_completed sessionId={sessionId} interruptSent={interruptSent} localCanceled={localCanceled} forcedReset={forcedResetApplied} clearedQueuedTurns={clearedQueuedTurnCount} fallback={fallbackReason ?? "(none)"}");
 
 		return (interruptSent, localCanceled, fallbackReason);
 	}
@@ -1697,8 +1740,10 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		_ = cancellationToken;
 		if (!TryRemoveSession(sessionId, out var session) || session is null)
 		{
+			WriteOrchestratorAudit($"event=session_stop_noop sessionId={sessionId}");
 			return Task.CompletedTask;
 		}
+		WriteOrchestratorAudit($"event=session_stop_requested sessionId={sessionId} threadId={session.Session.ThreadId}");
 
 		var stopMode = session.GetActiveCollaborationMode();
 		var stopIsPlanTurn = string.Equals(stopMode, "plan", StringComparison.Ordinal);
@@ -1728,6 +1773,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				message = "Session stopped.",
 				clearedQueuedTurnCount = stopReset.ClearedQueuedTurnCount
 			});
+		WriteOrchestratorAudit(
+			$"event=session_stop_completed sessionId={sessionId} clearedQueuedTurns={stopReset.ClearedQueuedTurnCount} hadTurnInFlight={stopReset.HadTurnInFlight}");
 
 		_ = Task.Run(async () =>
 		{
@@ -1979,6 +2026,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		if (IsCoreTransportPumpFailure(ev))
 		{
+			WriteOrchestratorAudit($"event=core_transport_failure sessionId={sessionId} type={ev.Type} message={ev.Message ?? "(none)"}");
 			var managed = TryGetSession(sessionId);
 			if (managed is not null && managed.IsTurnInFlight)
 			{
@@ -1988,6 +2036,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				if (TryPublishTurnComplete(sessionId, managed, status: "interrupted", errorMessage: errorMessage))
 				{
 					sessionLog.Write($"[turn_recovery] closed in-flight turn after core transport failure ({ev.Type})");
+					WriteOrchestratorAudit($"event=turn_recovery_after_transport_failure sessionId={sessionId} type={ev.Type}");
 					Broadcast?.Invoke(
 						"status",
 						new
@@ -2001,6 +2050,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		if (TryParseCoreTurnSignal(ev, out var signal))
 		{
+			Logs.DebugLog.WriteEvent(
+				"Audit.Core",
+				$"event=turn_signal sessionId={sessionId} kind={signal.Kind} status={signal.Status ?? "(none)"} source={signal.Source} turnId={signal.TurnId ?? "(none)"}");
 			var managed = TryGetSession(sessionId);
 			if (managed is not null)
 			{
@@ -2010,6 +2062,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 						managed.TryMarkTurnStartedFromCoreSignal(signal.TurnId))
 					{
 						sessionLog.Write($"[turn_recovery] marked started from core signal ({signal.Source})");
+						WriteOrchestratorAudit($"event=turn_started_from_core_signal sessionId={sessionId} source={signal.Source} turnId={signal.TurnId ?? "(none)"}");
 						var collaborationMode = managed.GetActiveCollaborationMode();
 						Broadcast?.Invoke(
 							"turn_started",
@@ -2029,6 +2082,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					signal.ErrorMessage))
 				{
 					sessionLog.Write($"[turn_recovery] marked complete from core signal ({signal.Source})");
+					WriteOrchestratorAudit(
+						$"event=turn_completed_from_core_signal sessionId={sessionId} source={signal.Source} status={signal.Status ?? "completed"} hasError={!string.IsNullOrWhiteSpace(signal.ErrorMessage)}");
 				}
 			}
 		}
@@ -2098,6 +2153,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		var normalizedStatus = string.IsNullOrWhiteSpace(status) ? "unknown" : status!;
 		Broadcast?.Invoke("turn_complete", new { sessionId, status = normalizedStatus, errorMessage, isPlanTurn, collaborationMode });
+		WriteOrchestratorAudit(
+			$"event=turn_completion_published sessionId={sessionId} status={normalizedStatus} hasError={!string.IsNullOrWhiteSpace(errorMessage)}");
 		SessionsChanged?.Invoke();
 		EnsureQueueDispatcher(sessionId, session);
 		return true;
@@ -3431,6 +3488,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				reason = "turn_start_stale",
 				pendingSeconds = roundedSeconds
 			});
+		WriteOrchestratorAudit(
+			$"event=appserver_recovery_requested sessionId={sessionId} threadId={session.Session.ThreadId} pendingSeconds={roundedSeconds} queuedTurns={session.GetQueuedTurnsSnapshot().Count}");
 		SessionsChanged?.Invoke();
 		_ = Task.Run(() => RecoverSessionAfterStaleTurnStartAsync(sessionId, session, pendingAge), CancellationToken.None);
 		return true;
@@ -3485,6 +3544,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				reason = "turn_started_no_activity_stale",
 				pendingSeconds = roundedSeconds
 			});
+		WriteOrchestratorAudit(
+			$"event=appserver_recovery_requested sessionId={sessionId} threadId={session.Session.ThreadId} pendingSeconds={roundedSeconds} queuedTurns={session.GetQueuedTurnsSnapshot().Count}");
 		SessionsChanged?.Invoke();
 		_ = Task.Run(() => RecoverSessionAfterStaleTurnStartAsync(sessionId, session, silentAge), CancellationToken.None);
 		return true;
@@ -3575,6 +3636,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					state = "recovered",
 					pendingSeconds = roundedSeconds
 				});
+			WriteOrchestratorAudit(
+				$"event=appserver_recovery_completed sessionId={sessionId} threadId={replacement.Session.ThreadId} pendingSeconds={roundedSeconds} queuedTurnsRestored={queuedTurns.Count}");
 			Broadcast?.Invoke("status", new { sessionId, message = "Session recovered after stalled turn/start." });
 		}
 		catch (Exception ex)
@@ -3603,6 +3666,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					state = "failed",
 					errorMessage = failureMessage
 				});
+			WriteOrchestratorAudit(
+				$"event=appserver_recovery_failed sessionId={sessionId} pendingSeconds={roundedSeconds} error={failureMessage}");
 			Broadcast?.Invoke("error", new { message = $"Session recovery failed: {failureMessage}" });
 		}
 		finally

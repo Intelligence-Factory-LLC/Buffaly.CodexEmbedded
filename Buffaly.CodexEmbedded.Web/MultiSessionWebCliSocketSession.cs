@@ -130,6 +130,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 		catch (Exception ex)
 		{
+			WriteAuditEvent($"action=invalid_json error={ex.Message}");
 			await SendEventAsync("error", new { message = $"Invalid JSON: {ex.Message}" }, cancellationToken);
 			return;
 		}
@@ -140,6 +141,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			var type = TryGetString(root, "type");
 			if (string.IsNullOrWhiteSpace(type))
 			{
+				WriteAuditEvent("action=missing_type");
 				await SendEventAsync("error", new { message = "Message must include 'type'." }, cancellationToken);
 				return;
 			}
@@ -185,8 +187,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					await AttachSessionAsync(root, setActive: true, cancellationToken);
 					return;
 				case "session_select":
-					SetActiveSession(TryGetString(root, "sessionId"));
-					await SendEventAsync("status", new { message = $"Active session set to {_activeSessionId ?? "(none)"}" }, cancellationToken);
+					WriteAuditEvent("action=session_select_rejected reason=unsupported");
+					await SendEventAsync("error", new { message = "session_select is no longer supported by the server. Selection is client-side only." }, cancellationToken);
 					return;
 				case "session_stop":
 					await StopSessionAsync(TryGetString(root, "sessionId"), cancellationToken);
@@ -283,6 +285,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						var sessionId = TryGetString(root, "sessionId") ?? _activeSessionId;
 						var approvalId = TryGetString(root, "approvalId");
 						var decision = TryGetString(root, "decision");
+						WriteAuditEvent(
+							$"action=approval_response sessionId={sessionId ?? "(null)"} approvalId={approvalId ?? "(null)"} decision={decision ?? "(null)"}");
 						if (!string.IsNullOrWhiteSpace(sessionId) && !string.IsNullOrWhiteSpace(decision))
 						{
 							_orchestrator.TryResolveApproval(sessionId, approvalId, decision);
@@ -294,6 +298,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						var sessionId = TryGetString(root, "sessionId") ?? _activeSessionId;
 						if (string.IsNullOrWhiteSpace(sessionId))
 						{
+							WriteAuditEvent("action=tool_user_input_response_rejected reason=missing_session");
 							await SendEventAsync("error", new { message = "No active session for tool user input response." }, cancellationToken);
 							return;
 						}
@@ -302,10 +307,14 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						var answersByQuestionId = TryGetToolUserInputAnswers(root);
 						if (!_orchestrator.TryResolveToolUserInput(sessionId, requestId, answersByQuestionId))
 						{
+							WriteAuditEvent(
+								$"action=tool_user_input_response_rejected reason=request_not_found sessionId={sessionId} requestId={requestId ?? "(null)"}");
 							await SendEventAsync("error", new { message = "No pending tool user input request was found for this response." }, cancellationToken);
 							return;
 						}
 
+						WriteAuditEvent(
+							$"action=tool_user_input_response sessionId={sessionId} requestId={requestId ?? "(null)"} answerCount={answersByQuestionId.Count}");
 						await SendEventAsync("status", new
 						{
 							sessionId,
@@ -314,7 +323,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					}
 					return;
 				case "models_list":
-					await SendModelsListAsync(TryGetString(root, "sessionId"), cancellationToken);
+					_ = SendModelsListSafeAsync(TryGetString(root, "sessionId"));
 					return;
 				case "log_verbosity_set":
 					await SetLogVerbosityAsync(root, cancellationToken);
@@ -323,6 +332,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					await SendEventAsync("pong", new { utc = DateTimeOffset.UtcNow.ToString("O") }, cancellationToken);
 					return;
 				default:
+					WriteAuditEvent($"action=unknown_message type={type}");
 					await SendEventAsync("error", new { message = $"Unknown message type: {type}" }, cancellationToken);
 					return;
 			}
@@ -348,6 +358,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 
 		await SendEventAsync("error", new { message = noActiveMessage }, cancellationToken);
+		WriteAuditEvent($"action=session_required_rejected reason=missing_session message={noActiveMessage}");
 		return null;
 	}
 
@@ -365,6 +376,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 
 		await SendEventAsync("error", new { message = $"Unknown session: {resolvedSessionId}" }, cancellationToken);
+		WriteAuditEvent($"action=session_required_rejected reason=unknown_session sessionId={resolvedSessionId}");
 		return null;
 	}
 
@@ -378,7 +390,11 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		if (_orchestrator.HasSession(sessionId))
 		{
 			_activeSessionId = sessionId;
+			WriteAuditEvent($"action=set_active_session result=ok sessionId={sessionId}");
+			return;
 		}
+
+		WriteAuditEvent($"action=set_active_session result=ignored sessionId={sessionId} reason=unknown_session");
 	}
 
 	private async Task CreateSessionAsync(JsonElement request, bool setActive, CancellationToken cancellationToken)
@@ -392,6 +408,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var codexPath = TryGetString(request, "codexPath") ?? _defaults.CodexPath;
 
 		var sessionId = Guid.NewGuid().ToString("N");
+		WriteAuditEvent($"action=session_create_requested sessionId={sessionId}");
 		await WriteConnectionLogAsync(
 			$"[session] creating id={sessionId} cwd={cwd} model={model ?? "(default)"} effort={effort ?? "(default)"} approval={approvalPolicy ?? "(default)"} sandbox={sandboxMode ?? "(default)"}",
 			cancellationToken);
@@ -404,6 +421,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		catch (Exception ex)
 		{
 			Logs.LogError(ex);
+			WriteAuditEvent($"action=session_create_failed sessionId={sessionId} error={ex.Message}");
 			await WriteConnectionLogAsync($"[session] failed to start id={sessionId} error={ex.Message}", cancellationToken);
 			await SendEventAsync("error", new { message = $"Failed to start session: {ex.Message}" }, cancellationToken);
 			return;
@@ -413,6 +431,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		{
 			_activeSessionId = sessionId;
 		}
+		WriteAuditEvent($"action=session_create_completed sessionId={sessionId} threadId={created.threadId}");
 
 		await SendEventAsync("session_created", new
 		{
@@ -448,6 +467,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var threadId = (TryGetString(request, "threadId") ?? TryGetString(request, "id"))?.Trim();
 		if (string.IsNullOrWhiteSpace(threadId))
 		{
+			WriteAuditEvent("action=session_attach_rejected reason=missing_threadId");
 			await SendEventAsync("error", new { message = "threadId is required to attach." }, cancellationToken);
 			return;
 		}
@@ -465,6 +485,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			var candidateList = loadedResolution.CandidateSessionIds.Count > 0
 				? string.Join(", ", loadedResolution.CandidateSessionIds)
 				: "(none)";
+			WriteAuditEvent($"action=session_attach_rejected reason=ambiguous threadId={threadId} candidates={candidateList}");
 			await SendEventAsync(
 				"error",
 				new
@@ -480,6 +501,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			var reason = string.IsNullOrWhiteSpace(loadedResolution.Reason)
 				? $"Loaded session for thread {threadId} is unavailable for attach."
 				: loadedResolution.Reason;
+			WriteAuditEvent($"action=session_attach_rejected reason=unavailable threadId={threadId} detail={reason}");
 			await SendEventAsync("error", new { message = $"Attach failed: {reason}" }, cancellationToken);
 			return;
 		}
@@ -489,6 +511,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			var existingSessionId = loadedResolution.SessionId;
 			if (string.IsNullOrWhiteSpace(existingSessionId))
 			{
+				WriteAuditEvent($"action=session_attach_rejected reason=resolved_missing_session threadId={threadId}");
 				await SendEventAsync(
 					"error",
 					new
@@ -503,6 +526,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			{
 				_activeSessionId = existingSessionId;
 			}
+			WriteAuditEvent($"action=session_attach_resolved_existing sessionId={existingSessionId} threadId={threadId}");
 
 			await WriteConnectionLogAsync(
 				$"[session] attach resolved existing session id={existingSessionId} threadId={threadId}",
@@ -527,6 +551,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 
 		var sessionId = Guid.NewGuid().ToString("N");
+		WriteAuditEvent($"action=session_attach_requested sessionId={sessionId} threadId={threadId}");
 		await WriteConnectionLogAsync(
 			$"[session] attaching id={sessionId} threadId={threadId} cwd={cwd} model={model ?? "(default)"} effort={effort ?? "(default)"} approval={approvalPolicy ?? "(default)"} sandbox={sandboxMode ?? "(default)"}",
 			cancellationToken);
@@ -539,6 +564,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		catch (Exception ex)
 		{
 			Logs.LogError(ex);
+			WriteAuditEvent($"action=session_attach_failed sessionId={sessionId} threadId={threadId} error={ex.Message}");
 			await WriteConnectionLogAsync($"[session] failed to attach id={sessionId} threadId={threadId} error={ex.Message}", cancellationToken);
 			await SendEventAsync("error", new { message = $"Failed to attach session: {ex.Message}" }, cancellationToken);
 			return;
@@ -548,6 +574,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		{
 			_activeSessionId = sessionId;
 		}
+		WriteAuditEvent($"action=session_attach_completed sessionId={sessionId} threadId={attached.threadId}");
 
 		await SendAttachCompletionEventsAsync(
 			sessionId,
@@ -651,6 +678,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		if (string.Equals(currentModel, targetModel, StringComparison.Ordinal) &&
 			string.Equals(currentEffort, targetEffort, StringComparison.Ordinal))
 		{
+			WriteAuditEvent($"action=session_set_model_noop sessionId={requiredSessionId}");
 			return;
 		}
 
@@ -664,6 +692,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		await WriteConnectionLogAsync(
 			$"[session] model updated session={requiredSessionId} thread={threadId} model={(normalizedModel ?? "(default)")} effort={(normalizedEffort ?? "(default)")}",
 			cancellationToken);
+		WriteAuditEvent($"action=session_set_model sessionId={requiredSessionId} threadId={threadId}");
 		await SendSessionListAsync(cancellationToken);
 	}
 
@@ -690,6 +719,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			hasApprovalOverride,
 			hasSandboxOverride))
 		{
+			WriteAuditEvent($"action=session_set_permissions_rejected reason=unknown_session sessionId={requiredSessionId}");
 			await SendEventAsync("error", new { message = $"Unknown session: {requiredSessionId}" }, cancellationToken);
 			return;
 		}
@@ -699,6 +729,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		await WriteConnectionLogAsync(
 			$"[session] permissions updated session={requiredSessionId} thread={threadId} approval={(snapshot?.ApprovalPolicy ?? "(default)")} sandbox={(snapshot?.SandboxPolicy ?? "(default)")}",
 			cancellationToken);
+		WriteAuditEvent($"action=session_set_permissions sessionId={requiredSessionId} threadId={threadId}");
 		await SendSessionListAsync(cancellationToken);
 	}
 
@@ -707,6 +738,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var verbosityRaw = TryGetString(request, "verbosity");
 		if (!CodexEventLogging.TryParseVerbosity(verbosityRaw, out var parsed))
 		{
+			WriteAuditEvent($"action=log_verbosity_rejected value={verbosityRaw ?? "(null)"}");
 			await SendEventAsync("error", new
 			{
 				message = $"Unknown verbosity '{verbosityRaw}'. Use errors|normal|verbose|trace."
@@ -715,6 +747,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 
 		_uiLogVerbosity = parsed;
+		WriteAuditEvent($"action=log_verbosity_set value={parsed}");
 		await SendEventAsync("log_verbosity", new { verbosity = parsed.ToString().ToLowerInvariant() }, cancellationToken);
 		await WriteConnectionLogAsync($"[log] verbosity set to {parsed}", cancellationToken);
 	}
@@ -791,10 +824,32 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 			await SendEventAsync("models_list", new { sessionId, models = payload, defaultModel = effectiveDefaultModel, error = (string?)null }, cancellationToken);
 		}
+		catch (OperationCanceledException)
+		{
+			WriteAuditEvent($"action=models_list_timeout sessionId={sessionId ?? "(none)"}");
+			await SendEventSafeAsync(
+				"models_list",
+				new
+				{
+					sessionId,
+					models = Array.Empty<object>(),
+					defaultModel = (string?)null,
+					error = "Model list request timed out."
+				});
+		}
 		catch (Exception ex)
 		{
 			Logs.LogError(ex);
-			await SendEventAsync("models_list", new { sessionId, models = Array.Empty<object>(), defaultModel = (string?)null, error = ex.Message }, cancellationToken);
+			WriteAuditEvent($"action=models_list_failed sessionId={sessionId ?? "(none)"} message={Truncate(ex.Message, 180)}");
+			await SendEventSafeAsync(
+				"models_list",
+				new
+				{
+					sessionId,
+					models = Array.Empty<object>(),
+					defaultModel = (string?)null,
+					error = ex.Message
+				});
 		}
 	}
 
@@ -830,24 +885,28 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var imageCount = images?.Count ?? 0;
 		if (string.IsNullOrWhiteSpace(normalizedText) && imageCount <= 0)
 		{
+			WriteAuditEvent($"action=turn_start_rejected sessionId={requiredSessionId} reason=empty_prompt");
 			await SendEventAsync("error", new { message = "Prompt text or at least one image is required." }, cancellationToken);
 			return;
 		}
 
 		if (!_orchestrator.HasSession(requiredSessionId))
 		{
+			WriteAuditEvent($"action=turn_start_rejected sessionId={requiredSessionId} reason=unknown_session");
 			await SendEventAsync("error", new { message = $"Unknown session: {requiredSessionId}" }, cancellationToken);
 			return;
 		}
 
 		if (_orchestrator.TryGetSessionRecoveryState(requiredSessionId, out var isRecovering) && isRecovering)
 		{
+			WriteAuditEvent($"action=turn_start_rejected sessionId={requiredSessionId} reason=session_recovering");
 			await SendEventAsync("error", new { message = "Session is recovering from an app-server disconnect. Wait for recovery to complete and retry." }, cancellationToken);
 			return;
 		}
 
 		if (_orchestrator.TryGetTurnState(requiredSessionId, out var isTurnInFlight) && isTurnInFlight)
 		{
+			WriteAuditEvent($"action=turn_start_rejected sessionId={requiredSessionId} reason=turn_in_flight");
 			await SendEventAsync(
 				"error",
 				new { message = "A turn is already running. Use turn_steer to send now or turn_queue_add to queue." },
@@ -855,6 +914,8 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
+		WriteAuditEvent(
+			$"action=turn_start sessionId={requiredSessionId} text={SummarizeTextForAudit(normalizedText)} images={imageCount} hasModelOverride={hasModelOverride} hasEffortOverride={hasEffortOverride} hasApprovalOverride={hasApprovalOverride} hasSandboxOverride={hasSandboxOverride}");
 		_orchestrator.StartTurn(
 			requiredSessionId,
 			normalizedText,
@@ -887,30 +948,35 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var imageCount = images?.Count ?? 0;
 		if (string.IsNullOrWhiteSpace(normalizedText) && imageCount <= 0)
 		{
+			WriteAuditEvent($"action=turn_steer_rejected sessionId={requiredSessionId} reason=empty_prompt");
 			await SendEventAsync("error", new { message = "Prompt text or at least one image is required." }, cancellationToken);
 			return;
 		}
 
 		if (!_orchestrator.HasSession(requiredSessionId))
 		{
+			WriteAuditEvent($"action=turn_steer_rejected sessionId={requiredSessionId} reason=unknown_session");
 			await SendEventAsync("error", new { message = $"Unknown session: {requiredSessionId}" }, cancellationToken);
 			return;
 		}
 
 		if (_orchestrator.TryGetSessionRecoveryState(requiredSessionId, out var isRecovering) && isRecovering)
 		{
+			WriteAuditEvent($"action=turn_steer_rejected sessionId={requiredSessionId} reason=session_recovering");
 			await SendEventAsync("error", new { message = "Session is recovering from an app-server disconnect. Wait for recovery to complete and retry." }, cancellationToken);
 			return;
 		}
 
 		if (!_orchestrator.TryGetTurnState(requiredSessionId, out var isTurnInFlight) || !isTurnInFlight)
 		{
+			WriteAuditEvent($"action=turn_steer_rejected sessionId={requiredSessionId} reason=no_turn_in_flight");
 			await SendEventAsync("error", new { message = "No running turn is available to steer. Start a new turn instead." }, cancellationToken);
 			return;
 		}
 
 		if (_orchestrator.TryGetTurnSteerability(requiredSessionId, out var canSteer) && !canSteer)
 		{
+			WriteAuditEvent($"action=turn_steer_rejected sessionId={requiredSessionId} reason=not_steerable");
 			await SendEventAsync("error", new { message = "Active turn is not steerable right now. Use queue to stage the prompt." }, cancellationToken);
 			return;
 		}
@@ -918,8 +984,12 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var steer = await _orchestrator.SteerTurnAsync(requiredSessionId, normalizedText, images, cancellationToken);
 		if (!steer.Success)
 		{
+			WriteAuditEvent($"action=turn_steer_failed sessionId={requiredSessionId} error={steer.ErrorMessage ?? "(none)"}");
 			await SendEventAsync("error", new { message = steer.ErrorMessage ?? "Failed to steer active turn." }, cancellationToken);
+			return;
 		}
+
+		WriteAuditEvent($"action=turn_steer sessionId={requiredSessionId} text={SummarizeTextForAudit(normalizedText)} images={imageCount}");
 	}
 
 	private async Task QueueTurnAsync(
@@ -953,6 +1023,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var normalizedCollaborationMode = NormalizeCollaborationMode(collaborationMode);
 		if (!_orchestrator.HasSession(requiredSessionId))
 		{
+			WriteAuditEvent($"action=turn_queue_add_rejected sessionId={requiredSessionId} reason=unknown_session");
 			await SendEventAsync("error", new { message = $"Unknown session: {requiredSessionId}" }, cancellationToken);
 			return;
 		}
@@ -974,10 +1045,12 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			out var queueItemId,
 			out var error))
 		{
+			WriteAuditEvent($"action=turn_queue_add_failed sessionId={requiredSessionId} error={error ?? "(none)"}");
 			await SendEventAsync("error", new { message = error ?? "Failed to queue prompt." }, cancellationToken);
 			return;
 		}
 
+		WriteAuditEvent($"action=turn_queue_add sessionId={requiredSessionId} queueItemId={queueItemId}");
 		await SendEventAsync("status", new { sessionId = requiredSessionId, message = $"Prompt queued ({queueItemId})." }, cancellationToken);
 	}
 
@@ -991,10 +1064,12 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		if (!_orchestrator.TryPopQueuedTurnForEditing(requiredSessionId, queueItemId ?? string.Empty, out var payload, out var errorMessage))
 		{
+			WriteAuditEvent($"action=turn_queue_pop_failed sessionId={requiredSessionId} queueItemId={queueItemId ?? "(null)"} error={errorMessage ?? "(none)"}");
 			await SendEventAsync("error", new { message = errorMessage ?? "Failed to edit queued prompt." }, cancellationToken);
 			return;
 		}
 
+		WriteAuditEvent($"action=turn_queue_pop sessionId={requiredSessionId} queueItemId={payload!.QueueItemId}");
 		await SendEventAsync(
 			"turn_queue_edit_item",
 			new
@@ -1017,9 +1092,12 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		if (!_orchestrator.TryRemoveQueuedTurn(requiredSessionId, queueItemId ?? string.Empty, out var errorMessage))
 		{
+			WriteAuditEvent($"action=turn_queue_remove_failed sessionId={requiredSessionId} queueItemId={queueItemId ?? "(null)"} error={errorMessage ?? "(none)"}");
 			await SendEventAsync("error", new { message = errorMessage ?? "Failed to remove queued prompt." }, cancellationToken);
 			return;
 		}
+
+		WriteAuditEvent($"action=turn_queue_remove sessionId={requiredSessionId} queueItemId={queueItemId ?? "(null)"}");
 	}
 
 	private async Task CancelTurnAsync(string? sessionId, CancellationToken cancellationToken)
@@ -1030,6 +1108,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return;
 		}
 
+		WriteAuditEvent($"action=turn_cancel_requested sessionId={requiredSessionId}");
 		await _orchestrator.CancelTurnAsync(requiredSessionId, cancellationToken);
 	}
 
@@ -1038,6 +1117,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
 		if (string.IsNullOrWhiteSpace(sessionId))
 		{
+			WriteAuditEvent("action=session_stop_rejected reason=missing_session");
 			await SendEventAsync("error", new { message = "No active session to stop." }, cancellationToken);
 			return;
 		}
@@ -1051,10 +1131,12 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		if (!_orchestrator.HasSession(sessionId))
 		{
+			WriteAuditEvent($"action=session_stop_rejected sessionId={sessionId} reason=unknown_session");
 			await SendEventAsync("error", new { message = $"Unknown session: {sessionId}" }, cancellationToken);
 			return;
 		}
 
+		WriteAuditEvent($"action=session_stop sessionId={sessionId}");
 		await _orchestrator.StopSessionAsync(sessionId, cancellationToken);
 	}
 
@@ -1063,6 +1145,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		sessionId = string.IsNullOrWhiteSpace(sessionId) ? _activeSessionId : sessionId;
 		if (string.IsNullOrWhiteSpace(sessionId))
 		{
+			WriteAuditEvent("action=session_rename_rejected reason=missing_session");
 			await SendEventAsync("error", new { message = "No active session to rename." }, cancellationToken);
 			return;
 		}
@@ -1070,6 +1153,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var sessionSnapshot = _orchestrator.GetSessionSnapshots(includeTurnCacheStats: false).FirstOrDefault(x => string.Equals(x.SessionId, sessionId, StringComparison.Ordinal));
 		if (sessionSnapshot is null)
 		{
+			WriteAuditEvent($"action=session_rename_rejected sessionId={sessionId} reason=unknown_session");
 			await SendEventAsync("error", new { message = $"Unknown session: {sessionId}" }, cancellationToken);
 			return;
 		}
@@ -1077,12 +1161,14 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var normalizedName = threadName?.Trim();
 		if (string.IsNullOrWhiteSpace(normalizedName))
 		{
+			WriteAuditEvent($"action=session_rename_rejected sessionId={sessionId} reason=missing_name");
 			await SendEventAsync("error", new { message = "threadName is required." }, cancellationToken);
 			return;
 		}
 
 		if (normalizedName.Length > 200)
 		{
+			WriteAuditEvent($"action=session_rename_rejected sessionId={sessionId} reason=name_too_long");
 			await SendEventAsync("error", new { message = "threadName must be 200 characters or fewer." }, cancellationToken);
 			return;
 		}
@@ -1096,10 +1182,12 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		if (!writeResult.Success)
 		{
+			WriteAuditEvent($"action=session_rename_failed sessionId={sessionId} threadId={threadId} error={writeResult.ErrorMessage ?? "(none)"}");
 			await SendEventAsync("error", new { message = $"Failed to rename session: {writeResult.ErrorMessage}" }, cancellationToken);
 			return;
 		}
 
+		WriteAuditEvent($"action=session_rename sessionId={sessionId} threadId={threadId}");
 		await WriteConnectionLogAsync($"[session] renamed thread={threadId} name={normalizedName}", cancellationToken);
 		await SendEventAsync("status", new { message = $"Renamed session '{threadId}' to '{normalizedName}'." }, cancellationToken);
 		await SendSessionCatalogAsync(cancellationToken);
@@ -1131,6 +1219,19 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 	}
 
+	private async Task SendModelsListSafeAsync(string? sessionId)
+	{
+		try
+		{
+			using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+			await SendModelsListAsync(sessionId, timeoutCts.Token);
+		}
+		catch (Exception ex)
+		{
+			HandleSafeSendFailure("send models_list", ex);
+		}
+	}
+
 	private void HandleSafeSendFailure(string operation, Exception ex)
 	{
 		var simplified = ex switch
@@ -1139,6 +1240,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			WebSocketException wsEx => wsEx.Message,
 			_ => ex.Message
 		};
+		WriteAuditEvent($"action=ws_send_failure operation={operation} socketState={_socket.State} detail={simplified}");
 		WriteConnectionLogLocal($"[ws_send] {operation} failed ({simplified}) socketState={_socket.State}");
 		if (_socket.State != WebSocketState.Open)
 		{
@@ -1151,12 +1253,14 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		}
 
 		WriteConnectionLogLocal("[ws_send] forcing websocket abort after send failure");
+		WriteAuditEvent("action=ws_forced_abort");
 		try
 		{
 			_socket.Abort();
 		}
 		catch (Exception abortEx)
 		{
+			WriteAuditEvent($"action=ws_forced_abort_failed error={abortEx.Message}");
 			WriteConnectionLogLocal($"[ws_send] websocket abort failed: {abortEx.Message}");
 		}
 	}
@@ -1190,6 +1294,21 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		Logs.DebugLog.WriteEvent("MultiSessionWebCliSocketSession", message);
 	}
 
+	private void WriteAuditEvent(string message)
+	{
+		Logs.DebugLog.WriteEvent("Audit", $"conn={_connectionId} {message}");
+	}
+
+	private static string SummarizeTextForAudit(string text)
+	{
+		if (string.IsNullOrWhiteSpace(text))
+		{
+			return "chars=0";
+		}
+
+		return $"chars={text.Length}";
+	}
+
 	private async Task<string?> ReceiveTextMessageAsync(CancellationToken cancellationToken)
 	{
 		var rented = ArrayPool<byte>.Shared.Rent(8192);
@@ -1202,6 +1321,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				var result = await _socket.ReceiveAsync(segment, cancellationToken);
 				if (result.MessageType == WebSocketMessageType.Close)
 				{
+					WriteAuditEvent($"action=ws_close_frame status={_socket.CloseStatus} description={_socket.CloseStatusDescription ?? "(none)"}");
 					return null;
 				}
 
