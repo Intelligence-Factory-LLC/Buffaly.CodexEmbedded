@@ -62,9 +62,11 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		var stalePendingStartAfter = GetPendingTurnStartStaleAfter();
+		var staleStartedLocalAfter = GetStartedLocalTurnStaleAfter();
 		foreach (var session in loadedSessions)
 		{
 			TryExpireStalePendingTurnStart(session.SessionId, session, stalePendingStartAfter);
+			TryExpireStaleStartedLocalTurn(session.SessionId, session, staleStartedLocalAfter);
 		}
 
 		var turnStatsByThread = new Dictionary<string, (int TurnCountInMemory, bool IsTurnInFlightInferredFromLogs)>(StringComparer.Ordinal);
@@ -948,13 +950,44 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			var stopwatch = Stopwatch.StartNew();
 			try
 			{
+				if (existingSession is not null && existingSession.IsAppServerRecovering)
+				{
+					if (existingSession.TryGetCachedModels(out var recoveringCachedModels))
+					{
+						WriteOrchestratorAudit(
+							$"event=models_list_from_cache sessionId={sessionId} reason=session_recovering modelCount={recoveringCachedModels.Count} threadId={existingSession.Session.ThreadId}");
+						return recoveringCachedModels;
+					}
+
+					WriteOrchestratorAudit(
+						$"event=models_list_deferred sessionId={sessionId} reason=session_recovering_no_cache threadId={existingSession.Session.ThreadId}");
+					throw new InvalidOperationException("Session is recovering; model list is temporarily unavailable.");
+				}
+
+				if (existingSession is not null &&
+					existingSession.IsLocalTurnAwaitingStartStale(TimeSpan.Zero, out var pendingStartAge))
+				{
+					if (existingSession.TryGetCachedModels(out var pendingStartCachedModels))
+					{
+						WriteOrchestratorAudit(
+							$"event=models_list_from_cache sessionId={sessionId} reason=turn_start_pending pendingMs={Math.Round(pendingStartAge.TotalMilliseconds)} modelCount={pendingStartCachedModels.Count} threadId={existingSession.Session.ThreadId} {existingSession.BuildRpcDebugSummary()}");
+						return pendingStartCachedModels;
+					}
+
+					WriteOrchestratorAudit(
+						$"event=models_list_deferred sessionId={sessionId} reason=turn_start_pending_no_cache pendingMs={Math.Round(pendingStartAge.TotalMilliseconds)} threadId={existingSession.Session.ThreadId} {existingSession.BuildRpcDebugSummary()}");
+					throw new InvalidOperationException("Turn is starting and model list is deferred until start is acknowledged.");
+				}
+
 				if (inFlightAtStart && existingSession is not null)
 				{
 					WriteOrchestratorAudit(
 						$"event=models_list_during_turn sessionId={sessionId} threadId={existingSession.Session.ThreadId} {existingSession.BuildTurnDebugSummary()}");
 				}
 
-				var models = await existingClient.ListModelsAsync(cancellationToken: cancellationToken);
+				var models = await existingSession!.QueryModelsSerializedAsync(
+					ct => existingClient.ListModelsAsync(cancellationToken: ct),
+					cancellationToken);
 				stopwatch.Stop();
 				if (inFlightAtStart || stopwatch.ElapsedMilliseconds >= 1000)
 				{
@@ -1049,6 +1082,109 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		return false;
+	}
+
+	public bool TryResolveRecoveryOfferDecision(
+		string sessionId,
+		string? offerId,
+		bool recover,
+		out string? errorMessage)
+	{
+		errorMessage = null;
+		if (string.IsNullOrWhiteSpace(sessionId))
+		{
+			errorMessage = "sessionId is required.";
+			return false;
+		}
+
+		var session = TryGetSession(sessionId);
+		if (session is null)
+		{
+			errorMessage = $"Unknown session: {sessionId}";
+			return false;
+		}
+
+		var normalizedOfferId = string.IsNullOrWhiteSpace(offerId) ? null : offerId.Trim();
+		if (recover)
+		{
+			if (!session.TryConsumeRecoveryOffer(normalizedOfferId, out var offeredRecovery) || offeredRecovery is null)
+			{
+				errorMessage = "No pending recovery prompt was found.";
+				return false;
+			}
+
+			var pendingAge = TimeSpan.FromSeconds(Math.Max(0, offeredRecovery.PendingSeconds));
+			var roundedSeconds = Math.Round(pendingAge.TotalSeconds);
+			WriteOrchestratorAudit(
+				$"event=recovery_decision_received sessionId={sessionId} threadId={session.Session.ThreadId} offerId={offeredRecovery.OfferId} decision=recover reason={offeredRecovery.Reason} pendingSeconds={roundedSeconds:0}");
+
+			if (!session.TryBeginAppServerRecovery())
+			{
+				session.Log.Write($"[session_recovery] decision accepted offerId={offeredRecovery.OfferId} but session was already recovering");
+				SessionsChanged?.Invoke();
+				return true;
+			}
+
+			var collaborationMode = session.GetActiveCollaborationMode();
+			var isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal);
+			var reset = session.ForceResetTurnState(clearQueuedTurns: false);
+			if (reset.HadTurnInFlight)
+			{
+				Broadcast?.Invoke(
+					"turn_complete",
+					new
+					{
+						sessionId,
+						status = "interrupted",
+						errorMessage = offeredRecovery.Message,
+						isPlanTurn,
+						collaborationMode
+					});
+			}
+
+			session.Log.Write(
+				$"[session_recovery] decision accepted offerId={offeredRecovery.OfferId} reason={offeredRecovery.Reason} pendingSeconds={roundedSeconds:0}");
+			Broadcast?.Invoke(
+				"session_recovery_state",
+				new
+				{
+					sessionId,
+					state = "recovering",
+					reason = offeredRecovery.Reason,
+					offerId = offeredRecovery.OfferId,
+					pendingSeconds = roundedSeconds
+				});
+			Broadcast?.Invoke("status", new { sessionId, message = "Recovery accepted. Restarting session app-server." });
+			WriteOrchestratorAudit(
+				$"event=appserver_recovery_requested sessionId={sessionId} threadId={session.Session.ThreadId} pendingSeconds={roundedSeconds:0} reason={offeredRecovery.Reason} queuedTurns={session.GetQueuedTurnsSnapshot().Count}");
+			SessionsChanged?.Invoke();
+			_ = Task.Run(() => RecoverSessionAfterStaleTurnStartAsync(sessionId, session, pendingAge), CancellationToken.None);
+			return true;
+		}
+
+		if (!session.TryDismissRecoveryOffer(normalizedOfferId, out var dismissedRecovery) || dismissedRecovery is null)
+		{
+			errorMessage = "No pending recovery prompt was found.";
+			return false;
+		}
+
+		var dismissedSeconds = Math.Round(Math.Max(0, dismissedRecovery.PendingSeconds));
+		session.Log.Write(
+			$"[session_recovery] decision dismissed offerId={dismissedRecovery.OfferId} reason={dismissedRecovery.Reason} pendingSeconds={dismissedSeconds:0}");
+		WriteOrchestratorAudit(
+			$"event=recovery_decision_received sessionId={sessionId} threadId={session.Session.ThreadId} offerId={dismissedRecovery.OfferId} decision=dismiss reason={dismissedRecovery.Reason} pendingSeconds={dismissedSeconds:0}");
+		Broadcast?.Invoke(
+			"session_recovery_offer",
+			new
+			{
+				sessionId,
+				state = "dismissed",
+				offerId = dismissedRecovery.OfferId,
+				reason = dismissedRecovery.Reason
+			});
+		Broadcast?.Invoke("status", new { sessionId, message = "Recovery prompt dismissed. Session remains stalled." });
+		SessionsChanged?.Invoke();
+		return true;
 	}
 
 	public bool TryRemoveSession(string sessionId, out ManagedSession? removed)
@@ -1522,7 +1658,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		catch (OperationCanceledException)
 		{
 			WriteOrchestratorAudit(
-				$"event=turn_rpc_canceled sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} timeout={timeoutCts?.IsCancellationRequested == true} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested} {session.BuildTurnDebugSummary()}");
+				$"event=turn_rpc_canceled sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} timeout={timeoutCts?.IsCancellationRequested == true} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested} {session.BuildTurnDebugSummary()} {session.BuildRpcDebugSummary()}");
 			WriteOrchestratorAudit(
 				$"event=turn_send_operation_canceled sessionId={sessionId} dispatchId={dispatchId} lifetimeCanceled={session.LifetimeToken.IsCancellationRequested}");
 			session.Log.Write(
@@ -2103,7 +2239,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			string.Equals(ev.Type, "rpc_wait_failed", StringComparison.Ordinal) ||
 			string.Equals(ev.Type, "rpc_response_unmatched", StringComparison.Ordinal))
 		{
-			WriteOrchestratorAudit($"event=core_rpc_warning sessionId={sessionId} type={ev.Type} message={ev.Message ?? "(none)"}");
+			var rpcDebug = managedSession is null ? string.Empty : $" {managedSession.BuildRpcDebugSummary()}";
+			WriteOrchestratorAudit($"event=core_rpc_warning sessionId={sessionId} type={ev.Type} message={ev.Message ?? "(none)"}{rpcDebug}");
 		}
 
 		if (IsCoreTransportPumpFailure(ev))
@@ -3660,120 +3797,81 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		return TimeSpan.FromSeconds(seconds);
 	}
 
-	private bool TryExpireStalePendingTurnStart(string sessionId, ManagedSession session, TimeSpan staleAfter)
+	private bool TryCreateRecoveryOfferForStaleTurn(
+		string sessionId,
+		ManagedSession session,
+		string reason,
+		string message,
+		TimeSpan pendingAge,
+		string detectedEventName)
 	{
 		if (session.IsAppServerRecovering)
 		{
 			return false;
 		}
 
+		if (!session.TryCreateRecoveryOffer(reason, message, pendingAge, out var offer) || offer is null)
+		{
+			return false;
+		}
+
+		var roundedSeconds = Math.Round(Math.Max(0, offer.PendingSeconds));
+		WriteOrchestratorAudit(
+			$"event={detectedEventName} sessionId={sessionId} threadId={session.Session.ThreadId} pendingSeconds={roundedSeconds:0} offerId={offer.OfferId} reason={reason} {session.BuildTurnDebugSummary()} {session.BuildRpcDebugSummary()}");
+		WriteOrchestratorAudit(
+			$"event=recovery_offer_created sessionId={sessionId} threadId={session.Session.ThreadId} offerId={offer.OfferId} reason={reason} pendingSeconds={roundedSeconds:0}");
+		session.Log.Write(
+			$"[session_recovery] offer created offerId={offer.OfferId} reason={reason} pendingSeconds={roundedSeconds:0}");
+		Broadcast?.Invoke(
+			"session_recovery_offer",
+			new
+			{
+				sessionId,
+				offerId = offer.OfferId,
+				reason,
+				message,
+				pendingSeconds = roundedSeconds,
+				createdAtUtc = offer.CreatedAtUtc
+			});
+		Broadcast?.Invoke("status", new { sessionId, message = $"{message} Recover to restart the session app-server." });
+		SessionsChanged?.Invoke();
+		return true;
+	}
+
+	private bool TryExpireStalePendingTurnStart(string sessionId, ManagedSession session, TimeSpan staleAfter)
+	{
 		if (!session.IsLocalTurnAwaitingStartStale(staleAfter, out var pendingAge))
 		{
 			return false;
 		}
 
-		if (!session.TryBeginAppServerRecovery())
-		{
-			return false;
-		}
-
 		var roundedSeconds = Math.Round(pendingAge.TotalSeconds);
-		WriteOrchestratorAudit(
-			$"event=turn_start_stale_detected sessionId={sessionId} threadId={session.Session.ThreadId} pendingSeconds={roundedSeconds} {session.BuildTurnDebugSummary()}");
-		var message = $"Turn start did not confirm after {roundedSeconds:0}s. Restarting session app-server.";
-		var collaborationMode = session.GetActiveCollaborationMode();
-		var isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal);
-		var reset = session.ForceResetTurnState(clearQueuedTurns: false);
-		if (!reset.HadTurnInFlight)
-		{
-			session.MarkAppServerRecoveryComplete();
-			return false;
-		}
-
-		Broadcast?.Invoke(
-			"turn_complete",
-			new
-			{
-				sessionId,
-				status = "interrupted",
-				errorMessage = message,
-				isPlanTurn,
-				collaborationMode
-			});
-		session.Log.Write($"[turn_recovery] expired pending turn/start after {roundedSeconds:0}s");
-		Broadcast?.Invoke("status", new { sessionId, message = "Turn start appeared stuck. Recovering session app-server." });
-		Broadcast?.Invoke(
-			"session_recovery_state",
-			new
-			{
-				sessionId,
-				state = "recovering",
-				reason = "turn_start_stale",
-				pendingSeconds = roundedSeconds
-			});
-		WriteOrchestratorAudit(
-			$"event=appserver_recovery_requested sessionId={sessionId} threadId={session.Session.ThreadId} pendingSeconds={roundedSeconds} queuedTurns={session.GetQueuedTurnsSnapshot().Count}");
-		SessionsChanged?.Invoke();
-		_ = Task.Run(() => RecoverSessionAfterStaleTurnStartAsync(sessionId, session, pendingAge), CancellationToken.None);
-		return true;
+		var message = $"Turn start did not confirm after {roundedSeconds:0}s. Codex may be disconnected.";
+		return TryCreateRecoveryOfferForStaleTurn(
+			sessionId,
+			session,
+			reason: "turn_start_stale",
+			message: message,
+			pendingAge: pendingAge,
+			detectedEventName: "turn_start_stale_detected");
 	}
 
 	private bool TryExpireStaleStartedLocalTurn(string sessionId, ManagedSession session, TimeSpan staleAfter)
 	{
-		if (session.IsAppServerRecovering)
-		{
-			return false;
-		}
-
 		if (!session.IsLocalStartedTurnStale(staleAfter, out var silentAge))
 		{
 			return false;
 		}
 
-		if (!session.TryBeginAppServerRecovery())
-		{
-			return false;
-		}
-
 		var roundedSeconds = Math.Round(silentAge.TotalSeconds);
-		WriteOrchestratorAudit(
-			$"event=turn_started_stale_detected sessionId={sessionId} threadId={session.Session.ThreadId} silentSeconds={roundedSeconds} {session.BuildTurnDebugSummary()}");
-		var message = $"Started turn showed no core activity for {roundedSeconds:0}s. Restarting session app-server.";
-		var collaborationMode = session.GetActiveCollaborationMode();
-		var isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal);
-		var reset = session.ForceResetTurnState(clearQueuedTurns: false);
-		if (!reset.HadTurnInFlight)
-		{
-			session.MarkAppServerRecoveryComplete();
-			return false;
-		}
-
-		Broadcast?.Invoke(
-			"turn_complete",
-			new
-			{
-				sessionId,
-				status = "interrupted",
-				errorMessage = message,
-				isPlanTurn,
-				collaborationMode
-			});
-		session.Log.Write($"[turn_recovery] expired started turn after {roundedSeconds:0}s without core activity");
-		Broadcast?.Invoke("status", new { sessionId, message = "Turn appeared stalled after start. Recovering session app-server." });
-		Broadcast?.Invoke(
-			"session_recovery_state",
-			new
-			{
-				sessionId,
-				state = "recovering",
-				reason = "turn_started_no_activity_stale",
-				pendingSeconds = roundedSeconds
-			});
-		WriteOrchestratorAudit(
-			$"event=appserver_recovery_requested sessionId={sessionId} threadId={session.Session.ThreadId} pendingSeconds={roundedSeconds} queuedTurns={session.GetQueuedTurnsSnapshot().Count}");
-		SessionsChanged?.Invoke();
-		_ = Task.Run(() => RecoverSessionAfterStaleTurnStartAsync(sessionId, session, silentAge), CancellationToken.None);
-		return true;
+		var message = $"Started turn showed no core activity for {roundedSeconds:0}s. Codex may be disconnected.";
+		return TryCreateRecoveryOfferForStaleTurn(
+			sessionId,
+			session,
+			reason: "turn_started_no_activity_stale",
+			message: message,
+			pendingAge: silentAge,
+			detectedEventName: "turn_started_stale_detected");
 	}
 
 	private async Task RecoverSessionAfterStaleTurnStartAsync(string sessionId, ManagedSession staleSession, TimeSpan pendingAge)
@@ -3790,7 +3888,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		ManagedSession? replacement = null;
 		var staleDisposed = false;
 		WriteOrchestratorAudit(
-			$"event=appserver_recovery_begin sessionId={sessionId} threadId={threadId} pendingSeconds={roundedSeconds} queuedTurns={queuedTurns.Count}");
+			$"event=appserver_recovery_begin sessionId={sessionId} threadId={threadId} pendingSeconds={roundedSeconds} queuedTurns={queuedTurns.Count} {staleSession.BuildRpcDebugSummary()}");
 		try
 		{
 			staleSession.CancelLifetime();
@@ -4273,22 +4371,23 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 	}
 
-	internal sealed record SessionSnapshot(
-		string SessionId,
-		string ThreadId,
-		string? Cwd,
-		string? Model,
-		string? ReasoningEffort,
-		string? ApprovalPolicy,
-		string? SandboxPolicy,
-		bool IsTurnInFlight,
-		PendingApprovalSnapshot? PendingApproval,
-		int QueuedTurnCount,
-		IReadOnlyList<QueuedTurnSummarySnapshot> QueuedTurns,
-		int TurnCountInMemory,
-		bool IsTurnInFlightInferredFromLogs,
-		bool IsTurnInFlightLogOnly,
-		bool IsAppServerRecovering);
+internal sealed record SessionSnapshot(
+	string SessionId,
+	string ThreadId,
+	string? Cwd,
+	string? Model,
+	string? ReasoningEffort,
+	string? ApprovalPolicy,
+	string? SandboxPolicy,
+	bool IsTurnInFlight,
+	PendingApprovalSnapshot? PendingApproval,
+	RecoveryOfferSnapshot? PendingRecoveryOffer,
+	int QueuedTurnCount,
+	IReadOnlyList<QueuedTurnSummarySnapshot> QueuedTurns,
+	int TurnCountInMemory,
+	bool IsTurnInFlightInferredFromLogs,
+	bool IsTurnInFlightLogOnly,
+	bool IsAppServerRecovering);
 
 	internal sealed record QueuedTurnSummarySnapshot(
 		string QueueItemId,
@@ -4346,6 +4445,15 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		IReadOnlyList<string> Actions,
 		DateTimeOffset CreatedAtUtc);
 
+	internal sealed record RecoveryOfferSnapshot(
+		string OfferId,
+		string Reason,
+		string Message,
+		double PendingSeconds,
+		DateTimeOffset CreatedAtUtc,
+		string? DispatchId,
+		string? ActiveTurnId);
+
 	internal sealed record ManagedSession(
 		string SessionId,
 		CodexClient Client,
@@ -4373,11 +4481,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		private readonly object _approvalSync = new();
 		private readonly object _turnSync = new();
 		private readonly object _queueSync = new();
+		private readonly object _modelsSync = new();
 		private readonly List<QueuedTurn> _queuedTurns = new();
+		private readonly SemaphoreSlim _modelsListGate = new(1, 1);
 		private string? _model = string.IsNullOrWhiteSpace(Model) ? null : Model.Trim();
 		private string? _reasoningEffort = WebCodexUtils.NormalizeReasoningEffort(ReasoningEffort);
 		private string? _approvalPolicy = WebCodexUtils.NormalizeApprovalPolicy(ApprovalPolicy);
 		private string? _sandboxPolicy = WebCodexUtils.NormalizeSandboxMode(SandboxPolicy);
+		private IReadOnlyList<CodexModelInfo> _cachedModels = Array.Empty<CodexModelInfo>();
 		private CancellationTokenSource? _activeTurnCts;
 		private string? _activeTurnId;
 		private string? _activeDispatchId;
@@ -4391,6 +4502,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		private DateTimeOffset _lastBroadcastCoreIssueUtc = DateTimeOffset.MinValue;
 		private bool _queueDispatchRunning;
 		private PendingApprovalSnapshot? _pendingApproval;
+		private RecoveryOfferSnapshot? _pendingRecoveryOffer;
+		private DateTimeOffset _lastRecoveryOfferDismissedUtc = DateTimeOffset.MinValue;
 		private bool _isAppServerRecovering = AppServerRecovering;
 
 		public string? PendingApprovalId => PendingApprovals.Keys.FirstOrDefault();
@@ -4531,6 +4644,67 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			}
 		}
 
+		public string BuildRpcDebugSummary(int maxPending = 6)
+		{
+			CodexRpcDebugSnapshot snapshot;
+			try
+			{
+				snapshot = Session.GetRpcDebugSnapshot(maxPending);
+			}
+			catch
+			{
+				return "rpcDebug=unavailable";
+			}
+
+			var nowUtc = DateTimeOffset.UtcNow;
+			var pendingSummary = snapshot.PendingRequests.Count == 0
+				? "(none)"
+				: string.Join(
+					",",
+					snapshot.PendingRequests.Select(x => $"{x.Id}:{x.Method}:{Math.Round(x.AgeMs):0}ms"));
+			var stdinIdleSec = snapshot.LastStdinWriteUtc.HasValue ? Math.Round((nowUtc - snapshot.LastStdinWriteUtc.Value).TotalSeconds) : -1;
+			var stdoutIdleSec = snapshot.LastStdoutReadUtc.HasValue ? Math.Round((nowUtc - snapshot.LastStdoutReadUtc.Value).TotalSeconds) : -1;
+			var stderrIdleSec = snapshot.LastStderrReadUtc.HasValue ? Math.Round((nowUtc - snapshot.LastStderrReadUtc.Value).TotalSeconds) : -1;
+			return
+				$"rpcPending={snapshot.PendingCount} rpcPendingDetail={pendingSummary} rpcStdinIdleSec={stdinIdleSec:0} rpcStdoutIdleSec={stdoutIdleSec:0} rpcStderrIdleSec={stderrIdleSec:0}";
+		}
+
+		public bool TryGetCachedModels(out IReadOnlyList<CodexModelInfo> models)
+		{
+			lock (_modelsSync)
+			{
+				if (_cachedModels is null || _cachedModels.Count == 0)
+				{
+					models = Array.Empty<CodexModelInfo>();
+					return false;
+				}
+
+				models = _cachedModels.ToArray();
+				return true;
+			}
+		}
+
+		public async Task<IReadOnlyList<CodexModelInfo>> QueryModelsSerializedAsync(
+			Func<CancellationToken, Task<IReadOnlyList<CodexModelInfo>>> fetchAsync,
+			CancellationToken cancellationToken)
+		{
+			await _modelsListGate.WaitAsync(cancellationToken);
+			try
+			{
+				var models = await fetchAsync(cancellationToken);
+				lock (_modelsSync)
+				{
+					_cachedModels = models.ToArray();
+				}
+
+				return models;
+			}
+			finally
+			{
+				_modelsListGate.Release();
+			}
+		}
+
 		public SessionSnapshot ToSnapshot(
 			int turnCountInMemory,
 			bool isTurnInFlightInferredFromLogs,
@@ -4547,6 +4721,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				SandboxPolicy: CurrentSandboxPolicy,
 				IsTurnInFlight: IsTurnInFlight,
 				PendingApproval: GetPendingApproval(),
+				PendingRecoveryOffer: GetPendingRecoveryOffer(),
 				QueuedTurnCount: queuedTurns.Count,
 				QueuedTurns: queuedTurns,
 				TurnCountInMemory: turnCountInMemory,
@@ -5021,6 +5196,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				_lastCoreEventUtc = DateTimeOffset.UtcNow;
 				_lastCoreEventType = null;
 				_lastCoreEventMessage = null;
+				_pendingRecoveryOffer = null;
 				SetTurnState(TurnLifecycleState.RunningLocal);
 				return true;
 			}
@@ -5048,6 +5224,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				_activeTurnCts = null;
 				_activeDispatchId = null;
 				_activeTurnId = normalizedTurnId;
+				_pendingRecoveryOffer = null;
 				SetTurnState(TurnLifecycleState.RunningRecovered);
 				return true;
 			}
@@ -5078,6 +5255,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				_activeTurnCts = null;
 				_activeDispatchId = null;
 				_activeTurnId = normalizedTurnId;
+				_pendingRecoveryOffer = null;
 				SetTurnState(TurnLifecycleState.RunningRecovered);
 				recoveredTurnId = normalizedTurnId;
 				return true;
@@ -5099,6 +5277,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				_activeDispatchId = null;
 				_activeTurnId = null;
 				_activeCollaborationMode = null;
+				_pendingRecoveryOffer = null;
 				SetTurnState(TurnLifecycleState.Idle);
 			}
 
@@ -5152,6 +5331,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				_activeDispatchId = null;
 				_activeTurnId = null;
 				_activeCollaborationMode = null;
+				_pendingRecoveryOffer = null;
 				SetTurnState(TurnLifecycleState.Idle);
 			}
 
@@ -5227,6 +5407,101 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			lock (_approvalSync)
 			{
 				return _pendingApproval;
+			}
+		}
+
+		public RecoveryOfferSnapshot? GetPendingRecoveryOffer()
+		{
+			lock (_turnSync)
+			{
+				return _pendingRecoveryOffer;
+			}
+		}
+
+		public bool TryCreateRecoveryOffer(
+			string reason,
+			string message,
+			TimeSpan pendingAge,
+			out RecoveryOfferSnapshot? offer)
+		{
+			offer = null;
+			lock (_turnSync)
+			{
+				if (_pendingRecoveryOffer is not null)
+				{
+					offer = _pendingRecoveryOffer;
+					return false;
+				}
+
+				var nowUtc = DateTimeOffset.UtcNow;
+				if (nowUtc - _lastRecoveryOfferDismissedUtc < TimeSpan.FromSeconds(30))
+				{
+					return false;
+				}
+
+				string? activeTurnId = _activeTurnId;
+				if (string.IsNullOrWhiteSpace(activeTurnId) &&
+					Session.TryGetActiveTurnId(out var activeFromClient) &&
+					!string.IsNullOrWhiteSpace(activeFromClient))
+				{
+					activeTurnId = activeFromClient;
+				}
+
+				offer = new RecoveryOfferSnapshot(
+					OfferId: Guid.NewGuid().ToString("N"),
+					Reason: reason,
+					Message: message,
+					PendingSeconds: Math.Max(0, Math.Round(pendingAge.TotalSeconds)),
+					CreatedAtUtc: nowUtc,
+					DispatchId: _activeDispatchId,
+					ActiveTurnId: activeTurnId);
+				_pendingRecoveryOffer = offer;
+				return true;
+			}
+		}
+
+		public bool TryConsumeRecoveryOffer(string? offerId, out RecoveryOfferSnapshot? offer)
+		{
+			offer = null;
+			lock (_turnSync)
+			{
+				if (_pendingRecoveryOffer is null)
+				{
+					return false;
+				}
+
+				if (!string.IsNullOrWhiteSpace(offerId) &&
+					!string.Equals(_pendingRecoveryOffer.OfferId, offerId.Trim(), StringComparison.Ordinal))
+				{
+					return false;
+				}
+
+				offer = _pendingRecoveryOffer;
+				_pendingRecoveryOffer = null;
+				return true;
+			}
+		}
+
+		public bool TryDismissRecoveryOffer(string? offerId, out RecoveryOfferSnapshot? offer)
+		{
+			offer = null;
+			lock (_turnSync)
+			{
+				if (_pendingRecoveryOffer is null)
+				{
+					return false;
+				}
+
+				if (!string.IsNullOrWhiteSpace(offerId) &&
+					!string.Equals(_pendingRecoveryOffer.OfferId, offerId.Trim(), StringComparison.Ordinal))
+				{
+					return false;
+				}
+
+				offer = _pendingRecoveryOffer;
+				_pendingRecoveryOffer = null;
+				_lastRecoveryOfferDismissedUtc = DateTimeOffset.UtcNow;
+				return true;
 			}
 		}
 

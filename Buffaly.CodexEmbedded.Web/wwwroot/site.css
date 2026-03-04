@@ -718,6 +718,18 @@ body {
 	font-weight: 700;
 }
 
+.session-badge.recovery-offer {
+	border: 1px solid #f59e0b;
+	background: #fffbeb;
+	color: #92400e;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.session-badge.recovery-offer:hover {
+	background: #fef3c7;
+}
+
 .session-processing-icon {
 	font-size: 0.74rem;
 	line-height: 1;
@@ -1815,6 +1827,38 @@ body {
 
 .tool-user-input-modal-card {
 	width: min(720px, 100%);
+}
+
+.session-recovery-modal-card {
+	width: min(560px, 100%);
+	border-color: #f59e0b;
+}
+
+.session-recovery-message {
+	border: 1px solid #fde68a;
+	border-radius: 8px;
+	background: #fffbeb;
+	color: #7c2d12;
+	padding: 0.58rem 0.65rem;
+	font-size: 0.9rem;
+	line-height: 1.4;
+}
+
+.session-recovery-meta {
+	border: 1px solid #e2e8f0;
+	border-radius: 8px;
+	background: #f8fafc;
+	color: #334155;
+	padding: 0.45rem 0.58rem;
+	font-size: 0.78rem;
+	line-height: 1.35;
+	font-family: Consolas, "Courier New", monospace;
+	word-break: break-word;
+}
+
+.session-recovery-actions button:first-child {
+	background: #b45309;
+	border-color: #b45309;
 }
 
 .tool-user-input-body {
@@ -4432,6 +4476,32 @@ html[data-theme="dark"] .prompt-queue-item {
 }
 
 html[data-theme="dark"] .diff-note-modal-path {
+	background: #111827;
+	border-color: #334155;
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .session-badge.recovery-offer {
+	background: #3f2a0b;
+	border-color: #d97706;
+	color: #fde68a;
+}
+
+html[data-theme="dark"] .session-badge.recovery-offer:hover {
+	background: #5a3a0e;
+}
+
+html[data-theme="dark"] .session-recovery-modal-card {
+	border-color: #d97706;
+}
+
+html[data-theme="dark"] .session-recovery-message {
+	background: #3f2a0b;
+	border-color: #d97706;
+	color: #fde68a;
+}
+
+html[data-theme="dark"] .session-recovery-meta {
 	background: #111827;
 	border-color: #334155;
 	color: #cbd5e1;

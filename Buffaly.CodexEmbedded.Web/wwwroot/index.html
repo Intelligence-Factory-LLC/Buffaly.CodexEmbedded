@@ -388,6 +388,20 @@
 			</div>
 		</div>
 
+		<div id="sessionRecoveryModal" class="command-modal hidden" role="dialog" aria-modal="true" aria-labelledby="sessionRecoveryTitle">
+			<div class="command-modal-card session-recovery-modal-card">
+				<div id="sessionRecoveryTitle" class="command-modal-title">Codex session appears stalled</div>
+				<div class="command-modal-body">
+					<div id="sessionRecoveryMessage" class="session-recovery-message"></div>
+					<div id="sessionRecoveryMeta" class="session-recovery-meta"></div>
+				</div>
+				<div class="command-modal-actions session-recovery-actions">
+					<button id="sessionRecoveryRecoverBtn" type="button">Recover Session</button>
+					<button id="sessionRecoveryDismissBtn" type="button">Not Now</button>
+				</div>
+			</div>
+		</div>
+
 		<div id="diffNoteModal" class="command-modal hidden" role="dialog" aria-modal="true" aria-labelledby="diffNoteModalTitle">
 			<div class="command-modal-card diff-note-modal-card">
 				<div id="diffNoteModalTitle" class="command-modal-title">Diff Line Note</div>
@@ -428,7 +442,7 @@
 	<script src="sessionTimeline.js?v=20260227-turnanchor2"></script>
 	<script src="scribe.js?v=20260303-openai-key-check1"></script>
 	<script src="app.shared.js?v=20260228-cleanup1"></script>
-	<script src="app.js?v=20260304-appserver-errors1"></script>
+	<script src="app.js?v=20260304-recovery-offer1"></script>
 	<script src="app.diffs.js?v=20260304-ui-audit-reason2"></script>
 </body>
 </html>

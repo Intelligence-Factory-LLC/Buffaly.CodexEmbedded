@@ -300,6 +300,28 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						}
 					}
 					return;
+				case "session_recovery_decision":
+					{
+						var sessionId = await RequireKnownSessionIdAsync(
+							TryGetString(root, "sessionId"),
+							"sessionId is required for session_recovery_decision.",
+							cancellationToken);
+						if (string.IsNullOrWhiteSpace(sessionId))
+						{
+							return;
+						}
+
+						if (!TryGetBoolean(root, "recover", out var recover))
+						{
+							WriteAuditEvent($"action=session_recovery_decision_rejected sessionId={sessionId} reason=invalid_recover_flag");
+							await SendEventAsync("error", new { message = "recover must be true or false." }, cancellationToken);
+							return;
+						}
+
+						var offerId = TryGetString(root, "offerId");
+						await ResolveSessionRecoveryDecisionAsync(sessionId, offerId, recover, cancellationToken);
+					}
+					return;
 				case "tool_user_input_response":
 					{
 						var sessionId = await RequireProvidedSessionIdAsync(
@@ -769,6 +791,18 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 						createdAtUtc = approval.CreatedAtUtc.ToString("O")
 					}
 					: null,
+				pendingRecoveryOffer = s.PendingRecoveryOffer is { } recoveryOffer
+					? new
+					{
+						offerId = recoveryOffer.OfferId,
+						reason = recoveryOffer.Reason,
+						message = recoveryOffer.Message,
+						pendingSeconds = recoveryOffer.PendingSeconds,
+						createdAtUtc = recoveryOffer.CreatedAtUtc.ToString("O"),
+						dispatchId = recoveryOffer.DispatchId,
+						activeTurnId = recoveryOffer.ActiveTurnId
+					}
+					: null,
 				queuedTurnCount = s.QueuedTurnCount,
 				turnCountInMemory = s.TurnCountInMemory,
 				queuedTurns = s.QueuedTurns.Select(queued => new
@@ -1092,6 +1126,38 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		await _orchestrator.CancelTurnAsync(requiredSessionId, cancellationToken);
 	}
 
+	private async Task ResolveSessionRecoveryDecisionAsync(
+		string sessionId,
+		string? offerId,
+		bool recover,
+		CancellationToken cancellationToken)
+	{
+		var normalizedOfferId = string.IsNullOrWhiteSpace(offerId) ? null : offerId.Trim();
+		WriteAuditEvent(
+			$"action=session_recovery_decision sessionId={sessionId} offerId={normalizedOfferId ?? "(null)"} recover={recover}");
+		if (!_orchestrator.TryResolveRecoveryOfferDecision(sessionId, normalizedOfferId, recover, out var errorMessage))
+		{
+			WriteAuditEvent(
+				$"action=session_recovery_decision_rejected sessionId={sessionId} offerId={normalizedOfferId ?? "(null)"} recover={recover} reason={errorMessage ?? "(none)"}");
+			await SendEventAsync(
+				"error",
+				new { message = errorMessage ?? "Failed to apply recovery decision." },
+				cancellationToken);
+			return;
+		}
+
+		await SendEventAsync(
+			"status",
+			new
+			{
+				sessionId,
+				message = recover
+					? "Recovery accepted. Restarting session app-server."
+					: "Recovery prompt dismissed."
+			},
+			cancellationToken);
+	}
+
 	private async Task StopSessionAsync(string? sessionId, CancellationToken cancellationToken)
 	{
 		var requiredSessionId = await RequireProvidedSessionIdAsync(sessionId, "sessionId is required for session_stop.", cancellationToken);
@@ -1354,6 +1420,41 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			return null;
 		}
 		return value.ToString();
+	}
+
+	private static bool TryGetBoolean(JsonElement root, string name, out bool value)
+	{
+		value = false;
+		if (root.ValueKind != JsonValueKind.Object)
+		{
+			return false;
+		}
+		if (!root.TryGetProperty(name, out var element))
+		{
+			return false;
+		}
+
+		if (element.ValueKind == JsonValueKind.True)
+		{
+			value = true;
+			return true;
+		}
+		if (element.ValueKind == JsonValueKind.False)
+		{
+			value = false;
+			return true;
+		}
+		if (element.ValueKind == JsonValueKind.String)
+		{
+			var raw = element.GetString();
+			if (bool.TryParse(raw, out var parsed))
+			{
+				value = parsed;
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private static string? TryGetApprovalPolicyRaw(JsonElement root)
