@@ -662,12 +662,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var pendingApprovals = new ConcurrentDictionary<string, TaskCompletionSource<string>>(StringComparer.Ordinal);
 		var pendingToolUserInputs = new ConcurrentDictionary<string, TaskCompletionSource<Dictionary<string, object?>>>(StringComparer.Ordinal);
 
-		CodexClient client;
-		CodexSession session;
+		CodexClient? client = null;
+		CodexSession? session = null;
+		CancellationTokenSource? appServerLifetimeCts = null;
 		try
 		{
+			var startupTimeoutSeconds = Math.Clamp(_defaults.TurnTimeoutSeconds, 30, 300);
 			WriteOrchestratorAudit(
-				$"event=appserver_session_start_requested sessionId={sessionId} attached={attached} recovering={appServerRecovering} cwd={effectiveCwd} model={model ?? "(default)"}");
+				$"event=appserver_session_start_requested sessionId={sessionId} attached={attached} recovering={appServerRecovering} cwd={effectiveCwd} model={model ?? "(default)"} startupToken=caller runtimeToken=session_lifetime startupTimeoutSeconds={startupTimeoutSeconds} callerTokenCanBeCanceled={cancellationToken.CanBeCanceled}");
 			var clientOptions = new CodexClientOptions
 			{
 				CodexPath = effectiveCodexPath,
@@ -679,29 +681,78 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				}
 			};
 
-			client = await CodexClient.StartAsync(clientOptions, cancellationToken);
+			appServerLifetimeCts = new CancellationTokenSource();
+			using var startupTimeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(startupTimeoutSeconds));
+			using var startupCts = CancellationTokenSource.CreateLinkedTokenSource(
+				appServerLifetimeCts.Token,
+				startupTimeoutCts.Token,
+				cancellationToken);
+			client = await CodexClient.StartAsync(clientOptions, startupCts.Token, appServerLifetimeCts.Token);
 			client.OnEvent += ev =>
 			{
 				HandleCoreEvent(sessionId, sessionLog, ev);
 			};
 
-			session = await openSessionAsync(client, cancellationToken);
+			session = await openSessionAsync(client, startupCts.Token);
 			WriteOrchestratorAudit(
 				$"event=appserver_session_started sessionId={sessionId} threadId={session.ThreadId} approval={session.ApprovalPolicy ?? approvalPolicy ?? "(default)"} sandbox={session.SandboxMode ?? sandboxMode ?? "(default)"}");
 		}
 		catch (OperationCanceledException ex)
 		{
+			if (client is not null)
+			{
+				try
+				{
+					await client.DisposeAsync();
+				}
+				catch
+				{
+				}
+			}
+
+			try
+			{
+				appServerLifetimeCts?.Cancel();
+			}
+			catch
+			{
+			}
+			appServerLifetimeCts?.Dispose();
 			WriteOrchestratorAudit(
-				$"event=appserver_session_start_canceled sessionId={sessionId} attached={attached} recovering={appServerRecovering} detail={ex.Message}");
+				$"event=appserver_session_start_canceled sessionId={sessionId} attached={attached} recovering={appServerRecovering} detail={ex.Message} callerTokenCanceled={cancellationToken.IsCancellationRequested}");
 			sessionLog.Dispose();
 			throw;
 		}
 		catch
 		{
+			if (client is not null)
+			{
+				try
+				{
+					await client.DisposeAsync();
+				}
+				catch
+				{
+				}
+			}
+
+			try
+			{
+				appServerLifetimeCts?.Cancel();
+			}
+			catch
+			{
+			}
+			appServerLifetimeCts?.Dispose();
 			WriteOrchestratorAudit(
 				$"event=appserver_session_start_failed sessionId={sessionId} attached={attached} recovering={appServerRecovering}");
 			sessionLog.Dispose();
 			throw;
+		}
+
+		if (client is null || session is null || appServerLifetimeCts is null)
+		{
+			throw new InvalidOperationException("App-server session startup did not initialize expected state.");
 		}
 
 		var managed = new ManagedSession(
@@ -717,7 +768,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			pendingToolUserInputs,
 			ApprovalPolicy: session.ApprovalPolicy ?? approvalPolicy,
 			SandboxPolicy: session.SandboxMode ?? sandboxMode,
-			AppServerRecovering: appServerRecovering);
+			AppServerRecovering: appServerRecovering,
+			ClientLifetimeCts: appServerLifetimeCts);
 		lock (_sync)
 		{
 			_sessions[sessionId] = managed;
@@ -4673,7 +4725,8 @@ internal sealed record SessionSnapshot(
 		ConcurrentDictionary<string, TaskCompletionSource<Dictionary<string, object?>>> PendingToolUserInputs,
 		string? ApprovalPolicy = null,
 		string? SandboxPolicy = null,
-		bool AppServerRecovering = false)
+		bool AppServerRecovering = false,
+		CancellationTokenSource? ClientLifetimeCts = null)
 	{
 		private enum TurnLifecycleState
 		{
@@ -4873,8 +4926,12 @@ internal sealed record SessionSnapshot(
 			var stdinIdleSec = snapshot.LastStdinWriteUtc.HasValue ? Math.Round((nowUtc - snapshot.LastStdinWriteUtc.Value).TotalSeconds) : -1;
 			var stdoutIdleSec = snapshot.LastStdoutReadUtc.HasValue ? Math.Round((nowUtc - snapshot.LastStdoutReadUtc.Value).TotalSeconds) : -1;
 			var stderrIdleSec = snapshot.LastStderrReadUtc.HasValue ? Math.Round((nowUtc - snapshot.LastStderrReadUtc.Value).TotalSeconds) : -1;
+			var stdoutPump = string.IsNullOrWhiteSpace(snapshot.StdoutPumpStopReason) ? "running" : snapshot.StdoutPumpStopReason;
+			var stderrPump = string.IsNullOrWhiteSpace(snapshot.StderrPumpStopReason) ? "running" : snapshot.StderrPumpStopReason;
+			var stdoutPumpStoppedSec = snapshot.StdoutPumpStoppedUtc.HasValue ? Math.Round((nowUtc - snapshot.StdoutPumpStoppedUtc.Value).TotalSeconds) : -1;
+			var stderrPumpStoppedSec = snapshot.StderrPumpStoppedUtc.HasValue ? Math.Round((nowUtc - snapshot.StderrPumpStoppedUtc.Value).TotalSeconds) : -1;
 			return
-				$"rpcPending={snapshot.PendingCount} rpcPendingDetail={pendingSummary} rpcStdinIdleSec={stdinIdleSec:0} rpcStdoutIdleSec={stdoutIdleSec:0} rpcStderrIdleSec={stderrIdleSec:0}";
+				$"rpcPending={snapshot.PendingCount} rpcPendingDetail={pendingSummary} rpcStdinIdleSec={stdinIdleSec:0} rpcStdoutIdleSec={stdoutIdleSec:0} rpcStderrIdleSec={stderrIdleSec:0} rpcStdoutPump={stdoutPump} rpcStdoutPumpStoppedSec={stdoutPumpStoppedSec:0} rpcStderrPump={stderrPump} rpcStderrPumpStoppedSec={stderrPumpStoppedSec:0}";
 		}
 
 		public bool TryGetCachedModels(out IReadOnlyList<CodexModelInfo> models)
@@ -5630,6 +5687,8 @@ internal sealed record SessionSnapshot(
 		public void CancelLifetime()
 		{
 			try { _lifetimeCts.Cancel(); } catch { }
+			try { ClientLifetimeCts?.Cancel(); } catch { }
+			try { ClientLifetimeCts?.Dispose(); } catch { }
 		}
 
 		public PendingApprovalSnapshot? GetPendingApproval()

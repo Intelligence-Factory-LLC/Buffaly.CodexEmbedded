@@ -85,5 +85,9 @@ public sealed record CodexRpcDebugSnapshot(
 	IReadOnlyList<CodexRpcPendingRequest> PendingRequests,
 	DateTimeOffset? LastStdinWriteUtc,
 	DateTimeOffset? LastStdoutReadUtc,
-	DateTimeOffset? LastStderrReadUtc);
+	DateTimeOffset? LastStderrReadUtc,
+	string? StdoutPumpStopReason = null,
+	DateTimeOffset? StdoutPumpStoppedUtc = null,
+	string? StderrPumpStopReason = null,
+	DateTimeOffset? StderrPumpStoppedUtc = null);
 

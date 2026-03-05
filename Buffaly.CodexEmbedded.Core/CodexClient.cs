@@ -27,13 +27,19 @@ public sealed class CodexClient : IAsyncDisposable
 		_rpc.OnServerRequest += HandleServerRequestAsync;
 	}
 
-	public static async Task<CodexClient> StartAsync(CodexClientOptions options, CancellationToken cancellationToken = default)
+	public static async Task<CodexClient> StartAsync(
+		CodexClientOptions options,
+		CancellationToken startupCancellationToken = default,
+		CancellationToken runtimeCancellationToken = default)
 	{
-		var transport = await ProcessJsonlTransport.StartAsync(options, cancellationToken);
+		var pumpLifetimeToken = runtimeCancellationToken.CanBeCanceled
+			? runtimeCancellationToken
+			: startupCancellationToken;
+		var transport = await ProcessJsonlTransport.StartAsync(options, startupCancellationToken);
 		var rpc = new JsonRpcJsonlClient(transport);
-		await rpc.StartAsync(cancellationToken);
+		await rpc.StartAsync(pumpLifetimeToken);
 		var client = new CodexClient(rpc, options.ServerRequestHandler);
-		await client.InitializeAsync(cancellationToken);
+		await client.InitializeAsync(startupCancellationToken);
 		return client;
 	}
 

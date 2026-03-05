@@ -127,6 +127,36 @@ public sealed class ProcessJsonlTransport : IJsonlTransport
 		return "codex.cmd";
 	}
 
+	internal bool IsExited
+	{
+		get
+		{
+			try
+			{
+				return _process.HasExited;
+			}
+			catch
+			{
+				return false;
+			}
+		}
+	}
+
+	internal int? ExitCodeOrNull
+	{
+		get
+		{
+			try
+			{
+				return _process.HasExited ? _process.ExitCode : null;
+			}
+			catch
+			{
+				return null;
+			}
+		}
+	}
+
 	public async Task WriteStdinLineAsync(string line, CancellationToken cancellationToken)
 	{
 		if (_process.HasExited)

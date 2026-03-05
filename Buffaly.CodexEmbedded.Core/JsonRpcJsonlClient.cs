@@ -21,6 +21,10 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 	private DateTimeOffset? _lastStdinWriteUtc;
 	private DateTimeOffset? _lastStdoutReadUtc;
 	private DateTimeOffset? _lastStderrReadUtc;
+	private string? _stdoutPumpStopReason;
+	private DateTimeOffset? _stdoutPumpStoppedUtc;
+	private string? _stderrPumpStopReason;
+	private DateTimeOffset? _stderrPumpStoppedUtc;
 
 	public event Action<CodexCoreEvent>? OnEvent;
 	public event Action<string, JsonElement>? OnNotification;
@@ -141,6 +145,8 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 
 	private async Task PumpStdoutAsync(CancellationToken cancellationToken)
 	{
+		var stopReason = "unknown";
+		var stopLevel = "warn";
 		try
 		{
 			while (!cancellationToken.IsCancellationRequested)
@@ -148,6 +154,7 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 				var line = await _transport.ReadStdoutLineAsync(cancellationToken);
 				if (line is null)
 				{
+					stopReason = $"eof {BuildTransportStateSummary()}";
 					break;
 				}
 				_lastStdoutReadUtc = DateTimeOffset.UtcNow;
@@ -238,16 +245,27 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 					}
 				}
 			}
+			if (string.Equals(stopReason, "unknown", StringComparison.Ordinal) && cancellationToken.IsCancellationRequested)
+			{
+				stopReason = $"canceled {BuildTransportStateSummary()}";
+				stopLevel = "debug";
+			}
 		}
-		catch (OperationCanceledException)
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
+			stopReason = $"canceled {BuildTransportStateSummary()}";
+			stopLevel = "debug";
 		}
 		catch (Exception ex)
 		{
+			stopReason = $"failed error={ex.Message} {BuildTransportStateSummary()}";
 			OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "error", "stdout_pump_failed", ex.Message));
 		}
 		finally
 		{
+			_stdoutPumpStopReason = stopReason;
+			_stdoutPumpStoppedUtc = DateTimeOffset.UtcNow;
+			OnEvent?.Invoke(new CodexCoreEvent(_stdoutPumpStoppedUtc.Value, stopLevel, "stdout_pump_stopped", stopReason));
 			foreach (var pending in _pending.Values)
 			{
 				pending.Completion.TrySetException(new InvalidOperationException("Transport closed before response."));
@@ -258,6 +276,8 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 
 	private async Task PumpStderrAsync(CancellationToken cancellationToken)
 	{
+		var stopReason = "unknown";
+		var stopLevel = "warn";
 		try
 		{
 			while (!cancellationToken.IsCancellationRequested)
@@ -265,19 +285,34 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 				var line = await _transport.ReadStderrLineAsync(cancellationToken);
 				if (line is null)
 				{
+					stopReason = $"eof {BuildTransportStateSummary()}";
 					break;
 				}
 				_lastStderrReadUtc = DateTimeOffset.UtcNow;
 
 				OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "debug", "stderr_line", line));
 			}
+			if (string.Equals(stopReason, "unknown", StringComparison.Ordinal) && cancellationToken.IsCancellationRequested)
+			{
+				stopReason = $"canceled {BuildTransportStateSummary()}";
+				stopLevel = "debug";
+			}
 		}
-		catch (OperationCanceledException)
+		catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
 		{
+			stopReason = $"canceled {BuildTransportStateSummary()}";
+			stopLevel = "debug";
 		}
 		catch (Exception ex)
 		{
+			stopReason = $"failed error={ex.Message} {BuildTransportStateSummary()}";
 			OnEvent?.Invoke(new CodexCoreEvent(DateTimeOffset.UtcNow, "error", "stderr_pump_failed", ex.Message));
+		}
+		finally
+		{
+			_stderrPumpStopReason = stopReason;
+			_stderrPumpStoppedUtc = DateTimeOffset.UtcNow;
+			OnEvent?.Invoke(new CodexCoreEvent(_stderrPumpStoppedUtc.Value, stopLevel, "stderr_pump_stopped", stopReason));
 		}
 	}
 
@@ -300,7 +335,22 @@ internal sealed class JsonRpcJsonlClient : IAsyncDisposable
 			PendingRequests: pendingRequests,
 			LastStdinWriteUtc: _lastStdinWriteUtc,
 			LastStdoutReadUtc: _lastStdoutReadUtc,
-			LastStderrReadUtc: _lastStderrReadUtc);
+			LastStderrReadUtc: _lastStderrReadUtc,
+			StdoutPumpStopReason: _stdoutPumpStopReason,
+			StdoutPumpStoppedUtc: _stdoutPumpStoppedUtc,
+			StderrPumpStopReason: _stderrPumpStopReason,
+			StderrPumpStoppedUtc: _stderrPumpStoppedUtc);
+	}
+
+	private string BuildTransportStateSummary()
+	{
+		if (_transport is ProcessJsonlTransport processTransport)
+		{
+			var exitCode = processTransport.ExitCodeOrNull;
+			return $"transport=process exited={processTransport.IsExited} exitCode={(exitCode.HasValue ? exitCode.Value.ToString(CultureInfo.InvariantCulture) : "(none)")}";
+		}
+
+		return $"transport={_transport.GetType().Name}";
 	}
 
 	public async ValueTask DisposeAsync()
