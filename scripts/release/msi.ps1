@@ -8,7 +8,9 @@ param(
 
     [string]$PublishRoot = "artifacts/publish",
 
-    [string]$OutputRoot = "artifacts/release"
+    [string]$OutputRoot = "artifacts/release",
+
+    [string]$VsixPath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -141,6 +143,71 @@ exit /b %EXITCODE%
 
     Set-Content -Path $cliLauncher -Value $cliContent -Encoding ascii
     Set-Content -Path $webLauncher -Value $webContent -Encoding ascii
+}
+
+function Resolve-OptionalVsixPath([string]$RepoRoot, [string]$PreferredPath) {
+    if (-not [string]::IsNullOrWhiteSpace($PreferredPath)) {
+        $expanded = [Environment]::ExpandEnvironmentVariables($PreferredPath.Trim())
+        if (-not (Test-Path $expanded)) {
+            throw "VSIX path was provided but not found: $expanded"
+        }
+        return (Resolve-Path $expanded).Path
+    }
+
+    $libRoot = Join-Path $RepoRoot "lib"
+    if (-not (Test-Path $libRoot)) {
+        return $null
+    }
+
+    $preferredNames = @(
+        "Buffaly.VisualStudio.Extension.vsix",
+        "Buffaly.Agent.VisualStudio.vsix",
+        "Buffaly.Agent.vsix"
+    )
+    foreach ($name in $preferredNames) {
+        $candidate = Join-Path $libRoot $name
+        if (Test-Path $candidate) {
+            return (Resolve-Path $candidate).Path
+        }
+    }
+
+    $fallback = Get-ChildItem -Path $libRoot -Filter "*.vsix" -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($null -eq $fallback) {
+        return $null
+    }
+    return $fallback.FullName
+}
+
+function Write-WixFragmentForVsix([string]$VsixSourcePath, [string]$OutVsixWxs) {
+    if (-not (Test-Path $VsixSourcePath)) {
+        throw "VSIX file not found: $VsixSourcePath"
+    }
+
+    $fileName = [IO.Path]::GetFileName($VsixSourcePath)
+    $safeIdSuffix = (Get-Md5Hex("vsix|$VsixSourcePath")).Substring(0, 24)
+    $componentId = "cmp_vsix_" + $safeIdSuffix
+    $fileId = "fil_vsix_" + $safeIdSuffix
+    $guid = New-DeterministicGuid("guid|vsix|$VsixSourcePath")
+
+    $sb = [System.Text.StringBuilder]::new()
+    [void]$sb.AppendLine("<?xml version=""1.0"" encoding=""utf-8""?>")
+    [void]$sb.AppendLine("<Wix xmlns=""http://wixtoolset.org/schemas/v4/wxs"">")
+    [void]$sb.AppendLine("  <Fragment>")
+    [void]$sb.AppendLine("    <DirectoryRef Id=""VSEXTDIR"">")
+    [void]$sb.AppendLine("      <Component Id=""$componentId"" Guid=""$guid"">")
+    [void]$sb.AppendLine("        <File Id=""$fileId"" Source=""$VsixSourcePath"" Name=""$fileName"" KeyPath=""yes"" />")
+    [void]$sb.AppendLine("      </Component>")
+    [void]$sb.AppendLine("    </DirectoryRef>")
+    [void]$sb.AppendLine("  </Fragment>")
+    [void]$sb.AppendLine("  <Fragment>")
+    [void]$sb.AppendLine("    <ComponentGroup Id=""VsixFiles"">")
+    [void]$sb.AppendLine("      <ComponentRef Id=""$componentId"" />")
+    [void]$sb.AppendLine("    </ComponentGroup>")
+    [void]$sb.AppendLine("  </Fragment>")
+    [void]$sb.AppendLine("</Wix>")
+    Set-Content -Path $OutVsixWxs -Value $sb.ToString() -Encoding utf8
 }
 
 function Build-DirectoryTree([string[]]$DirectoryPaths) {
@@ -306,6 +373,7 @@ $cliDirsWxs = Join-Path $stageRoot "Directories.Cli.wxs"
 $cliFilesWxs = Join-Path $stageRoot "Files.Cli.wxs"
 $webDirsWxs = Join-Path $stageRoot "Directories.Web.wxs"
 $webFilesWxs = Join-Path $stageRoot "Files.Web.wxs"
+$vsixFilesWxs = Join-Path $stageRoot "Files.Vsix.wxs"
 
 $productTemplate = Join-Path $repoRoot "installer\\wix\\Product.wxs"
 $productGenerated = Join-Path $stageRoot "Product.generated.wxs"
@@ -319,6 +387,17 @@ $productXml = Get-Content -Raw -Path $productTemplate
 if ($productXml -notmatch "__PRODUCT_VERSION__") {
     throw "Product.wxs does not contain __PRODUCT_VERSION__ placeholder."
 }
+
+$resolvedVsixPath = Resolve-OptionalVsixPath -RepoRoot $repoRoot -PreferredPath $VsixPath
+$optionalMainFeatureRefs = ""
+if (-not [string]::IsNullOrWhiteSpace($resolvedVsixPath)) {
+    Write-Host "Including VSIX payload in MSI:"
+    Write-Host "  $resolvedVsixPath"
+    Write-WixFragmentForVsix -VsixSourcePath $resolvedVsixPath -OutVsixWxs $vsixFilesWxs
+    $optionalMainFeatureRefs = "      <ComponentGroupRef Id=""VsixFiles"" />"
+}
+
+$productXml = $productXml.Replace("__OPTIONAL_MAIN_COMPONENT_GROUP_REFS__", $optionalMainFeatureRefs)
 $productXml = $productXml.Replace("__PRODUCT_VERSION__", $msiVersion)
 Set-Content -Path $productGenerated -Value $productXml -Encoding utf8
 
@@ -331,15 +410,20 @@ Write-WixFragmentsForPublishRoot -SourceRoot $webSource -RootDirId "WEBDIR" -Gro
 Write-Host "Building MSI..."
 Push-Location $repoRoot
 try {
-    wix build `
-        $productGenerated `
-        $binWxs `
-        $cliDirsWxs `
-        $cliFilesWxs `
-        $webDirsWxs `
-        $webFilesWxs `
-        -arch x64 `
-        -o $msiPath
+    $wixBuildArgs = @(
+        "build",
+        $productGenerated,
+        $binWxs,
+        $cliDirsWxs,
+        $cliFilesWxs,
+        $webDirsWxs,
+        $webFilesWxs
+    )
+    if (Test-Path $vsixFilesWxs) {
+        $wixBuildArgs += $vsixFilesWxs
+    }
+    $wixBuildArgs += @("-arch", "x64", "-o", $msiPath)
+    & wix @wixBuildArgs
     if ($LASTEXITCODE -ne 0) { throw "wix build failed with exit code $LASTEXITCODE" }
 }
 finally {

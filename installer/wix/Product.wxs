@@ -17,6 +17,7 @@
       <ComponentGroupRef Id="BinFiles" />
       <ComponentGroupRef Id="CliFiles" />
       <ComponentGroupRef Id="WebFiles" />
+      __OPTIONAL_MAIN_COMPONENT_GROUP_REFS__
       <ComponentRef Id="cmp_env_path" />
       <ComponentRef Id="cmp_start_menu" />
     </Feature>
@@ -28,6 +29,7 @@
           <Directory Id="WEBDIR" Name="web" />
         </Directory>
         <Directory Id="BINDIR" Name="bin" />
+        <Directory Id="VSEXTDIR" Name="visual-studio" />
       </Directory>
     </StandardDirectory>
 
