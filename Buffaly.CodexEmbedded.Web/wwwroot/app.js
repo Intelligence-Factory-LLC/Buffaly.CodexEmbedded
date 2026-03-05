@@ -86,6 +86,9 @@ let vsSelectionSnapshot = null; // { filePath, fileName, selectionText, caretLin
 let consumedVsSelectionSignature = "";
 let vsSelectionPollTimer = null;
 let vsSelectionPollInFlight = false;
+let pendingBuildFixClip = null; // { signature, state, errors, warnings, errorCount }
+let dismissedBuildFixSignature = "";
+let buildFixPollTimer = null;
 let openAiKeyStatusCache = null; // { hasKey, checkedAtMs }
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
@@ -116,6 +119,8 @@ const APP_SERVER_ERROR_BANNER_MS = 45000;
 const MODELS_LIST_MIN_INTERVAL_MS = 4000;
 const VS_SELECTION_POLL_INTERVAL_MS = 1500;
 const VS_SELECTION_MAX_PROMPT_CHARS = 4000;
+const BUILD_FIX_POLL_INTERVAL_MS = 2000;
+const BUILD_FIX_MAX_CHARS = 12000;
 const OPENAI_KEY_STATUS_CACHE_MS = 15000;
 const UI_AUDIT_OUTGOING_TYPES = new Set([
   "session_create",
@@ -172,6 +177,7 @@ const contextLeftIndicator = document.getElementById("contextLeftIndicator");
 const permissionLevelIndicator = document.getElementById("permissionLevelIndicator");
 const composerImages = document.getElementById("composerImages");
 const promptSelectionIndicator = document.getElementById("promptSelectionIndicator");
+const promptBuildFixIndicator = document.getElementById("promptBuildFixIndicator");
 const imageUploadInput = document.getElementById("imageUploadInput");
 const imageUploadBtn = document.getElementById("imageUploadBtn");
 const speechToTextBtn = document.getElementById("speechToTextBtn");
@@ -4339,6 +4345,187 @@ async function composePromptWithVsSelection(promptText) {
   };
 }
 
+function getBridgeBuildFixSnapshot() {
+  const bridge = window.__vsBridge || window.devAgentBridge;
+  const build = bridge && bridge.build && typeof bridge.build === "object" ? bridge.build : null;
+  if (!build) {
+    return null;
+  }
+
+  const state = String(build.state || "").trim().toLowerCase();
+  const errors = String(build.errorList || "");
+  const warnings = String(build.warningList || "");
+  const parsedErrorCount = Number(build.errors || 0);
+  const errorCount = Number.isFinite(parsedErrorCount) ? Math.max(0, Math.floor(parsedErrorCount)) : 0;
+  if (state !== "failed" || !errors.trim()) {
+    return null;
+  }
+
+  return {
+    state,
+    errors,
+    warnings,
+    errorCount
+  };
+}
+
+function buildFixClipSignature(snapshot) {
+  if (!snapshot) {
+    return "";
+  }
+
+  return `${snapshot.state}||${snapshot.errorCount}||${snapshot.errors}`;
+}
+
+function formatBuildFixContextForPrompt(clip) {
+  if (!clip || !clip.errors || !clip.errors.trim()) {
+    return "";
+  }
+
+  const errors = clip.errors.length > BUILD_FIX_MAX_CHARS
+    ? `${clip.errors.slice(0, BUILD_FIX_MAX_CHARS)}\n...[build errors truncated]...`
+    : clip.errors;
+  const warningSection = clip.warnings && clip.warnings.trim()
+    ? [
+      "",
+      "Warnings:",
+      "```",
+      clip.warnings,
+      "```"
+    ].join("\n")
+    : "";
+  return [
+    "",
+    "[Visual Studio build errors]",
+    `Build state: ${clip.state}`,
+    `Error count: ${clip.errorCount}`,
+    "Errors:",
+    "```",
+    errors,
+    "```",
+    warningSection
+  ].join("\n");
+}
+
+function renderBuildFixIndicator() {
+  if (!promptBuildFixIndicator) {
+    return;
+  }
+
+  const clip = pendingBuildFixClip;
+  if (!clip || !clip.signature) {
+    promptBuildFixIndicator.textContent = "";
+    promptBuildFixIndicator.classList.add("hidden");
+    return;
+  }
+
+  const row = document.createElement("div");
+  row.className = "header";
+
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = `Build failed: ${clip.errorCount} error${clip.errorCount === 1 ? "" : "s"}`;
+  row.appendChild(label);
+
+  const fixBtn = document.createElement("button");
+  fixBtn.type = "button";
+  fixBtn.className = "fix";
+  fixBtn.textContent = "Fix";
+  fixBtn.title = "Attach build errors to next request";
+  fixBtn.addEventListener("click", () => {
+    if (promptInput) {
+      promptInput.focus();
+    }
+  });
+  row.appendChild(fixBtn);
+
+  const dismissBtn = document.createElement("button");
+  dismissBtn.type = "button";
+  dismissBtn.className = "dismiss";
+  dismissBtn.textContent = "\u00D7";
+  dismissBtn.title = "Dismiss build fix clip";
+  dismissBtn.setAttribute("aria-label", "Dismiss build fix clip");
+  dismissBtn.addEventListener("click", () => {
+    dismissedBuildFixSignature = clip.signature;
+    pendingBuildFixClip = null;
+    renderBuildFixIndicator();
+  });
+  row.appendChild(dismissBtn);
+
+  const preview = document.createElement("div");
+  preview.className = "preview";
+  const firstLine = String(clip.errors || "").replace(/\r/g, "").split("\n").map((line) => line.trim()).find((line) => line);
+  preview.textContent = firstLine || "Error list ready to attach.";
+
+  promptBuildFixIndicator.textContent = "";
+  promptBuildFixIndicator.appendChild(row);
+  promptBuildFixIndicator.appendChild(preview);
+  promptBuildFixIndicator.classList.remove("hidden");
+}
+
+function refreshBuildFixClipFromBridge() {
+  const snapshot = getBridgeBuildFixSnapshot();
+  if (!snapshot) {
+    if (pendingBuildFixClip) {
+      pendingBuildFixClip = null;
+      renderBuildFixIndicator();
+    }
+    return;
+  }
+
+  const signature = buildFixClipSignature(snapshot);
+  if (!signature || signature === dismissedBuildFixSignature) {
+    return;
+  }
+
+  if (pendingBuildFixClip && pendingBuildFixClip.signature === signature) {
+    return;
+  }
+
+  pendingBuildFixClip = {
+    signature,
+    state: snapshot.state,
+    errors: snapshot.errors,
+    warnings: snapshot.warnings,
+    errorCount: snapshot.errorCount
+  };
+  renderBuildFixIndicator();
+}
+
+function startBuildFixPolling() {
+  if (buildFixPollTimer) {
+    clearInterval(buildFixPollTimer);
+  }
+
+  refreshBuildFixClipFromBridge();
+  buildFixPollTimer = setInterval(() => {
+    if (!isDocumentVisible()) {
+      return;
+    }
+    refreshBuildFixClipFromBridge();
+  }, BUILD_FIX_POLL_INTERVAL_MS);
+}
+
+function composePromptWithBuildFix(promptText) {
+  const base = String(promptText || "");
+  const clip = pendingBuildFixClip;
+  if (!clip || !clip.signature) {
+    return { prompt: base, includedBuildFix: false };
+  }
+
+  const block = formatBuildFixContextForPrompt(clip);
+  if (!block) {
+    return { prompt: base, includedBuildFix: false };
+  }
+
+  const head = base.trim() ? base : "Fix the build errors from the latest Visual Studio build.";
+  return {
+    prompt: `${head}\n${block}`,
+    includedBuildFix: true,
+    buildFixSignature: clip.signature
+  };
+}
+
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -8110,7 +8297,7 @@ async function queueCurrentComposerPrompt() {
   const images = pendingComposerImages.map((x) => ({ ...x }));
   const hasDiffNotes = hasPendingDiffNotes();
   const usePlanMode = planModeNextTurn === true;
-  if (!prompt && images.length === 0 && !hasDiffNotes) {
+  if (!prompt && images.length === 0 && !hasDiffNotes && !pendingBuildFixClip) {
     return false;
   }
 
@@ -8136,10 +8323,14 @@ async function queueCurrentComposerPrompt() {
   }
 
   const composed = await composePromptWithVsSelection(prompt);
-  const promptWithDiffNotes = appendDiffNotesToPrompt(composed.prompt);
+  const withBuildFix = composePromptWithBuildFix(composed.prompt);
+  const promptWithDiffNotes = appendDiffNotesToPrompt(withBuildFix.prompt);
   if (composed.includedSelection && composed.selection) {
     appendLog(
       `[bridge] included VS selection from ${composed.selection.fileName || composed.selection.filePath} (${composed.selection.selectionText.length} chars)`);
+  }
+  if (withBuildFix.includedBuildFix) {
+    appendLog("[build-fix] included latest Visual Studio build errors");
   }
 
   const queued = await queuePrompt(activeSessionId, promptWithDiffNotes, images, { planMode: usePlanMode });
@@ -8150,6 +8341,11 @@ async function queueCurrentComposerPrompt() {
   if (composed.includedSelection && composed.selectionSignature) {
     consumedVsSelectionSignature = composed.selectionSignature;
     renderVsSelectionIndicator();
+  }
+  if (withBuildFix.includedBuildFix && withBuildFix.buildFixSignature) {
+    dismissedBuildFixSignature = withBuildFix.buildFixSignature;
+    pendingBuildFixClip = null;
+    renderBuildFixIndicator();
   }
 
   promptInput.value = "";
@@ -8199,11 +8395,11 @@ promptForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  if (!prompt && images.length === 0 && !hasDiffNotes) {
+  if (!prompt && images.length === 0 && !hasDiffNotes && !pendingBuildFixClip) {
     return;
   }
 
-  if (images.length === 0 && await tryHandleSlashCommand(prompt)) {
+  if (!pendingBuildFixClip && images.length === 0 && await tryHandleSlashCommand(prompt)) {
     promptInput.value = "";
     clearCurrentPromptDraft();
     return;
@@ -8226,10 +8422,14 @@ promptForm.addEventListener("submit", async (event) => {
   }
 
   const composed = await composePromptWithVsSelection(prompt);
-  const promptWithDiffNotes = appendDiffNotesToPrompt(composed.prompt);
+  const withBuildFix = composePromptWithBuildFix(composed.prompt);
+  const promptWithDiffNotes = appendDiffNotesToPrompt(withBuildFix.prompt);
   if (composed.includedSelection && composed.selection) {
     appendLog(
       `[bridge] included VS selection from ${composed.selection.fileName || composed.selection.filePath} (${composed.selection.selectionText.length} chars)`);
+  }
+  if (withBuildFix.includedBuildFix) {
+    appendLog("[build-fix] included latest Visual Studio build errors");
   }
 
   const processingActive = isTurnInFlight(activeSessionId);
@@ -8244,6 +8444,11 @@ promptForm.addEventListener("submit", async (event) => {
         consumedVsSelectionSignature = composed.selectionSignature;
         renderVsSelectionIndicator();
       }
+      if (withBuildFix.includedBuildFix && withBuildFix.buildFixSignature) {
+        dismissedBuildFixSignature = withBuildFix.buildFixSignature;
+        pendingBuildFixClip = null;
+        renderBuildFixIndicator();
+      }
       appendLog(`[turn] queued prompt for session=${activeSessionId}`);
     } else {
       const steered = steerTurn(activeSessionId, promptWithDiffNotes, images);
@@ -8254,6 +8459,11 @@ promptForm.addEventListener("submit", async (event) => {
       if (composed.includedSelection && composed.selectionSignature) {
         consumedVsSelectionSignature = composed.selectionSignature;
         renderVsSelectionIndicator();
+      }
+      if (withBuildFix.includedBuildFix && withBuildFix.buildFixSignature) {
+        dismissedBuildFixSignature = withBuildFix.buildFixSignature;
+        pendingBuildFixClip = null;
+        renderBuildFixIndicator();
       }
       appendLog(`[turn] steer prompt sent for session=${activeSessionId}`);
     }
@@ -8266,6 +8476,11 @@ promptForm.addEventListener("submit", async (event) => {
     if (composed.includedSelection && composed.selectionSignature) {
       consumedVsSelectionSignature = composed.selectionSignature;
       renderVsSelectionIndicator();
+    }
+    if (withBuildFix.includedBuildFix && withBuildFix.buildFixSignature) {
+      dismissedBuildFixSignature = withBuildFix.buildFixSignature;
+      pendingBuildFixClip = null;
+      renderBuildFixIndicator();
     }
   }
 
@@ -8468,6 +8683,10 @@ window.addEventListener("beforeunload", () => {
     clearInterval(vsSelectionPollTimer);
     vsSelectionPollTimer = null;
   }
+  if (buildFixPollTimer) {
+    clearInterval(buildFixPollTimer);
+    buildFixPollTimer = null;
+  }
   try {
     if (scribeController && typeof scribeController.dispose === "function") {
       scribeController.dispose();
@@ -8478,11 +8697,13 @@ window.addEventListener("beforeunload", () => {
 
 window.addEventListener("focus", () => {
   refreshVsSelectionSnapshot({ force: true }).catch(() => {});
+  refreshBuildFixClipFromBridge();
 });
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     refreshVsSelectionSnapshot({ force: true }).catch(() => {});
+    refreshBuildFixClipFromBridge();
     if (socket && socket.readyState === WebSocket.OPEN) {
       startSessionListSync();
       send("session_list");
@@ -8502,6 +8723,8 @@ applySavedUiSettings();
 renderComposerImages();
 renderVsSelectionIndicator();
 startVsSelectionPolling();
+renderBuildFixIndicator();
+startBuildFixPolling();
 renderProjectSidebar();
 updateScrollToBottomButton();
 updateTimelineTruncationNotice();
