@@ -7212,10 +7212,6 @@ function handleServerEvent(frame) {
       const approvalId = payload.approvalId;
       pendingApproval = sessionId && approvalId ? { sessionId, approvalId } : null;
 
-      if (sessionId && sessions.has(sessionId) && sessionId !== activeSessionId) {
-        setActiveSession(sessionId, { reason: "approval_request_focus" });
-      }
-
       approvalSummary.textContent = payload.summary || "Approval requested";
       const lines = [];
       if (payload.reason) lines.push(`Reason: ${payload.reason}`);
