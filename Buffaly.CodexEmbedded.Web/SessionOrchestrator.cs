@@ -667,7 +667,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		CancellationTokenSource? appServerLifetimeCts = null;
 		try
 		{
-			var startupTimeoutSeconds = Math.Clamp(_defaults.TurnTimeoutSeconds, 30, 300);
+			var startupTimeoutSeconds = Math.Clamp(_defaults.TurnTimeoutSeconds, 30, 1200);
 			WriteOrchestratorAudit(
 				$"event=appserver_session_start_requested sessionId={sessionId} attached={attached} recovering={appServerRecovering} cwd={effectiveCwd} model={model ?? "(default)"} startupToken=caller runtimeToken=session_lifetime startupTimeoutSeconds={startupTimeoutSeconds} callerTokenCanBeCanceled={cancellationToken.CanBeCanceled}");
 			var clientOptions = new CodexClientOptions
@@ -3977,7 +3977,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	private TimeSpan GetRecoveredTurnStaleAfter()
 	{
-		var seconds = Math.Clamp(_defaults.TurnSlotWaitTimeoutSeconds * 2, 90, 300);
+		var seconds = Math.Clamp(_defaults.TurnSlotWaitTimeoutSeconds * 2, 90, 1200);
 		return TimeSpan.FromSeconds(seconds);
 	}
 
@@ -3989,7 +3989,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	private TimeSpan GetStartedLocalTurnStaleAfter()
 	{
-		var seconds = Math.Clamp(_defaults.TurnTimeoutSeconds, 60, 300);
+		var seconds = Math.Clamp(_defaults.TurnTimeoutSeconds, 60, 1200);
 		return TimeSpan.FromSeconds(seconds);
 	}
 
@@ -6076,3 +6076,4 @@ internal sealed record SessionSnapshot(
 		}
 	}
 }
+

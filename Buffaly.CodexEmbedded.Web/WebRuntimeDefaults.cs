@@ -34,7 +34,7 @@ internal sealed class WebRuntimeDefaults
 		var codexInstallHelpUrl = NormalizeCodexInstallHelpUrl(configuration["CodexInstallHelpUrl"]);
 		var defaultCwd = configuration["DefaultCwd"];
 		var codexHomePath = configuration["CodexHomePath"];
-		var timeout = configuration.GetValue<int?>("TurnTimeoutSeconds") ?? 300;
+		var timeout = configuration.GetValue<int?>("TurnTimeoutSeconds") ?? 1200;
 		var turnSlotWaitTimeoutSeconds = configuration.GetValue<int?>("TurnSlotWaitTimeoutSeconds") ?? timeout;
 		var turnSlotWaitPollSeconds = configuration.GetValue<int?>("TurnSlotWaitPollSeconds") ?? 2;
 		var turnStartAckTimeoutSeconds = configuration.GetValue<int?>("TurnStartAckTimeoutSeconds") ?? 15;
@@ -56,7 +56,7 @@ internal sealed class WebRuntimeDefaults
 			WebLaunchUrl = webLaunchUrl,
 			CodexInstallHelpUrl = codexInstallHelpUrl,
 			DefaultCwd = string.IsNullOrWhiteSpace(defaultCwd) ? Environment.CurrentDirectory : defaultCwd,
-			TurnTimeoutSeconds = timeout > 0 ? timeout : 300,
+			TurnTimeoutSeconds = timeout > 0 ? timeout : 1200,
 			TurnSlotWaitTimeoutSeconds = Math.Clamp(turnSlotWaitTimeoutSeconds, 5, 3600),
 			TurnSlotWaitPollSeconds = Math.Clamp(turnSlotWaitPollSeconds, 1, 30),
 			TurnStartAckTimeoutSeconds = Math.Clamp(turnStartAckTimeoutSeconds, 5, 120),
@@ -285,3 +285,4 @@ internal sealed class WebRuntimeDefaults
 		}
 	}
 }
+
