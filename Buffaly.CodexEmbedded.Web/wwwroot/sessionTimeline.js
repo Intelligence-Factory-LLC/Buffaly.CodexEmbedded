@@ -488,8 +488,17 @@
 
       const intermediateWrap = document.createElement("div");
       intermediateWrap.className = "watcher-turn-intermediate-wrap";
+      let completionToggle = null;
       for (const entry of turn.intermediate) {
-        const itemNode = this.createTurnEntryNode(entry, { roleClassOverride: entry.role || "system", intermediate: true });
+        const includeToggle = entry && entry.rawType === "task_complete" && turn.hasIntermediate === true;
+        const itemNode = this.createTurnEntryNode(entry, {
+          roleClassOverride: entry.role || "system",
+          intermediate: true,
+          includeToggle
+        });
+        if (includeToggle && itemNode.toggle) {
+          completionToggle = itemNode.toggle;
+        }
         intermediateWrap.appendChild(itemNode.card);
       }
       if (turn.hasIntermediate === true && turn.intermediate.length === 0) {
@@ -524,12 +533,15 @@
       this.turnNodeById.set(turn.turnId, {
         turn,
         container,
-        toggle: userNode.toggle,
+        toggles: [userNode.toggle, completionToggle].filter((x) => !!x),
         intermediateWrap
       });
 
-      if (userNode.toggle) {
-        userNode.toggle.addEventListener("click", () => {
+      const bindTurnToggle = (toggle) => {
+        if (!toggle) {
+          return;
+        }
+        toggle.addEventListener("click", () => {
           const collapsed = this.isTurnCollapsed(turn);
           const nextCollapsed = !collapsed;
           this.turnCollapsedById.set(turn.turnId, nextCollapsed);
@@ -542,6 +554,9 @@
           }
           this.refreshTurnVisibility();
         });
+      };
+      for (const toggle of [userNode.toggle, completionToggle]) {
+        bindTurnToggle(toggle);
       }
     }
 
@@ -567,10 +582,14 @@
         const collapsed = this.isTurnCollapsed(turn);
         node.intermediateWrap.classList.toggle("watcher-view-hidden", collapsed);
 
-        if (node.toggle) {
-          node.toggle.textContent = collapsed ? "[+]" : "[-]";
-          node.toggle.title = collapsed ? "Expand turn details" : "Collapse turn details";
-          node.toggle.setAttribute("aria-label", node.toggle.title);
+        const toggles = Array.isArray(node.toggles) ? node.toggles : [];
+        for (const toggle of toggles) {
+          if (!toggle) {
+            continue;
+          }
+          toggle.textContent = collapsed ? "[+]" : "[-]";
+          toggle.title = collapsed ? "Expand turn details" : "Collapse turn details";
+          toggle.setAttribute("aria-label", toggle.title);
         }
       }
     }
@@ -605,10 +624,19 @@
         time.className = "watcher-inline-time";
         time.textContent = this.formatTime(entry.timestamp);
 
+        let toggle = null;
+        if (options.includeToggle === true) {
+          toggle = document.createElement("button");
+          toggle.type = "button";
+          toggle.className = "watcher-turn-toggle watcher-task-toggle";
+          toggle.textContent = "[-]";
+          row.appendChild(toggle);
+        }
+
         row.appendChild(title);
         row.appendChild(text);
         row.appendChild(time);
-        return { card: row, toggle: null };
+        return { card: row, toggle };
       }
 
       const roleClass = options.roleClassOverride || entry.role || "system";
