@@ -72,6 +72,8 @@ let turnActivityTickTimer = null;
 let turnStartedAtBySession = new Map(); // sessionId -> epoch ms when running turn started
 let turnStartGraceUntilBySession = new Map(); // sessionId -> epoch ms while waiting for turn_start confirmation
 let lastReasoningByThread = new Map(); // threadId -> latest reasoning summary
+let awaitingFreshReasoningBySession = new Map(); // sessionId -> true while waiting for first new-turn reasoning
+let reasoningBaselineBySession = new Map(); // sessionId -> reasoning text seen when turn started
 let jumpCollapseMode = false;
 let conversationMetaMenuOpen = false;
 let sessionThreadCopyResetTimer = null;
@@ -599,8 +601,18 @@ function updateTurnActivityStrip() {
 
   const threadId = normalizeThreadId(getActiveSessionState()?.threadId || "");
   const reasoning = threadId ? normalizeReasoningSummary(lastReasoningByThread.get(threadId) || "") : "";
+  let displayReasoning = reasoning;
+  if (awaitingFreshReasoningBySession.get(sessionId) === true) {
+    const baseline = normalizeReasoningSummary(reasoningBaselineBySession.get(sessionId) || "");
+    if (displayReasoning && displayReasoning !== baseline) {
+      awaitingFreshReasoningBySession.delete(sessionId);
+      reasoningBaselineBySession.delete(sessionId);
+    } else {
+      displayReasoning = "";
+    }
+  }
   const promptPreview = trimPendingPromptPreview(lastSentPromptBySession.get(sessionId) || "");
-  turnActivityReasoning.textContent = reasoning || (promptPreview ? `Prompt sent: ${promptPreview}` : "Waiting for reasoning update...");
+  turnActivityReasoning.textContent = displayReasoning || (promptPreview ? `Prompt sent: ${promptPreview}` : "Waiting for reasoning update...");
   turnActivityStrip.classList.remove("hidden");
   turnActivityStrip.classList.add("running");
 }
@@ -4572,12 +4584,17 @@ function setTurnInFlight(sessionId, value) {
       if (!turnStartedAtBySession.has(sessionId)) {
         turnStartedAtBySession.set(sessionId, Date.now());
       }
+      const baselineReasoning = threadId ? normalizeReasoningSummary(lastReasoningByThread.get(threadId) || "") : "";
+      reasoningBaselineBySession.set(sessionId, baselineReasoning);
+      awaitingFreshReasoningBySession.set(sessionId, true);
       if (threadId) {
         lastReasoningByThread.delete(threadId);
       }
     } else {
       turnStartedAtBySession.delete(sessionId);
       setTurnStartGrace(sessionId, false);
+      awaitingFreshReasoningBySession.delete(sessionId);
+      reasoningBaselineBySession.delete(sessionId);
     }
 
     renderProjectSidebar();
