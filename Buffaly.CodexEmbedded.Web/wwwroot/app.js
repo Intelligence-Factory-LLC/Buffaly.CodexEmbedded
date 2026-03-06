@@ -22,6 +22,7 @@ let recoveryOfferModalSessionId = null;
 let turnInFlightBySession = new Map(); // sessionId -> boolean
 let lastSentPromptBySession = new Map(); // sessionId -> string
 let promptDraftByKey = new Map(); // "thread:<threadId>" | "__global__" -> text
+let promptDraftImagesByKey = new Map(); // "thread:<threadId>" | "__global__" -> unsent composer images
 let pendingComposerImages = [];
 let nextComposerImageId = 1;
 let selectedProjectKey = null;
@@ -1291,6 +1292,7 @@ function getCurrentPromptDraftKey() {
 
 function loadPromptDraftState() {
   promptDraftByKey = new Map();
+  promptDraftImagesByKey = new Map();
   const raw = safeJsonParse(localStorage.getItem(STORAGE_PROMPT_DRAFTS_KEY), {});
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return;
@@ -1328,6 +1330,33 @@ function persistPromptDraftState() {
   localStorage.setItem(STORAGE_PROMPT_DRAFTS_KEY, JSON.stringify(payload));
 }
 
+function normalizePromptDraftImages(images, options = {}) {
+  const assignIds = options.assignIds === true;
+  return collectValidTurnImages(images)
+    .slice(0, MAX_COMPOSER_IMAGES)
+    .map((x) => ({
+      id: assignIds ? nextComposerImageId++ : Number(x.id || 0),
+      name: x.name || "image",
+      mimeType: x.mimeType || "image/*",
+      size: typeof x.size === "number" ? x.size : 0,
+      url: x.url
+    }));
+}
+
+function rememberPromptDraftImagesForKey(key, images) {
+  const normalizedKey = typeof key === "string" ? key.trim() : "";
+  if (!normalizedKey) {
+    return;
+  }
+
+  const normalizedImages = normalizePromptDraftImages(images);
+  if (normalizedImages.length > 0) {
+    promptDraftImagesByKey.set(normalizedKey, normalizedImages);
+  } else {
+    promptDraftImagesByKey.delete(normalizedKey);
+  }
+}
+
 function rememberPromptDraftForKey(key, text) {
   const normalizedKey = typeof key === "string" ? key.trim() : "";
   if (!normalizedKey) {
@@ -1347,12 +1376,16 @@ function rememberPromptDraftForState(state) {
     return;
   }
 
-  rememberPromptDraftForKey(getPromptDraftKeyForState(state), promptInput.value);
+  const key = getPromptDraftKeyForState(state);
+  rememberPromptDraftForKey(key, promptInput.value);
+  rememberPromptDraftImagesForKey(key, pendingComposerImages);
   persistPromptDraftState();
 }
 
 function clearCurrentPromptDraft() {
-  rememberPromptDraftForKey(getCurrentPromptDraftKey(), "");
+  const key = getCurrentPromptDraftKey();
+  rememberPromptDraftForKey(key, "");
+  rememberPromptDraftImagesForKey(key, []);
   persistPromptDraftState();
 }
 
@@ -1375,6 +1408,16 @@ function restorePromptDraftForActiveSession(options = {}) {
   if (promptInput.value !== normalized) {
     promptInput.value = normalized;
   }
+
+  let nextImages = promptDraftImagesByKey.get(key);
+  if ((!Array.isArray(nextImages) || nextImages.length === 0)
+      && includeGlobalFallback
+      && key !== GLOBAL_PROMPT_DRAFT_KEY) {
+    nextImages = promptDraftImagesByKey.get(GLOBAL_PROMPT_DRAFT_KEY);
+  }
+
+  pendingComposerImages = normalizePromptDraftImages(nextImages || [], { assignIds: true });
+  renderComposerImages();
 }
 
 function normalizeQueuedTurnSummaryList(list) {
@@ -4098,6 +4141,7 @@ function renderComposerImages() {
     removeBtn.addEventListener("click", () => {
       pendingComposerImages = pendingComposerImages.filter((x) => x.id !== image.id);
       renderComposerImages();
+      rememberPromptDraftForState(getActiveSessionState());
     });
     pill.appendChild(removeBtn);
 
@@ -4573,6 +4617,7 @@ async function addComposerFiles(filesLike) {
   }
 
   renderComposerImages();
+  rememberPromptDraftForState(getActiveSessionState());
 }
 
 function initializeScribeControl() {
@@ -5032,18 +5077,10 @@ function removeQueuedPrompt(sessionId, queueItemId) {
 
 function restoreQueuedPromptForEditing(text, images = []) {
   promptInput.value = String(text || "");
-  rememberPromptDraftForState(getActiveSessionState());
 
-  pendingComposerImages = collectValidTurnImages(images)
-    .slice(0, MAX_COMPOSER_IMAGES)
-    .map((x) => ({
-    id: nextComposerImageId++,
-    name: x.name || "image",
-    mimeType: x.mimeType || "image/*",
-    size: typeof x.size === "number" ? x.size : 0,
-    url: x.url
-  }));
+  pendingComposerImages = normalizePromptDraftImages(images, { assignIds: true });
   renderComposerImages();
+  rememberPromptDraftForState(getActiveSessionState());
 
   promptInput.focus();
   promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
