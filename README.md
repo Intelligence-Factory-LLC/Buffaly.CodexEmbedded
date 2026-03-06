@@ -26,7 +26,7 @@ This is the fastest path on Windows:
 
 - [Install Codex CLI on Windows](https://help.openai.com/en/articles/11096431)
 - [Download the latest Windows installer](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/releases/latest)
-- [Read the latest release notes](docs/release-notes-2026-03-01.md)
+- [Read the latest release notes](docs/release-notes-2026-03-06.md)
 
 Requires: Codex CLI installed and signed in.
 
@@ -54,6 +54,32 @@ That is all most users need. Sessions started from the CLI or the web UI will ap
 For advanced portable, CLI, or source-based setup, see [Advanced Install, CLI, and Source Options](#-advanced-install-cli-and-source-options).
 For install issues, see [Troubleshooting](#troubleshooting).
 
+## ✨ What's New in the Latest Release
+
+### Visual Studio stays in the loop
+
+The workspace now works much more naturally with Visual Studio. You can see bridge status, pull selected code directly into a prompt, and send build errors back to Codex without manually copying text between tools.
+
+![Visual Studio bridge connected inside the workspace](screenshots/visual-studio-bridge-1.png)
+
+![Selected editor text ready to include in a prompt](screenshots/visual-studio-selected-text.png)
+
+![Build errors ready to send back to Codex for a fix](screenshots/visual-studio-fix-build-errors.png)
+
+### New 5.4 model availability
+
+Model selection is easier to trust because the workspace surfaces newer model options directly in the picker, including the new 5.4 option when it is available in your runtime.
+
+![New model availability surfaced directly in the model picker](screenshots/model-5.4-available.png)
+
+### See diffs and give feedback from the workspace
+
+You can now review working tree diffs, inspect what changed, and steer the next step without leaving the workspace. That makes it much easier to guide Codex through cleanup, review, and follow-up edits while the context is still fresh.
+
+![Working tree diff view inside the Codex workspace](screenshots/diff-working-tree.png)
+
+![Inline feedback flow for guiding the next change](screenshots/diff-feedback-1.png)
+
 ### 📸 See It In Action
 
 Use the UI in your browser to manage all of your codex session, even those started by the CLI. Start a session in the terminal, then watch it appear in the web UI with full context and timeline.
@@ -64,9 +90,10 @@ Or start a session in the web UI and manage it from any browser. Use Tailscale t
 ## Release Notes
 
 Start here:
-- [Latest release notes - March 1, 2026](docs/release-notes-2026-03-01.md)
+- [Latest release notes - March 6, 2026](docs/release-notes-2026-03-06.md)
 
 Recent releases:
+- [Release Notes - March 1, 2026](docs/release-notes-2026-03-01.md)
 - [Release Notes - February 23, 2026](docs/release-notes-2026-02-23.md)
 - [Release Notes - February 25, 2026](docs/release-notes-2026-02-25.md)
 - [Release Notes - February 27, 2026](docs/release-notes-2026-02-27.md)
