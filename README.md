@@ -15,11 +15,44 @@ Run the official Codex agent in a beautiful browser UI - on your desktop, from y
 Run the official Codex agent in a clean browser interface on your desktop, from your phone, or right next to the CLI.
 
 You get:
-- Multiple projects open at once (no more switching bewteen terminals)
+- Multiple projects open at once (no more switching between terminals)
 - Natural editing, image paste, and full history
 - Seamless switching between desktop, web, and phone
 - Same powerful Codex agent under the hood
 
+## ⚡ Quick Start
+
+This is the fastest path on Windows:
+
+- [Install Codex CLI on Windows](https://help.openai.com/en/articles/11096431)
+- [Download the latest Windows installer](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/releases/latest)
+- [Read the latest release notes](docs/release-notes-2026-03-01.md)
+
+Requires: Codex CLI installed and signed in.
+
+1. Install Codex CLI and verify it works:
+
+```powershell
+codex --version
+codex login
+```
+
+2. Open the latest release and download the `.msi` asset named `Buffaly.CodexEmbedded-win-x64-<version>.msi`.
+3. Run the installer.
+4. Launch `Buffaly Codex Embedded` from the Start Menu shortcut created by the installer.
+
+Optional terminal launch:
+
+```powershell
+buffaly-codex-web
+```
+
+The installer adds `buffaly-codex` and `buffaly-codex-web` to your PATH, creates a Start Menu shortcut, and launches or reuses the local web server when you open the app.
+
+That is all most users need. Sessions started from the CLI or the web UI will appear in the same app.
+
+For advanced portable, CLI, or source-based setup, see [Advanced Install, CLI, and Source Options](#-advanced-install-cli-and-source-options).
+For install issues, see [Troubleshooting](#troubleshooting).
 
 ### 📸 See It In Action
 
@@ -30,48 +63,21 @@ Or start a session in the web UI and manage it from any browser. Use Tailscale t
 
 ## Release Notes
 
+Start here:
+- [Latest release notes - March 1, 2026](docs/release-notes-2026-03-01.md)
+
+Recent releases:
 - [Release Notes - February 23, 2026](docs/release-notes-2026-02-23.md)
 - [Release Notes - February 25, 2026](docs/release-notes-2026-02-25.md)
 - [Release Notes - February 27, 2026](docs/release-notes-2026-02-27.md)
-- [Release Notes - March 1, 2026](docs/release-notes-2026-03-01.md)
-
-## ⚡ Quick Start
-
-Download:
-- [Download latest release](https://github.com/Intelligence-Factory-LLC/Buffaly.CodexEmbedded/releases/latest)
-
-PRE: Make sure you have the Codex CLI installed and authenticated, and that `codex --version` works in your terminal.
-
-1. Install Codex CLI and verify it works:
-
-```powershell
-codex --version
-codex login
-```
-
-2. Download the latest `.msi` from the release assets (recommended).
-3. Run the installer.
-4. Launch `Buffaly Codex Embedded` from the Start Menu icon created by the installer.
-5. Or open a new terminal and run:
-
-```powershell
-buffaly-codex-web
-```
-
-`buffaly-codex-web` opens your browser automatically, reuses an already-running local server if one exists, and otherwise starts the server then opens the UI when ready.
-
-That's it. The server will start listening for sessions started by the CLI or the web UI, and you can manage them from either interface.
-
-For advanced portable or source-based setup, see [Detailed Install and Run Options](#-detailed-install-and-run-options).
-For install issues, see [Troubleshooting](#troubleshooting).
 
 ## ✨ Major Features
 
 The application is designed to mirror the Desktop Codex experience while also making the same experience available on mobile. Core features include:
 
-### 1. Multi-project / mulit-session management
+### 1. Multi-project / multi-session management
 
-The project side bar lets you organize your Codex tasks by working directory and sessions. The same session names you use 
+The project sidebar lets you organize your Codex tasks by working directory and sessions. The same session names you use
 in the CLI appear in the sidebar, and you can have multiple sessions open at once without losing context.
 
 ![Multi-project workspace with sidebar and active conversation](screenshots/multi-project.png)
@@ -103,7 +109,7 @@ Image context is carried into the message so Codex can use it immediately.
 
 ### 3. Persistent timeline and context continuity
 
-Every session keeps a readable timeline so you can resume old work without terminal scrollback hunting. C
+Every session keeps a readable timeline so you can resume old work without terminal scrollback hunting.
 
 State stays visible, including what ran, what failed, what changed, and what to do next.
 
@@ -166,7 +172,7 @@ We built this tool because we use this tool.
 
 **Same official Codex agent. Easier developer experience.**
 
-## 🚀 Detailed Install and Run Options
+## 🚀 Advanced Install, CLI, and Source Options
 
 ### 1. Prerequisites
 
@@ -182,7 +188,7 @@ codex --version
 
 ### 2. Install using the MSI (recommended)
 
-1. Open the latest GitHub Release and download the `.msi` asset.
+1. Open the latest GitHub Release and download the `.msi` asset named `Buffaly.CodexEmbedded-win-x64-<version>.msi`.
 2. Run the installer.
 3. Open a new terminal so updated PATH is loaded.
 
