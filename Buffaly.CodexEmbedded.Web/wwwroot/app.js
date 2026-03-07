@@ -87,6 +87,8 @@ let vsSelectionSnapshot = null; // { filePath, fileName, selectionText, caretLin
 let consumedVsSelectionSignature = "";
 let vsSelectionPollTimer = null;
 let vsSelectionPollInFlight = false;
+let timelineSelectionSnapshot = null; // { threadId, selectionText, selectedAtMs }
+let consumedTimelineSelectionSignature = "";
 let pendingBuildFixClip = null; // { signature, state, errors, warnings, errorCount }
 let dismissedBuildFixSignature = "";
 let buildFixPollTimer = null;
@@ -120,6 +122,7 @@ const APP_SERVER_ERROR_BANNER_MS = 45000;
 const MODELS_LIST_MIN_INTERVAL_MS = 4000;
 const VS_SELECTION_POLL_INTERVAL_MS = 1500;
 const VS_SELECTION_MAX_PROMPT_CHARS = 4000;
+const TIMELINE_SELECTION_MAX_PROMPT_CHARS = 4000;
 const BUILD_FIX_POLL_INTERVAL_MS = 2000;
 const BUILD_FIX_MAX_CHARS = 12000;
 const OPENAI_KEY_STATUS_CACHE_MS = 15000;
@@ -179,6 +182,7 @@ const scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
 const contextLeftIndicator = document.getElementById("contextLeftIndicator");
 const permissionLevelIndicator = document.getElementById("permissionLevelIndicator");
 const composerImages = document.getElementById("composerImages");
+const promptTimelineSelectionIndicator = document.getElementById("promptTimelineSelectionIndicator");
 const promptSelectionIndicator = document.getElementById("promptSelectionIndicator");
 const promptBuildFixIndicator = document.getElementById("promptBuildFixIndicator");
 const imageUploadInput = document.getElementById("imageUploadInput");
@@ -4181,6 +4185,208 @@ function renderComposerImages() {
   composerImages.classList.remove("hidden");
 }
 
+function getTimelineSelectionSignature(snapshot) {
+  if (!snapshot) {
+    return "";
+  }
+
+  return [
+    String(snapshot.threadId || "").trim(),
+    String(snapshot.selectionText || "")
+  ].join("||");
+}
+
+function getCurrentTimelineSelectionSnapshot() {
+  if (!chatMessages || typeof window === "undefined" || typeof window.getSelection !== "function") {
+    return null;
+  }
+
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    return null;
+  }
+
+  const selectedText = String(selection || "");
+  if (!selectedText.trim()) {
+    return null;
+  }
+
+  const anchorNode = selection.anchorNode;
+  const focusNode = selection.focusNode;
+  if ((anchorNode && !chatMessages.contains(anchorNode)) || (focusNode && !chatMessages.contains(focusNode))) {
+    return null;
+  }
+
+  const range = selection.getRangeAt(0);
+  const ancestor = range && range.commonAncestorContainer
+    ? range.commonAncestorContainer
+    : null;
+  if (ancestor && !chatMessages.contains(ancestor)) {
+    return null;
+  }
+
+  return {
+    threadId: getActiveThreadId(),
+    selectionText: selectedText,
+    selectedAtMs: Date.now()
+  };
+}
+
+function renderTimelineSelectionIndicator() {
+  if (!promptTimelineSelectionIndicator) {
+    return;
+  }
+
+  const activeThreadId = getActiveThreadId();
+  const snapshot = timelineSelectionSnapshot;
+  if (!snapshot || !activeThreadId || String(snapshot.threadId || "").trim() !== activeThreadId) {
+    promptTimelineSelectionIndicator.textContent = "";
+    promptTimelineSelectionIndicator.classList.add("hidden");
+    return;
+  }
+
+  const signature = getTimelineSelectionSignature(snapshot);
+  if (signature && signature === consumedTimelineSelectionSignature) {
+    promptTimelineSelectionIndicator.textContent = "";
+    promptTimelineSelectionIndicator.classList.add("hidden");
+    return;
+  }
+
+  const chars = String(snapshot.selectionText || "").length;
+  const previewLines = String(snapshot.selectionText || "")
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(0, 2);
+  const previewText = previewLines.length > 0
+    ? previewLines.join(" ")
+    : "(selection is empty)";
+
+  const header = document.createElement("div");
+  header.className = "header";
+  const label = document.createElement("span");
+  label.className = "file";
+  label.textContent = "Timeline selection";
+  header.appendChild(label);
+
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = ` ${chars} chars`;
+  header.appendChild(meta);
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "dismiss";
+  dismiss.title = "Dismiss selected timeline context";
+  dismiss.setAttribute("aria-label", "Dismiss selected timeline context");
+  dismiss.textContent = "\u00D7";
+  dismiss.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    consumedTimelineSelectionSignature = signature;
+    renderTimelineSelectionIndicator();
+  });
+  header.appendChild(dismiss);
+
+  const preview = document.createElement("div");
+  preview.className = "preview";
+  preview.textContent = previewText;
+
+  promptTimelineSelectionIndicator.textContent = "";
+  promptTimelineSelectionIndicator.appendChild(header);
+  promptTimelineSelectionIndicator.appendChild(preview);
+  promptTimelineSelectionIndicator.classList.remove("hidden");
+}
+
+function refreshTimelineSelectionSnapshot(options = {}) {
+  const clearWhenNoSelection = options.clearWhenNoSelection === true;
+  const force = options.force === true;
+  const next = getCurrentTimelineSelectionSnapshot();
+  const activeThreadId = getActiveThreadId();
+
+  if (timelineSelectionSnapshot && String(timelineSelectionSnapshot.threadId || "").trim() !== activeThreadId) {
+    timelineSelectionSnapshot = null;
+    renderTimelineSelectionIndicator();
+    return null;
+  }
+
+  if (!next) {
+    if (clearWhenNoSelection && timelineSelectionSnapshot !== null) {
+      timelineSelectionSnapshot = null;
+      renderTimelineSelectionIndicator();
+    } else if (force) {
+      renderTimelineSelectionIndicator();
+    }
+    return timelineSelectionSnapshot;
+  }
+
+  const previousSignature = getTimelineSelectionSignature(timelineSelectionSnapshot);
+  const nextSignature = getTimelineSelectionSignature(next);
+  const changed = previousSignature !== nextSignature;
+  timelineSelectionSnapshot = next;
+  if (changed || force) {
+    renderTimelineSelectionIndicator();
+  }
+  return timelineSelectionSnapshot;
+}
+
+function formatTimelineSelectionContextForPrompt(snapshot) {
+  if (!snapshot) {
+    return "";
+  }
+
+  const activeThreadId = getActiveThreadId();
+  const snapshotThreadId = String(snapshot.threadId || "").trim();
+  if (!activeThreadId || snapshotThreadId !== activeThreadId) {
+    return "";
+  }
+
+  const text = String(snapshot.selectionText || "");
+  if (!text.trim()) {
+    return "";
+  }
+
+  const truncated = text.length > TIMELINE_SELECTION_MAX_PROMPT_CHARS
+    ? `${text.slice(0, TIMELINE_SELECTION_MAX_PROMPT_CHARS)}\n...[selection truncated]...`
+    : text;
+
+  return [
+    "",
+    "[Timeline selection context]",
+    `Thread: ${snapshotThreadId}`,
+    "Selected timeline text:",
+    "```",
+    truncated,
+    "```"
+  ].join("\n");
+}
+
+function composePromptWithTimelineSelection(promptText) {
+  const base = String(promptText || "");
+  if (!base.trim()) {
+    return { prompt: base, includedSelection: false };
+  }
+
+  const snapshot = timelineSelectionSnapshot;
+  const signature = getTimelineSelectionSignature(snapshot);
+  if (signature && signature === consumedTimelineSelectionSignature) {
+    return { prompt: base, includedSelection: false };
+  }
+
+  const contextBlock = formatTimelineSelectionContextForPrompt(snapshot);
+  if (!contextBlock) {
+    return { prompt: base, includedSelection: false };
+  }
+
+  return {
+    prompt: `${base}\n${contextBlock}`,
+    includedSelection: true,
+    selection: snapshot,
+    selectionSignature: signature
+  };
+}
+
 function getVsBridgeCommands() {
   const bridge = window.__vsBridge || window.devAgentBridge;
   if (!bridge || !bridge.commands || typeof bridge.commands.getContext !== "function") {
@@ -5801,6 +6007,7 @@ function setActiveSession(sessionId, options = {}) {
 
   syncSessionRecoveryModal();
   requestModelsListForSession(sessionId);
+  renderTimelineSelectionIndicator();
   updateScrollToBottomButton();
 }
 
@@ -5822,6 +6029,8 @@ function clearActiveSession() {
   timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
   timeline.clear();
   timelineHasTruncatedHead = false;
+  timelineSelectionSnapshot = null;
+  renderTimelineSelectionIndicator();
   updateTimelineTruncationNotice();
   renderProjectSidebar();
   closeSessionRecoveryModal();
@@ -8155,6 +8364,15 @@ if (chatMessages) {
   chatMessages.addEventListener("codex:timeline-updated", () => {
     updateScrollToBottomButton();
     updateTimelineTruncationNotice();
+    refreshTimelineSelectionSnapshot({ force: true });
+  });
+
+  chatMessages.addEventListener("mouseup", () => {
+    refreshTimelineSelectionSnapshot({ force: true });
+  });
+
+  chatMessages.addEventListener("keyup", () => {
+    refreshTimelineSelectionSnapshot({ force: true });
   });
 
   chatMessages.addEventListener("codex:turn-detail-request", (event) => {
@@ -8391,9 +8609,14 @@ async function queueCurrentComposerPrompt() {
     return true;
   }
 
-  const composed = await composePromptWithVsSelection(prompt);
+  const timelineComposed = composePromptWithTimelineSelection(prompt);
+  const composed = await composePromptWithVsSelection(timelineComposed.prompt);
   const withBuildFix = composePromptWithBuildFix(composed.prompt);
   const promptWithDiffNotes = appendDiffNotesToPrompt(withBuildFix.prompt);
+  if (timelineComposed.includedSelection && timelineComposed.selection) {
+    appendLog(
+      `[timeline] included selected timeline text (${timelineComposed.selection.selectionText.length} chars)`);
+  }
   if (composed.includedSelection && composed.selection) {
     appendLog(
       `[bridge] included VS selection from ${composed.selection.fileName || composed.selection.filePath} (${composed.selection.selectionText.length} chars)`);
@@ -8406,6 +8629,10 @@ async function queueCurrentComposerPrompt() {
   if (!queued) {
     appendLog(`[queue] failed to queue prompt for session=${activeSessionId}`);
     return true;
+  }
+  if (timelineComposed.includedSelection && timelineComposed.selectionSignature) {
+    consumedTimelineSelectionSignature = timelineComposed.selectionSignature;
+    renderTimelineSelectionIndicator();
   }
   if (composed.includedSelection && composed.selectionSignature) {
     consumedVsSelectionSignature = composed.selectionSignature;
@@ -8493,9 +8720,14 @@ promptForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  const composed = await composePromptWithVsSelection(prompt);
+  const timelineComposed = composePromptWithTimelineSelection(prompt);
+  const composed = await composePromptWithVsSelection(timelineComposed.prompt);
   const withBuildFix = composePromptWithBuildFix(composed.prompt);
   const promptWithDiffNotes = appendDiffNotesToPrompt(withBuildFix.prompt);
+  if (timelineComposed.includedSelection && timelineComposed.selection) {
+    appendLog(
+      `[timeline] included selected timeline text (${timelineComposed.selection.selectionText.length} chars)`);
+  }
   if (composed.includedSelection && composed.selection) {
     appendLog(
       `[bridge] included VS selection from ${composed.selection.fileName || composed.selection.filePath} (${composed.selection.selectionText.length} chars)`);
@@ -8511,6 +8743,10 @@ promptForm.addEventListener("submit", async (event) => {
       if (!queued) {
         appendLog(`[queue] failed to queue prompt for session=${activeSessionId}`);
         return;
+      }
+      if (timelineComposed.includedSelection && timelineComposed.selectionSignature) {
+        consumedTimelineSelectionSignature = timelineComposed.selectionSignature;
+        renderTimelineSelectionIndicator();
       }
       if (composed.includedSelection && composed.selectionSignature) {
         consumedVsSelectionSignature = composed.selectionSignature;
@@ -8528,6 +8764,10 @@ promptForm.addEventListener("submit", async (event) => {
         appendLog(`[turn] failed to steer prompt for session=${activeSessionId}`);
         return;
       }
+      if (timelineComposed.includedSelection && timelineComposed.selectionSignature) {
+        consumedTimelineSelectionSignature = timelineComposed.selectionSignature;
+        renderTimelineSelectionIndicator();
+      }
       if (composed.includedSelection && composed.selectionSignature) {
         consumedVsSelectionSignature = composed.selectionSignature;
         renderVsSelectionIndicator();
@@ -8544,6 +8784,10 @@ promptForm.addEventListener("submit", async (event) => {
     if (!started) {
       appendLog(`[turn] failed to send prompt for session=${activeSessionId}`);
       return;
+    }
+    if (timelineComposed.includedSelection && timelineComposed.selectionSignature) {
+      consumedTimelineSelectionSignature = timelineComposed.selectionSignature;
+      renderTimelineSelectionIndicator();
     }
     if (composed.includedSelection && composed.selectionSignature) {
       consumedVsSelectionSignature = composed.selectionSignature;
@@ -8653,6 +8897,10 @@ if (connectionReconnectBtn) {
     reconnectWebSocketNow().catch((error) => appendLog(`[ws] reconnect button failed: ${error}`));
   });
 }
+
+document.addEventListener("selectionchange", () => {
+  refreshTimelineSelectionSnapshot();
+});
 
 if (appServerErrorDismissBtn) {
   appServerErrorDismissBtn.addEventListener("click", () => {
@@ -8797,6 +9045,7 @@ document.addEventListener("visibilitychange", () => {
 applySavedUiSettings();
 refreshPromptInputHeight({ reset: promptInput.value.length === 0 });
 renderComposerImages();
+renderTimelineSelectionIndicator();
 renderVsSelectionIndicator();
 startVsSelectionPolling();
 renderBuildFixIndicator();

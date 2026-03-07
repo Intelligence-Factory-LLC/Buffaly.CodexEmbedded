@@ -2422,6 +2422,69 @@ body {
 	padding: 0.08rem 0.5rem;
 }
 
+.prompt-timeline-selection-indicator {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 0.5rem;
+	margin: 0.5rem 0.75rem 0;
+	padding: 0.45rem 0.65rem;
+	border: 1px solid #99f6e4;
+	border-radius: 10px;
+	background: #ecfeff;
+	color: #155e75;
+	font-size: 0.82rem;
+	line-height: 1.3;
+}
+
+.prompt-timeline-selection-indicator .header {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+}
+
+.prompt-timeline-selection-indicator .file {
+	font-weight: 700;
+}
+
+.prompt-timeline-selection-indicator .meta {
+	opacity: 0.95;
+	white-space: nowrap;
+}
+
+.prompt-timeline-selection-indicator .dismiss {
+	margin-left: auto;
+	width: 1.15rem;
+	height: 1.15rem;
+	min-width: 1.15rem;
+	padding: 0;
+	border: 1px solid #67e8f9;
+	border-radius: 999px;
+	background: #cffafe;
+	color: #155e75;
+	font-size: 0.82rem;
+	line-height: 1;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+}
+
+.prompt-timeline-selection-indicator .dismiss:hover {
+	background: #a5f3fc;
+	border-color: #22d3ee;
+}
+
+.prompt-timeline-selection-indicator .preview {
+	font-family: "Consolas", "Courier New", monospace;
+	font-size: 0.76rem;
+	color: #0e7490;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	max-width: 100%;
+}
+
 .prompt-selection-indicator {
 	display: flex;
 	flex-direction: column;
@@ -4530,6 +4593,26 @@ html[data-theme="dark"] .recap-timeline-column {
 
 html[data-theme="dark"] .prompt-form {
 	border-top-color: #334155;
+}
+
+html[data-theme="dark"] .prompt-timeline-selection-indicator {
+	background: #082f38;
+	border-color: #0e7490;
+	color: #a5f3fc;
+}
+
+html[data-theme="dark"] .prompt-timeline-selection-indicator .preview {
+	color: #67e8f9;
+}
+
+html[data-theme="dark"] .prompt-timeline-selection-indicator .dismiss {
+	background: #0c4a5a;
+	border-color: #06b6d4;
+	color: #cffafe;
+}
+
+html[data-theme="dark"] .prompt-timeline-selection-indicator .dismiss:hover {
+	background: #0e7490;
 }
 
 html[data-theme="dark"] .prompt-selection-indicator {
