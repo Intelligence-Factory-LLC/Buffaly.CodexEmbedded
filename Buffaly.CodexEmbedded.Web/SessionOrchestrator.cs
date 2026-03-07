@@ -4918,11 +4918,37 @@ internal sealed record SessionSnapshot(
 			}
 
 			var nowUtc = DateTimeOffset.UtcNow;
-			var pendingSummary = snapshot.PendingRequests.Count == 0
-				? "(none)"
-				: string.Join(
-					",",
-					snapshot.PendingRequests.Select(x => $"{x.Id}:{x.Method}:{Math.Round(x.AgeMs):0}ms"));
+			var pendingSummary = "(none)";
+			var pendingRequests = snapshot.PendingRequests;
+			if (pendingRequests is { Count: > 0 })
+			{
+				try
+				{
+					pendingSummary = string.Join(
+						",",
+						pendingRequests.Select(x =>
+						{
+							if (x is null)
+							{
+								return "(null-pending-request)";
+							}
+
+							var requestId = string.IsNullOrWhiteSpace(x.Id) ? "(missing-id)" : x.Id;
+							var requestMethod = string.IsNullOrWhiteSpace(x.Method) ? "(missing-method)" : x.Method;
+							var roundedAgeMs = Math.Round(x.AgeMs);
+							if (double.IsNaN(roundedAgeMs) || double.IsInfinity(roundedAgeMs))
+							{
+								roundedAgeMs = -1;
+							}
+
+							return $"{requestId}:{requestMethod}:{roundedAgeMs:0}ms";
+						}));
+				}
+				catch
+				{
+					pendingSummary = "(unavailable)";
+				}
+			}
 			var stdinIdleSec = snapshot.LastStdinWriteUtc.HasValue ? Math.Round((nowUtc - snapshot.LastStdinWriteUtc.Value).TotalSeconds) : -1;
 			var stdoutIdleSec = snapshot.LastStdoutReadUtc.HasValue ? Math.Round((nowUtc - snapshot.LastStdoutReadUtc.Value).TotalSeconds) : -1;
 			var stderrIdleSec = snapshot.LastStderrReadUtc.HasValue ? Math.Round((nowUtc - snapshot.LastStderrReadUtc.Value).TotalSeconds) : -1;
