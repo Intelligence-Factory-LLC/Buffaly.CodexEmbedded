@@ -2084,9 +2084,11 @@ body {
 	border: 1px solid #d1d5db;
 	border-radius: 18px;
 	min-height: 7.2rem;
+	max-height: 22.5rem;
 	background: #ffffff;
 	box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
-	resize: vertical;
+	resize: none;
+	overflow-y: hidden;
 	font: inherit;
 	line-height: 1.35;
 }
@@ -5322,7 +5324,7 @@ html[data-theme="dark"] .server-row-action-btn:hover {
 	.prompt-form textarea {
 		width: 100%;
 		min-height: 5.2rem;
-		max-height: 10rem;
+		max-height: 12rem;
 		padding: 0.5rem 0.62rem;
 	}
 

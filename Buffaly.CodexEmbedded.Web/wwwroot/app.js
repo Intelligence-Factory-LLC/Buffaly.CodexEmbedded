@@ -123,6 +123,8 @@ const VS_SELECTION_MAX_PROMPT_CHARS = 4000;
 const BUILD_FIX_POLL_INTERVAL_MS = 2000;
 const BUILD_FIX_MAX_CHARS = 12000;
 const OPENAI_KEY_STATUS_CACHE_MS = 15000;
+const PROMPT_INPUT_MAX_HEIGHT_DESKTOP_PX = 360;
+const PROMPT_INPUT_MAX_HEIGHT_MOBILE_PX = 192;
 const UI_AUDIT_OUTGOING_TYPES = new Set([
   "session_create",
   "session_attach",
@@ -1382,6 +1384,33 @@ function rememberPromptDraftForState(state) {
   persistPromptDraftState();
 }
 
+function getPromptInputMaxHeightPx() {
+  return isMobileViewport() ? PROMPT_INPUT_MAX_HEIGHT_MOBILE_PX : PROMPT_INPUT_MAX_HEIGHT_DESKTOP_PX;
+}
+
+function refreshPromptInputHeight(options = {}) {
+  if (!promptInput) {
+    return;
+  }
+
+  const reset = options.reset === true;
+  const maxHeightPx = getPromptInputMaxHeightPx();
+  promptInput.style.maxHeight = `${maxHeightPx}px`;
+
+  if (reset) {
+    promptInput.style.height = "";
+    promptInput.style.overflowY = "hidden";
+    return;
+  }
+
+  promptInput.style.height = "auto";
+  const scrollHeight = Math.max(0, promptInput.scrollHeight || 0);
+  if (scrollHeight > 0) {
+    promptInput.style.height = `${Math.min(scrollHeight, maxHeightPx)}px`;
+  }
+  promptInput.style.overflowY = scrollHeight > maxHeightPx ? "auto" : "hidden";
+}
+
 function clearCurrentPromptDraft() {
   const key = getCurrentPromptDraftKey();
   rememberPromptDraftForKey(key, "");
@@ -1408,6 +1437,7 @@ function restorePromptDraftForActiveSession(options = {}) {
   if (promptInput.value !== normalized) {
     promptInput.value = normalized;
   }
+  refreshPromptInputHeight({ reset: normalized.length === 0 });
 
   let nextImages = promptDraftImagesByKey.get(key);
   if ((!Array.isArray(nextImages) || nextImages.length === 0)
@@ -5077,6 +5107,7 @@ function removeQueuedPrompt(sessionId, queueItemId) {
 
 function restoreQueuedPromptForEditing(text, images = []) {
   promptInput.value = String(text || "");
+  refreshPromptInputHeight({ reset: promptInput.value.length === 0 });
 
   pendingComposerImages = normalizePromptDraftImages(images, { assignIds: true });
   renderComposerImages();
@@ -8193,6 +8224,7 @@ promptInput.addEventListener("paste", async (event) => {
 });
 
 promptInput.addEventListener("input", () => {
+  refreshPromptInputHeight({ reset: promptInput.value.length === 0 });
   rememberPromptDraftForState(getActiveSessionState());
   refreshVsSelectionSnapshot().catch(() => {});
 });
@@ -8386,6 +8418,7 @@ async function queueCurrentComposerPrompt() {
   }
 
   promptInput.value = "";
+  refreshPromptInputHeight({ reset: true });
   clearCurrentPromptDraft();
   clearComposerImages();
   resetPlanModeNextTurn();
@@ -8423,6 +8456,7 @@ promptForm.addEventListener("submit", async (event) => {
     if (prompt.localeCompare("cancel", undefined, { sensitivity: "accent" }) === 0) {
       cancelPendingToolUserInput();
       promptInput.value = "";
+      refreshPromptInputHeight({ reset: true });
       clearCurrentPromptDraft();
       clearComposerImages();
       return;
@@ -8438,6 +8472,7 @@ promptForm.addEventListener("submit", async (event) => {
 
   if (!pendingBuildFixClip && images.length === 0 && await tryHandleSlashCommand(prompt)) {
     promptInput.value = "";
+    refreshPromptInputHeight({ reset: true });
     clearCurrentPromptDraft();
     return;
   }
@@ -8522,6 +8557,7 @@ promptForm.addEventListener("submit", async (event) => {
   }
 
   promptInput.value = "";
+  refreshPromptInputHeight({ reset: true });
   clearCurrentPromptDraft();
   clearComposerImages();
   resetPlanModeNextTurn();
@@ -8560,6 +8596,7 @@ promptInput.addEventListener("keydown", (event) => {
 
     event.preventDefault();
     promptInput.value = lastSent;
+    refreshPromptInputHeight({ reset: false });
     promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
     rememberPromptDraftForState(getActiveSessionState());
     return;
@@ -8707,6 +8744,7 @@ window.addEventListener("resize", () => {
   if (!isMobileViewport()) {
     setMobileProjectsOpen(false);
   }
+  refreshPromptInputHeight({ reset: promptInput.value.length === 0 });
   updateMobileProjectsButton();
   updateConversationMetaVisibility();
   updateScrollToBottomButton();
@@ -8757,6 +8795,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 applySavedUiSettings();
+refreshPromptInputHeight({ reset: promptInput.value.length === 0 });
 renderComposerImages();
 renderVsSelectionIndicator();
 startVsSelectionPolling();
