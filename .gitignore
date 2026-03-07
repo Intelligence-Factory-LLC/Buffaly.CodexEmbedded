@@ -10,7 +10,8 @@ _web_run_stderr.log
 msbuild.binlog
 logs/
 Buffaly.CodexEmbedded.Web/reports/
-lib/
+lib/*
+!lib/BasicUtilities.dll
 working/
 .codex-runtime/
 codex-runtime/

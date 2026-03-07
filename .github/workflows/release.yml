@@ -40,6 +40,13 @@ jobs:
           }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
+      - name: Verify bundled BasicUtilities
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "lib/BasicUtilities.dll")) {
+            throw "Missing required dependency: lib/BasicUtilities.dll"
+          }
+
       - name: Build and test
         shell: pwsh
         run: ./scripts/release/build.ps1 -Configuration Release
