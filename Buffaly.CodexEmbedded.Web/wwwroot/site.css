@@ -806,7 +806,7 @@ body {
 }
 
 .layout.sidebar-collapsed .codex-main {
-	grid-template-columns: 56px 1fr;
+	grid-template-columns: 1fr;
 }
 
 .layout.sidebar-collapsed .sidebar-divider,
@@ -844,8 +844,9 @@ body {
 }
 
 .layout.sidebar-collapsed .session-sidebar {
-	width: 56px;
-	min-width: 56px;
+	display: none;
+	width: 0;
+	min-width: 0;
 }
 
 .getting-started-panel {
@@ -933,6 +934,17 @@ body {
 .conversation-title-row {
 	gap: 0.75rem;
 	align-items: center;
+}
+
+.conversation-title-main {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.45rem;
+	min-width: 0;
+}
+
+.conversation-sidebar-toggle-btn {
+	flex: 0 0 auto;
 }
 
 .conversation-jump-btn {
@@ -5090,6 +5102,10 @@ html[data-theme="dark"] .server-row-action-btn:hover {
 
 	.layout:not(.mobile-projects-open) .chat-panel > .panel-title.conversation-title-row {
 		padding-left: 4rem;
+	}
+
+	.conversation-sidebar-toggle-btn {
+		display: none;
 	}
 
 	.recap-controls {
