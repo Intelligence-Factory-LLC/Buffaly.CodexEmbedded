@@ -93,12 +93,15 @@ let pendingBuildFixClip = null; // { signature, state, errors, warnings, errorCo
 let dismissedBuildFixSignature = "";
 let buildFixPollTimer = null;
 let openAiKeyStatusCache = null; // { hasKey, checkedAtMs }
+let blockedAutoRestoreThreadId = "";
+let startupRestoreAttemptThreadId = "";
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
 const STORAGE_LAST_THREAD_ID_KEY = "codex-web-last-thread-id";
 const STORAGE_LAST_SESSION_ID_KEY = "codex-web-last-session-id";
 const STORAGE_PROMPT_DRAFTS_KEY = "codex-web-prompt-drafts-v1";
+const STORAGE_STARTUP_RESTORE_GUARD_KEY = "codex-web-startup-restore-guard-v1";
 const STORAGE_THREAD_MODELS_KEY = "codex-web-thread-models-v1";
 const STORAGE_THREAD_REASONING_KEY = "codex-web-thread-reasoning-v1";
 const STORAGE_THREAD_PERMISSIONS_KEY = "codex-web-thread-permissions-v1";
@@ -120,6 +123,8 @@ const WS_RECONNECT_BASE_DELAY_MS = 1000;
 const WS_RECONNECT_MAX_DELAY_MS = 15000;
 const APP_SERVER_ERROR_BANNER_MS = 45000;
 const MODELS_LIST_MIN_INTERVAL_MS = 4000;
+const STARTUP_RESTORE_GUARD_WINDOW_MS = 5 * 60 * 1000;
+const STARTUP_RESTORE_GUARD_MAX_ATTEMPTS = 2;
 const VS_SELECTION_POLL_INTERVAL_MS = 1500;
 const VS_SELECTION_MAX_PROMPT_CHARS = 4000;
 const TIMELINE_SELECTION_MAX_PROMPT_CHARS = 4000;
@@ -5453,8 +5458,76 @@ function getStoredLastSessionId() {
   return value && value.trim().length > 0 ? value.trim() : null;
 }
 
+function clearStoredLastSessionAndThread() {
+  localStorage.removeItem(STORAGE_LAST_THREAD_ID_KEY);
+  localStorage.removeItem(STORAGE_LAST_SESSION_ID_KEY);
+}
+
+function initializeStartupRestoreGuard() {
+  blockedAutoRestoreThreadId = "";
+  startupRestoreAttemptThreadId = "";
+
+  const storedThreadId = getStoredLastThreadId();
+  if (!storedThreadId) {
+    localStorage.removeItem(STORAGE_STARTUP_RESTORE_GUARD_KEY);
+    return;
+  }
+
+  const now = Date.now();
+  const existing = safeJsonParse(localStorage.getItem(STORAGE_STARTUP_RESTORE_GUARD_KEY), {});
+  const priorThreadId = normalizeThreadId(existing?.threadId || "");
+  const priorStartedAtMs = Number(existing?.startedAtMs || 0);
+  const priorAttempts = Number(existing?.attemptCount || 0);
+  const hasRecentPriorAttempt =
+    priorThreadId === storedThreadId &&
+    Number.isFinite(priorStartedAtMs) &&
+    priorStartedAtMs > 0 &&
+    (now - priorStartedAtMs) <= STARTUP_RESTORE_GUARD_WINDOW_MS;
+  const attemptCount = hasRecentPriorAttempt
+    ? Math.max(1, Math.floor(priorAttempts) + 1)
+    : 1;
+
+  localStorage.setItem(
+    STORAGE_STARTUP_RESTORE_GUARD_KEY,
+    JSON.stringify({
+      threadId: storedThreadId,
+      attemptCount,
+      startedAtMs: now
+    }));
+
+  if (attemptCount >= STARTUP_RESTORE_GUARD_MAX_ATTEMPTS) {
+    blockedAutoRestoreThreadId = storedThreadId;
+    clearStoredLastSessionAndThread();
+    localStorage.removeItem(STORAGE_STARTUP_RESTORE_GUARD_KEY);
+    return;
+  }
+
+  startupRestoreAttemptThreadId = storedThreadId;
+}
+
+function markStartupRestoreStable(threadId) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  if (!normalizedThreadId || !startupRestoreAttemptThreadId) {
+    return;
+  }
+
+  if (normalizedThreadId !== startupRestoreAttemptThreadId) {
+    return;
+  }
+
+  localStorage.removeItem(STORAGE_STARTUP_RESTORE_GUARD_KEY);
+  startupRestoreAttemptThreadId = "";
+}
+
 async function tryAutoAttachStoredThread() {
   if (autoAttachAttempted) {
+    return;
+  }
+
+  if (blockedAutoRestoreThreadId) {
+    autoAttachAttempted = true;
+    appendLog(
+      `[session] skipped auto-attach for unstable thread=${blockedAutoRestoreThreadId}; choose a thread manually from the sidebar`);
     return;
   }
 
@@ -5908,6 +5981,7 @@ async function pollTimelineOnce(initial, generation) {
       timelineHasTruncatedHead = true;
     }
     updateTimelineTruncationNotice();
+    markStartupRestoreStable(normalizedThreadId);
   } finally {
     timelinePollInFlight = false;
   }
@@ -9002,6 +9076,7 @@ window.addEventListener("resize", () => {
 window.addEventListener("beforeunload", () => {
   rememberPromptDraftForState(getActiveSessionState());
   clearWsReconnectTimer();
+  localStorage.removeItem(STORAGE_STARTUP_RESTORE_GUARD_KEY);
   if (vsSelectionPollTimer) {
     clearInterval(vsSelectionPollTimer);
     vsSelectionPollTimer = null;
@@ -9043,6 +9118,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 applySavedUiSettings();
+initializeStartupRestoreGuard();
 refreshPromptInputHeight({ reset: promptInput.value.length === 0 });
 renderComposerImages();
 renderTimelineSelectionIndicator();
