@@ -111,7 +111,6 @@ const STORAGE_ARCHIVED_THREADS_KEY = "codex-web-archived-threads";
 const STORAGE_SIDEBAR_COLLAPSED_KEY = "codex-web-sidebar-collapsed";
 const STORAGE_SIDEBAR_EXTRAS_EXPANDED_KEY = "codex-web-sidebar-extras-expanded";
 const STORAGE_CUSTOM_PROJECTS_KEY = "codex-web-custom-projects";
-const STORAGE_GITHUB_STAR_CTA_DISMISSED_KEY = "codex-web-github-star-cta-dismissed-v1";
 const MAX_QUEUE_TEXT_CHARS = 90;
 const MAX_PROJECT_SESSIONS_COLLAPSED = 4;
 const MAX_COMPOSER_IMAGES = 4;
@@ -248,8 +247,6 @@ const projectList = document.getElementById("projectList");
 const projectSearchInput = document.getElementById("projectSearchInput");
 const projectSearchToggleBtn = document.getElementById("projectSearchToggleBtn");
 const sidebarSearchRow = document.getElementById("sidebarSearchRow");
-const sidebarStarCta = document.getElementById("sidebarStarCta");
-const sidebarStarDismissBtn = document.getElementById("sidebarStarDismissBtn");
 const gettingStartedPanel = document.getElementById("gettingStartedPanel");
 const queryParams = new URLSearchParams(window.location.search || "");
 const showGettingStartedOverride = parseBooleanQueryParam(queryParams.get("showGettingStarted"));
@@ -6504,17 +6501,7 @@ function applySavedUiSettings() {
   applySidebarCollapsed(sidebarCollapsed);
   setSidebarExtrasExpanded(sidebarExtrasExpanded, { persist: false });
   setMobileProjectsOpen(false);
-  applyGithubStarCtaVisibility();
   restorePromptDraftForActiveSession();
-}
-
-function applyGithubStarCtaVisibility() {
-  if (!sidebarStarCta) {
-    return;
-  }
-
-  const dismissed = localStorage.getItem(STORAGE_GITHUB_STAR_CTA_DISMISSED_KEY) === "1";
-  sidebarStarCta.classList.toggle("hidden", dismissed);
 }
 
 function getCurrentLogVerbosity() {
@@ -8956,13 +8943,6 @@ if (turnActivityCancelLink) {
     if (promptInput) {
       promptInput.focus();
     }
-  });
-}
-
-if (sidebarStarDismissBtn) {
-  sidebarStarDismissBtn.addEventListener("click", () => {
-    localStorage.setItem(STORAGE_GITHUB_STAR_CTA_DISMISSED_KEY, "1");
-    applyGithubStarCtaVisibility();
   });
 }
 
