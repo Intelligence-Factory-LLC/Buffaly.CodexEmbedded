@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Fragment>
     <DirectoryRef Id="BINDIR">
@@ -8,6 +8,9 @@
       <Component Id="cmp_bin_web" Guid="c6a37db1-0e37-41d4-b4b0-0c1aa24d27d0">
         <File Id="fil_bin_web" Source="installer\wix\bin\buffaly-codex-web.cmd" KeyPath="yes" />
       </Component>
+      <Component Id="cmp_bin_install_vsix" Guid="7dbf8e2b-2f8a-4e6d-a2a3-6f0bbf7b4b2a">
+        <File Id="fil_bin_install_vsix" Source="installer\wix\bin\install-vsix.cmd" KeyPath="yes" />
+      </Component>
     </DirectoryRef>
   </Fragment>
 
@@ -15,7 +18,9 @@
     <ComponentGroup Id="BinFiles">
       <ComponentRef Id="cmp_bin_codex" />
       <ComponentRef Id="cmp_bin_web" />
+      <ComponentRef Id="cmp_bin_install_vsix" />
     </ComponentGroup>
   </Fragment>
 </Wix>
+
 

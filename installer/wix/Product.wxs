@@ -1,5 +1,5 @@
-<?xml version="1.0" encoding="utf-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs" xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package
     Name="Buffaly Codex Embedded"
     Manufacturer="Intelligence Factory LLC"
@@ -7,21 +7,20 @@
     UpgradeCode="7e91c39d-9d35-49dd-9b6e-0edc17db7e10"
     Compressed="yes"
     Scope="perMachine">
-
     <MajorUpgrade DowngradeErrorMessage="A newer version of Buffaly Codex Embedded is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="ico_buffaly" SourceFile="Buffaly.CodexEmbedded.Web\wwwroot\images\favicon.ico" />
     <Property Id="ARPPRODUCTICON" Value="ico_buffaly" />
-
-    <Feature Id="MainFeature" Title="Buffaly Codex Embedded" Level="1">
+    <WixVariable Id="WixUILicenseRtf" Value="installer\wix\License.rtf" />
+    <Feature Id="MainFeature" Title="Buffaly Codex Embedded" Level="1" ConfigurableDirectory="INSTALLFOLDER">
       <ComponentGroupRef Id="BinFiles" />
       <ComponentGroupRef Id="CliFiles" />
       <ComponentGroupRef Id="WebFiles" />
-      __OPTIONAL_MAIN_COMPONENT_GROUP_REFS__
       <ComponentRef Id="cmp_env_path" />
       <ComponentRef Id="cmp_start_menu" />
     </Feature>
-
+    __OPTIONAL_VSIX_FEATURE__
+    <ui:WixUI Id="WixUI_FeatureTree" InstallDirectory="INSTALLFOLDER" />
     <StandardDirectory Id="ProgramFilesFolder">
       <Directory Id="INSTALLFOLDER" Name="Buffaly Codex Embedded">
         <Directory Id="APPSDIR" Name="apps">
@@ -32,11 +31,9 @@
         <Directory Id="VSEXTDIR" Name="visual-studio" />
       </Directory>
     </StandardDirectory>
-
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="ProgramMenuDir" Name="Buffaly Codex Embedded" />
     </StandardDirectory>
-
     <Component Id="cmp_env_path" Guid="d0e73b9f-364c-49d7-9b7a-2d13a3cc1f78" Directory="INSTALLFOLDER">
       <Environment
         Id="env_path"
@@ -47,7 +44,6 @@
         System="yes" />
       <RegistryValue Root="HKLM" Key="Software\IntelligenceFactory\BuffalyCodexEmbedded" Name="PathSet" Type="integer" Value="1" KeyPath="yes" />
     </Component>
-
     <Component Id="cmp_start_menu" Guid="4a0b2b80-2768-4f4b-9ecf-4a2c5ecdf6d6" Directory="ProgramMenuDir">
       <Shortcut
         Id="sc_web"
@@ -58,5 +54,13 @@
       <RemoveFolder Id="rm_program_menu" Directory="ProgramMenuDir" On="uninstall" />
       <RegistryValue Root="HKLM" Key="Software\IntelligenceFactory\BuffalyCodexEmbedded" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
     </Component>
+    <CustomAction Id="CA_RunVsixHelper" Directory="SystemFolder" ExeCommand='cmd.exe /c ""[BINDIR]install-vsix.cmd""' Return="asyncNoWait" />
+    <InstallUISequence>
+      <Custom Action="CA_RunVsixHelper" After="ExecuteAction" Condition="NOT Installed" />
+    </InstallUISequence>
   </Package>
 </Wix>
+
+
+
+
