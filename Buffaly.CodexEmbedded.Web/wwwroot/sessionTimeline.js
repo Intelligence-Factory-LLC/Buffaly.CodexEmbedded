@@ -11,6 +11,9 @@
   const MAX_TIMELINE_TURNS_RENDERED = 200;
   const MAX_TIMELINE_INTERMEDIATE_PER_TURN = 60;
   const MAX_TIMELINE_TOTAL_RENDERED_ENTRIES = 1800;
+  const MAX_ASSISTANT_MARKDOWN_RENDER_CHARS = 4000;
+  const MAX_DIFF_HIGHLIGHT_CHARS = 6000;
+  const MAX_DIFF_HIGHLIGHT_LINES = 400;
 
   class CodexSessionTimeline {
     constructor(options) {
@@ -104,6 +107,10 @@
       }
 
       if (!bodyText || typeof bodyText !== "string" || !bodyText.trim()) {
+        return false;
+      }
+
+      if (bodyText.length > MAX_ASSISTANT_MARKDOWN_RENDER_CHARS) {
         return false;
       }
 
@@ -887,8 +894,15 @@
         return false;
       }
 
+      if (normalized.length > MAX_DIFF_HIGHLIGHT_CHARS) {
+        return false;
+      }
+
       const lines = normalized.split("\n");
       if (lines.length < 2) {
+        return false;
+      }
+      if (lines.length > MAX_DIFF_HIGHLIGHT_LINES) {
         return false;
       }
 
