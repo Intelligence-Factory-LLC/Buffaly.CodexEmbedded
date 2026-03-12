@@ -119,6 +119,9 @@ const STORAGE_SIDEBAR_COLLAPSED_KEY = "codex-web-sidebar-collapsed";
 const STORAGE_SIDEBAR_EXTRAS_EXPANDED_KEY = "codex-web-sidebar-extras-expanded";
 const STORAGE_CUSTOM_PROJECTS_KEY = "codex-web-custom-projects";
 const MAX_QUEUE_TEXT_CHARS = 90;
+const MAX_QUEUE_PREVIEW_SOURCE_CHARS = 1200;
+const MAX_QUEUE_PREVIEW_KEY_CHARS = 160;
+const MAX_QUEUED_TURNS_TRACKED = 100;
 const MAX_PROJECT_SESSIONS_COLLAPSED = 4;
 const MAX_COMPOSER_IMAGES = 4;
 const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -1368,6 +1371,17 @@ function normalizePromptDraftText(value) {
   return text.slice(0, MAX_PROMPT_DRAFT_CHARS);
 }
 
+function normalizeQueuePreviewText(value, maxChars = MAX_QUEUE_PREVIEW_SOURCE_CHARS) {
+  const raw = typeof value === "string" ? value : String(value || "");
+  if (!raw) {
+    return "";
+  }
+
+  const boundedMax = Math.max(32, Math.floor(Number(maxChars) || MAX_QUEUE_PREVIEW_SOURCE_CHARS));
+  const clipped = raw.length > boundedMax ? raw.slice(0, boundedMax) : raw;
+  return clipped.replace(/\s+/g, " ").trim();
+}
+
 function loadPromptDraftState() {
   promptDraftByKey = new Map();
   promptDraftImagesByKey = new Map();
@@ -1556,7 +1570,9 @@ function normalizeQueuedTurnSummaryList(list) {
   }
 
   const normalized = [];
-  for (const item of list) {
+  const maxItems = Math.min(list.length, MAX_QUEUED_TURNS_TRACKED);
+  for (let i = 0; i < maxItems; i += 1) {
+    const item = list[i];
     if (!item || typeof item !== "object") {
       continue;
     }
@@ -1566,7 +1582,7 @@ function normalizeQueuedTurnSummaryList(list) {
       continue;
     }
 
-    const previewText = typeof item.previewText === "string" ? item.previewText : "";
+    const previewText = normalizeQueuePreviewText(item.previewText);
     const imageCount = Number.isFinite(item.imageCount) ? Math.max(0, Math.floor(item.imageCount)) : 0;
     normalized.push({
       queueItemId,
@@ -3459,13 +3475,14 @@ function buildSessionListQueuedTurnsKey(queuedTurns) {
   }
 
   return queuedTurns
+    .slice(0, MAX_QUEUED_TURNS_TRACKED)
     .map((queued) => {
       if (!queued || typeof queued !== "object") {
         return "";
       }
 
       const queueItemId = typeof queued.queueItemId === "string" ? queued.queueItemId.trim() : "";
-      const previewText = typeof queued.previewText === "string" ? queued.previewText.trim() : "";
+      const previewText = normalizeQueuePreviewText(queued.previewText, MAX_QUEUE_PREVIEW_KEY_CHARS);
       const imageCount = Number.isFinite(queued.imageCount) ? Math.max(0, Math.floor(queued.imageCount)) : 0;
       const createdAtUtc = typeof queued.createdAtUtc === "string" ? queued.createdAtUtc.trim() : "";
       return `${queueItemId}|${previewText}|${imageCount}|${createdAtUtc}`;
@@ -5203,7 +5220,7 @@ function applyTurnOverrideReset(sessionId, options = {}) {
 }
 
 function trimPromptPreview(text) {
-  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  const normalized = normalizeQueuePreviewText(text);
   if (normalized.length <= MAX_QUEUE_TEXT_CHARS) {
     return normalized;
   }
@@ -5237,11 +5254,12 @@ function renderPromptQueue() {
 
   const list = document.createElement("div");
   list.className = "prompt-queue-list";
-  for (let i = 0; i < queue.length; i++) {
+  const maxQueueItemsToRender = Math.min(queue.length, MAX_QUEUED_TURNS_TRACKED);
+  for (let i = 0; i < maxQueueItemsToRender; i++) {
     const item = queue[i];
     const imageCount = Number.isFinite(item.imageCount) ? Math.max(0, Math.floor(item.imageCount)) : 0;
     const imageSuffix = imageCount > 0 ? ` (+${imageCount} image${imageCount > 1 ? "s" : ""})` : "";
-    const rawPreview = (item.previewText || "").trim() || (imageCount > 0 ? "(image only)" : "");
+    const rawPreview = normalizeQueuePreviewText(item.previewText) || (imageCount > 0 ? "(image only)" : "");
 
     const row = document.createElement("div");
     row.className = "prompt-queue-row";
@@ -5412,7 +5430,7 @@ function removeQueuedPrompt(sessionId, queueItemId) {
 }
 
 function restoreQueuedPromptForEditing(text, images = []) {
-  promptInput.value = String(text || "");
+  promptInput.value = normalizePromptDraftText(text);
   refreshPromptInputHeight({ reset: promptInput.value.length === 0 });
 
   pendingComposerImages = normalizePromptDraftImages(images, { assignIds: true });
