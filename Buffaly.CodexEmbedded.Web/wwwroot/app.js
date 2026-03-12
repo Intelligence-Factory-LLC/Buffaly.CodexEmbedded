@@ -3,10 +3,12 @@ const TURN_ACTIVITY_TICK_INTERVAL_MS = 1000;
 const LOG_FLUSH_INTERVAL_MS = 250;
 const MAX_RENDERED_CLIENT_LOG_LINES = 800;
 const MAX_CLIENT_LOG_LINE_CHARS = 4000;
-const MAX_CLIENT_SNAPSHOT_TURNS = 200;
-const MAX_CLIENT_SNAPSHOT_INTERMEDIATE = 60;
-const MAX_CLIENT_SNAPSHOT_TEXT_CHARS = 8000;
+const MAX_CLIENT_SNAPSHOT_TURNS = 1200;
+const MAX_CLIENT_SNAPSHOT_INTERMEDIATE = 300;
+const MAX_CLIENT_SNAPSHOT_TEXT_CHARS = 16000;
 const MAX_CLIENT_SNAPSHOT_IMAGE_URL_CHARS = 200000;
+const MAX_PROMPT_DRAFT_CHARS = 12000;
+const MAX_PROMPT_DRAFT_STORAGE_CHARS = 250000;
 
 let socket = null;
 let socketReadyPromise = null;
@@ -156,8 +158,8 @@ const UI_AUDIT_OUTGOING_TYPES = new Set([
   "turn_retry_decision"
 ]);
 // Server turn cache is rebuilt from recent JSONL lines, so keep this high enough to capture many complete turns.
-const TIMELINE_INITIAL_WINDOW_DEFAULT = 300;
-const TIMELINE_MAX_WINDOW_ENTRIES = 500;
+const TIMELINE_INITIAL_WINDOW_DEFAULT = 1600;
+const TIMELINE_MAX_WINDOW_ENTRIES = 2000;
 let timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
 const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only.";
 const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
@@ -1353,25 +1355,56 @@ function getCurrentPromptDraftKey() {
   return getPromptDraftKeyForState(getActiveSessionState());
 }
 
+function normalizePromptDraftText(value) {
+  const text = typeof value === "string" ? value : String(value || "");
+  if (!text) {
+    return "";
+  }
+
+  if (text.length <= MAX_PROMPT_DRAFT_CHARS) {
+    return text;
+  }
+
+  return text.slice(0, MAX_PROMPT_DRAFT_CHARS);
+}
+
 function loadPromptDraftState() {
   promptDraftByKey = new Map();
   promptDraftImagesByKey = new Map();
-  const raw = safeJsonParse(localStorage.getItem(STORAGE_PROMPT_DRAFTS_KEY), {});
+  const rawJson = localStorage.getItem(STORAGE_PROMPT_DRAFTS_KEY);
+  if (typeof rawJson === "string" && rawJson.length > MAX_PROMPT_DRAFT_STORAGE_CHARS) {
+    localStorage.removeItem(STORAGE_PROMPT_DRAFTS_KEY);
+    return;
+  }
+
+  const raw = safeJsonParse(rawJson, {});
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     return;
   }
 
+  let changed = false;
   for (const [key, value] of Object.entries(raw)) {
     if (typeof key !== "string" || !key.trim()) {
       continue;
     }
 
-    const text = typeof value === "string" ? value : String(value || "");
+    const rawText = typeof value === "string" ? value : String(value || "");
+    const text = normalizePromptDraftText(rawText);
     if (!text) {
+      if (rawText) {
+        changed = true;
+      }
       continue;
     }
 
+    if (rawText !== text) {
+      changed = true;
+    }
     promptDraftByKey.set(key, text);
+  }
+
+  if (changed) {
+    persistPromptDraftState();
   }
 }
 
@@ -1382,7 +1415,7 @@ function persistPromptDraftState() {
       continue;
     }
 
-    const text = typeof value === "string" ? value : String(value || "");
+    const text = normalizePromptDraftText(value);
     if (!text) {
       continue;
     }
@@ -1390,7 +1423,13 @@ function persistPromptDraftState() {
     payload[key] = text;
   }
 
-  localStorage.setItem(STORAGE_PROMPT_DRAFTS_KEY, JSON.stringify(payload));
+  const serialized = JSON.stringify(payload);
+  if (serialized.length > MAX_PROMPT_DRAFT_STORAGE_CHARS) {
+    localStorage.removeItem(STORAGE_PROMPT_DRAFTS_KEY);
+    return;
+  }
+
+  localStorage.setItem(STORAGE_PROMPT_DRAFTS_KEY, serialized);
 }
 
 function normalizePromptDraftImages(images, options = {}) {
@@ -1426,7 +1465,7 @@ function rememberPromptDraftForKey(key, text) {
     return;
   }
 
-  const normalizedText = typeof text === "string" ? text : String(text || "");
+  const normalizedText = normalizePromptDraftText(text);
   if (normalizedText) {
     promptDraftByKey.set(normalizedKey, normalizedText);
   } else {
