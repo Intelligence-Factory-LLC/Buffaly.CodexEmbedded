@@ -3,9 +3,9 @@ const TURN_ACTIVITY_TICK_INTERVAL_MS = 1000;
 const LOG_FLUSH_INTERVAL_MS = 250;
 const MAX_RENDERED_CLIENT_LOG_LINES = 800;
 const MAX_CLIENT_LOG_LINE_CHARS = 4000;
-const MAX_CLIENT_SNAPSHOT_TURNS = 1200;
-const MAX_CLIENT_SNAPSHOT_INTERMEDIATE = 300;
-const MAX_CLIENT_SNAPSHOT_TEXT_CHARS = 16000;
+const MAX_CLIENT_SNAPSHOT_TURNS = 200;
+const MAX_CLIENT_SNAPSHOT_INTERMEDIATE = 60;
+const MAX_CLIENT_SNAPSHOT_TEXT_CHARS = 8000;
 const MAX_CLIENT_SNAPSHOT_IMAGE_URL_CHARS = 200000;
 
 let socket = null;
@@ -156,8 +156,8 @@ const UI_AUDIT_OUTGOING_TYPES = new Set([
   "turn_retry_decision"
 ]);
 // Server turn cache is rebuilt from recent JSONL lines, so keep this high enough to capture many complete turns.
-const TIMELINE_INITIAL_WINDOW_DEFAULT = 1600;
-const TIMELINE_MAX_WINDOW_ENTRIES = 2000;
+const TIMELINE_INITIAL_WINDOW_DEFAULT = 300;
+const TIMELINE_MAX_WINDOW_ENTRIES = 500;
 let timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
 const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only.";
 const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];

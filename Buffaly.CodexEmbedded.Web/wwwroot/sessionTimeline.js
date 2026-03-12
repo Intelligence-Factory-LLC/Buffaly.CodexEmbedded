@@ -8,8 +8,9 @@
   const STORAGE_RENDER_ASSISTANT_MARKDOWN_KEY = "codex.settings.renderAssistantMarkdown.v1";
   const MAX_TIMELINE_ENTRY_TEXT_CHARS = 20_000;
   const MAX_TIMELINE_IMAGE_URL_CHARS = 2_000_000;
-  const MAX_TIMELINE_TURNS_RENDERED = 1200;
-  const MAX_TIMELINE_INTERMEDIATE_PER_TURN = 300;
+  const MAX_TIMELINE_TURNS_RENDERED = 200;
+  const MAX_TIMELINE_INTERMEDIATE_PER_TURN = 60;
+  const MAX_TIMELINE_TOTAL_RENDERED_ENTRIES = 1800;
 
   class CodexSessionTimeline {
     constructor(options) {
@@ -386,10 +387,12 @@
       }
 
       const turns = [];
-      const startIndex = rawTurns.length > MAX_TIMELINE_TURNS_RENDERED
-        ? rawTurns.length - MAX_TIMELINE_TURNS_RENDERED
-        : 0;
-      for (let i = startIndex; i < rawTurns.length; i += 1) {
+      let totalRenderedEntries = 0;
+      for (let i = rawTurns.length - 1; i >= 0; i -= 1) {
+        if (turns.length >= MAX_TIMELINE_TURNS_RENDERED) {
+          break;
+        }
+
         const rawTurn = rawTurns[i];
         if (!rawTurn || typeof rawTurn !== "object") {
           continue;
@@ -400,7 +403,7 @@
         const user = this.normalizeTurnEntry(rawTurn.user, "user", "User");
         const assistantFinal = this.normalizeTurnEntry(rawTurn.assistantFinal, "assistant", "Assistant");
         const intermediateRaw = Array.isArray(rawTurn.intermediate) ? rawTurn.intermediate : [];
-        const intermediate = [];
+        let intermediate = [];
         const clampedIntermediateCount = Math.max(0, intermediateRaw.length - MAX_TIMELINE_INTERMEDIATE_PER_TURN);
         const maxIntermediateEntries = Math.min(intermediateRaw.length, MAX_TIMELINE_INTERMEDIATE_PER_TURN);
         for (let index = 0; index < maxIntermediateEntries; index += 1) {
@@ -422,6 +425,7 @@
             images: []
           });
         }
+
         const intermediateCountRaw = Number(
           rawTurn.intermediateCount ?? rawTurn.IntermediateCount ?? intermediateRaw.length
         );
@@ -433,7 +437,7 @@
           || rawTurn.HasIntermediate === true
           || intermediateCount > 0
           || intermediate.length > 0;
-        const intermediateLoaded = rawTurn.intermediateLoaded === true
+        let intermediateLoaded = rawTurn.intermediateLoaded === true
           || rawTurn.IntermediateLoaded === true
           || (hasIntermediate && intermediateRaw.length >= intermediateCount);
 
@@ -452,6 +456,38 @@
           images: []
         };
 
+        const assistantEntryCount = assistantFinal ? 1 : 0;
+        const availableIntermediateBudget = Math.max(
+          0,
+          MAX_TIMELINE_TOTAL_RENDERED_ENTRIES - totalRenderedEntries - 1 - assistantEntryCount
+        );
+        if (intermediate.length > availableIntermediateBudget) {
+          const hiddenByBudget = intermediate.length - availableIntermediateBudget;
+          intermediate = intermediate.slice(0, availableIntermediateBudget);
+          if (hiddenByBudget > 0) {
+            intermediate.push({
+              role: "system",
+              kind: "",
+              title: "Details",
+              text: `${hiddenByBudget} additional events hidden for performance`,
+              timestamp: null,
+              rawType: "inline_notice",
+              compact: true,
+              images: []
+            });
+          }
+          intermediateLoaded = false;
+        }
+
+        const entryCountForTurn = 1 + assistantEntryCount + intermediate.length;
+        if (entryCountForTurn <= 0) {
+          continue;
+        }
+
+        if (turns.length > 0 && totalRenderedEntries + entryCountForTurn > MAX_TIMELINE_TOTAL_RENDERED_ENTRIES) {
+          break;
+        }
+
         turns.push({
           turnId,
           user: syntheticUser,
@@ -462,8 +498,10 @@
           intermediateCount,
           intermediateLoaded: clampedIntermediateCount > 0 ? false : intermediateLoaded
         });
+        totalRenderedEntries += entryCountForTurn;
       }
 
+      turns.reverse();
       return turns;
     }
 
@@ -478,7 +516,11 @@
       const title = typeof rawEntry.title === "string" && rawEntry.title.trim().length > 0
         ? rawEntry.title.trim()
         : fallbackTitle;
-      const text = this.truncateText(rawEntry.text || "", MAX_TIMELINE_ENTRY_TEXT_CHARS);
+      const rawTextValue = typeof rawEntry.text === "string" ? rawEntry.text : String(rawEntry.text || "");
+      const preTruncatedText = rawTextValue.length > (MAX_TIMELINE_ENTRY_TEXT_CHARS * 4)
+        ? `${rawTextValue.slice(0, MAX_TIMELINE_ENTRY_TEXT_CHARS * 4)}\n... (pre-truncated)`
+        : rawTextValue;
+      const text = this.truncateText(preTruncatedText, MAX_TIMELINE_ENTRY_TEXT_CHARS);
       const images = Array.isArray(rawEntry.images)
         ? rawEntry.images
           .filter((x) => typeof x === "string" && x.trim().length > 0)
