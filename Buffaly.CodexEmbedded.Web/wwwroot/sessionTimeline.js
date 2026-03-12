@@ -8,6 +8,8 @@
   const STORAGE_RENDER_ASSISTANT_MARKDOWN_KEY = "codex.settings.renderAssistantMarkdown.v1";
   const MAX_TIMELINE_ENTRY_TEXT_CHARS = 20_000;
   const MAX_TIMELINE_IMAGE_URL_CHARS = 2_000_000;
+  const MAX_TIMELINE_TURNS_RENDERED = 1200;
+  const MAX_TIMELINE_INTERMEDIATE_PER_TURN = 300;
 
   class CodexSessionTimeline {
     constructor(options) {
@@ -384,7 +386,10 @@
       }
 
       const turns = [];
-      for (let i = 0; i < rawTurns.length; i += 1) {
+      const startIndex = rawTurns.length > MAX_TIMELINE_TURNS_RENDERED
+        ? rawTurns.length - MAX_TIMELINE_TURNS_RENDERED
+        : 0;
+      for (let i = startIndex; i < rawTurns.length; i += 1) {
         const rawTurn = rawTurns[i];
         if (!rawTurn || typeof rawTurn !== "object") {
           continue;
@@ -396,25 +401,41 @@
         const assistantFinal = this.normalizeTurnEntry(rawTurn.assistantFinal, "assistant", "Assistant");
         const intermediateRaw = Array.isArray(rawTurn.intermediate) ? rawTurn.intermediate : [];
         const intermediate = [];
-        for (const item of intermediateRaw) {
+        const clampedIntermediateCount = Math.max(0, intermediateRaw.length - MAX_TIMELINE_INTERMEDIATE_PER_TURN);
+        const maxIntermediateEntries = Math.min(intermediateRaw.length, MAX_TIMELINE_INTERMEDIATE_PER_TURN);
+        for (let index = 0; index < maxIntermediateEntries; index += 1) {
+          const item = intermediateRaw[index];
           const normalized = this.normalizeTurnEntry(item, "system", "System");
           if (normalized) {
             intermediate.push(normalized);
           }
         }
+        if (clampedIntermediateCount > 0) {
+          intermediate.push({
+            role: "system",
+            kind: "",
+            title: "Details",
+            text: `${clampedIntermediateCount} intermediate events hidden for performance`,
+            timestamp: null,
+            rawType: "inline_notice",
+            compact: true,
+            images: []
+          });
+        }
         const intermediateCountRaw = Number(
-          rawTurn.intermediateCount ?? rawTurn.IntermediateCount ?? intermediate.length
+          rawTurn.intermediateCount ?? rawTurn.IntermediateCount ?? intermediateRaw.length
         );
-        const intermediateCount = Number.isFinite(intermediateCountRaw) && intermediateCountRaw >= 0
+        const intermediateCountBase = Number.isFinite(intermediateCountRaw) && intermediateCountRaw >= 0
           ? Math.floor(intermediateCountRaw)
-          : intermediate.length;
+          : intermediateRaw.length;
+        const intermediateCount = Math.max(intermediateCountBase, intermediateRaw.length);
         const hasIntermediate = rawTurn.hasIntermediate === true
           || rawTurn.HasIntermediate === true
           || intermediateCount > 0
           || intermediate.length > 0;
         const intermediateLoaded = rawTurn.intermediateLoaded === true
           || rawTurn.IntermediateLoaded === true
-          || (hasIntermediate && intermediate.length >= intermediateCount);
+          || (hasIntermediate && intermediateRaw.length >= intermediateCount);
 
         if (!user && !assistantFinal && intermediate.length === 0) {
           continue;
@@ -439,7 +460,7 @@
           isInFlight: rawTurn.isInFlight === true,
           hasIntermediate,
           intermediateCount,
-          intermediateLoaded
+          intermediateLoaded: clampedIntermediateCount > 0 ? false : intermediateLoaded
         });
       }
 

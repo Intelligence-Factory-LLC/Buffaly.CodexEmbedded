@@ -2,6 +2,11 @@ const TIMELINE_POLL_INTERVAL_MS = 2000;
 const TURN_ACTIVITY_TICK_INTERVAL_MS = 1000;
 const LOG_FLUSH_INTERVAL_MS = 250;
 const MAX_RENDERED_CLIENT_LOG_LINES = 800;
+const MAX_CLIENT_LOG_LINE_CHARS = 4000;
+const MAX_CLIENT_SNAPSHOT_TURNS = 1200;
+const MAX_CLIENT_SNAPSHOT_INTERMEDIATE = 300;
+const MAX_CLIENT_SNAPSHOT_TEXT_CHARS = 16000;
+const MAX_CLIENT_SNAPSHOT_IMAGE_URL_CHARS = 200000;
 
 let socket = null;
 let socketReadyPromise = null;
@@ -151,7 +156,8 @@ const UI_AUDIT_OUTGOING_TYPES = new Set([
   "turn_retry_decision"
 ]);
 // Server turn cache is rebuilt from recent JSONL lines, so keep this high enough to capture many complete turns.
-const TIMELINE_INITIAL_WINDOW_DEFAULT = 6000;
+const TIMELINE_INITIAL_WINDOW_DEFAULT = 1600;
+const TIMELINE_MAX_WINDOW_ENTRIES = 2000;
 let timelineWatchMaxEntries = TIMELINE_INITIAL_WINDOW_DEFAULT;
 const SECURITY_WARNING_TEXT = "Security warning: this UI can execute commands and modify files through Codex. Do not expose it to the public internet. Recommended: bind to localhost and access via Tailscale tailnet-only.";
 const REASONING_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
@@ -633,13 +639,15 @@ function updateTurnActivityStrip() {
 }
 
 function normalizeTimelineMaxEntries(value, fallback = TIMELINE_INITIAL_WINDOW_DEFAULT) {
-  const fallbackNumeric = Math.max(20, Math.floor(Number(fallback) || TIMELINE_INITIAL_WINDOW_DEFAULT));
+  const maxEntriesLimit = Math.max(20, Math.floor(Number(TIMELINE_MAX_WINDOW_ENTRIES) || TIMELINE_INITIAL_WINDOW_DEFAULT));
+  const fallbackNumericRaw = Math.max(20, Math.floor(Number(fallback) || TIMELINE_INITIAL_WINDOW_DEFAULT));
+  const fallbackNumeric = Math.min(maxEntriesLimit, fallbackNumericRaw);
   const numeric = Math.floor(Number(value));
   if (!Number.isFinite(numeric) || numeric < 20) {
     return fallbackNumeric;
   }
 
-  return numeric;
+  return Math.min(maxEntriesLimit, numeric);
 }
 
 function normalizeWatchSnapshotMode(value) {
@@ -683,21 +691,59 @@ function readTurnSnapshotIntermediate(turn) {
   return [];
 }
 
+function truncateTurnSnapshotText(text) {
+  const raw = typeof text === "string" ? text : "";
+  if (raw.length <= MAX_CLIENT_SNAPSHOT_TEXT_CHARS) {
+    return raw;
+  }
+
+  return `${raw.slice(0, MAX_CLIENT_SNAPSHOT_TEXT_CHARS)}\n... (truncated)`;
+}
+
+function normalizeTurnSnapshotImages(images) {
+  const source = Array.isArray(images) ? images : [];
+  const normalized = [];
+  for (const item of source) {
+    if (typeof item !== "string") {
+      continue;
+    }
+
+    const value = item.trim();
+    if (!value || value.length > MAX_CLIENT_SNAPSHOT_IMAGE_URL_CHARS) {
+      continue;
+    }
+
+    normalized.push(value);
+  }
+
+  return normalized;
+}
+
+function limitTurnSnapshotWindow(turns) {
+  if (!Array.isArray(turns) || turns.length <= MAX_CLIENT_SNAPSHOT_TURNS) {
+    return Array.isArray(turns) ? turns : [];
+  }
+
+  return turns.slice(turns.length - MAX_CLIENT_SNAPSHOT_TURNS);
+}
+
 function cloneTurnSnapshotEntry(entry) {
   if (!entry || typeof entry !== "object") {
     return null;
   }
 
+  const rawText = typeof entry.text === "string" ? entry.text : (typeof entry.Text === "string" ? entry.Text : "");
   return {
     role: typeof entry.role === "string" ? entry.role : (typeof entry.Role === "string" ? entry.Role : ""),
     title: typeof entry.title === "string" ? entry.title : (typeof entry.Title === "string" ? entry.Title : ""),
-    text: typeof entry.text === "string" ? entry.text : (typeof entry.Text === "string" ? entry.Text : ""),
+    text: truncateTurnSnapshotText(rawText),
     timestamp: entry.timestamp || entry.Timestamp || null,
     rawType: typeof entry.rawType === "string" ? entry.rawType : (typeof entry.RawType === "string" ? entry.RawType : ""),
     compact: entry.compact === true || entry.Compact === true,
-    images: Array.isArray(entry.images)
-      ? entry.images.slice()
-      : (Array.isArray(entry.Images) ? entry.Images.slice() : [])
+    images: normalizeTurnSnapshotImages(
+      Array.isArray(entry.images)
+        ? entry.images
+        : (Array.isArray(entry.Images) ? entry.Images : []))
   };
 }
 
@@ -708,20 +754,29 @@ function cloneTurnSnapshot(turn) {
 
   const user = cloneTurnSnapshotEntry(turn.user || turn.User || null);
   const assistantFinal = cloneTurnSnapshotEntry(turn.assistantFinal || turn.AssistantFinal || null);
-  const intermediate = readTurnSnapshotIntermediate(turn)
-    .map((entry) => cloneTurnSnapshotEntry(entry))
-    .filter((entry) => !!entry);
-  const intermediateCountRaw = Number(turn.intermediateCount ?? turn.IntermediateCount ?? intermediate.length);
+  const intermediateRaw = readTurnSnapshotIntermediate(turn);
+  const intermediate = [];
+  const maxIntermediateEntries = Math.min(intermediateRaw.length, MAX_CLIENT_SNAPSHOT_INTERMEDIATE);
+  for (let i = 0; i < maxIntermediateEntries; i += 1) {
+    const clonedEntry = cloneTurnSnapshotEntry(intermediateRaw[i]);
+    if (clonedEntry) {
+      intermediate.push(clonedEntry);
+    }
+  }
+
+  const intermediateCountRaw = Number(turn.intermediateCount ?? turn.IntermediateCount ?? intermediateRaw.length);
   const intermediateCount = Number.isFinite(intermediateCountRaw) && intermediateCountRaw >= 0
     ? Math.floor(intermediateCountRaw)
-    : intermediate.length;
+    : intermediateRaw.length;
+  const effectiveIntermediateCount = Math.max(intermediateCount, intermediateRaw.length);
   const hasIntermediate = turn.hasIntermediate === true
     || turn.HasIntermediate === true
-    || intermediateCount > 0
+    || effectiveIntermediateCount > 0
     || intermediate.length > 0;
-  const intermediateLoaded = turn.intermediateLoaded === true
+  const loadedFromServer = turn.intermediateLoaded === true
     || turn.IntermediateLoaded === true
-    || (hasIntermediate && intermediate.length >= intermediateCount);
+    || (hasIntermediate && intermediateRaw.length >= effectiveIntermediateCount);
+  const intermediateLoaded = loadedFromServer && intermediateRaw.length <= MAX_CLIENT_SNAPSHOT_INTERMEDIATE;
 
   return {
     turnId: readTurnSnapshotTurnId(turn),
@@ -730,7 +785,7 @@ function cloneTurnSnapshot(turn) {
     intermediate,
     isInFlight: turn.isInFlight === true || turn.IsInFlight === true,
     hasIntermediate,
-    intermediateCount,
+    intermediateCount: effectiveIntermediateCount,
     intermediateLoaded
   };
 }
@@ -773,12 +828,12 @@ function mergeTurnWithDetail(baseTurn, detailTurn) {
 }
 
 function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurnDetail, options = {}) {
-  const incoming = Array.isArray(incomingTurns) ? incomingTurns : [];
+  const incoming = limitTurnSnapshotWindow(Array.isArray(incomingTurns) ? incomingTurns : []);
   const preserveMissingExisting = options && options.preserveMissingExisting === true;
   const existingByTurnId = new Map();
   const existingClones = [];
   if (Array.isArray(existingTurns)) {
-    for (const item of existingTurns) {
+    for (const item of limitTurnSnapshotWindow(existingTurns)) {
       const cloned = cloneTurnSnapshot(item);
       if (cloned) {
         existingClones.push(cloned);
@@ -793,12 +848,12 @@ function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurn
   const activeDetailId = readTurnSnapshotTurnId(activeTurnDetail);
   if (incoming.length === 0) {
     if (!activeDetailId) {
-      return existingClones;
+      return limitTurnSnapshotWindow(existingClones);
     }
 
     const detailOnlyTurn = cloneTurnSnapshot(activeTurnDetail);
     if (!detailOnlyTurn) {
-      return existingClones;
+      return limitTurnSnapshotWindow(existingClones);
     }
 
     let mergedDetail = false;
@@ -814,7 +869,7 @@ function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurn
       mergedExisting.push(detailOnlyTurn);
     }
 
-    return mergedExisting;
+    return limitTurnSnapshotWindow(mergedExisting);
   }
 
   let activeDetailIncluded = false;
@@ -867,11 +922,11 @@ function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurn
     }
 
     if (preservedPriorTurns.length > 0) {
-      return preservedPriorTurns.concat(merged);
+      return limitTurnSnapshotWindow(preservedPriorTurns.concat(merged));
     }
   }
 
-  return merged;
+  return limitTurnSnapshotWindow(merged);
 }
 
 function rememberTimelineCache(threadId, payload) {
@@ -3437,7 +3492,11 @@ function buildSessionListViewKey(activeSessionId, list, processingByThread) {
 
 function appendLog(text) {
   const stamp = new Date().toISOString();
-  const line = `${stamp} ${text}`;
+  const rawText = typeof text === "string" ? text : String(text || "");
+  const clippedText = rawText.length > MAX_CLIENT_LOG_LINE_CHARS
+    ? `${rawText.slice(0, MAX_CLIENT_LOG_LINE_CHARS)} ... (truncated ${rawText.length - MAX_CLIENT_LOG_LINE_CHARS} chars)`
+    : rawText;
+  const line = `${stamp} ${clippedText}`;
   if (!logOutput) {
     return;
   }
