@@ -719,16 +719,28 @@ window.initScribe = function (btnEl, textEl) {
 	const RECORDING_LABEL = 'Stop Recording';
 	const PROCESSING_LABEL = 'Processing...';
 
-	function setBtn(html, opts = {}) {
+	function buildSpeechButtonMarkup(iconClass, label) {
+		const safeIconClass = typeof iconClass === 'string' && iconClass.trim() ? iconClass.trim() : 'bi-mic-fill';
+		const safeLabel = typeof label === 'string' && label.trim() ? label.trim() : IDLE_LABEL;
+		return `
+			<i class="bi ${safeIconClass}" aria-hidden="true"></i>
+			<span class="visually-hidden">${safeLabel}</span>
+		`;
+	}
+
+	function setBtn(label, opts = {}) {
 		if (!btn) return;
-		const busy = btn.querySelector('.mic-busy');
-		if (html != null) {
-			btn.innerHTML = html;
-			if (busy) btn.appendChild(busy);
-		}
+		const iconClass = opts.busy === true
+			? 'bi-hourglass-split'
+			: (opts.recording === true ? 'bi-stop-fill' : 'bi-mic-fill');
+		btn.innerHTML = buildSpeechButtonMarkup(iconClass, label);
 		btn.disabled = !!opts.disabled;
 		btn.setAttribute('aria-busy', opts.busy ? 'true' : 'false');
-		if (opts.recording === true) btn.classList.add('mic-recording'); else btn.classList.remove('mic-recording');
+		btn.setAttribute('aria-label', label);
+		btn.title = label;
+		btn.classList.toggle('mic-recording', opts.recording === true);
+		btn.classList.toggle('is-recording', opts.recording === true);
+		btn.classList.toggle('is-processing', opts.busy === true);
 	}
 
 	function toIdle() {
