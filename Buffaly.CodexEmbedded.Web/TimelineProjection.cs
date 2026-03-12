@@ -7,6 +7,8 @@ internal sealed class TimelineProjectionService
 	private const int MaxMessageTextChars = 20_000;
 	private const int MaxInlineDataImageUrlChars = 2_000_000;
 	private const int SkipHeavyLineParseChars = 250_000;
+	private const int SkipNoisyControlLineChars = 12_000;
+	private const int TypeProbeChars = 256;
 
 	private readonly ConcurrentDictionary<string, TimelineProjectionState> _stateByThread = new(StringComparer.Ordinal);
 
@@ -122,7 +124,30 @@ internal sealed class TimelineProjectionService
 
 	private static bool ShouldSkipHeavyLineWithoutParse(string line)
 	{
-		return line.Length >= SkipHeavyLineParseChars;
+		if (line.Length >= SkipHeavyLineParseChars)
+		{
+			return true;
+		}
+
+		if (line.Length < SkipNoisyControlLineChars)
+		{
+			return false;
+		}
+
+		if (LooksLikeTopLevelType(line, "\"type\":\"turn_context\""))
+		{
+			return true;
+		}
+
+		return LooksLikeTopLevelType(line, "\"type\":\"event_msg\"") &&
+			(line.IndexOf("thread_compacted", StringComparison.Ordinal) >= 0 ||
+			 line.IndexOf("thread/compacted", StringComparison.Ordinal) >= 0);
+	}
+
+	private static bool LooksLikeTopLevelType(string line, string typeMarker)
+	{
+		var probeLength = Math.Min(TypeProbeChars, line.Length);
+		return line.IndexOf(typeMarker, 0, probeLength, StringComparison.Ordinal) >= 0;
 	}
 
 	private static void UpdateSessionMeta(TimelineProjectionState state, JsonElement payload)

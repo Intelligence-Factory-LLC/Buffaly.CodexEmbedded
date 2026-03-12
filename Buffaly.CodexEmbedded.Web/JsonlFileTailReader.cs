@@ -11,6 +11,8 @@ internal sealed record JsonlWatchResult(
 internal static class JsonlFileTailReader
 {
 	private const int MaxWatchLineChars = 250_000;
+	private const int MaxNoisyControlLineChars = 12_000;
+	private const int TypeProbeChars = 256;
 
 	public static JsonlWatchResult ReadInitial(string path, int maxLines)
 	{
@@ -30,7 +32,7 @@ internal static class JsonlFileTailReader
 
 			// Defensive guard: oversized JSONL lines (often compacted replacement histories or large data URLs)
 			// can stall timeline/log endpoints and freeze the browser when echoed back.
-			if (line.Length > MaxWatchLineChars)
+			if (ShouldSkipForWatch(line))
 			{
 				truncated = true;
 				continue;
@@ -79,7 +81,7 @@ internal static class JsonlFileTailReader
 				break;
 			}
 
-			if (line.Length > MaxWatchLineChars)
+			if (ShouldSkipForWatch(line))
 			{
 				truncated = true;
 				continue;
@@ -102,5 +104,41 @@ internal static class JsonlFileTailReader
 			Reset: reset,
 			Truncated: truncated,
 			Lines: lines);
+	}
+
+	private static bool ShouldSkipForWatch(string line)
+	{
+		if (line.Length > MaxWatchLineChars)
+		{
+			return true;
+		}
+
+		// turn_context and compaction control lines are noisy and can be very large without adding user-facing value.
+		// Skip extremely large variants early so timeline/watch responses stay responsive.
+		if (line.Length > MaxNoisyControlLineChars && IsLargeNoisyControlLine(line))
+		{
+			return true;
+		}
+
+		return false;
+	}
+
+	private static bool IsLargeNoisyControlLine(string line)
+	{
+		if (LooksLikeTopLevelType(line, "\"type\":\"turn_context\""))
+		{
+			return true;
+		}
+
+		return LooksLikeTopLevelType(line, "\"type\":\"event_msg\"") &&
+			(line.IndexOf("thread_compacted", StringComparison.Ordinal) >= 0 ||
+			 line.IndexOf("thread/compacted", StringComparison.Ordinal) >= 0);
+	}
+
+	private static bool LooksLikeTopLevelType(string line, string typeMarker)
+	{
+		var probeLength = Math.Min(TypeProbeChars, line.Length);
+		var idx = line.IndexOf(typeMarker, 0, probeLength, StringComparison.Ordinal);
+		return idx >= 0;
 	}
 }
