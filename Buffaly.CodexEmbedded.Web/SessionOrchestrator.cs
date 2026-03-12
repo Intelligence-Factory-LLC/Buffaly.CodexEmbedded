@@ -19,6 +19,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private readonly Dictionary<string, string> _lastThreadNameByThread = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, RateLimitDispatchState> _rateLimitDispatchBySession = new(StringComparer.Ordinal);
 	private static readonly TimeSpan RateLimitCoalesceDelay = TimeSpan.FromMilliseconds(350);
+	private const int MaxCoreStdoutJsonlParseChars = 250_000;
 
 	public event Action? SessionsChanged;
 	public event Action<string, object>? Broadcast;
@@ -2956,6 +2957,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		var line = ev.Message;
 		if (string.IsNullOrWhiteSpace(line))
+		{
+			return false;
+		}
+
+		// Some core frames (notably thread/resume snapshots) can embed very large historical payloads.
+		// They are not signal-oriented and can stall JSON parsing, so skip parsing for oversized frames.
+		if (line.Length > MaxCoreStdoutJsonlParseChars)
 		{
 			return false;
 		}

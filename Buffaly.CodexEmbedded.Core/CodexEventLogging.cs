@@ -10,6 +10,8 @@ public enum CodexEventVerbosity
 
 public static class CodexEventLogging
 {
+	private const int MaxFormattedMessageChars = 16_000;
+
 	public static bool TryParseVerbosity(string? value, out CodexEventVerbosity verbosity)
 	{
 		verbosity = CodexEventVerbosity.Normal;
@@ -78,11 +80,17 @@ public static class CodexEventLogging
 
 	public static string Format(CodexCoreEvent ev, bool includeTimestamp = true)
 	{
-		if (includeTimestamp)
+		var message = ev.Message ?? string.Empty;
+		if (message.Length > MaxFormattedMessageChars)
 		{
-			return $"{ev.Timestamp:O} [{ev.Level}] {ev.Type}: {ev.Message}";
+			message = message[..MaxFormattedMessageChars] + "...[truncated]";
 		}
 
-		return $"[{ev.Level}] {ev.Type}: {ev.Message}";
+		if (includeTimestamp)
+		{
+			return $"{ev.Timestamp:O} [{ev.Level}] {ev.Type}: {message}";
+		}
+
+		return $"[{ev.Level}] {ev.Type}: {message}";
 	}
 }
