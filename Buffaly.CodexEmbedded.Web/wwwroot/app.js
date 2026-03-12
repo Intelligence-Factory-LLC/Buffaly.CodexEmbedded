@@ -9,6 +9,7 @@ const MAX_CLIENT_SNAPSHOT_TEXT_CHARS = 16000;
 const MAX_CLIENT_SNAPSHOT_IMAGE_URL_CHARS = 200000;
 const MAX_PROMPT_DRAFT_CHARS = 12000;
 const MAX_PROMPT_DRAFT_STORAGE_CHARS = 250000;
+const MAX_TIMELINE_JSON_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 let socket = null;
 let socketReadyPromise = null;
@@ -1053,7 +1054,10 @@ async function fetchTurnDetailForThread(threadId, turnId) {
       throw new Error(`turn detail failed (${response.status}): ${detail}`);
     }
 
-    const payload = await response.json();
+    const payload = await readJsonResponseWithByteLimit(
+      response,
+      MAX_TIMELINE_JSON_RESPONSE_BYTES,
+      "turn detail");
     if (!payload || typeof payload !== "object" || !payload.turn || typeof payload.turn !== "object") {
       return;
     }
@@ -1083,6 +1087,64 @@ function safeJsonParse(raw, fallbackValue) {
     return JSON.parse(raw);
   } catch {
     return fallbackValue;
+  }
+}
+
+async function readJsonResponseWithByteLimit(response, maxBytes, label) {
+  const boundedMaxBytes = Math.max(64 * 1024, Math.floor(Number(maxBytes) || MAX_TIMELINE_JSON_RESPONSE_BYTES));
+  const sourceLabel = typeof label === "string" && label.trim() ? label.trim() : "response";
+  const contentLengthRaw = response?.headers?.get?.("content-length");
+  const contentLength = Number(contentLengthRaw);
+  if (Number.isFinite(contentLength) && contentLength > boundedMaxBytes) {
+    throw new Error(`${sourceLabel} payload too large (${contentLength} bytes)`);
+  }
+
+  if (!response || !response.body || typeof response.body.getReader !== "function") {
+    const text = await response.text();
+    const bytes = typeof TextEncoder !== "undefined"
+      ? new TextEncoder().encode(text).length
+      : text.length;
+    if (bytes > boundedMaxBytes) {
+      throw new Error(`${sourceLabel} payload too large (${bytes} bytes)`);
+    }
+
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      throw new Error(`${sourceLabel} invalid JSON: ${error}`);
+    }
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let receivedBytes = 0;
+  const chunks = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    if (value && value.byteLength > 0) {
+      receivedBytes += value.byteLength;
+      if (receivedBytes > boundedMaxBytes) {
+        try {
+          await reader.cancel();
+        } catch {
+          // no-op
+        }
+        throw new Error(`${sourceLabel} payload too large (> ${boundedMaxBytes} bytes)`);
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+  }
+
+  chunks.push(decoder.decode());
+  const text = chunks.join("");
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${sourceLabel} invalid JSON: ${error}`);
   }
 }
 
@@ -5966,7 +6028,10 @@ async function pollTimelineOnce(initial, generation) {
         throw new Error(`watch failed (${response.status}): ${detail}`);
       }
 
-      return response.json();
+      return readJsonResponseWithByteLimit(
+        response,
+        MAX_TIMELINE_JSON_RESPONSE_BYTES,
+        "timeline bootstrap");
     };
     const fetchTurnsWatch = async (maxEntries) => {
       const requestedMaxEntries = normalizeTimelineMaxEntries(maxEntries, activeWatchMaxEntries);
@@ -5985,7 +6050,10 @@ async function pollTimelineOnce(initial, generation) {
         throw new Error(`watch failed (${response.status}): ${detail}`);
       }
 
-      return response.json();
+      return readJsonResponseWithByteLimit(
+        response,
+        MAX_TIMELINE_JSON_RESPONSE_BYTES,
+        "timeline watch");
     };
 
     const response = isInitialRequest
