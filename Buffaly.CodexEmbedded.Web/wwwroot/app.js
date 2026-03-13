@@ -8825,6 +8825,7 @@ function hasPendingDiffNotes() {
 }
 
 async function queueCurrentComposerPrompt() {
+  await settleScribeBeforeSubmit();
   const prompt = promptInput.value.trim();
   const images = pendingComposerImages.map((x) => ({ ...x }));
   const hasDiffNotes = hasPendingDiffNotes();
