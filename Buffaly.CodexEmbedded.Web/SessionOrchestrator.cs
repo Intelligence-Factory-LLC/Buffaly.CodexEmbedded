@@ -7,6 +7,9 @@ using BasicUtilities;
 
 internal sealed class SessionOrchestrator : IAsyncDisposable
 {
+	private const int WatchToolOutputTextMaxChars = 6000;
+	private const int WatchToolCallTextMaxChars = 3000;
+	private const int WatchGeneralTextSafetyMaxChars = 32000;
 	private readonly WebRuntimeDefaults _defaults;
 	private readonly TimelineProjectionService _timelineProjection;
 	private readonly object _sync = new();
@@ -192,10 +195,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				var latest = state.Turns[^1];
 				if (latest.IsInFlight || latest.Intermediate.Count > 0)
 				{
-					activeTurnDetail = latest.Clone();
-					activeTurnDetail.IntermediateLoaded = true;
-					activeTurnDetail.HasIntermediate = activeTurnDetail.Intermediate.Count > 0;
-					activeTurnDetail.IntermediateCount = activeTurnDetail.Intermediate.Count;
+					activeTurnDetail = ToWatchActiveTurnDetail(latest);
 				}
 			}
 
@@ -540,8 +540,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var summary = new ConsolidatedTurnSnapshot
 		{
 			TurnId = source.TurnId,
-			User = source.User.Clone(),
-			AssistantFinal = source.AssistantFinal?.Clone(),
+			User = ToWatchEntry(source.User),
+			AssistantFinal = source.AssistantFinal is null ? null : ToWatchEntry(source.AssistantFinal),
 			Intermediate = new List<TurnEntrySnapshot>(),
 			IsInFlight = source.IsInFlight,
 			HasIntermediate = source.Intermediate.Count > 0,
@@ -550,6 +550,107 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		};
 
 		return summary;
+	}
+
+	private static ConsolidatedTurnSnapshot ToWatchActiveTurnDetail(ConsolidatedTurnSnapshot source)
+	{
+		var detail = new ConsolidatedTurnSnapshot
+		{
+			TurnId = source.TurnId,
+			User = ToWatchEntry(source.User),
+			AssistantFinal = source.AssistantFinal is null ? null : ToWatchEntry(source.AssistantFinal),
+			Intermediate = source.Intermediate.Select(ToWatchEntry).ToList(),
+			IsInFlight = source.IsInFlight,
+			HasIntermediate = source.Intermediate.Count > 0,
+			IntermediateCount = source.Intermediate.Count,
+			IntermediateLoaded = true
+		};
+
+		return detail;
+	}
+
+	private static TurnEntrySnapshot ToWatchEntry(TurnEntrySnapshot source)
+	{
+		var text = ClipWatchEntryText(source);
+		return new TurnEntrySnapshot(
+			source.Role,
+			source.Title,
+			text,
+			source.Timestamp,
+			source.RawType,
+			source.Compact,
+			source.Images ?? Array.Empty<string>());
+	}
+
+	private static string ClipWatchEntryText(TurnEntrySnapshot source)
+	{
+		var text = source.Text ?? string.Empty;
+		if (text.Length == 0)
+		{
+			return text;
+		}
+
+		var rawType = source.RawType ?? string.Empty;
+		var role = source.Role ?? string.Empty;
+		var isToolRole = string.Equals(role, "tool", StringComparison.OrdinalIgnoreCase);
+		var isToolOutput =
+			string.Equals(rawType, "function_call_output", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(rawType, "custom_tool_call_output", StringComparison.OrdinalIgnoreCase) ||
+			rawType.IndexOf("tool_call_output", StringComparison.OrdinalIgnoreCase) >= 0;
+		var isToolCall =
+			string.Equals(rawType, "function_call", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(rawType, "custom_tool_call", StringComparison.OrdinalIgnoreCase) ||
+			rawType.IndexOf("tool_call", StringComparison.OrdinalIgnoreCase) >= 0;
+
+		var maxChars = WatchGeneralTextSafetyMaxChars;
+		if (isToolOutput || isToolRole)
+		{
+			maxChars = WatchToolOutputTextMaxChars;
+		}
+		else if (isToolCall)
+		{
+			maxChars = WatchToolCallTextMaxChars;
+		}
+
+		return ClipMiddle(text, maxChars);
+	}
+
+	private static string ClipMiddle(string text, int maxChars)
+	{
+		if (string.IsNullOrEmpty(text))
+		{
+			return string.Empty;
+		}
+
+		var boundedMax = Math.Max(256, maxChars);
+		if (text.Length <= boundedMax)
+		{
+			return text;
+		}
+
+		const string marker = "\n... (truncated middle) ...\n";
+		var available = boundedMax - marker.Length;
+		if (available <= 32)
+		{
+			return text.Substring(0, Math.Max(32, boundedMax));
+		}
+
+		var headChars = (int)Math.Floor(available * 0.7);
+		var tailChars = available - headChars;
+		if (tailChars < 32)
+		{
+			tailChars = 32;
+			headChars = available - tailChars;
+		}
+		if (headChars < 32)
+		{
+			headChars = 32;
+			tailChars = available - headChars;
+		}
+
+		var head = text.Substring(0, headChars);
+		var tail = text.Substring(text.Length - tailChars, tailChars);
+		return head + marker + tail;
 	}
 
 	private static TurnEntrySnapshot ToTurnEntry(TimelineProjectedEntry source)
