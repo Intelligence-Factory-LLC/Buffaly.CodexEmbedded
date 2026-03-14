@@ -9,7 +9,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 {
 	private const int WatchToolOutputTextMaxChars = 6000;
 	private const int WatchToolCallTextMaxChars = 3000;
-	private const int WatchGeneralTextSafetyMaxChars = 32000;
+	private const int WatchGeneralTextSafetyMaxChars = 200000;
+	private const int WatchActiveDetailMaxIntermediateEntries = 24;
 	private readonly WebRuntimeDefaults _defaults;
 	private readonly TimelineProjectionService _timelineProjection;
 	private readonly object _sync = new();
@@ -554,16 +555,23 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	private static ConsolidatedTurnSnapshot ToWatchActiveTurnDetail(ConsolidatedTurnSnapshot source)
 	{
+		var totalIntermediateCount = source.Intermediate.Count;
+		var maxIntermediateCount = Math.Max(1, WatchActiveDetailMaxIntermediateEntries);
+		var skippedIntermediateCount = Math.Max(0, totalIntermediateCount - maxIntermediateCount);
+		var visibleIntermediate = skippedIntermediateCount > 0
+			? source.Intermediate.Skip(skippedIntermediateCount)
+			: source.Intermediate.AsEnumerable();
+
 		var detail = new ConsolidatedTurnSnapshot
 		{
 			TurnId = source.TurnId,
 			User = ToWatchEntry(source.User),
 			AssistantFinal = source.AssistantFinal is null ? null : ToWatchEntry(source.AssistantFinal),
-			Intermediate = source.Intermediate.Select(ToWatchEntry).ToList(),
+			Intermediate = visibleIntermediate.Select(ToWatchEntry).ToList(),
 			IsInFlight = source.IsInFlight,
-			HasIntermediate = source.Intermediate.Count > 0,
-			IntermediateCount = source.Intermediate.Count,
-			IntermediateLoaded = true
+			HasIntermediate = totalIntermediateCount > 0,
+			IntermediateCount = totalIntermediateCount,
+			IntermediateLoaded = skippedIntermediateCount == 0
 		};
 
 		return detail;
@@ -603,13 +611,17 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			rawType.IndexOf("tool_call", StringComparison.OrdinalIgnoreCase) >= 0;
 
 		var maxChars = WatchGeneralTextSafetyMaxChars;
-		if (isToolOutput || isToolRole)
+		if (isToolOutput)
 		{
 			maxChars = WatchToolOutputTextMaxChars;
 		}
 		else if (isToolCall)
 		{
 			maxChars = WatchToolCallTextMaxChars;
+		}
+		else if (isToolRole)
+		{
+			maxChars = WatchToolOutputTextMaxChars;
 		}
 
 		return ClipMiddle(text, maxChars);
