@@ -91,6 +91,8 @@ let configuredDefaultModel = "";
 let scribeController = null;
 let sidebarProjectSearchQuery = "";
 let sidebarProjectSearchExpanded = false;
+let projectSidebarRenderQueued = false;
+let projectSidebarRenderPendingWhileHidden = false;
 let vsSelectionSnapshot = null; // { filePath, fileName, selectionText, caretLine, caretColumn }
 let consumedVsSelectionSignature = "";
 let vsSelectionPollTimer = null;
@@ -100,6 +102,7 @@ let consumedTimelineSelectionSignature = "";
 let pendingBuildFixClip = null; // { signature, state, errors, warnings, errorCount }
 let dismissedBuildFixSignature = "";
 let buildFixPollTimer = null;
+let lastDiffRefreshAssistantSignatureByThread = new Map();
 let openAiKeyStatusCache = null; // { hasKey, checkedAtMs }
 let blockedAutoRestoreThreadId = "";
 let startupRestoreAttemptThreadId = "";
@@ -124,6 +127,7 @@ const MAX_QUEUE_PREVIEW_SOURCE_CHARS = 1200;
 const MAX_QUEUE_PREVIEW_KEY_CHARS = 160;
 const MAX_QUEUED_TURNS_TRACKED = 100;
 const MAX_PROJECT_SESSIONS_COLLAPSED = 4;
+const MAX_PROJECT_SESSIONS_LOADED = 20;
 const MAX_COMPOSER_IMAGES = 4;
 const MAX_COMPOSER_IMAGE_BYTES = 8 * 1024 * 1024;
 const GLOBAL_PROMPT_DRAFT_KEY = "__global__";
@@ -933,6 +937,58 @@ function mergeIncomingTurnsWithExisting(incomingTurns, existingTurns, activeTurn
   }
 
   return limitTurnSnapshotWindow(merged);
+}
+
+function buildLatestAssistantRenderSignature(turns) {
+  if (!Array.isArray(turns) || turns.length === 0) {
+    return "";
+  }
+
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const turn = turns[i];
+    const assistant = turn?.assistantFinal || turn?.AssistantFinal || null;
+    if (!assistant) {
+      continue;
+    }
+
+    const text = typeof assistant.text === "string"
+      ? assistant.text
+      : (typeof assistant.Text === "string" ? assistant.Text : "");
+    if (!text) {
+      continue;
+    }
+
+    const tail = text.length > 192 ? text.slice(text.length - 192) : text;
+    const turnId = readTurnSnapshotTurnId(turn) || "";
+    const timestamp = assistant.timestamp || assistant.Timestamp || "";
+    const rawType = assistant.rawType || assistant.RawType || "";
+    return `${turnId}|${timestamp}|${rawType}|${text.length}|${tail}`;
+  }
+
+  return "";
+}
+
+function refreshWorktreeDiffForAssistantRender(threadId, turns) {
+  const normalizedThreadId = normalizeThreadId(threadId);
+  if (!normalizedThreadId) {
+    return;
+  }
+
+  const nextSignature = buildLatestAssistantRenderSignature(turns);
+  if (!nextSignature) {
+    return;
+  }
+
+  const priorSignature = lastDiffRefreshAssistantSignatureByThread.get(normalizedThreadId) || "";
+  if (priorSignature === nextSignature) {
+    return;
+  }
+
+  lastDiffRefreshAssistantSignatureByThread.set(normalizedThreadId, nextSignature);
+  const requestRefresh = window.codexDiffRequestRefresh;
+  if (typeof requestRefresh === "function") {
+    requestRefresh({ force: false, reason: "assistant_render" });
+  }
 }
 
 function rememberTimelineCache(threadId, payload) {
@@ -2918,7 +2974,7 @@ function applyProjectSearchUi(options = {}) {
   }
 }
 
-function renderProjectSidebar() {
+function renderProjectSidebarNow() {
   if (!projectList) {
     return;
   }
@@ -3248,6 +3304,37 @@ function renderProjectSidebar() {
     empty.textContent = searchEnabled ? "No matching projects or sessions." : "No sessions to display.";
     projectList.appendChild(empty);
   }
+}
+
+function renderProjectSidebar() {
+  if (!isDocumentVisible()) {
+    projectSidebarRenderPendingWhileHidden = true;
+    return;
+  }
+
+  projectSidebarRenderPendingWhileHidden = false;
+  if (projectSidebarRenderQueued) {
+    return;
+  }
+
+  projectSidebarRenderQueued = true;
+  const run = () => {
+    if (!isDocumentVisible()) {
+      projectSidebarRenderQueued = false;
+      projectSidebarRenderPendingWhileHidden = true;
+      return;
+    }
+
+    projectSidebarRenderQueued = false;
+    renderProjectSidebarNow();
+  };
+
+  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+    window.requestAnimationFrame(run);
+    return;
+  }
+
+  setTimeout(run, 0);
 }
 
 function wsUrl() {
@@ -6118,6 +6205,7 @@ async function pollTimelineOnce(initial, generation) {
         } else {
           timeline.clear();
         }
+        refreshWorktreeDiffForAssistantRender(normalizedThreadId, turns);
 
         if (polledSessionId && sessions.has(polledSessionId)) {
           reconcileTurnAndPlanStateFromTurnsWatch(polledSessionId, turns);
@@ -7431,7 +7519,7 @@ function handleServerEvent(frame) {
         }
       }
       let persistedPreferenceUpdated = false;
-      sessionCatalog = list
+      const normalizedCatalog = list
         .filter((s) => s && s.threadId)
         .map((s) => {
           const normalizedThreadId = typeof s.threadId === "string" ? s.threadId.trim() : "";
@@ -7470,6 +7558,17 @@ function handleServerEvent(frame) {
           };
         })
         .sort((a, b) => (b.updatedAtUtc || "").localeCompare(a.updatedAtUtc || ""));
+      const perProjectCounts = new Map();
+      sessionCatalog = normalizedCatalog.filter((entry) => {
+        const projectKey = getProjectKeyFromCwd(entry.cwd || "");
+        const count = perProjectCounts.get(projectKey) || 0;
+        if (count >= MAX_PROJECT_SESSIONS_LOADED) {
+          return false;
+        }
+
+        perProjectCounts.set(projectKey, count + 1);
+        return true;
+      });
       if (payload.processingByThread && typeof payload.processingByThread === "object" && !Array.isArray(payload.processingByThread)) {
         nextProcessingByThread.clear();
         for (const [threadId, processing] of Object.entries(payload.processingByThread)) {
@@ -9272,6 +9371,9 @@ document.addEventListener("visibilitychange", () => {
       send("session_list");
     }
     restartTimelinePolling();
+    if (projectSidebarRenderPendingWhileHidden) {
+      renderProjectSidebar();
+    }
     return;
   }
 

@@ -22,12 +22,13 @@
 
   const noteModalReady = !!(noteModal && noteModalPath && noteModalTextarea && noteModalSaveBtn && noteModalRemoveBtn && noteModalCancelBtn && noteModalCard && noteModalTitle);
 
-  const POLL_MS = 5000;
+  const REFRESH_DEBOUNCE_MS = 120;
   const MAX_LINES_PER_FILE = 280;
   const STORAGE_NOTES_PREFIX = "codex-worktree-diff-notes-v2::";
 
-  let pollTimer = null;
   let pollInFlight = false;
+  let refreshTimer = null;
+  let refreshPendingForce = false;
   let lastRenderKey = "";
   let lastCwd = "";
   let currentBranch = "";
@@ -839,17 +840,25 @@
     }
   }
 
-  function startPolling() {
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
+  function queueRefresh(options = {}) {
+    if (options.force === true) {
+      refreshPendingForce = true;
+    }
+    if (refreshTimer) {
+      return;
     }
 
-    fetchAndRenderDiff(true).catch(() => { });
-    pollTimer = setInterval(() => {
-      fetchAndRenderDiff(false).catch(() => { });
-    }, POLL_MS);
+    refreshTimer = setTimeout(() => {
+      const force = refreshPendingForce;
+      refreshPendingForce = false;
+      refreshTimer = null;
+      fetchAndRenderDiff(force).catch(() => { });
+    }, REFRESH_DEBOUNCE_MS);
   }
+
+  window.codexDiffRequestRefresh = function codexDiffRequestRefresh(options = {}) {
+    queueRefresh(options);
+  };
 
   function startModalDrag(event) {
     if (!(event.target instanceof Element)) {
@@ -1000,13 +1009,8 @@
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
-      startPolling();
+      queueRefresh({ force: true });
       return;
-    }
-
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
     }
   });
 
@@ -1050,5 +1054,5 @@
 
   applyPanelState();
   renderComposerNotes();
-  startPolling();
+  queueRefresh({ force: true });
 })();

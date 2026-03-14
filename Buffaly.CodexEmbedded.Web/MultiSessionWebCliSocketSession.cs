@@ -8,6 +8,7 @@ using BasicUtilities;
 
 internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 {
+	private const int MaxCatalogSessionsPerProject = 20;
 	private readonly WebSocket _socket;
 	private readonly WebRuntimeDefaults _defaults;
 	private readonly SessionOrchestrator _orchestrator;
@@ -667,8 +668,15 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	private async Task SendSessionCatalogAsync(CancellationToken cancellationToken)
 	{
 		var sessions = CodexSessionCatalog.ListSessions(_defaults.CodexHomePath, limit: 0);
+		var limitedSessions = sessions
+			.GroupBy(s => ServerStateSnapshotBuilder.NormalizeProjectCwd(s.Cwd), StringComparer.OrdinalIgnoreCase)
+			.SelectMany(group => group
+				.OrderByDescending(x => x.UpdatedAtUtc ?? DateTimeOffset.MinValue)
+				.ThenBy(x => x.ThreadId, StringComparer.Ordinal)
+				.Take(MaxCatalogSessionsPerProject))
+			.ToArray();
 		var processingByThread = _orchestrator.GetLiveProcessingByThread();
-		var payload = sessions.Select(s => new
+		var payload = limitedSessions.Select(s => new
 		{
 			threadId = s.ThreadId,
 			threadName = s.ThreadName,

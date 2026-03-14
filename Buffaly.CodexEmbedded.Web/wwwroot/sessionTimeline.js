@@ -2534,10 +2534,12 @@
       const head = this.createToolPreBlock("watcher-entry-text watcher-tool-body-block", segments.headText);
       bodyWrap.appendChild(head);
 
-      const hidden = this.createToolPreBlock("watcher-entry-text watcher-tool-body-block watcher-tool-body-hidden", segments.hiddenText);
       const expanded = this.expandedToolEntryIds.has(entryId);
-      hidden.classList.toggle("hidden", !expanded);
-      bodyWrap.appendChild(hidden);
+      if (expanded) {
+        const hidden = this.createToolPreBlock("watcher-entry-text watcher-tool-body-block watcher-tool-body-hidden", segments.hiddenText);
+        hidden.classList.remove("hidden");
+        bodyWrap.appendChild(hidden);
+      }
 
       const toggle = document.createElement("button");
       toggle.type = "button";
