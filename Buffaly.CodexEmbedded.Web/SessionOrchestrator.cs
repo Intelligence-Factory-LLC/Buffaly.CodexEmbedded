@@ -2551,6 +2551,11 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		{
 			var rpcDebug = managedSession is null ? string.Empty : $" {managedSession.BuildRpcDebugSummary()}";
 			WriteOrchestratorAudit($"event=core_rpc_warning sessionId={sessionId} type={ev.Type} message={ev.Message ?? "(none)"}{rpcDebug}");
+
+			if (string.Equals(ev.Type, "rpc_wait_failed", StringComparison.Ordinal))
+			{
+				TryOfferRecoveryForRpcWaitFailure(sessionId, managedSession, ev);
+			}
 		}
 
 		if (IsCoreTransportPumpFailure(ev))
@@ -2653,6 +2658,27 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		CoreEvent?.Invoke(sessionId, ev);
+	}
+
+	private bool TryOfferRecoveryForRpcWaitFailure(string sessionId, ManagedSession? managedSession, CodexCoreEvent ev)
+	{
+		if (managedSession is null || managedSession.IsAppServerRecovering || !managedSession.IsTurnInFlight)
+		{
+			return false;
+		}
+
+		var coreMessage = NormalizeCoreIssueMessage(ev.Message, maxLength: 180);
+		var message = string.IsNullOrWhiteSpace(coreMessage)
+			? "RPC wait failed while a turn was active. Codex may be disconnected."
+			: $"RPC wait failed while a turn was active ({coreMessage}). Codex may be disconnected.";
+
+		return TryCreateRecoveryOfferForStaleTurn(
+			sessionId,
+			managedSession,
+			reason: "rpc_wait_failed",
+			message: message,
+			pendingAge: TimeSpan.Zero,
+			detectedEventName: "rpc_wait_failed_recovery_offer");
 	}
 
 	private static bool IsCoreTransportPumpFailure(CodexCoreEvent ev)
