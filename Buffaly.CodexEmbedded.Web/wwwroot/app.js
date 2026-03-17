@@ -20,6 +20,7 @@ let lastSessionListViewKey = "";
 let appServerErrorBannerTimer = null;
 let appServerErrorBannerSticky = false;
 let lastModelsRequestAtBySession = new Map(); // sessionId -> epoch ms
+let codexAccountInfo = null; // { authMode, accountId, email, subject, chatgptPlanType, label, identityKey, isAvailable }
 
 let sessions = new Map(); // sessionId -> { threadId, cwd, model, reasoningEffort, approvalPolicy, sandboxPolicy }
 let sessionCatalog = []; // [{ threadId, threadName, updatedAtUtc, cwd, model, reasoningEffort, sessionFilePath }]
@@ -253,6 +254,8 @@ const sessionMetaThreadValue = document.getElementById("sessionMetaThreadValue")
 const sessionMetaThreadCopyBtn = document.getElementById("sessionMetaThreadCopyBtn");
 const sessionMetaDetailsBtn = document.getElementById("sessionMetaDetailsBtn");
 const sessionMetaModelItem = document.getElementById("sessionMetaModelItem");
+const sessionMetaAccountItem = document.getElementById("sessionMetaAccountItem");
+const sessionMetaAccountValue = document.getElementById("sessionMetaAccountValue");
 const jumpToBtn = document.getElementById("jumpToBtn");
 const conversationModelSelect = document.getElementById("conversationModelSelect");
 const conversationReasoningSelect = document.getElementById("conversationReasoningSelect");
@@ -5954,6 +5957,112 @@ function setSessionThreadCopyButtonCopied() {
   }, 1500);
 }
 
+function normalizeCodexAccountPayload(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+
+  const authMode = typeof raw.authMode === "string" ? raw.authMode.trim() : "";
+  const accountId = typeof raw.accountId === "string" ? raw.accountId.trim() : "";
+  const email = typeof raw.email === "string" ? raw.email.trim() : "";
+  const subject = typeof raw.subject === "string" ? raw.subject.trim() : "";
+  const chatgptPlanType = typeof raw.chatgptPlanType === "string" ? raw.chatgptPlanType.trim() : "";
+  const identityKey = typeof raw.identityKey === "string"
+    ? raw.identityKey.trim()
+    : [authMode, accountId, email, subject].join("|");
+  const label = typeof raw.label === "string" ? raw.label.trim() : "";
+  const isAvailable = raw.isAvailable === true || !!(accountId || email || subject);
+
+  if (!authMode && !accountId && !email && !subject && !label && !isAvailable) {
+    return null;
+  }
+
+  return {
+    authMode,
+    accountId,
+    email,
+    subject,
+    chatgptPlanType,
+    label,
+    identityKey,
+    isAvailable
+  };
+}
+
+function formatCodexAccountDisplay(account) {
+  if (!account) {
+    return "unavailable";
+  }
+
+  if (account.label) {
+    return account.label;
+  }
+
+  if (account.email) {
+    return account.email;
+  }
+
+  if (account.accountId) {
+    return `account:${account.accountId.slice(0, 12)}`;
+  }
+
+  if (account.subject) {
+    return `sub:${account.subject.slice(0, 16)}`;
+  }
+
+  if (account.authMode) {
+    return account.authMode;
+  }
+
+  return "unavailable";
+}
+
+function syncCodexAccountFromPayload(raw, sourceType = "") {
+  const next = normalizeCodexAccountPayload(raw);
+  const previousKey = codexAccountInfo?.identityKey || "";
+  const nextKey = next?.identityKey || "";
+  const changed = previousKey !== nextKey;
+  codexAccountInfo = next;
+
+  if (changed) {
+    const display = formatCodexAccountDisplay(next);
+    if (display && display !== "unavailable") {
+      appendLog(`[auth] active account ${display}${sourceType ? ` (${sourceType})` : ""}`);
+    } else {
+      appendLog("[auth] active account unavailable");
+    }
+  }
+
+  refreshSessionMetaAccount();
+}
+
+function refreshSessionMetaAccount() {
+  if (!sessionMetaAccountItem || !sessionMetaAccountValue) {
+    return;
+  }
+
+  const hasState = !!getActiveSessionState();
+  if (!hasState) {
+    sessionMetaAccountItem.classList.add("hidden");
+    sessionMetaAccountValue.textContent = "unavailable";
+    sessionMetaAccountValue.title = "";
+    return;
+  }
+
+  const account = codexAccountInfo;
+  const display = formatCodexAccountDisplay(account);
+  sessionMetaAccountItem.classList.remove("hidden");
+  sessionMetaAccountValue.textContent = display;
+
+  const titleParts = [];
+  if (account?.email) titleParts.push(`email=${account.email}`);
+  if (account?.accountId) titleParts.push(`accountId=${account.accountId}`);
+  if (account?.subject) titleParts.push(`subject=${account.subject}`);
+  if (account?.chatgptPlanType) titleParts.push(`plan=${account.chatgptPlanType}`);
+  if (account?.authMode) titleParts.push(`mode=${account.authMode}`);
+  sessionMetaAccountValue.title = titleParts.join(" | ");
+}
+
 function refreshSessionMeta() {
   if (!sessionMeta || !sessionMetaModelItem) {
     return;
@@ -5980,6 +6089,7 @@ function refreshSessionMeta() {
       sessionMetaThreadValue.textContent = "(none)";
       sessionMetaThreadValue.title = "";
     }
+    refreshSessionMetaAccount();
     resetSessionThreadCopyButton();
     sessionMeta.title = "";
     updateConversationModelSummary();
@@ -6022,6 +6132,7 @@ function refreshSessionMeta() {
     sessionMetaThreadValue.textContent = threadId || "(none)";
     sessionMetaThreadValue.title = threadId || "";
   }
+  refreshSessionMetaAccount();
   resetSessionThreadCopyButton();
 
   syncConversationModelOptions(selectedModel);
@@ -7274,6 +7385,7 @@ function handleServerEvent(frame) {
     }
 
     case "session_list": {
+      syncCodexAccountFromPayload(payload.codexAccount, "session_list");
       const list = Array.isArray(payload.sessions) ? payload.sessions : [];
       const nextSessionListViewKey = buildSessionListViewKey(
         payload.activeSessionId || null,
@@ -7488,6 +7600,7 @@ function handleServerEvent(frame) {
     }
 
     case "session_catalog": {
+      syncCodexAccountFromPayload(payload.codexAccount, "session_catalog");
       sessionCatalogLoadedOnce = true;
       const list = Array.isArray(payload.sessions) ? payload.sessions : [];
       const nextProcessingByThread = new Map();

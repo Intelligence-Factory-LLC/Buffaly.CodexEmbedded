@@ -2503,6 +2503,23 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					SessionsChanged?.Invoke();
 				}
 			}
+			case "account/chatgptAuthTokens/refresh":
+			{
+				var authState = CodexAuthStateReader.Read(_defaults.CodexHomePath);
+				if (!authState.HasRefreshTokenPayload)
+				{
+					log.Write($"[auth_refresh] session={sessionId} unavailable account={MaskAccountId(authState.AccountId)}");
+					return new { };
+				}
+
+				log.Write($"[auth_refresh] session={sessionId} account={MaskAccountId(authState.AccountId)}");
+				return new
+				{
+					accessToken = authState.AccessToken,
+					chatgptAccountId = authState.AccountId,
+					chatgptPlanType = authState.ChatGptPlanType
+				};
+			}
 			case "item/tool/call":
 				return new
 				{
@@ -2512,6 +2529,22 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			default:
 				return new { };
 		}
+	}
+
+	private static string MaskAccountId(string? accountId)
+	{
+		if (string.IsNullOrWhiteSpace(accountId))
+		{
+			return "(none)";
+		}
+
+		var trimmed = accountId.Trim();
+		if (trimmed.Length <= 8)
+		{
+			return trimmed;
+		}
+
+		return $"{trimmed[..8]}...";
 	}
 
 	private void HandleCoreEvent(string sessionId, LocalLogWriter sessionLog, CodexCoreEvent ev)

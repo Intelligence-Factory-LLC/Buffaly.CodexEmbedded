@@ -668,6 +668,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	private async Task SendSessionCatalogAsync(CancellationToken cancellationToken)
 	{
 		var sessions = CodexSessionCatalog.ListSessions(_defaults.CodexHomePath, limit: 0);
+		var codexAuthState = CodexAuthStateReader.Read(_defaults.CodexHomePath);
 		var limitedSessions = sessions
 			.GroupBy(s => ServerStateSnapshotBuilder.NormalizeProjectCwd(s.Cwd), StringComparer.OrdinalIgnoreCase)
 			.SelectMany(group => group
@@ -690,6 +691,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		await SendEventAsync("session_catalog", new
 		{
 			codexHomePath = CodexHomePaths.ResolveCodexHomePath(_defaults.CodexHomePath),
+			codexAccount = BuildCodexAccountPayload(codexAuthState),
 			sessions = payload,
 			processingByThread
 		}, cancellationToken);
@@ -794,6 +796,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	private async Task SendSessionListAsync(CancellationToken cancellationToken)
 	{
 		var snapshots = _orchestrator.GetSessionSnapshots(includeTurnCacheStats: false);
+		var codexAuthState = CodexAuthStateReader.Read(_defaults.CodexHomePath);
 
 		var sessions = snapshots
 			.Select(s => (object)new
@@ -862,7 +865,30 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			.ToList();
 
 		var processingByThread = _orchestrator.GetLiveProcessingByThread();
-		await SendEventAsync("session_list", new { activeSessionId = (string?)null, sessions, processingByThread }, cancellationToken);
+		await SendEventAsync("session_list", new
+		{
+			activeSessionId = (string?)null,
+			codexAccount = BuildCodexAccountPayload(codexAuthState),
+			sessions,
+			processingByThread
+		}, cancellationToken);
+	}
+
+	private static object BuildCodexAccountPayload(CodexAuthStateSnapshot authState)
+	{
+		return new
+		{
+			authMode = authState.AuthMode,
+			accountId = authState.AccountId,
+			email = authState.Email,
+			subject = authState.Subject,
+			chatgptPlanType = authState.ChatGptPlanType,
+			label = authState.DisplayLabel,
+			identityKey = authState.IdentityKey,
+			isAvailable = authState.HasIdentity,
+			lastRefreshUtc = authState.LastRefreshUtc?.ToString("O"),
+			fileUpdatedAtUtc = authState.FileUpdatedAtUtc?.ToString("O")
+		};
 	}
 
 	private async Task SendModelsListAsync(string sessionId, CancellationToken cancellationToken)

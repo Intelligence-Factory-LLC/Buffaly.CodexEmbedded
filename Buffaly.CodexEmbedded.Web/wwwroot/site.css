@@ -1083,6 +1083,10 @@ body {
 	text-overflow: ellipsis;
 }
 
+.conversation-meta-account-row .conversation-meta-thread-value {
+	display: block;
+}
+
 .conversation-meta-thread-copy-btn {
 	flex: 0 0 auto;
 	padding: 0.24rem 0.42rem;
