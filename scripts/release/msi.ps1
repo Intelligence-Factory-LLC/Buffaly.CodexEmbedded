@@ -111,15 +111,15 @@ if not exist "%TARGET%" (
 
 set "WEB_CONFIG_PATH=%ROOT%\apps\web\appsettings.json"
 set "BUFFALY_WEB_CONFIG=%WEB_CONFIG_PATH%"
-for /f "usebackq delims=" %%U in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$default='http://127.0.0.1:5170/'; $u=$env:BUFFALY_CODEX_WEB_URL; if([string]::IsNullOrWhiteSpace($u) -and (Test-Path $env:BUFFALY_WEB_CONFIG)){ try { $json=Get-Content -Raw $env:BUFFALY_WEB_CONFIG | ConvertFrom-Json; $u=[string]$json.WebLaunchUrl } catch {} }; if([string]::IsNullOrWhiteSpace($u)){ $u=$default }; $u=$u.Trim(); $parsed=$null; if(-not [Uri]::TryCreate($u,[UriKind]::Absolute,[ref]$parsed)){ $u=$default }; if(($u -notlike 'http://*') -and ($u -notlike 'https://*')){ $u=$default }; if(-not $u.EndsWith('/')){ $u=$u + '/' }; $u"`) do set "WEB_URL=%%U"
-if "%WEB_URL%"=="" set "WEB_URL=https://win.tailf78e41.ts.net/codex/"
+    for /f "usebackq delims=" %%U in (`pwsh -NoProfile -ExecutionPolicy Bypass -Command "$default='http://127.0.0.1:5225/'; $u=$env:BUFFALY_CODEX_WEB_URL; if([string]::IsNullOrWhiteSpace($u) -and (Test-Path $env:BUFFALY_WEB_CONFIG)){ try { $json=Get-Content -Raw $env:BUFFALY_WEB_CONFIG | ConvertFrom-Json; $u=[string]$json.WebLaunchUrl } catch {} }; if([string]::IsNullOrWhiteSpace($u)){ $u=$default }; $u=$u.Trim(); $parsed=$null; if(-not [Uri]::TryCreate($u,[UriKind]::Absolute,[ref]$parsed)){ $u=$default }; if(($u -notlike 'http://*') -and ($u -notlike 'https://*')){ $u=$default }; if(-not $u.EndsWith('/')){ $u=$u + '/' }; $u"`) do set "WEB_URL=%%U"
+if "%WEB_URL%"=="" set "WEB_URL=http://127.0.0.1:5225/"
 set "INTERNAL_WEB_URL_HTTPS=https://127.0.0.1:7239/"
 set "INTERNAL_WEB_URL_HTTP=http://127.0.0.1:5225/"
 set "INTERNAL_BIND_URLS=https://127.0.0.1:7239;http://127.0.0.1:5225"
 
 
 set "BUFFALY_WEB_URL=%WEB_URL%"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri $env:INTERNAL_WEB_URL_HTTP -UseBasicParsing -TimeoutSec 1 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>nul
+pwsh -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -Uri $env:INTERNAL_WEB_URL_HTTP -UseBasicParsing -TimeoutSec 1 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>nul
 if %ERRORLEVEL%==0 (
   start "" "%WEB_URL%"
   exit /b 0
@@ -127,7 +127,7 @@ if %ERRORLEVEL%==0 (
 
 echo Starting Buffaly Codex Embedded Web UI...
 set "ASPNETCORE_URLS=%INTERNAL_BIND_URLS%"
-start "" powershell -NoProfile -ExecutionPolicy Bypass -Command "$check='http://127.0.0.1:5225/'; $open=$env:BUFFALY_WEB_URL; for($i=0; $i -lt 80; $i++){ try { Invoke-WebRequest -Uri $check -UseBasicParsing -TimeoutSec 1 | Out-Null; Start-Process $open; exit 0 } catch { Start-Sleep -Milliseconds 500 } }; Start-Process $open"
+start "" pwsh -NoProfile -ExecutionPolicy Bypass -Command "$check='http://127.0.0.1:5225/'; $open=$env:BUFFALY_WEB_URL; for($i=0; $i -lt 80; $i++){ try { Invoke-WebRequest -Uri $check -UseBasicParsing -TimeoutSec 1 | Out-Null; Start-Process $open; exit 0 } catch { Start-Sleep -Milliseconds 500 } }; Start-Process $open"
 
 for %%I in ("%TARGET%") do set "APPDIR=%%~dpI"
 pushd "%APPDIR%" >nul
@@ -435,6 +435,8 @@ finally {
 
 Write-Host "MSI created:"
 Write-Host "  $msiPath"
+
+
 
 
 
