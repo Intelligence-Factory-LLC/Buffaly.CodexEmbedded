@@ -56,11 +56,17 @@ internal sealed record CodexAuthStateSnapshot(
 	{
 		get
 		{
-			return string.Join("|",
-				AuthMode ?? string.Empty,
-				AccountId ?? string.Empty,
-				Email ?? string.Empty,
-				Subject ?? string.Empty);
+			var account = AccountId?.Trim() ?? string.Empty;
+			var email = Email?.Trim() ?? string.Empty;
+			var subject = Subject?.Trim() ?? string.Empty;
+			if (string.IsNullOrWhiteSpace(account) &&
+				string.IsNullOrWhiteSpace(email) &&
+				string.IsNullOrWhiteSpace(subject))
+			{
+				return string.Empty;
+			}
+
+			return string.Join("|", account, email, subject);
 		}
 	}
 

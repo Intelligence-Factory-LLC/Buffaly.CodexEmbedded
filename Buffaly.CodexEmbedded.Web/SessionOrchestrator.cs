@@ -771,6 +771,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	{
 		var effectiveCodexPath = codexPath ?? _defaults.CodexPath;
 		var effectiveCwd = cwd ?? _defaults.DefaultCwd;
+		var startupAuthState = CodexAuthStateReader.Read(_defaults.CodexHomePath);
 		var sessionLogPath = Path.Combine(_defaults.LogRootPath, $"session-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{sessionId}.log");
 		var sessionLog = new LocalLogWriter(sessionLogPath);
 		var pendingApprovals = new ConcurrentDictionary<string, TaskCompletionSource<string>>(StringComparer.Ordinal);
@@ -882,6 +883,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			pendingToolUserInputs,
 			ApprovalPolicy: session.ApprovalPolicy ?? approvalPolicy,
 			SandboxPolicy: session.SandboxMode ?? sandboxMode,
+			StartupAuthIdentityKey: NormalizeAuthIdentityKey(startupAuthState.IdentityKey),
+			StartupAuthLabel: NormalizeAuthLabel(startupAuthState.DisplayLabel),
 			AppServerRecovering: appServerRecovering,
 			ClientLifetimeCts: appServerLifetimeCts);
 		lock (_sync)
@@ -1542,6 +1545,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return;
 		}
 
+		if (TryGuardAgainstAuthAccountSwitch(sessionId, session, operation: "turn_start", out var authErrorMessage))
+		{
+			WriteOrchestratorAudit($"event=turn_send_rejected sessionId={sessionId} reason=auth_account_switched");
+			Broadcast?.Invoke("error", new { message = authErrorMessage });
+			return;
+		}
+
 		ApplySessionTurnOverrides(
 			session,
 			normalizedModel,
@@ -1587,6 +1597,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		if (session is null)
 		{
 			errorMessage = $"Unknown session: {sessionId}";
+			return false;
+		}
+
+		if (TryGuardAgainstAuthAccountSwitch(sessionId, session, operation: "turn_queue_add", out var authErrorMessage))
+		{
+			errorMessage = authErrorMessage;
+			Broadcast?.Invoke("error", new { message = authErrorMessage });
 			return false;
 		}
 
@@ -1736,6 +1753,11 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			return new SteerTurnResult(false, $"Unknown session: {sessionId}", TurnSubmitFallback.None);
 		}
 
+		if (TryGuardAgainstAuthAccountSwitch(sessionId, session, operation: "turn_steer", out var authErrorMessage))
+		{
+			return new SteerTurnResult(false, authErrorMessage, TurnSubmitFallback.None);
+		}
+
 		var safeImages = images?.ToList() ?? new List<CodexUserImageInput>();
 		if (string.IsNullOrWhiteSpace(normalizedText) && safeImages.Count == 0)
 		{
@@ -1825,6 +1847,11 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		{
 			WriteOrchestratorAudit(
 				$"event=turn_send_dispatching sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} fromQueue={fromQueue} mode={collaborationModeKind} text={SummarizeTextForAudit(request.Text, request.Images?.Count ?? 0)}");
+			if (TryGuardAgainstAuthAccountSwitch(sessionId, session, operation: fromQueue ? "turn_queue_dispatch" : "turn_dispatch", out var authErrorMessage))
+			{
+				Broadcast?.Invoke("error", new { message = authErrorMessage });
+				return TurnExecutionOutcome.AccountMismatch;
+			}
 			var lockAcquired = await WaitForTurnSlotWithTimeoutAsync(sessionId, session);
 			if (!lockAcquired)
 			{
@@ -2354,6 +2381,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				SessionsChanged?.Invoke();
 				return;
 			}
+			if (outcome == TurnExecutionOutcome.AccountMismatch)
+			{
+				session.RequeueQueuedTurnFront(queuedTurn);
+				SessionsChanged?.Invoke();
+				return;
+			}
 		}
 	}
 
@@ -2545,6 +2578,64 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		return $"{trimmed[..8]}...";
+	}
+
+	private static string NormalizeAuthIdentityKey(string? identityKey)
+	{
+		var normalized = identityKey?.Trim() ?? string.Empty;
+		return string.IsNullOrWhiteSpace(normalized) ? string.Empty : normalized;
+	}
+
+	private static string NormalizeAuthLabel(string? label)
+	{
+		var normalized = label?.Trim() ?? string.Empty;
+		return string.IsNullOrWhiteSpace(normalized) ? "unavailable" : normalized;
+	}
+
+	private bool TryGuardAgainstAuthAccountSwitch(string sessionId, ManagedSession session, string operation, out string errorMessage)
+	{
+		errorMessage = string.Empty;
+		var startupKey = NormalizeAuthIdentityKey(session.StartupAuthIdentityKey);
+		if (string.IsNullOrWhiteSpace(startupKey))
+		{
+			return false;
+		}
+
+		var currentAuthState = CodexAuthStateReader.Read(_defaults.CodexHomePath);
+		var currentKey = NormalizeAuthIdentityKey(currentAuthState.IdentityKey);
+		if (string.IsNullOrWhiteSpace(currentKey) || string.Equals(startupKey, currentKey, StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		var startedLabel = NormalizeAuthLabel(session.StartupAuthLabel);
+		var currentLabel = NormalizeAuthLabel(currentAuthState.DisplayLabel);
+		errorMessage = $"Codex account changed for this running session ({startedLabel} -> {currentLabel}). Stop and re-attach this thread, or create a new session.";
+		session.Log.Write($"[auth_guard] operation={operation} startedAccount={startedLabel} currentAccount={currentLabel}");
+		WriteOrchestratorAudit(
+			$"event=auth_account_switched sessionId={sessionId} threadId={session.Session.ThreadId} operation={operation} started={NormalizeAuditValue(startedLabel, 80)} current={NormalizeAuditValue(currentLabel, 80)}");
+
+		var shouldBroadcast = session.ShouldBroadcastCoreIssue("auth.account_switched", TimeSpan.FromSeconds(15));
+		if (shouldBroadcast)
+		{
+			Broadcast?.Invoke(
+				"appserver_error",
+				new
+				{
+					sessionId,
+					code = "auth.account_switched",
+					severity = "error",
+					message = "Codex account switched after this session started.",
+					detail = $"Started account: {startedLabel}. Current account: {currentLabel}.",
+					recommendedAction = "Stop and re-attach this session so it runs under the new account.",
+					isAuthError = true,
+					isTransient = false,
+					eventType = "auth/account_switched",
+					occurredAtUtc = DateTimeOffset.UtcNow.ToString("O")
+				});
+		}
+
+		return true;
 	}
 
 	private void HandleCoreEvent(string sessionId, LocalLogWriter sessionLog, CodexCoreEvent ev)
@@ -4842,6 +4933,7 @@ internal sealed record SessionSnapshot(
 	{
 		Finished,
 		QueueTimedOut,
+		AccountMismatch,
 		CanceledByLifetime
 	}
 
@@ -4905,6 +4997,8 @@ internal sealed record SessionSnapshot(
 		ConcurrentDictionary<string, TaskCompletionSource<Dictionary<string, object?>>> PendingToolUserInputs,
 		string? ApprovalPolicy = null,
 		string? SandboxPolicy = null,
+		string? StartupAuthIdentityKey = null,
+		string? StartupAuthLabel = null,
 		bool AppServerRecovering = false,
 		CancellationTokenSource? ClientLifetimeCts = null)
 	{
