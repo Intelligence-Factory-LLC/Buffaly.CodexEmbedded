@@ -149,6 +149,45 @@ app.MapGet("/api/settings/openai-key/status", async (
 	});
 });
 
+app.MapGet("/api/settings/codex-auth/status", (
+	HttpContext context,
+	WebRuntimeDefaults defaults) =>
+{
+	if (!IsHttpRequestAuthorized(context.Request, defaults))
+	{
+		return Results.Unauthorized();
+	}
+
+	var authState = CodexAuthStateReader.Read(defaults.CodexHomePath);
+	var hasAuthFile = !string.IsNullOrWhiteSpace(authState.SourceFilePath);
+	var message = hasAuthFile
+		? authState.HasIdentity
+			? "Codex auth file loaded."
+			: "Codex auth file exists but no account identity was found."
+		: "Codex auth file was not found under CODEX_HOME.";
+	var recommendation = authState.HasIdentity
+		? "If you switched accounts while sessions were running, stop and re-attach those sessions."
+		: "Run 'codex login' and refresh this page.";
+
+	return Results.Ok(new
+	{
+		codexHomePath = authState.CodexHomePath,
+		authFilePath = authState.SourceFilePath,
+		authFilePresent = hasAuthFile,
+		hasIdentity = authState.HasIdentity,
+		label = authState.DisplayLabel,
+		authMode = authState.AuthMode,
+		email = authState.Email,
+		accountId = authState.AccountId,
+		subject = authState.Subject,
+		chatgptPlanType = authState.ChatGptPlanType,
+		lastRefreshUtc = authState.LastRefreshUtc?.ToString("O"),
+		fileUpdatedAtUtc = authState.FileUpdatedAtUtc?.ToString("O"),
+		message,
+		recommendation
+	});
+});
+
 app.MapPut("/api/settings/openai-key", async (
 	HttpContext context,
 	OpenAiKeyUpdateRequest body,

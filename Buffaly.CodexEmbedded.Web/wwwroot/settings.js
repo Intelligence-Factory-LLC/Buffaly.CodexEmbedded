@@ -16,6 +16,9 @@ const openAiKeySaveBtn = document.getElementById("openAiKeySaveBtn");
 const openAiKeyClearBtn = document.getElementById("openAiKeyClearBtn");
 const openAiKeyStatus = document.getElementById("openAiKeyStatus");
 const buildInfoLine = document.getElementById("buildInfoLine");
+const codexAuthRefreshBtn = document.getElementById("codexAuthRefreshBtn");
+const codexAuthStatus = document.getElementById("codexAuthStatus");
+const codexAuthDetails = document.getElementById("codexAuthDetails");
 
 function isMobileViewport() {
   return window.matchMedia("(max-width: 900px)").matches;
@@ -228,6 +231,60 @@ function renderBuildInfo(payload) {
   buildInfoLine.textContent = `Build: ${buildNumber}` + (updated ? ` (${updated})` : "");
 }
 
+function setCodexAuthUiBusy(isBusy) {
+  if (codexAuthRefreshBtn) {
+    codexAuthRefreshBtn.disabled = isBusy;
+  }
+}
+
+function setCodexAuthStatusText(text, status = "") {
+  if (!codexAuthStatus) {
+    return;
+  }
+
+  codexAuthStatus.textContent = text || "";
+  codexAuthStatus.classList.toggle("error", status === "error");
+  codexAuthStatus.classList.toggle("success", status === "success");
+}
+
+function setCodexAuthDetailsText(text) {
+  if (!codexAuthDetails) {
+    return;
+  }
+
+  codexAuthDetails.textContent = text || "";
+}
+
+function renderCodexAuthStatus(payload) {
+  const hasIdentity = payload && payload.hasIdentity === true;
+  const label = payload && typeof payload.label === "string" ? payload.label.trim() : "";
+  const authMode = payload && typeof payload.authMode === "string" ? payload.authMode.trim() : "";
+  const email = payload && typeof payload.email === "string" ? payload.email.trim() : "";
+  const accountId = payload && typeof payload.accountId === "string" ? payload.accountId.trim() : "";
+  const plan = payload && typeof payload.chatgptPlanType === "string" ? payload.chatgptPlanType.trim() : "";
+  const lastRefresh = formatUpdatedAt(payload?.lastRefreshUtc);
+  const fileUpdated = formatUpdatedAt(payload?.fileUpdatedAtUtc);
+  const message = payload && typeof payload.message === "string" ? payload.message.trim() : "";
+  const recommendation = payload && typeof payload.recommendation === "string" ? payload.recommendation.trim() : "";
+
+  if (hasIdentity) {
+    const display = label || email || accountId || "available";
+    setCodexAuthStatusText(`Active account: ${display}`, "success");
+  } else {
+    setCodexAuthStatusText(message || "No active Codex account identity detected.", "error");
+  }
+
+  const details = [];
+  if (authMode) details.push(`Mode: ${authMode}`);
+  if (email) details.push(`Email: ${email}`);
+  if (accountId) details.push(`Account ID: ${accountId}`);
+  if (plan) details.push(`Plan: ${plan}`);
+  if (lastRefresh) details.push(`Last refresh: ${lastRefresh}`);
+  if (fileUpdated) details.push(`Auth file updated: ${fileUpdated}`);
+  if (recommendation) details.push(recommendation);
+  setCodexAuthDetailsText(details.join(" | "));
+}
+
 async function readJsonOrThrow(response) {
   if (response.ok) {
     return response.json();
@@ -271,6 +328,26 @@ async function loadBuildInfo() {
     renderBuildInfo(payload);
   } catch {
     buildInfoLine.textContent = "Build: unavailable";
+  }
+}
+
+async function loadCodexAuthStatus() {
+  if (!codexAuthStatus) {
+    return;
+  }
+
+  setCodexAuthUiBusy(true);
+  setCodexAuthStatusText("Checking Codex auth status...");
+  setCodexAuthDetailsText("");
+  try {
+    const response = await fetch(new URL("api/settings/codex-auth/status", document.baseURI), { cache: "no-store" });
+    const payload = await readJsonOrThrow(response);
+    renderCodexAuthStatus(payload);
+  } catch (error) {
+    setCodexAuthStatusText(`Failed to load Codex auth status: ${error}`, "error");
+    setCodexAuthDetailsText("");
+  } finally {
+    setCodexAuthUiBusy(false);
   }
 }
 
@@ -387,6 +464,15 @@ if (openAiKeyClearBtn) {
   });
 }
 
+if (codexAuthRefreshBtn) {
+  codexAuthRefreshBtn.addEventListener("click", () => {
+    loadCodexAuthStatus().catch((error) => {
+      setCodexAuthStatusText(`Failed to load Codex auth status: ${error}`, "error");
+      setCodexAuthDetailsText("");
+    });
+  });
+}
+
 if (openAiKeyInput) {
   openAiKeyInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -423,3 +509,7 @@ loadOpenAiKeyStatus()
   .catch((error) => setKeyStatusText(`Failed to load key status: ${error}`, "error"))
   .finally(() => applyOpenAiKeyQueryHints());
 loadBuildInfo().catch(() => {});
+loadCodexAuthStatus().catch((error) => {
+  setCodexAuthStatusText(`Failed to load Codex auth status: ${error}`, "error");
+  setCodexAuthDetailsText("");
+});

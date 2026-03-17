@@ -75,6 +75,15 @@
 						<div id="buildInfoLine" class="settings-mode-value">Build: loading...</div>
 					</section>
 					<section class="settings-section">
+						<h2 class="settings-section-title">Codex Account</h2>
+						<p class="settings-section-copy">Shows the Codex account identity currently loaded from your CODEX_HOME auth file.</p>
+						<div class="settings-actions">
+							<button id="codexAuthRefreshBtn" class="settings-action-btn" type="button">Refresh status</button>
+						</div>
+						<div id="codexAuthStatus" class="settings-mode-value">Checking Codex auth status...</div>
+						<div id="codexAuthDetails" class="settings-mode-value"></div>
+					</section>
+					<section class="settings-section">
 						<h2 class="settings-section-title">Voice and OpenAI</h2>
 						<p class="settings-section-copy">Set your OpenAI API key for speech-to-text. Your key is stored encrypted on your server where this application is installed, and it is not sent to anyone except OpenAI for transcription requests.</p>
 						<label class="settings-field-label" for="openAiKeyInput">OpenAI API key</label>
