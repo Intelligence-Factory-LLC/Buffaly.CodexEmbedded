@@ -600,6 +600,9 @@ internal static class WebEndpointMappings
 			}
 
 			context.Response.ContentType = "text/html; charset=utf-8";
+			context.Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
+			context.Response.Headers["Pragma"] = "no-cache";
+			context.Response.Headers["Expires"] = "0";
 			await context.Response.SendFileAsync(pagePath);
 		});
 	}

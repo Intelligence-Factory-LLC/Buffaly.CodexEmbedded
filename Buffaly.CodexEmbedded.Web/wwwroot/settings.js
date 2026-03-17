@@ -15,6 +15,7 @@ const openAiKeyInput = document.getElementById("openAiKeyInput");
 const openAiKeySaveBtn = document.getElementById("openAiKeySaveBtn");
 const openAiKeyClearBtn = document.getElementById("openAiKeyClearBtn");
 const openAiKeyStatus = document.getElementById("openAiKeyStatus");
+const buildInfoLine = document.getElementById("buildInfoLine");
 
 function isMobileViewport() {
   return window.matchMedia("(max-width: 900px)").matches;
@@ -206,6 +207,27 @@ function renderKeyStatus(payload, prefix = "") {
   setKeyStatusText(`${start}Saved key: ${hint}.${details}`, prefix ? "success" : "");
 }
 
+function renderBuildInfo(payload) {
+  if (!buildInfoLine) {
+    return;
+  }
+
+  const buildNumber = payload && typeof payload.buildNumber === "string"
+    ? payload.buildNumber.trim()
+    : "";
+  const buildTimestamp = payload && typeof payload.buildTimestampUtc === "string"
+    ? payload.buildTimestampUtc.trim()
+    : "";
+
+  if (!buildNumber) {
+    buildInfoLine.textContent = "Build: unavailable";
+    return;
+  }
+
+  const updated = buildTimestamp ? formatUpdatedAt(buildTimestamp) : "";
+  buildInfoLine.textContent = `Build: ${buildNumber}` + (updated ? ` (${updated})` : "");
+}
+
 async function readJsonOrThrow(response) {
   if (response.ok) {
     return response.json();
@@ -235,6 +257,20 @@ async function loadOpenAiKeyStatus() {
     renderKeyStatus(payload);
   } catch (error) {
     setKeyStatusText(`Failed to load key status: ${error}`, "error");
+  }
+}
+
+async function loadBuildInfo() {
+  if (!buildInfoLine) {
+    return;
+  }
+
+  try {
+    const response = await fetch(new URL("api/security/config", document.baseURI), { cache: "no-store" });
+    const payload = await readJsonOrThrow(response);
+    renderBuildInfo(payload);
+  } catch {
+    buildInfoLine.textContent = "Build: unavailable";
   }
 }
 
@@ -386,3 +422,4 @@ refreshAssistantMarkdownUi();
 loadOpenAiKeyStatus()
   .catch((error) => setKeyStatusText(`Failed to load key status: ${error}`, "error"))
   .finally(() => applyOpenAiKeyQueryHints());
+loadBuildInfo().catch(() => {});

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Net.WebSockets;
 using System.Reflection;
+using System.Text.Json;
 using Buffaly.CodexEmbedded.Core;
 using BasicUtilities;
 using Microsoft.AspNetCore.DataProtection;
@@ -33,6 +34,8 @@ builder.Services.AddDataProtection()
 builder.Services.AddHttpClient();
 
 var app = builder.Build();
+var projectVersion = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "unknown";
+var buildMetadata = LoadBuildMetadata(builder.Environment.ContentRootPath, projectVersion);
 
 if (!codexPreflight.IsCodexInstalled)
 {
@@ -53,7 +56,34 @@ app.Use(async (context, next) =>
 });
 
 app.UseDefaultFiles();
-app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+	OnPrepareResponse = context =>
+	{
+		var fileName = context.File.Name;
+		var extension = Path.GetExtension(fileName);
+		if (string.IsNullOrWhiteSpace(extension))
+		{
+			return;
+		}
+
+		if (string.Equals(extension, ".html", StringComparison.OrdinalIgnoreCase))
+		{
+			context.Context.Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
+			context.Context.Response.Headers["Pragma"] = "no-cache";
+			context.Context.Response.Headers["Expires"] = "0";
+			return;
+		}
+
+		if (string.Equals(extension, ".js", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(extension, ".css", StringComparison.OrdinalIgnoreCase))
+		{
+			context.Context.Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
+			context.Context.Response.Headers["Pragma"] = "no-cache";
+			context.Context.Response.Headers["Expires"] = "0";
+		}
+	}
+});
 app.UseWebSockets(new WebSocketOptions
 {
 	KeepAliveInterval = TimeSpan.FromSeconds(20)
@@ -76,11 +106,13 @@ app.MapTimelineAndRuntimeLogEndpoints();
 
 app.MapGet("/api/security/config", (WebRuntimeDefaults defaults) =>
 {
-	var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "unknown";
 	return Results.Ok(new
 	{
 		projectName = "Buffaly.CodexEmbedded",
-		projectVersion = version,
+		projectVersion = projectVersion,
+		informationalVersion = buildMetadata.informationalVersion,
+		buildNumber = buildMetadata.buildNumber,
+		buildTimestampUtc = buildMetadata.buildTimestampUtc,
 		attribution = "Built by Buffaly (Intelligence Factory LLC)",
 		attributionUrl = "https://buffa.ly",
 		notAffiliated = "Not affiliated with OpenAI",
@@ -673,6 +705,73 @@ static string ResolveDataProtectionKeyPath()
 	}
 
 	return Path.Combine(baseRoot, "secrets", "data-protection-keys");
+}
+
+static (string buildNumber, string buildTimestampUtc, string informationalVersion) LoadBuildMetadata(string contentRootPath, string informationalVersionFallback)
+{
+	const string unknown = "unknown";
+	var fallback = (
+		buildNumber: unknown,
+		buildTimestampUtc: unknown,
+		informationalVersion: string.IsNullOrWhiteSpace(informationalVersionFallback) ? unknown : informationalVersionFallback);
+
+	if (string.IsNullOrWhiteSpace(contentRootPath))
+	{
+		return fallback;
+	}
+
+	var buildInfoPath = Path.Combine(contentRootPath, "wwwroot", "build-info.json");
+	if (!File.Exists(buildInfoPath))
+	{
+		return fallback;
+	}
+
+	try
+	{
+		var json = File.ReadAllText(buildInfoPath);
+		using var document = JsonDocument.Parse(json);
+		var root = document.RootElement;
+		if (root.ValueKind != JsonValueKind.Object)
+		{
+			return fallback;
+		}
+
+		var buildNumber = ReadBuildMetadataString(root, "buildNumber");
+		var buildTimestampUtc = ReadBuildMetadataString(root, "buildTimestampUtc");
+		var informationalVersion = ReadBuildMetadataString(root, "informationalVersion");
+		if (informationalVersion == unknown)
+		{
+			informationalVersion = informationalVersionFallback;
+		}
+
+		return (
+			buildNumber: buildNumber,
+			buildTimestampUtc: buildTimestampUtc,
+			informationalVersion: informationalVersion);
+	}
+	catch (IOException)
+	{
+		return fallback;
+	}
+	catch (UnauthorizedAccessException)
+	{
+		return fallback;
+	}
+	catch (JsonException)
+	{
+		return fallback;
+	}
+}
+
+static string ReadBuildMetadataString(JsonElement root, string propertyName)
+{
+	if (!root.TryGetProperty(propertyName, out var rawValue) || rawValue.ValueKind != JsonValueKind.String)
+	{
+		return "unknown";
+	}
+
+	var value = rawValue.GetString()?.Trim() ?? string.Empty;
+	return string.IsNullOrWhiteSpace(value) ? "unknown" : value;
 }
 
 static void EnsureDirectoryWritable(string directoryPath)

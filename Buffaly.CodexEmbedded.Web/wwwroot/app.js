@@ -6403,9 +6403,6 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     }
   }
 
-  const storedSessionId = getStoredLastSessionId();
-  const storedThreadId = getStoredLastThreadId();
-  const sessionForStoredThread = storedThreadId ? getAttachedSessionIdByThreadId(storedThreadId) : null;
   const serverActiveId = typeof activeIdFromServer === "string" && sessions.has(activeIdFromServer)
     ? activeIdFromServer
     : null;
@@ -6421,22 +6418,16 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     (isTurnInFlight(activeSessionId) || isTurnStartGraceActive(activeSessionId))
       ? activeSessionId
       : null;
-  const isStoredSessionCandidate = !!storedSessionId && sessions.has(storedSessionId);
-  const isStoredThreadCandidate = !!sessionForStoredThread && sessions.has(sessionForStoredThread);
   const toSelect = pinnedActiveSessionId ||
     (preferServerActive
     ? (serverActiveId ||
       activeSessionId ||
       current ||
-      (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
-      (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
-      (ids.length > 0 ? ids[0] : null))
+      null)
     : (activeSessionId ||
       current ||
-      (storedSessionId && sessions.has(storedSessionId) ? storedSessionId : null) ||
-      (sessionForStoredThread && sessions.has(sessionForStoredThread) ? sessionForStoredThread : null) ||
       serverActiveId ||
-      (ids.length > 0 ? ids[0] : null)));
+      null));
   let selectionReason = "none";
   if (pinnedActiveSessionId && toSelect === pinnedActiveSessionId) {
     selectionReason = "keep_inflight_or_pending";
@@ -6448,12 +6439,6 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     selectionReason = "preserve_current_active";
   } else if (toSelect && toSelect === current) {
     selectionReason = "preserve_selector_value";
-  } else if (toSelect && isStoredSessionCandidate && toSelect === storedSessionId) {
-    selectionReason = "restore_stored_session";
-  } else if (toSelect && isStoredThreadCandidate && toSelect === sessionForStoredThread) {
-    selectionReason = "restore_stored_thread";
-  } else if (toSelect && ids.length > 0 && toSelect === ids[0]) {
-    selectionReason = "fallback_first_session";
   }
   if (toSelect && sessions.has(toSelect)) {
     const changed = activeSessionId !== toSelect;
@@ -7592,7 +7577,6 @@ function handleServerEvent(frame) {
       updateExistingSessionSelect();
       refreshSessionMeta();
       appendLog(`[catalog] loaded ${sessionCatalog.length} existing sessions from ${payload.codexHomePath || "default CODEX_HOME"}`);
-      tryAutoAttachStoredThread().catch((error) => appendLog(`[session] auto-attach failed: ${error}`));
       return;
     }
 

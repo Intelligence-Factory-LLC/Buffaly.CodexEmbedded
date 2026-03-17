@@ -21,6 +21,23 @@
     <Delete Files="@(_StaticWebAssetCacheFiles)" />
   </Target>
 
+  <Target Name="GenerateBuildInfoJson" BeforeTargets="PrepareForBuild">
+    <PropertyGroup>
+      <BuildInfoDirectory>$(ProjectDir)wwwroot</BuildInfoDirectory>
+      <BuildInfoPath>$(BuildInfoDirectory)\build-info.json</BuildInfoPath>
+      <BuildInfoBuildNumber>$([System.DateTime]::UtcNow.ToString("yyyyMMddHHmmssfff"))</BuildInfoBuildNumber>
+      <BuildInfoTimestampUtc>$([System.DateTime]::UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"))</BuildInfoTimestampUtc>
+      <BuildInfoInformationalVersion>$(InformationalVersion)</BuildInfoInformationalVersion>
+      <BuildInfoInformationalVersion Condition="'$(BuildInfoInformationalVersion)'==''">unknown</BuildInfoInformationalVersion>
+    </PropertyGroup>
+
+    <MakeDir Directories="$(BuildInfoDirectory)" />
+    <WriteLinesToFile File="$(BuildInfoPath)"
+      Lines='{"buildNumber":"$(BuildInfoBuildNumber)","buildTimestampUtc":"$(BuildInfoTimestampUtc)","informationalVersion":"$(BuildInfoInformationalVersion)"}'
+      Overwrite="true"
+      WriteOnlyWhenDifferent="true" />
+  </Target>
+
   <ItemGroup>
     <ProjectReference Include="..\\Buffaly.CodexEmbedded.Core\\Buffaly.CodexEmbedded.Core.csproj" />
   </ItemGroup>

@@ -116,7 +116,7 @@ internal sealed class WebRuntimeDefaults
 
 	private static string NormalizeWebLaunchUrl(string? configuredUrl)
 	{
-		const string fallback = "http://127.0.0.1:5170/";
+		const string fallback = "http://127.0.0.1:5225/";
 		if (string.IsNullOrWhiteSpace(configuredUrl))
 		{
 			return fallback;
