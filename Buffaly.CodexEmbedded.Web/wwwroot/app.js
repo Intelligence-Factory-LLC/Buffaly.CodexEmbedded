@@ -256,6 +256,8 @@ const sessionMetaDetailsBtn = document.getElementById("sessionMetaDetailsBtn");
 const sessionMetaModelItem = document.getElementById("sessionMetaModelItem");
 const sessionMetaAccountItem = document.getElementById("sessionMetaAccountItem");
 const sessionMetaAccountValue = document.getElementById("sessionMetaAccountValue");
+const sessionMetaUsageItem = document.getElementById("sessionMetaUsageItem");
+const sessionMetaUsageValue = document.getElementById("sessionMetaUsageValue");
 const jumpToBtn = document.getElementById("jumpToBtn");
 const conversationModelSelect = document.getElementById("conversationModelSelect");
 const conversationReasoningSelect = document.getElementById("conversationReasoningSelect");
@@ -6307,6 +6309,86 @@ function refreshSessionMetaAccount() {
   sessionMetaAccountValue.title = titleParts.join(" | ");
 }
 
+function formatRateLimitNumber(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "";
+  }
+
+  if (Math.abs(numeric - Math.round(numeric)) < 0.0001) {
+    return Math.round(numeric).toLocaleString();
+  }
+
+  return numeric.toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+function formatRateLimitSummary(rateLimit) {
+  if (!rateLimit || typeof rateLimit !== "object") {
+    return "unavailable";
+  }
+
+  const summary = typeof rateLimit.summary === "string" ? rateLimit.summary.trim() : "";
+  if (summary) {
+    return summary;
+  }
+
+  const remaining = formatRateLimitNumber(rateLimit.remaining);
+  const limit = formatRateLimitNumber(rateLimit.limit);
+  const used = formatRateLimitNumber(rateLimit.used);
+  const resetAt = formatUpdatedAt(rateLimit.resetAtUtc);
+  const parts = [];
+  if (remaining && limit) {
+    parts.push(`${remaining}/${limit} remaining`);
+  } else if (remaining) {
+    parts.push(`${remaining} remaining`);
+  }
+  if (used) {
+    parts.push(`${used} used`);
+  }
+  if (resetAt) {
+    parts.push(`resets ${resetAt}`);
+  }
+
+  return parts.length > 0 ? parts.join(" | ") : "updated";
+}
+
+function refreshSessionMetaUsage() {
+  if (!sessionMetaUsageItem || !sessionMetaUsageValue) {
+    return;
+  }
+
+  const hasState = !!getActiveSessionState();
+  if (!hasState) {
+    sessionMetaUsageItem.classList.add("hidden");
+    sessionMetaUsageValue.textContent = "unavailable";
+    sessionMetaUsageValue.title = "";
+    return;
+  }
+
+  const sessionId = typeof activeSessionId === "string" ? activeSessionId : "";
+  const rateLimit = sessionId ? (rateLimitBySession.get(sessionId) || null) : null;
+  sessionMetaUsageItem.classList.remove("hidden");
+  sessionMetaUsageValue.textContent = formatRateLimitSummary(rateLimit);
+
+  const titleParts = [];
+  if (rateLimit && typeof rateLimit === "object") {
+    if (typeof rateLimit.scope === "string" && rateLimit.scope.trim()) {
+      titleParts.push(`scope=${rateLimit.scope.trim()}`);
+    }
+    if (typeof rateLimit.source === "string" && rateLimit.source.trim()) {
+      titleParts.push(`source=${rateLimit.source.trim()}`);
+    }
+    const resetAt = formatUpdatedAt(rateLimit.resetAtUtc);
+    if (resetAt) {
+      titleParts.push(`resetAt=${resetAt}`);
+    }
+  } else {
+    titleParts.push("No usage update has been received for this session yet.");
+  }
+
+  sessionMetaUsageValue.title = titleParts.join(" | ");
+}
+
 function refreshSessionMeta() {
   if (!sessionMeta || !sessionMetaModelItem) {
     return;
@@ -6334,6 +6416,7 @@ function refreshSessionMeta() {
       sessionMetaThreadValue.title = "";
     }
     refreshSessionMetaAccount();
+    refreshSessionMetaUsage();
     resetSessionThreadCopyButton();
     sessionMeta.title = "";
     updateConversationModelSummary();
@@ -6377,6 +6460,7 @@ function refreshSessionMeta() {
     sessionMetaThreadValue.title = threadId || "";
   }
   refreshSessionMetaAccount();
+  refreshSessionMetaUsage();
   resetSessionThreadCopyButton();
 
   syncConversationModelOptions(selectedModel);
@@ -8229,6 +8313,9 @@ function handleServerEvent(frame) {
       const sessionId = payload.sessionId || null;
       if (sessionId) {
         rateLimitBySession.set(sessionId, payload);
+        if (sessionId === activeSessionId) {
+          refreshSessionMetaUsage();
+        }
       }
 
       const summary = typeof payload.summary === "string" && payload.summary.trim()
