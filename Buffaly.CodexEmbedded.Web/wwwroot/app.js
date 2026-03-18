@@ -1907,11 +1907,13 @@ function restorePromptDraftForActiveSession(options = {}) {
   const includeGlobalFallback = options.includeGlobalFallback !== false;
   const key = getCurrentPromptDraftKey();
   let nextValue = promptDraftByKey.get(key);
+  let usedGlobalTextFallback = false;
 
   if ((nextValue === undefined || nextValue === null || nextValue === "")
       && includeGlobalFallback
       && key !== GLOBAL_PROMPT_DRAFT_KEY) {
     nextValue = promptDraftByKey.get(GLOBAL_PROMPT_DRAFT_KEY);
+    usedGlobalTextFallback = typeof nextValue === "string" && nextValue.length > 0;
   }
 
   const normalized = typeof nextValue === "string" ? nextValue : "";
@@ -1921,14 +1923,31 @@ function restorePromptDraftForActiveSession(options = {}) {
   refreshPromptInputHeight({ reset: normalized.length === 0 });
 
   let nextImages = promptDraftImagesByKey.get(key);
+  let usedGlobalImageFallback = false;
   if ((!Array.isArray(nextImages) || nextImages.length === 0)
       && includeGlobalFallback
       && key !== GLOBAL_PROMPT_DRAFT_KEY) {
     nextImages = promptDraftImagesByKey.get(GLOBAL_PROMPT_DRAFT_KEY);
+    usedGlobalImageFallback = Array.isArray(nextImages) && nextImages.length > 0;
   }
 
   pendingComposerImages = normalizePromptDraftImages(nextImages || [], { assignIds: true });
   renderComposerImages();
+
+  // Global fallback drafts are intended for transition states (no active thread key).
+  // Once consumed for a concrete thread/session, migrate and clear the global entry so
+  // the same unsent text does not leak into every thread forever.
+  if (key !== GLOBAL_PROMPT_DRAFT_KEY && (usedGlobalTextFallback || usedGlobalImageFallback)) {
+    if (usedGlobalTextFallback) {
+      rememberPromptDraftForKey(key, normalized);
+      rememberPromptDraftForKey(GLOBAL_PROMPT_DRAFT_KEY, "");
+    }
+    if (usedGlobalImageFallback) {
+      rememberPromptDraftImagesForKey(key, pendingComposerImages);
+      rememberPromptDraftImagesForKey(GLOBAL_PROMPT_DRAFT_KEY, []);
+    }
+    persistPromptDraftState();
+  }
 }
 
 function normalizeQueuedTurnSummaryList(list) {
