@@ -8,6 +8,8 @@
   const STORAGE_RENDER_ASSISTANT_MARKDOWN_KEY = "codex.settings.renderAssistantMarkdown.v1";
   const MAX_TIMELINE_ENTRY_TEXT_CHARS = 20_000;
   const MAX_TIMELINE_IMAGE_URL_CHARS = 2_000_000;
+  const MAX_TIMELINE_INLINE_IMAGE_URL_RENDER_CHARS = 120_000;
+  const MAX_TIMELINE_INLINE_DATA_URL_RENDER_CHARS = 80_000;
   const MAX_TIMELINE_TURNS_RENDERED = 1200;
   const MAX_TIMELINE_INTERMEDIATE_PER_TURN = 300;
   const MAX_TIMELINE_TOTAL_RENDERED_ENTRIES = 6000;
@@ -337,9 +339,33 @@
         const normalizeEndedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
         const shouldStick = this.autoScrollPinned || this.isNearBottom();
         const livePlanKeys = this.collectPlanStateKeysFromTurns(safeTurns);
+        let imageCount = 0;
+        let maxImageUrlChars = 0;
+        for (const turn of safeTurns) {
+          const entries = [];
+          if (turn.user) entries.push(turn.user);
+          if (turn.assistantFinal) entries.push(turn.assistantFinal);
+          if (Array.isArray(turn.intermediate)) entries.push(...turn.intermediate);
+
+          for (const entry of entries) {
+            const images = Array.isArray(entry?.images) ? entry.images : [];
+            imageCount += images.length;
+            for (const image of images) {
+              if (typeof image !== "string") {
+                continue;
+              }
+
+              if (image.length > maxImageUrlChars) {
+                maxImageUrlChars = image.length;
+              }
+            }
+          }
+        }
         this.emitDiagnostic("set_turns_normalized", {
           safeTurnCount: safeTurns.length,
-          normalizeMs: Math.round((normalizeEndedAt - normalizeStartedAt) * 10) / 10
+          normalizeMs: Math.round((normalizeEndedAt - normalizeStartedAt) * 10) / 10,
+          imageCount,
+          maxImageUrlChars
         });
 
         for (const key of Array.from(this.expandedPlanEntryKeys)) {
@@ -371,8 +397,19 @@
           renderCount: this.renderCount
         });
 
-        for (const turn of safeTurns) {
+        for (let index = 0; index < safeTurns.length; index += 1) {
+          const turn = safeTurns[index];
           this.appendTurnNode(turn);
+          if ((index + 1) % 5 === 0 || index + 1 === safeTurns.length) {
+            const progressAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
+            this.emitDiagnostic("set_turns_progress", {
+              appendedTurns: index + 1,
+              safeTurnCount: safeTurns.length,
+              renderCount: this.renderCount,
+              domNodes: this.container.childElementCount,
+              elapsedMs: Math.round((progressAt - startedAt) * 10) / 10
+            });
+          }
         }
 
         this.refreshTurnVisibility();
@@ -581,7 +618,7 @@
         ? rawEntry.images
           .filter((x) => typeof x === "string" && x.trim().length > 0)
           .map((x) => x.trim())
-          .filter((x) => !(x.startsWith("data:") && x.length > MAX_TIMELINE_IMAGE_URL_CHARS))
+          .filter((x) => this.shouldKeepImageUrlInEntry(x))
         : [];
       return {
         role,
@@ -593,6 +630,27 @@
         compact: rawEntry.compact === true,
         images
       };
+    }
+
+    shouldKeepImageUrlInEntry(url) {
+      if (typeof url !== "string") {
+        return false;
+      }
+
+      const value = url.trim();
+      if (!value) {
+        return false;
+      }
+
+      if (value.length > MAX_TIMELINE_IMAGE_URL_CHARS) {
+        return false;
+      }
+
+      if (value.startsWith("data:")) {
+        return value.length <= MAX_TIMELINE_INLINE_DATA_URL_RENDER_CHARS;
+      }
+
+      return value.length <= MAX_TIMELINE_INLINE_IMAGE_URL_RENDER_CHARS;
     }
 
     appendTurnNode(turn) {
@@ -1490,7 +1548,7 @@
         ? rawEntry.images
           .filter((x) => typeof x === "string" && x.trim().length > 0)
           .map((x) => x.trim())
-          .filter((x) => !(x.startsWith("data:") && x.length > MAX_TIMELINE_IMAGE_URL_CHARS))
+          .filter((x) => this.shouldKeepImageUrlInEntry(x))
         : [];
       const taskDepthRaw = Number(rawEntry.taskDepth);
       const taskDepth = Number.isFinite(taskDepthRaw) ? Math.max(0, Math.floor(taskDepthRaw)) : 0;
