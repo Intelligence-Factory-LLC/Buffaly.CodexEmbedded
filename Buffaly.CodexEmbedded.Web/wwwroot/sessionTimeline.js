@@ -55,6 +55,7 @@
       this.turnNodeById = new Map();
       this.turnCollapsedById = new Map();
       this.expandedToolEntryIds = new Set();
+      this.collapsedToolEntryIds = new Set();
       this.expandedPlanEntryKeys = new Set();
       this.renderAssistantMarkdown = this.resolveAssistantMarkdownPreference(opts.renderAssistantMarkdown);
       this.imagePreviewOverlay = null;
@@ -392,6 +393,7 @@
         this.container.textContent = "";
         this.turnNodeById.clear();
         this.expandedToolEntryIds.clear();
+        this.collapsedToolEntryIds.clear();
         this.emitDiagnostic("set_turns_cleared", {
           safeTurnCount: safeTurns.length,
           renderCount: this.renderCount
@@ -1315,6 +1317,7 @@
       this.turnNodeById.clear();
       this.turnCollapsedById.clear();
       this.expandedToolEntryIds.clear();
+      this.collapsedToolEntryIds.clear();
       this.entryNodeById.clear();
       this.toolEntriesByCallId.clear();
       this.pendingOptimisticUserKeys = [];
@@ -2622,6 +2625,33 @@
       const normalizedBodyText = this.normalizeText(bodyText || "");
       const entryId = Number.isFinite(entry?.id) ? Math.floor(entry.id) : null;
       bodyWrap.textContent = "";
+      const collapsed = entryId !== null && this.collapsedToolEntryIds.has(entryId);
+
+      if (entryId !== null) {
+        const collapseToggle = document.createElement("button");
+        collapseToggle.type = "button";
+        collapseToggle.className = "watcher-tool-hidden-toggle";
+        collapseToggle.textContent = collapsed ? "Show details" : "Hide details";
+        collapseToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+        collapseToggle.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+
+          if (this.collapsedToolEntryIds.has(entryId)) {
+            this.collapsedToolEntryIds.delete(entryId);
+          } else {
+            this.collapsedToolEntryIds.add(entryId);
+          }
+
+          this.renderToolBodyContent(bodyWrap, entry, normalizedBodyText);
+        });
+        bodyWrap.appendChild(collapseToggle);
+      }
+
+      if (collapsed) {
+        bodyWrap.dataset.bodyKind = "tool-collapsed";
+        return;
+      }
 
       if (!normalizedBodyText) {
         bodyWrap.dataset.bodyKind = "tool";
@@ -3338,6 +3368,7 @@
           this.entryNodeById.delete(oldestId);
           this.removeToolMappingsForEntryId(oldestId);
           this.expandedToolEntryIds.delete(oldestId);
+          this.collapsedToolEntryIds.delete(oldestId);
           if (this.visibleActionEntryId === oldestId) {
             this.visibleActionEntryId = null;
           }
