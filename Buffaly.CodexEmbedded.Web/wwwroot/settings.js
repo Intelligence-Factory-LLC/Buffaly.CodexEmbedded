@@ -255,6 +255,7 @@ function setCodexAuthDetailsText(text) {
     return;
   }
 
+  codexAuthDetails.replaceChildren();
   codexAuthDetails.textContent = text || "";
 }
 
@@ -273,7 +274,56 @@ function setCodexUsageDetailsText(text) {
     return;
   }
 
+  codexUsageDetails.replaceChildren();
   codexUsageDetails.textContent = text || "";
+}
+
+function renderDetailRows(container, rows, note = "") {
+  if (!container) {
+    return;
+  }
+
+  container.replaceChildren();
+  const normalizedRows = Array.isArray(rows) ? rows : [];
+  const grid = document.createElement("div");
+  grid.className = "settings-detail-grid";
+  let renderedCount = 0;
+  for (const row of normalizedRows) {
+    if (!row || typeof row !== "object") {
+      continue;
+    }
+
+    const label = typeof row.label === "string" ? row.label.trim() : "";
+    const value = typeof row.value === "string" ? row.value.trim() : "";
+    if (!label || !value) {
+      continue;
+    }
+
+    const item = document.createElement("div");
+    item.className = "settings-detail-row";
+    const labelNode = document.createElement("div");
+    labelNode.className = "settings-detail-label";
+    labelNode.textContent = label;
+    const valueNode = document.createElement("div");
+    valueNode.className = "settings-detail-value";
+    valueNode.textContent = value;
+    item.appendChild(labelNode);
+    item.appendChild(valueNode);
+    grid.appendChild(item);
+    renderedCount += 1;
+  }
+
+  if (renderedCount > 0) {
+    container.appendChild(grid);
+  }
+
+  const noteText = typeof note === "string" ? note.trim() : "";
+  if (noteText) {
+    const noteNode = document.createElement("div");
+    noteNode.className = "settings-detail-note";
+    noteNode.textContent = noteText;
+    container.appendChild(noteNode);
+  }
 }
 
 function clearCodexUsageBars() {
@@ -304,15 +354,14 @@ function renderCodexAuthStatus(payload) {
     setCodexAuthStatusText(message || "No active Codex account identity detected.", "error");
   }
 
-  const details = [];
-  if (authMode) details.push(`Mode: ${authMode}`);
-  if (email) details.push(`Email: ${email}`);
-  if (accountId) details.push(`Account ID: ${accountId}`);
-  if (plan) details.push(`Plan: ${plan}`);
-  if (lastRefresh) details.push(`Last refresh: ${lastRefresh}`);
-  if (fileUpdated) details.push(`Auth file updated: ${fileUpdated}`);
-  if (recommendation) details.push(recommendation);
-  setCodexAuthDetailsText(details.join(" | "));
+  const rows = [];
+  if (email) rows.push({ label: "Email", value: email });
+  if (accountId) rows.push({ label: "Account ID", value: accountId });
+  if (authMode) rows.push({ label: "Mode", value: authMode });
+  if (plan) rows.push({ label: "Plan", value: plan });
+  if (lastRefresh) rows.push({ label: "Last refresh", value: lastRefresh });
+  if (fileUpdated) rows.push({ label: "Auth file updated", value: fileUpdated });
+  renderDetailRows(codexAuthDetails, rows, recommendation);
 }
 
 function formatUsageNumber(value) {
@@ -554,32 +603,34 @@ function renderCodexUsageStatus(payload) {
   const quotaRemaining = formatUsageNumber(latest.remaining);
   const quotaLimit = formatUsageNumber(latest.limit);
   const quotaUsed = formatUsageNumber(latest.used);
-  if (quotaRemaining && quotaLimit) details.push(`Quota: ${quotaRemaining}/${quotaLimit} remaining`);
-  if (quotaUsed) details.push(`Used: ${quotaUsed}`);
-  if (planType) details.push(`Plan: ${planType}`);
+  if (quotaRemaining && quotaLimit) details.push({ label: "Quota", value: `${quotaRemaining}/${quotaLimit} remaining` });
+  if (quotaUsed) details.push({ label: "Used", value: quotaUsed });
+  if (planType) details.push({ label: "Plan", value: planType });
   if (credits) {
     const hasCredits = credits.hasCredits === true;
     const unlimited = credits.unlimited === true;
     const creditBalance = formatUsageNumber(credits.balance);
     if (unlimited) {
-      details.push("Credits: unlimited");
+      details.push({ label: "Credits", value: "Unlimited" });
     } else if (hasCredits && creditBalance) {
-      details.push(`Credits balance: ${creditBalance}`);
+      details.push({ label: "Credits", value: `Balance ${creditBalance}` });
     } else if (hasCredits) {
-      details.push("Credits: available");
+      details.push({ label: "Credits", value: "Available" });
     } else if (credits.hasCredits === false) {
-      details.push("Credits: none");
+      details.push({ label: "Credits", value: "None" });
     }
   }
-  if (primaryResetAt) details.push(`${primaryLabel} resets: ${primaryResetAt}`);
-  if (secondaryResetAt) details.push(`${secondaryLabel} resets: ${secondaryResetAt}`);
-  if (latest.sessionId) details.push(`Session: ${latest.sessionId}`);
-  if (latest.threadId) details.push(`Thread: ${latest.threadId}`);
-  if (latest.scope) details.push(`Scope: ${latest.scope}`);
-  if (resetAt) details.push(`Resets: ${resetAt}`);
-  if (updated) details.push(`Updated: ${updated}`);
-  if (latest.source) details.push(`Source: ${latest.source}`);
-  setCodexUsageDetailsText(details.join(" | "));
+  if (primaryResetAt) details.push({ label: `${primaryLabel} reset`, value: primaryResetAt });
+  if (secondaryResetAt) details.push({ label: `${secondaryLabel} reset`, value: secondaryResetAt });
+  if (resetAt) details.push({ label: "Reset", value: resetAt });
+  if (updated) details.push({ label: "Updated", value: updated });
+  if (latest.source) details.push({ label: "Source", value: latest.source });
+
+  const noteParts = [];
+  if (latest.scope) noteParts.push(`Scope ${latest.scope}`);
+  if (latest.sessionId) noteParts.push(`Session ${latest.sessionId}`);
+  if (latest.threadId) noteParts.push(`Thread ${latest.threadId}`);
+  renderDetailRows(codexUsageDetails, details, noteParts.join(" | "));
 }
 
 async function readJsonOrThrow(response) {

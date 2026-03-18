@@ -2026,6 +2026,44 @@ body {
 	color: #64748b;
 }
 
+.settings-detail-grid {
+	margin-top: 0.58rem;
+	display: grid;
+	gap: 0.36rem;
+}
+
+.settings-detail-row {
+	display: grid;
+	grid-template-columns: minmax(100px, 130px) minmax(0, 1fr);
+	gap: 0.52rem;
+	align-items: baseline;
+	padding: 0.34rem 0.5rem;
+	border: 1px solid #dbe2ea;
+	border-radius: 8px;
+	background: #ffffff;
+}
+
+.settings-detail-label {
+	font-size: 0.72rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+	color: #64748b;
+}
+
+.settings-detail-value {
+	font-size: 0.79rem;
+	color: #0f172a;
+	overflow-wrap: anywhere;
+}
+
+.settings-detail-note {
+	margin-top: 0.46rem;
+	font-size: 0.75rem;
+	line-height: 1.35;
+	color: #64748b;
+}
+
 .settings-field-label {
 	margin-top: 0.75rem;
 	display: block;
@@ -4347,6 +4385,20 @@ html[data-theme="dark"] .settings-usage-card-value {
 
 html[data-theme="dark"] .settings-usage-bar-track {
 	background: #334155;
+}
+
+html[data-theme="dark"] .settings-detail-row {
+	background: #0f172a;
+	border-color: #334155;
+}
+
+html[data-theme="dark"] .settings-detail-label,
+html[data-theme="dark"] .settings-detail-note {
+	color: #94a3b8;
+}
+
+html[data-theme="dark"] .settings-detail-value {
+	color: #e2e8f0;
 }
 
 html[data-theme="dark"] .project-path {
