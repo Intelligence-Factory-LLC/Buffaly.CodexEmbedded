@@ -2192,6 +2192,12 @@
           next = nextCode;
         }
 
+        if (next <= cursor) {
+          parent.appendChild(document.createTextNode(source.charAt(cursor)));
+          cursor += 1;
+          continue;
+        }
+
         parent.appendChild(document.createTextNode(source.slice(cursor, next)));
         cursor = next;
       }
