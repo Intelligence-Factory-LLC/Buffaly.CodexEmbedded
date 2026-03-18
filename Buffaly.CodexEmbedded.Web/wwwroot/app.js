@@ -269,6 +269,21 @@ const sidebarSearchRow = document.getElementById("sidebarSearchRow");
 const gettingStartedPanel = document.getElementById("gettingStartedPanel");
 const queryParams = new URLSearchParams(window.location.search || "");
 const showGettingStartedOverride = parseBooleanQueryParam(queryParams.get("showGettingStarted"));
+const timelineDiagQueryValue = queryParams.get("timelineDiag");
+const timelineDiagEnabledFromQuery =
+  parseBooleanQueryParam(timelineDiagQueryValue) === true ||
+  String(timelineDiagQueryValue || "").trim() === "1";
+const TIMELINE_DIAG_STORAGE_KEY = "codex.timeline.diag.v1";
+let timelineDiagEnabled = timelineDiagEnabledFromQuery;
+try {
+  if (timelineDiagEnabledFromQuery) {
+    localStorage.setItem(TIMELINE_DIAG_STORAGE_KEY, "1");
+  } else if (localStorage.getItem(TIMELINE_DIAG_STORAGE_KEY) === "1") {
+    timelineDiagEnabled = true;
+  }
+} catch {
+  // no-op
+}
 
 const logVerbositySelect = document.getElementById("logVerbositySelect");
 const modelSelect = document.getElementById("modelSelect");
@@ -1107,16 +1122,28 @@ async function fetchTurnDetailForThread(threadId, turnId) {
     url.searchParams.set("threadId", normalizedThreadId);
     url.searchParams.set("turnId", normalizedTurnId);
     url.searchParams.set("maxEntries", String(normalizeTimelineMaxEntries(timelineWatchMaxEntries, TIMELINE_INITIAL_WINDOW_DEFAULT)));
+    if (timelineDiagEnabled) {
+      url.searchParams.set("diag", "1");
+    }
     const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) {
       const detail = await response.text();
       throw new Error(`turn detail failed (${response.status}): ${detail}`);
     }
 
+    const responseStats = {};
     const payload = await readJsonResponseWithByteLimit(
       response,
       MAX_TIMELINE_JSON_RESPONSE_BYTES,
-      "turn detail");
+      "turn detail",
+      responseStats);
+    logTimelineDiag("turn_detail", {
+      threadId: normalizedThreadId,
+      turnId: normalizedTurnId,
+      bytes: responseStats.bytes || 0,
+      readMs: responseStats.readMs || 0,
+      parseMs: responseStats.parseMs || 0
+    });
     if (!payload || typeof payload !== "object" || !payload.turn || typeof payload.turn !== "object") {
       return;
     }
@@ -1149,11 +1176,116 @@ function safeJsonParse(raw, fallbackValue) {
   }
 }
 
-async function readJsonResponseWithByteLimit(response, maxBytes, label) {
+function readHeapUsageMb() {
+  if (typeof performance === "undefined" || !performance || !performance.memory) {
+    return null;
+  }
+
+  const value = Number(performance.memory.usedJSHeapSize);
+  if (!Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+
+  return Math.round((value / (1024 * 1024)) * 10) / 10;
+}
+
+function summarizeTurnsForTimelineDiag(turns) {
+  if (!Array.isArray(turns)) {
+    return {
+      turnCount: 0,
+      entryCount: 0,
+      intermediateCount: 0,
+      textChars: 0,
+      maxEntryTextChars: 0,
+      imageCount: 0,
+      imageUrlChars: 0
+    };
+  }
+
+  let entryCount = 0;
+  let intermediateCount = 0;
+  let textChars = 0;
+  let maxEntryTextChars = 0;
+  let imageCount = 0;
+  let imageUrlChars = 0;
+
+  const collectEntry = (entry, isIntermediate) => {
+    if (!entry || typeof entry !== "object") {
+      return;
+    }
+
+    entryCount += 1;
+    if (isIntermediate) {
+      intermediateCount += 1;
+    }
+
+    const text = typeof entry.text === "string" ? entry.text : "";
+    textChars += text.length;
+    if (text.length > maxEntryTextChars) {
+      maxEntryTextChars = text.length;
+    }
+
+    const images = Array.isArray(entry.images) ? entry.images : [];
+    imageCount += images.length;
+    for (const image of images) {
+      if (typeof image === "string") {
+        imageUrlChars += image.length;
+      }
+    }
+  };
+
+  for (const turn of turns) {
+    if (!turn || typeof turn !== "object") {
+      continue;
+    }
+
+    collectEntry(turn.user, false);
+    collectEntry(turn.assistantFinal, false);
+    const intermediate = Array.isArray(turn.intermediate) ? turn.intermediate : [];
+    for (const entry of intermediate) {
+      collectEntry(entry, true);
+    }
+  }
+
+  return {
+    turnCount: turns.length,
+    entryCount,
+    intermediateCount,
+    textChars,
+    maxEntryTextChars,
+    imageCount,
+    imageUrlChars
+  };
+}
+
+function logTimelineDiag(stage, details = {}) {
+  if (!timelineDiagEnabled) {
+    return;
+  }
+
+  const pieces = [`stage=${stage}`];
+  for (const [key, value] of Object.entries(details || {})) {
+    if (value === null || value === undefined || value === "") {
+      continue;
+    }
+
+    pieces.push(`${key}=${value}`);
+  }
+
+  appendLog(`[timeline_diag] ${pieces.join(" ")}`);
+}
+
+async function readJsonResponseWithByteLimit(response, maxBytes, label, statsSink = null) {
   const boundedMaxBytes = Math.max(64 * 1024, Math.floor(Number(maxBytes) || MAX_TIMELINE_JSON_RESPONSE_BYTES));
   const sourceLabel = typeof label === "string" && label.trim() ? label.trim() : "response";
   const contentLengthRaw = response?.headers?.get?.("content-length");
   const contentLength = Number(contentLengthRaw);
+  const readStartedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
+  if (statsSink && typeof statsSink === "object") {
+    statsSink.label = sourceLabel;
+    statsSink.contentLength = Number.isFinite(contentLength) ? contentLength : null;
+    statsSink.maxBytes = boundedMaxBytes;
+  }
   if (Number.isFinite(contentLength) && contentLength > boundedMaxBytes) {
     throw new Error(`${sourceLabel} payload too large (${contentLength} bytes)`);
   }
@@ -1167,8 +1299,16 @@ async function readJsonResponseWithByteLimit(response, maxBytes, label) {
       throw new Error(`${sourceLabel} payload too large (${bytes} bytes)`);
     }
 
+    const parseStartedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
     try {
-      return JSON.parse(text);
+      const parsed = JSON.parse(text);
+      if (statsSink && typeof statsSink === "object") {
+        const parseEndedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
+        statsSink.bytes = bytes;
+        statsSink.readMs = Math.round((parseStartedAt - readStartedAt) * 10) / 10;
+        statsSink.parseMs = Math.round((parseEndedAt - parseStartedAt) * 10) / 10;
+      }
+      return parsed;
     } catch (error) {
       throw new Error(`${sourceLabel} invalid JSON: ${error}`);
     }
@@ -1200,8 +1340,16 @@ async function readJsonResponseWithByteLimit(response, maxBytes, label) {
 
   chunks.push(decoder.decode());
   const text = chunks.join("");
+  const parseStartedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
   try {
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+    if (statsSink && typeof statsSink === "object") {
+      const parseEndedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
+      statsSink.bytes = receivedBytes;
+      statsSink.readMs = Math.round((parseStartedAt - readStartedAt) * 10) / 10;
+      statsSink.parseMs = Math.round((parseEndedAt - parseStartedAt) * 10) / 10;
+    }
+    return parsed;
   } catch (error) {
     throw new Error(`${sourceLabel} invalid JSON: ${error}`);
   }
@@ -6209,16 +6357,28 @@ async function pollTimelineOnce(initial, generation) {
   }
 
   timelinePollInFlight = true;
+  const pollStartedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
   try {
     const normalizedThreadId = normalizeThreadId(state.threadId || "");
     const isInitialRequest = initial || timelineCursor === null;
     let activeWatchMaxEntries = normalizeTimelineMaxEntries(timelineWatchMaxEntries, TIMELINE_INITIAL_WINDOW_DEFAULT);
     timelineWatchMaxEntries = activeWatchMaxEntries;
+    const responseStats = {};
+    logTimelineDiag("poll_start", {
+      threadId: normalizedThreadId || state.threadId,
+      initial: isInitialRequest ? 1 : 0,
+      cursor: Number.isFinite(timelineCursor) ? timelineCursor : "none",
+      maxEntries: activeWatchMaxEntries,
+      heapMb: readHeapUsageMb() ?? "n/a"
+    });
     const fetchTurnsBootstrap = async (maxEntries) => {
       const requestedMaxEntries = normalizeTimelineMaxEntries(maxEntries, activeWatchMaxEntries);
       const url = new URL("api/turns/bootstrap", document.baseURI);
       url.searchParams.set("threadId", normalizedThreadId || state.threadId);
       url.searchParams.set("maxEntries", String(requestedMaxEntries));
+      if (timelineDiagEnabled) {
+        url.searchParams.set("diag", "1");
+      }
 
       const response = await fetch(url, { cache: "no-store" });
       if (!response.ok) {
@@ -6229,13 +6389,17 @@ async function pollTimelineOnce(initial, generation) {
       return readJsonResponseWithByteLimit(
         response,
         MAX_TIMELINE_JSON_RESPONSE_BYTES,
-        "timeline bootstrap");
+        "timeline bootstrap",
+        responseStats);
     };
     const fetchTurnsWatch = async (maxEntries) => {
       const requestedMaxEntries = normalizeTimelineMaxEntries(maxEntries, activeWatchMaxEntries);
       const url = new URL("api/turns/watch", document.baseURI);
       url.searchParams.set("threadId", normalizedThreadId || state.threadId);
       url.searchParams.set("maxEntries", String(requestedMaxEntries));
+      if (timelineDiagEnabled) {
+        url.searchParams.set("diag", "1");
+      }
       if (Number.isFinite(timelineCursor)) {
         url.searchParams.set("cursor", String(timelineCursor));
       } else {
@@ -6251,7 +6415,8 @@ async function pollTimelineOnce(initial, generation) {
       return readJsonResponseWithByteLimit(
         response,
         MAX_TIMELINE_JSON_RESPONSE_BYTES,
-        "timeline watch");
+        "timeline watch",
+        responseStats);
     };
 
     const response = isInitialRequest
@@ -6289,6 +6454,19 @@ async function pollTimelineOnce(initial, generation) {
     const shouldConsumeFullSnapshot =
       snapshotMode === "full" ||
       (snapshotMode !== "noop" && (forcedFullSnapshot || hasServerPayload));
+    logTimelineDiag("poll_payload", {
+      threadId: normalizedThreadId,
+      mode: snapshotMode || "unknown",
+      bytes: responseStats.bytes || 0,
+      contentLength: responseStats.contentLength || 0,
+      readMs: responseStats.readMs || 0,
+      parseMs: responseStats.parseMs || 0,
+      incomingTurns: incomingTurns.length,
+      activeDetail: activeTurnDetail ? 1 : 0,
+      reset: data.reset === true ? 1 : 0,
+      truncated: data.truncated === true ? 1 : 0,
+      nextCursor: Number.isFinite(nextCursor) ? nextCursor : "none"
+    });
     const sessionInFlightOrPending =
       !!polledSessionId && (isTurnInFlight(polledSessionId) || isTurnStartGraceActive(polledSessionId));
     const threadProcessing = isThreadProcessing(normalizedThreadId);
@@ -6311,11 +6489,27 @@ async function pollTimelineOnce(initial, generation) {
       hasServerTurns = turns.length > 0;
 
       if (hasServerTurns) {
+        const turnSummary = summarizeTurnsForTimelineDiag(turns);
+        const heapBeforeRender = readHeapUsageMb();
         if (typeof timeline.setServerTurns === "function") {
           timeline.setServerTurns(turns);
         } else {
           timeline.clear();
         }
+        const heapAfterRender = readHeapUsageMb();
+        logTimelineDiag("render_full", {
+          threadId: normalizedThreadId,
+          turns: turnSummary.turnCount,
+          entries: turnSummary.entryCount,
+          intermediate: turnSummary.intermediateCount,
+          textChars: turnSummary.textChars,
+          maxEntryTextChars: turnSummary.maxEntryTextChars,
+          images: turnSummary.imageCount,
+          imageUrlChars: turnSummary.imageUrlChars,
+          heapBeforeMb: heapBeforeRender ?? "n/a",
+          heapAfterMb: heapAfterRender ?? "n/a",
+          renderedNodes: Number.isFinite(timeline?.renderCount) ? timeline.renderCount : "n/a"
+        });
         refreshWorktreeDiffForAssistantRender(normalizedThreadId, turns);
 
         if (polledSessionId && sessions.has(polledSessionId)) {
@@ -6363,6 +6557,11 @@ async function pollTimelineOnce(initial, generation) {
     updateTimelineTruncationNotice();
     markStartupRestoreStable(normalizedThreadId);
   } finally {
+    const pollEndedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
+    logTimelineDiag("poll_end", {
+      elapsedMs: Math.round((pollEndedAt - pollStartedAt) * 10) / 10,
+      heapMb: readHeapUsageMb() ?? "n/a"
+    });
     timelinePollInFlight = false;
   }
 }
@@ -9506,6 +9705,9 @@ turnActivityTickTimer = setInterval(() => {
   updateTurnActivityStrip();
 }, TURN_ACTIVITY_TICK_INTERVAL_MS);
 logFlushTimer = setInterval(() => flushPendingClientLogs(), LOG_FLUSH_INTERVAL_MS);
+if (timelineDiagEnabled) {
+  appendLog("[timeline_diag] enabled (set ?timelineDiag=1 in URL to force-enable on load)");
+}
 
 loadRuntimeSecurityConfig()
   .catch((error) => {

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Buffaly.CodexEmbedded.Core;
@@ -318,9 +319,23 @@ internal static class WebEndpointMappings
 			}
 
 			var maxEntries = QueryValueParser.GetPositiveInt(request.Query["maxEntries"], fallback: 6000, max: 20000);
+			var diag = QueryValueParser.GetBool(request.Query["diag"]);
 			try
 			{
+				var watchStopwatch = Stopwatch.StartNew();
 				var watch = orchestrator.WatchTurns(threadId, maxEntries, initial: true, cursor: null, includeActiveTurnDetail: false);
+				watchStopwatch.Stop();
+				if (diag)
+				{
+					WriteTimelineDiagnostics(
+						endpoint: "bootstrap",
+						requestedThreadId: threadId,
+						maxEntries: maxEntries,
+						initial: true,
+						cursor: null,
+						watch,
+						watchStopwatch.ElapsedMilliseconds);
+				}
 				return Results.Ok(new
 				{
 					threadId = watch.ThreadId,
@@ -362,6 +377,7 @@ internal static class WebEndpointMappings
 
 			var maxEntries = QueryValueParser.GetPositiveInt(request.Query["maxEntries"], fallback: 6000, max: 20000);
 			var initial = QueryValueParser.GetBool(request.Query["initial"]);
+			var diag = QueryValueParser.GetBool(request.Query["diag"]);
 			var cursor = ParseNonNegativeLongQuery(request, "cursor");
 			if (cursor is null && !string.IsNullOrWhiteSpace(request.Query["cursor"]))
 			{
@@ -370,7 +386,20 @@ internal static class WebEndpointMappings
 
 			try
 			{
+				var watchStopwatch = Stopwatch.StartNew();
 				var watch = orchestrator.WatchTurns(threadId, maxEntries, initial, cursor, includeActiveTurnDetail: true);
+				watchStopwatch.Stop();
+				if (diag)
+				{
+					WriteTimelineDiagnostics(
+						endpoint: "watch",
+						requestedThreadId: threadId,
+						maxEntries: maxEntries,
+						initial: initial,
+						cursor: cursor,
+						watch,
+						watchStopwatch.ElapsedMilliseconds);
+				}
 				return Results.Ok(new
 				{
 					threadId = watch.ThreadId,
@@ -418,10 +447,31 @@ internal static class WebEndpointMappings
 			}
 
 			var maxEntries = QueryValueParser.GetPositiveInt(request.Query["maxEntries"], fallback: 6000, max: 20000);
+			var diag = QueryValueParser.GetBool(request.Query["diag"]);
 
 			try
 			{
+				var detailStopwatch = Stopwatch.StartNew();
 				var detail = orchestrator.GetTurnDetail(threadId, turnId, maxEntries);
+				detailStopwatch.Stop();
+				if (diag)
+				{
+					var textChars = 0;
+					var imageCount = 0;
+					AccumulateTurnEntryDiagnostics(detail.User, ref textChars, ref imageCount);
+					if (detail.AssistantFinal is not null)
+					{
+						AccumulateTurnEntryDiagnostics(detail.AssistantFinal, ref textChars, ref imageCount);
+					}
+					foreach (var entry in detail.Intermediate)
+					{
+						AccumulateTurnEntryDiagnostics(entry, ref textChars, ref imageCount);
+					}
+
+					Logs.DebugLog.WriteEvent(
+						"TimelineDiag",
+						$"endpoint=detail requestedThread={threadId.Trim()} turnId={turnId.Trim()} maxEntries={maxEntries} elapsedMs={detailStopwatch.ElapsedMilliseconds} intermediateCount={detail.Intermediate.Count} textChars={textChars} imageCount={imageCount}");
+				}
 				return Results.Ok(new
 				{
 					threadId = threadId.Trim(),
@@ -568,6 +618,67 @@ internal static class WebEndpointMappings
 		}
 
 		return long.TryParse(raw, out var value) && value >= 0 ? value : null;
+	}
+
+	private static void WriteTimelineDiagnostics(
+		string endpoint,
+		string requestedThreadId,
+		int maxEntries,
+		bool initial,
+		long? cursor,
+		SessionOrchestrator.TurnWatchSnapshot watch,
+		long elapsedMilliseconds)
+	{
+		var turns = watch.Turns ?? Array.Empty<SessionOrchestrator.ConsolidatedTurnSnapshot>();
+		var turnCount = turns.Count;
+		var inFlightTurns = 0;
+		var intermediateVisibleCount = 0;
+		var intermediateTotalCount = 0;
+		var textChars = 0;
+		var imageCount = 0;
+
+		foreach (var turn in turns)
+		{
+			if (turn.IsInFlight)
+			{
+				inFlightTurns += 1;
+			}
+
+			intermediateVisibleCount += turn.Intermediate?.Count ?? 0;
+			intermediateTotalCount += Math.Max(turn.IntermediateCount, turn.Intermediate?.Count ?? 0);
+			AccumulateTurnEntryDiagnostics(turn.User, ref textChars, ref imageCount);
+			if (turn.AssistantFinal is not null)
+			{
+				AccumulateTurnEntryDiagnostics(turn.AssistantFinal, ref textChars, ref imageCount);
+			}
+
+			var intermediate = turn.Intermediate ?? new List<SessionOrchestrator.TurnEntrySnapshot>();
+			foreach (var entry in intermediate)
+			{
+				AccumulateTurnEntryDiagnostics(entry, ref textChars, ref imageCount);
+			}
+		}
+
+		var activeDetailIntermediateCount = watch.ActiveTurnDetail?.Intermediate?.Count ?? 0;
+		var activeDetailIntermediateTotal = watch.ActiveTurnDetail?.IntermediateCount ?? 0;
+		Logs.DebugLog.WriteEvent(
+			"TimelineDiag",
+			$"endpoint={endpoint} requestedThread={requestedThreadId.Trim()} resolvedThread={watch.ThreadId} maxEntries={maxEntries} initial={initial} cursor={(cursor?.ToString() ?? "(none)")} elapsedMs={elapsedMilliseconds} mode={watch.Mode} reset={watch.Reset} truncated={watch.Truncated} turnCount={turnCount} turnCountInMemory={watch.TurnCountInMemory} inFlightTurns={inFlightTurns} intermediateVisible={intermediateVisibleCount} intermediateTotal={intermediateTotalCount} activeDetailIntermediateVisible={activeDetailIntermediateCount} activeDetailIntermediateTotal={activeDetailIntermediateTotal} textChars={textChars} imageCount={imageCount}");
+	}
+
+	private static void AccumulateTurnEntryDiagnostics(SessionOrchestrator.TurnEntrySnapshot? entry, ref int textChars, ref int imageCount)
+	{
+		if (entry is null)
+		{
+			return;
+		}
+
+		if (!string.IsNullOrEmpty(entry.Text))
+		{
+			textChars += entry.Text.Length;
+		}
+
+		imageCount += entry.Images?.Length ?? 0;
 	}
 
 	private static object BuildRecapSettingsPayload(RecapSettingsSnapshot settings)
