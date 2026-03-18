@@ -1970,6 +1970,62 @@ body {
 	color: #166534;
 }
 
+.settings-usage-grid {
+	margin-top: 0.62rem;
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+	gap: 0.58rem;
+}
+
+.settings-usage-card {
+	padding: 0.7rem 0.72rem;
+	border: 1px solid #d1d5db;
+	border-radius: 10px;
+	background: #ffffff;
+}
+
+.settings-usage-card-title {
+	font-size: 0.79rem;
+	font-weight: 700;
+	color: #64748b;
+}
+
+.settings-usage-card-value {
+	margin-top: 0.3rem;
+	font-size: 0.8rem;
+	font-weight: 700;
+	color: #0f172a;
+}
+
+.settings-usage-bar-track {
+	margin-top: 0.5rem;
+	height: 0.55rem;
+	border-radius: 999px;
+	background: #e5e7eb;
+	overflow: hidden;
+}
+
+.settings-usage-bar-fill {
+	height: 100%;
+	width: 0;
+	border-radius: inherit;
+	background: #22c55e;
+}
+
+.settings-usage-bar-fill.warning {
+	background: #f59e0b;
+}
+
+.settings-usage-bar-fill.critical {
+	background: #ef4444;
+}
+
+.settings-usage-card-reset {
+	margin-top: 0.42rem;
+	font-size: 0.75rem;
+	color: #64748b;
+}
+
 .settings-field-label {
 	margin-top: 0.75rem;
 	display: block;
@@ -4273,6 +4329,24 @@ html[data-theme="dark"] .settings-mode-value.error {
 
 html[data-theme="dark"] .settings-mode-value.success {
 	color: #86efac;
+}
+
+html[data-theme="dark"] .settings-usage-card {
+	background: #0f172a;
+	border-color: #334155;
+}
+
+html[data-theme="dark"] .settings-usage-card-title,
+html[data-theme="dark"] .settings-usage-card-reset {
+	color: #94a3b8;
+}
+
+html[data-theme="dark"] .settings-usage-card-value {
+	color: #f1f5f9;
+}
+
+html[data-theme="dark"] .settings-usage-bar-track {
+	background: #334155;
 }
 
 html[data-theme="dark"] .project-path {

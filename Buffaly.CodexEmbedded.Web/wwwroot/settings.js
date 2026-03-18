@@ -20,6 +20,7 @@ const codexAuthRefreshBtn = document.getElementById("codexAuthRefreshBtn");
 const codexAuthStatus = document.getElementById("codexAuthStatus");
 const codexAuthDetails = document.getElementById("codexAuthDetails");
 const codexUsageStatus = document.getElementById("codexUsageStatus");
+const codexUsageBars = document.getElementById("codexUsageBars");
 const codexUsageDetails = document.getElementById("codexUsageDetails");
 
 function isMobileViewport() {
@@ -275,6 +276,15 @@ function setCodexUsageDetailsText(text) {
   codexUsageDetails.textContent = text || "";
 }
 
+function clearCodexUsageBars() {
+  if (!codexUsageBars) {
+    return;
+  }
+
+  codexUsageBars.replaceChildren();
+  codexUsageBars.classList.add("hidden");
+}
+
 function renderCodexAuthStatus(payload) {
   const hasIdentity = payload && payload.hasIdentity === true;
   const label = payload && typeof payload.label === "string" ? payload.label.trim() : "";
@@ -356,6 +366,117 @@ function formatUsageWindowLabel(windowMinutes, fallbackLabel) {
   return rounded === 1 ? "1m" : `${rounded}m`;
 }
 
+function formatUsageWindowTitle(windowMinutes, fallbackLabel) {
+  const shortLabel = formatUsageWindowLabel(windowMinutes, fallbackLabel);
+  if (shortLabel === "5h") {
+    return "5 hour usage limit";
+  }
+  if (shortLabel === "weekly" || shortLabel === "7d") {
+    return "Weekly usage limit";
+  }
+
+  return `${shortLabel} usage limit`;
+}
+
+function toUsagePercentNumber(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  return Math.max(0, Math.min(100, numeric));
+}
+
+function resolveUsageRemainingPercent(windowPayload) {
+  if (!windowPayload || typeof windowPayload !== "object") {
+    return null;
+  }
+
+  const remaining = toUsagePercentNumber(windowPayload.remainingPercent);
+  if (remaining !== null) {
+    return remaining;
+  }
+
+  const used = toUsagePercentNumber(windowPayload.usedPercent);
+  if (used === null) {
+    return null;
+  }
+
+  return Math.max(0, Math.min(100, 100 - used));
+}
+
+function renderCodexUsageBars(latest) {
+  if (!codexUsageBars) {
+    return false;
+  }
+
+  codexUsageBars.replaceChildren();
+  const windowEntries = [
+    { windowPayload: latest?.primary, fallbackLabel: "primary", fallbackResetUtc: latest?.resetAtUtc },
+    { windowPayload: latest?.secondary, fallbackLabel: "secondary", fallbackResetUtc: latest?.resetAtUtc }
+  ];
+
+  let cardCount = 0;
+  for (const entry of windowEntries) {
+    const windowPayload = entry.windowPayload;
+    if (!windowPayload || typeof windowPayload !== "object") {
+      continue;
+    }
+
+    const remainingPercentNumeric = resolveUsageRemainingPercent(windowPayload);
+    if (remainingPercentNumeric === null) {
+      continue;
+    }
+
+    const remainingPercentText = formatUsagePercent(remainingPercentNumeric) || `${Math.round(remainingPercentNumeric)}%`;
+    const titleText = formatUsageWindowTitle(windowPayload.windowMinutes, entry.fallbackLabel);
+    const resetText = formatUpdatedAt(windowPayload.resetsAtUtc || entry.fallbackResetUtc);
+    const card = document.createElement("article");
+    card.className = "settings-usage-card";
+
+    const label = document.createElement("div");
+    label.className = "settings-usage-card-title";
+    label.textContent = titleText;
+
+    const valueRow = document.createElement("div");
+    valueRow.className = "settings-usage-card-value";
+    valueRow.textContent = `${remainingPercentText} remaining`;
+
+    const barTrack = document.createElement("div");
+    barTrack.className = "settings-usage-bar-track";
+
+    const barFill = document.createElement("div");
+    barFill.className = "settings-usage-bar-fill";
+    if (remainingPercentNumeric <= 25) {
+      barFill.classList.add("critical");
+    } else if (remainingPercentNumeric <= 50) {
+      barFill.classList.add("warning");
+    }
+
+    barFill.style.width = `${remainingPercentNumeric.toFixed(1)}%`;
+    barFill.setAttribute("aria-label", `${titleText}: ${remainingPercentText} remaining`);
+    barFill.setAttribute("role", "progressbar");
+    barFill.setAttribute("aria-valuemin", "0");
+    barFill.setAttribute("aria-valuemax", "100");
+    barFill.setAttribute("aria-valuenow", remainingPercentNumeric.toFixed(1));
+    barTrack.appendChild(barFill);
+
+    const resetLine = document.createElement("div");
+    resetLine.className = "settings-usage-card-reset";
+    resetLine.textContent = resetText ? `Resets ${resetText}` : "Reset time unavailable";
+
+    card.appendChild(label);
+    card.appendChild(valueRow);
+    card.appendChild(barTrack);
+    card.appendChild(resetLine);
+    codexUsageBars.appendChild(card);
+    cardCount += 1;
+  }
+
+  codexUsageBars.classList.toggle("hidden", cardCount === 0);
+  return cardCount > 0;
+}
+
 function summarizeUsageWindow(windowPayload, fallbackLabel) {
   if (!windowPayload || typeof windowPayload !== "object") {
     return "";
@@ -385,6 +506,7 @@ function renderCodexUsageStatus(payload) {
   const latest = payload && payload.latest && typeof payload.latest === "object" ? payload.latest : null;
   const message = payload && typeof payload.message === "string" ? payload.message.trim() : "";
   if (!hasUsage || !latest) {
+    clearCodexUsageBars();
     setCodexUsageStatusText(message || "Usage data unavailable.", "error");
     setCodexUsageDetailsText("No rate limit signal has been observed yet for any loaded session.");
     return;
@@ -394,7 +516,10 @@ function renderCodexUsageStatus(payload) {
   const primarySummary = summarizeUsageWindow(latest.primary, "primary");
   const secondarySummary = summarizeUsageWindow(latest.secondary, "secondary");
   const rateWindowSummary = [primarySummary, secondarySummary].filter((x) => !!x);
-  if (rateWindowSummary.length > 0) {
+  const hasBars = renderCodexUsageBars(latest);
+  if (hasBars) {
+    setCodexUsageStatusText("Balance", "success");
+  } else if (rateWindowSummary.length > 0) {
     setCodexUsageStatusText(`Usage: ${rateWindowSummary.join(" | ")}`, "success");
   } else if (summary) {
     setCodexUsageStatusText(`Usage: ${summary}`, "success");
@@ -528,6 +653,7 @@ async function loadCodexUsageStatus() {
     return;
   }
 
+  clearCodexUsageBars();
   setCodexUsageStatusText("Checking usage status...");
   setCodexUsageDetailsText("");
   try {
