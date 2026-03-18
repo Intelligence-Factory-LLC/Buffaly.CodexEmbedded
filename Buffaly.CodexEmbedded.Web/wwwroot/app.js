@@ -7000,18 +7000,41 @@ function resolveDefaultModelName(models, fallbackDefaultModel = "") {
 function populateModelSelect(models, fallbackDefaultModel = "") {
   const prior = modelSelect.value;
   configuredDefaultModel = resolveDefaultModelName(models, fallbackDefaultModel);
+  const listedDefaultModel = Array.isArray(models)
+    ? normalizeModelValue((models.find((model) => model && model.isDefault)?.model) || "")
+    : "";
+  const hasDualDefaults =
+    !!configuredDefaultModel &&
+    !!listedDefaultModel &&
+    configuredDefaultModel.toLowerCase() !== listedDefaultModel.toLowerCase();
   modelSelect.textContent = "";
 
   const optDefault = document.createElement("option");
   optDefault.value = "";
-  optDefault.textContent = configuredDefaultModel ? `(default: ${configuredDefaultModel})` : "(default)";
+  if (configuredDefaultModel) {
+    optDefault.textContent = hasDualDefaults
+      ? `(default: ${configuredDefaultModel}, server: ${listedDefaultModel})`
+      : `(default: ${configuredDefaultModel})`;
+  } else if (listedDefaultModel) {
+    optDefault.textContent = `(default: ${listedDefaultModel})`;
+  } else {
+    optDefault.textContent = "(default)";
+  }
   modelSelect.appendChild(optDefault);
 
   for (const m of models) {
     const opt = document.createElement("option");
     opt.value = m.model;
     const isConfiguredDefault = configuredDefaultModel && normalizeModelValue(m.model) === configuredDefaultModel;
-    const defaultSuffix = isConfiguredDefault || m.isDefault ? " (default)" : "";
+    const isServerDefault = listedDefaultModel && normalizeModelValue(m.model) === listedDefaultModel;
+    let defaultSuffix = "";
+    if (isConfiguredDefault && isServerDefault) {
+      defaultSuffix = " (default)";
+    } else if (isConfiguredDefault) {
+      defaultSuffix = " (configured default)";
+    } else if (isServerDefault || m.isDefault) {
+      defaultSuffix = hasDualDefaults ? " (server default)" : " (default)";
+    }
     opt.textContent = `${m.displayName || m.model}${defaultSuffix}`;
     modelSelect.appendChild(opt);
   }
