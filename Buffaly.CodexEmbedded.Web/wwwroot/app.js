@@ -334,7 +334,17 @@ const sessionRecoveryDismissBtn = document.getElementById("sessionRecoveryDismis
 const timeline = new window.CodexSessionTimeline({
   container: chatMessages,
   maxRenderedEntries: 1500,
-  systemTitle: "Session"
+  systemTitle: "Session",
+  onDiagnostic: (stage, details) => {
+    if (!timelineDiagEnabled) {
+      return;
+    }
+
+    const normalizedStage = typeof stage === "string" && stage.trim()
+      ? `timeline_${stage.trim()}`
+      : "timeline_unknown";
+    logTimelineDiag(normalizedStage, details || {});
+  }
 });
 
 function uiAuditLog(eventName, details = null, level = "info") {

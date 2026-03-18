@@ -26,6 +26,7 @@
       this.maxRenderedEntries = Number.isFinite(opts.maxRenderedEntries) ? opts.maxRenderedEntries : DEFAULT_MAX_RENDERED_ENTRIES;
       this.maxTextChars = Number.isFinite(opts.maxTextChars) ? opts.maxTextChars : DEFAULT_MAX_TEXT_CHARS;
       this.systemTitle = opts.systemTitle || "System";
+      this.onDiagnostic = typeof opts.onDiagnostic === "function" ? opts.onDiagnostic : null;
 
       this.pendingEntries = [];
       this.pendingUpdatedEntries = new Map();
@@ -62,6 +63,18 @@
       });
 
       this.refreshVisibility();
+    }
+
+    emitDiagnostic(stage, details = {}) {
+      if (typeof this.onDiagnostic !== "function") {
+        return;
+      }
+
+      try {
+        this.onDiagnostic(stage, details || {});
+      } catch {
+        // no-op
+      }
     }
 
     resolveAssistantMarkdownPreference(explicitValue) {
@@ -311,48 +324,84 @@
     }
 
     setServerTurns(rawTurns) {
-      const safeTurns = this.normalizeServerTurns(rawTurns);
-      const shouldStick = this.autoScrollPinned || this.isNearBottom();
-      const livePlanKeys = this.collectPlanStateKeysFromTurns(safeTurns);
-      for (const key of Array.from(this.expandedPlanEntryKeys)) {
-        if (!livePlanKeys.has(key)) {
-          this.expandedPlanEntryKeys.delete(key);
-        }
-      }
+      const startedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
+      this.emitDiagnostic("set_turns_start", {
+        rawTurnCount: Array.isArray(rawTurns) ? rawTurns.length : 0,
+        priorRenderCount: this.renderCount,
+        priorDomNodes: this.container.childElementCount
+      });
 
-      this.turnModeActive = true;
-      this.turns = safeTurns;
-      const validTurnIds = new Set(safeTurns.map((x) => x.turnId));
-      for (const existingTurnId of Array.from(this.turnCollapsedById.keys())) {
-        if (!validTurnIds.has(existingTurnId)) {
-          this.turnCollapsedById.delete(existingTurnId);
-        }
-      }
-      this.pendingEntries = [];
-      this.pendingUpdatedEntries.clear();
-      this.entryNodeById.clear();
-      this.toolEntriesByCallId.clear();
-      this.liveAssistantEntriesByStreamKey.clear();
-      this.visibleActionEntryId = null;
-      this.container.textContent = "";
-      this.turnNodeById.clear();
-      this.expandedToolEntryIds.clear();
-
-      for (const turn of safeTurns) {
-        this.appendTurnNode(turn);
-      }
-
-      this.refreshTurnVisibility();
-      if (shouldStick) {
-        this.container.scrollTop = this.container.scrollHeight;
-        this.autoScrollPinned = true;
-      }
-
-      this.dispatchTimelineEvent("timeline-updated", { mode: "turns", turnCount: safeTurns.length });
       try {
-        this.container.dispatchEvent(new CustomEvent("codex:timeline-updated"));
-      } catch {
-        // no-op
+        const normalizeStartedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
+        const safeTurns = this.normalizeServerTurns(rawTurns);
+        const normalizeEndedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
+        const shouldStick = this.autoScrollPinned || this.isNearBottom();
+        const livePlanKeys = this.collectPlanStateKeysFromTurns(safeTurns);
+        this.emitDiagnostic("set_turns_normalized", {
+          safeTurnCount: safeTurns.length,
+          normalizeMs: Math.round((normalizeEndedAt - normalizeStartedAt) * 10) / 10
+        });
+
+        for (const key of Array.from(this.expandedPlanEntryKeys)) {
+          if (!livePlanKeys.has(key)) {
+            this.expandedPlanEntryKeys.delete(key);
+          }
+        }
+
+        this.turnModeActive = true;
+        this.turns = safeTurns;
+        const validTurnIds = new Set(safeTurns.map((x) => x.turnId));
+        for (const existingTurnId of Array.from(this.turnCollapsedById.keys())) {
+          if (!validTurnIds.has(existingTurnId)) {
+            this.turnCollapsedById.delete(existingTurnId);
+          }
+        }
+        this.pendingEntries = [];
+        this.pendingUpdatedEntries.clear();
+        this.renderCount = 0;
+        this.entryNodeById.clear();
+        this.toolEntriesByCallId.clear();
+        this.liveAssistantEntriesByStreamKey.clear();
+        this.visibleActionEntryId = null;
+        this.container.textContent = "";
+        this.turnNodeById.clear();
+        this.expandedToolEntryIds.clear();
+        this.emitDiagnostic("set_turns_cleared", {
+          safeTurnCount: safeTurns.length,
+          renderCount: this.renderCount
+        });
+
+        for (const turn of safeTurns) {
+          this.appendTurnNode(turn);
+        }
+
+        this.refreshTurnVisibility();
+        if (shouldStick) {
+          this.container.scrollTop = this.container.scrollHeight;
+          this.autoScrollPinned = true;
+        }
+
+        this.dispatchTimelineEvent("timeline-updated", { mode: "turns", turnCount: safeTurns.length });
+        try {
+          this.container.dispatchEvent(new CustomEvent("codex:timeline-updated"));
+        } catch {
+          // no-op
+        }
+
+        const endedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
+        this.emitDiagnostic("set_turns_complete", {
+          safeTurnCount: safeTurns.length,
+          renderCount: this.renderCount,
+          domNodes: this.container.childElementCount,
+          elapsedMs: Math.round((endedAt - startedAt) * 10) / 10
+        });
+      } catch (error) {
+        const endedAt = typeof performance !== "undefined" && performance ? performance.now() : Date.now();
+        this.emitDiagnostic("set_turns_error", {
+          message: String(error || "unknown"),
+          elapsedMs: Math.round((endedAt - startedAt) * 10) / 10
+        });
+        throw error;
       }
     }
 
