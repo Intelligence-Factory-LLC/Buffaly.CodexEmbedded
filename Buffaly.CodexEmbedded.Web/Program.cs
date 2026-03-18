@@ -188,6 +188,60 @@ app.MapGet("/api/settings/codex-auth/status", (
 	});
 });
 
+app.MapGet("/api/settings/codex-usage/status", (
+	HttpContext context,
+	WebRuntimeDefaults defaults,
+	SessionOrchestrator orchestrator) =>
+{
+	if (!IsHttpRequestAuthorized(context.Request, defaults))
+	{
+		return Results.Unauthorized();
+	}
+
+	var snapshots = orchestrator.GetLatestRateLimitSnapshots();
+	var latest = snapshots.FirstOrDefault();
+	var message = latest is null
+		? "Usage data has not been received yet. Start or resume a session to populate limits."
+		: $"Latest usage from session {latest.SessionId}.";
+
+	return Results.Ok(new
+	{
+		hasUsage = latest is not null,
+		message,
+		updatedAtUtc = latest?.UpdatedAtUtc.ToString("O"),
+		latest = latest is null
+			? null
+			: new
+			{
+				sessionId = latest.SessionId,
+				threadId = latest.ThreadId,
+				scope = latest.Scope,
+				remaining = latest.Remaining,
+				limit = latest.Limit,
+				used = latest.Used,
+				retryAfterSeconds = latest.RetryAfterSeconds,
+				resetAtUtc = latest.ResetAtUtc?.ToString("O"),
+				summary = latest.Summary,
+				source = latest.Source,
+				updatedAtUtc = latest.UpdatedAtUtc.ToString("O")
+			},
+		sessions = snapshots.Select(x => new
+		{
+			sessionId = x.SessionId,
+			threadId = x.ThreadId,
+			scope = x.Scope,
+			remaining = x.Remaining,
+			limit = x.Limit,
+			used = x.Used,
+			retryAfterSeconds = x.RetryAfterSeconds,
+			resetAtUtc = x.ResetAtUtc?.ToString("O"),
+			summary = x.Summary,
+			source = x.Source,
+			updatedAtUtc = x.UpdatedAtUtc.ToString("O")
+		}).ToArray()
+	});
+});
+
 app.MapPut("/api/settings/openai-key", async (
 	HttpContext context,
 	OpenAiKeyUpdateRequest body,

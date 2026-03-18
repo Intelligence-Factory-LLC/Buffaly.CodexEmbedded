@@ -19,6 +19,8 @@ const buildInfoLine = document.getElementById("buildInfoLine");
 const codexAuthRefreshBtn = document.getElementById("codexAuthRefreshBtn");
 const codexAuthStatus = document.getElementById("codexAuthStatus");
 const codexAuthDetails = document.getElementById("codexAuthDetails");
+const codexUsageStatus = document.getElementById("codexUsageStatus");
+const codexUsageDetails = document.getElementById("codexUsageDetails");
 
 function isMobileViewport() {
   return window.matchMedia("(max-width: 900px)").matches;
@@ -255,6 +257,24 @@ function setCodexAuthDetailsText(text) {
   codexAuthDetails.textContent = text || "";
 }
 
+function setCodexUsageStatusText(text, status = "") {
+  if (!codexUsageStatus) {
+    return;
+  }
+
+  codexUsageStatus.textContent = text || "";
+  codexUsageStatus.classList.toggle("error", status === "error");
+  codexUsageStatus.classList.toggle("success", status === "success");
+}
+
+function setCodexUsageDetailsText(text) {
+  if (!codexUsageDetails) {
+    return;
+  }
+
+  codexUsageDetails.textContent = text || "";
+}
+
 function renderCodexAuthStatus(payload) {
   const hasIdentity = payload && payload.hasIdentity === true;
   const label = payload && typeof payload.label === "string" ? payload.label.trim() : "";
@@ -283,6 +303,63 @@ function renderCodexAuthStatus(payload) {
   if (fileUpdated) details.push(`Auth file updated: ${fileUpdated}`);
   if (recommendation) details.push(recommendation);
   setCodexAuthDetailsText(details.join(" | "));
+}
+
+function formatUsageNumber(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "";
+  }
+
+  if (Math.abs(numeric - Math.round(numeric)) < 0.0001) {
+    return Math.round(numeric).toLocaleString();
+  }
+
+  return numeric.toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+function renderCodexUsageStatus(payload) {
+  const hasUsage = payload && payload.hasUsage === true;
+  const latest = payload && payload.latest && typeof payload.latest === "object" ? payload.latest : null;
+  const message = payload && typeof payload.message === "string" ? payload.message.trim() : "";
+  if (!hasUsage || !latest) {
+    setCodexUsageStatusText(message || "Usage data unavailable.", "error");
+    setCodexUsageDetailsText("No rate limit signal has been observed yet for any loaded session.");
+    return;
+  }
+
+  const summary = typeof latest.summary === "string" ? latest.summary.trim() : "";
+  if (summary) {
+    setCodexUsageStatusText(`Usage: ${summary}`, "success");
+  } else {
+    const remaining = formatUsageNumber(latest.remaining);
+    const limit = formatUsageNumber(latest.limit);
+    const used = formatUsageNumber(latest.used);
+    const pieces = [];
+    if (remaining && limit) {
+      pieces.push(`${remaining}/${limit} remaining`);
+    } else if (remaining) {
+      pieces.push(`${remaining} remaining`);
+    }
+    if (used) {
+      pieces.push(`${used} used`);
+    }
+
+    setCodexUsageStatusText(
+      pieces.length > 0 ? `Usage: ${pieces.join(" | ")}` : "Usage update received.",
+      "success");
+  }
+
+  const details = [];
+  const updated = formatUpdatedAt(latest.updatedAtUtc);
+  const resetAt = formatUpdatedAt(latest.resetAtUtc);
+  if (latest.sessionId) details.push(`Session: ${latest.sessionId}`);
+  if (latest.threadId) details.push(`Thread: ${latest.threadId}`);
+  if (latest.scope) details.push(`Scope: ${latest.scope}`);
+  if (resetAt) details.push(`Resets: ${resetAt}`);
+  if (updated) details.push(`Updated: ${updated}`);
+  if (latest.source) details.push(`Source: ${latest.source}`);
+  setCodexUsageDetailsText(details.join(" | "));
 }
 
 async function readJsonOrThrow(response) {
@@ -348,6 +425,23 @@ async function loadCodexAuthStatus() {
     setCodexAuthDetailsText("");
   } finally {
     setCodexAuthUiBusy(false);
+  }
+}
+
+async function loadCodexUsageStatus() {
+  if (!codexUsageStatus) {
+    return;
+  }
+
+  setCodexUsageStatusText("Checking usage status...");
+  setCodexUsageDetailsText("");
+  try {
+    const response = await fetch(new URL("api/settings/codex-usage/status", document.baseURI), { cache: "no-store" });
+    const payload = await readJsonOrThrow(response);
+    renderCodexUsageStatus(payload);
+  } catch (error) {
+    setCodexUsageStatusText(`Failed to load usage status: ${error}`, "error");
+    setCodexUsageDetailsText("");
   }
 }
 
@@ -466,10 +560,10 @@ if (openAiKeyClearBtn) {
 
 if (codexAuthRefreshBtn) {
   codexAuthRefreshBtn.addEventListener("click", () => {
-    loadCodexAuthStatus().catch((error) => {
-      setCodexAuthStatusText(`Failed to load Codex auth status: ${error}`, "error");
-      setCodexAuthDetailsText("");
-    });
+    Promise.all([
+      loadCodexAuthStatus(),
+      loadCodexUsageStatus()
+    ]).catch(() => {});
   });
 }
 
@@ -512,4 +606,8 @@ loadBuildInfo().catch(() => {});
 loadCodexAuthStatus().catch((error) => {
   setCodexAuthStatusText(`Failed to load Codex auth status: ${error}`, "error");
   setCodexAuthDetailsText("");
+});
+loadCodexUsageStatus().catch((error) => {
+  setCodexUsageStatusText(`Failed to load usage status: ${error}`, "error");
+  setCodexUsageDetailsText("");
 });

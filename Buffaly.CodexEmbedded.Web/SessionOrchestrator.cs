@@ -109,6 +109,23 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			.ToList();
 	}
 
+	public IReadOnlyList<SessionRateLimitSnapshot> GetLatestRateLimitSnapshots()
+	{
+		List<ManagedSession> loadedSessions;
+		lock (_sync)
+		{
+			loadedSessions = _sessions.Values.ToList();
+		}
+
+		return loadedSessions
+			.Select(s => s.GetLatestRateLimitSnapshot())
+			.Where(x => x is not null)
+			.Select(x => x!)
+			.OrderByDescending(x => x.UpdatedAtUtc)
+			.ThenBy(x => x.SessionId, StringComparer.Ordinal)
+			.ToList();
+	}
+
 	public TurnWatchSnapshot WatchTurns(
 		string threadId,
 		int maxEntries,
@@ -3165,6 +3182,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private void FlushRateLimitsSignal(string sessionId)
 	{
 		CoreRateLimitsSignal? signal = null;
+		ManagedSession? loadedSession = null;
 		lock (_coreSignalSync)
 		{
 			if (!_rateLimitDispatchBySession.TryGetValue(sessionId, out var state))
@@ -3184,10 +3202,30 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			state.LastFingerprint = signal.Fingerprint;
 		}
 
-		if (signal is null || TryGetSession(sessionId) is null)
+		if (signal is null)
 		{
 			return;
 		}
+
+		loadedSession = TryGetSession(sessionId);
+		if (loadedSession is null)
+		{
+			return;
+		}
+
+		var snapshot = new SessionRateLimitSnapshot(
+			SessionId: sessionId,
+			ThreadId: loadedSession.Session.ThreadId,
+			Scope: signal.Scope,
+			Remaining: signal.Remaining,
+			Limit: signal.Limit,
+			Used: signal.Used,
+			RetryAfterSeconds: signal.RetryAfterSeconds,
+			ResetAtUtc: signal.ResetAtUtc,
+			Summary: signal.Summary,
+			Source: signal.Source,
+			UpdatedAtUtc: DateTimeOffset.UtcNow);
+		loadedSession.SetLatestRateLimitSnapshot(snapshot);
 
 		Broadcast?.Invoke(
 			"rate_limits_updated",
@@ -4884,6 +4922,19 @@ internal sealed record SessionSnapshot(
 	bool IsTurnInFlightLogOnly,
 	bool IsAppServerRecovering);
 
+internal sealed record SessionRateLimitSnapshot(
+	string SessionId,
+	string ThreadId,
+	string? Scope,
+	double? Remaining,
+	double? Limit,
+	double? Used,
+	double? RetryAfterSeconds,
+	DateTimeOffset? ResetAtUtc,
+	string Summary,
+	string Source,
+	DateTimeOffset UpdatedAtUtc);
+
 	internal sealed record QueuedTurnSummarySnapshot(
 		string QueueItemId,
 		string PreviewText,
@@ -5040,6 +5091,7 @@ internal sealed record SessionSnapshot(
 		private RecoverableTurnReplaySnapshot? _recoverableTurn;
 		private DateTimeOffset _lastRecoveryOfferDismissedUtc = DateTimeOffset.MinValue;
 		private bool _isAppServerRecovering = AppServerRecovering;
+		private SessionRateLimitSnapshot? _latestRateLimitSnapshot;
 
 		public string? PendingApprovalId => PendingApprovals.Keys.FirstOrDefault();
 		public string? PendingToolUserInputId => PendingToolUserInputs.Keys.FirstOrDefault();
@@ -5294,6 +5346,22 @@ internal sealed record SessionSnapshot(
 				IsTurnInFlightInferredFromLogs: isTurnInFlightInferredFromLogs,
 				IsTurnInFlightLogOnly: isTurnInFlightLogOnly,
 				IsAppServerRecovering: IsAppServerRecovering);
+		}
+
+		public void SetLatestRateLimitSnapshot(SessionRateLimitSnapshot snapshot)
+		{
+			lock (_turnSync)
+			{
+				_latestRateLimitSnapshot = snapshot;
+			}
+		}
+
+		public SessionRateLimitSnapshot? GetLatestRateLimitSnapshot()
+		{
+			lock (_turnSync)
+			{
+				return _latestRateLimitSnapshot;
+			}
 		}
 
 		public void SetModel(string? model)
