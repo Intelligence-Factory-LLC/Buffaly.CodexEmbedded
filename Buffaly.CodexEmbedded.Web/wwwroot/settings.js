@@ -318,6 +318,68 @@ function formatUsageNumber(value) {
   return numeric.toLocaleString(undefined, { maximumFractionDigits: 3 });
 }
 
+function formatUsagePercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "";
+  }
+
+  if (Math.abs(numeric - Math.round(numeric)) < 0.05) {
+    return `${Math.round(numeric)}%`;
+  }
+
+  return `${numeric.toLocaleString(undefined, { maximumFractionDigits: 1 })}%`;
+}
+
+function formatUsageWindowLabel(windowMinutes, fallbackLabel) {
+  const numeric = Number(windowMinutes);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return fallbackLabel;
+  }
+
+  const rounded = Math.round(numeric);
+  if (Math.abs(rounded - 300) <= 1) {
+    return "5h";
+  }
+  if (Math.abs(rounded - 10080) <= 1) {
+    return "weekly";
+  }
+  if (rounded % 1440 === 0) {
+    const days = rounded / 1440;
+    return days === 1 ? "1d" : `${days}d`;
+  }
+  if (rounded % 60 === 0) {
+    const hours = rounded / 60;
+    return hours === 1 ? "1h" : `${hours}h`;
+  }
+
+  return rounded === 1 ? "1m" : `${rounded}m`;
+}
+
+function summarizeUsageWindow(windowPayload, fallbackLabel) {
+  if (!windowPayload || typeof windowPayload !== "object") {
+    return "";
+  }
+
+  const label = formatUsageWindowLabel(windowPayload.windowMinutes, fallbackLabel);
+  let remainingPercent = formatUsagePercent(windowPayload.remainingPercent);
+  const usedPercent = Number(windowPayload.usedPercent);
+  if (!remainingPercent && Number.isFinite(usedPercent)) {
+    remainingPercent = formatUsagePercent(Math.max(0, Math.min(100, 100 - usedPercent)));
+  }
+
+  if (remainingPercent) {
+    return `${label} ${remainingPercent} remaining`;
+  }
+
+  const usedText = formatUsagePercent(windowPayload.usedPercent);
+  if (usedText) {
+    return `${label} ${usedText} used`;
+  }
+
+  return "";
+}
+
 function renderCodexUsageStatus(payload) {
   const hasUsage = payload && payload.hasUsage === true;
   const latest = payload && payload.latest && typeof payload.latest === "object" ? payload.latest : null;
@@ -329,7 +391,12 @@ function renderCodexUsageStatus(payload) {
   }
 
   const summary = typeof latest.summary === "string" ? latest.summary.trim() : "";
-  if (summary) {
+  const primarySummary = summarizeUsageWindow(latest.primary, "primary");
+  const secondarySummary = summarizeUsageWindow(latest.secondary, "secondary");
+  const rateWindowSummary = [primarySummary, secondarySummary].filter((x) => !!x);
+  if (rateWindowSummary.length > 0) {
+    setCodexUsageStatusText(`Usage: ${rateWindowSummary.join(" | ")}`, "success");
+  } else if (summary) {
     setCodexUsageStatusText(`Usage: ${summary}`, "success");
   } else {
     const remaining = formatUsageNumber(latest.remaining);
@@ -353,6 +420,34 @@ function renderCodexUsageStatus(payload) {
   const details = [];
   const updated = formatUpdatedAt(latest.updatedAtUtc);
   const resetAt = formatUpdatedAt(latest.resetAtUtc);
+  const primaryLabel = formatUsageWindowLabel(latest?.primary?.windowMinutes, "primary");
+  const secondaryLabel = formatUsageWindowLabel(latest?.secondary?.windowMinutes, "secondary");
+  const primaryResetAt = formatUpdatedAt(latest?.primary?.resetsAtUtc);
+  const secondaryResetAt = formatUpdatedAt(latest?.secondary?.resetsAtUtc);
+  const planType = typeof latest.planType === "string" ? latest.planType.trim() : "";
+  const credits = latest && typeof latest.credits === "object" ? latest.credits : null;
+  const quotaRemaining = formatUsageNumber(latest.remaining);
+  const quotaLimit = formatUsageNumber(latest.limit);
+  const quotaUsed = formatUsageNumber(latest.used);
+  if (quotaRemaining && quotaLimit) details.push(`Quota: ${quotaRemaining}/${quotaLimit} remaining`);
+  if (quotaUsed) details.push(`Used: ${quotaUsed}`);
+  if (planType) details.push(`Plan: ${planType}`);
+  if (credits) {
+    const hasCredits = credits.hasCredits === true;
+    const unlimited = credits.unlimited === true;
+    const creditBalance = formatUsageNumber(credits.balance);
+    if (unlimited) {
+      details.push("Credits: unlimited");
+    } else if (hasCredits && creditBalance) {
+      details.push(`Credits balance: ${creditBalance}`);
+    } else if (hasCredits) {
+      details.push("Credits: available");
+    } else if (credits.hasCredits === false) {
+      details.push("Credits: none");
+    }
+  }
+  if (primaryResetAt) details.push(`${primaryLabel} resets: ${primaryResetAt}`);
+  if (secondaryResetAt) details.push(`${secondaryLabel} resets: ${secondaryResetAt}`);
   if (latest.sessionId) details.push(`Session: ${latest.sessionId}`);
   if (latest.threadId) details.push(`Thread: ${latest.threadId}`);
   if (latest.scope) details.push(`Scope: ${latest.scope}`);

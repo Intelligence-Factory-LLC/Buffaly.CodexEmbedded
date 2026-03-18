@@ -221,6 +221,31 @@ app.MapGet("/api/settings/codex-usage/status", (
 				used = latest.Used,
 				retryAfterSeconds = latest.RetryAfterSeconds,
 				resetAtUtc = latest.ResetAtUtc?.ToString("O"),
+				primary = latest.Primary is null
+					? null
+					: new
+					{
+						usedPercent = latest.Primary.UsedPercent,
+						remainingPercent = latest.Primary.RemainingPercent,
+						windowMinutes = latest.Primary.WindowMinutes,
+						resetsAtUtc = latest.Primary.ResetsAtUtc?.ToString("O")
+					},
+				secondary = latest.Secondary is null
+					? null
+					: new
+					{
+						usedPercent = latest.Secondary.UsedPercent,
+						remainingPercent = latest.Secondary.RemainingPercent,
+						windowMinutes = latest.Secondary.WindowMinutes,
+						resetsAtUtc = latest.Secondary.ResetsAtUtc?.ToString("O")
+					},
+				planType = latest.PlanType,
+				credits = new
+				{
+					hasCredits = latest.HasCredits,
+					unlimited = latest.UnlimitedCredits,
+					balance = latest.CreditBalance
+				},
 				summary = latest.Summary,
 				source = latest.Source,
 				updatedAtUtc = latest.UpdatedAtUtc.ToString("O")
@@ -235,6 +260,31 @@ app.MapGet("/api/settings/codex-usage/status", (
 			used = x.Used,
 			retryAfterSeconds = x.RetryAfterSeconds,
 			resetAtUtc = x.ResetAtUtc?.ToString("O"),
+			primary = x.Primary is null
+				? null
+				: new
+				{
+					usedPercent = x.Primary.UsedPercent,
+					remainingPercent = x.Primary.RemainingPercent,
+					windowMinutes = x.Primary.WindowMinutes,
+					resetsAtUtc = x.Primary.ResetsAtUtc?.ToString("O")
+				},
+			secondary = x.Secondary is null
+				? null
+				: new
+				{
+					usedPercent = x.Secondary.UsedPercent,
+					remainingPercent = x.Secondary.RemainingPercent,
+					windowMinutes = x.Secondary.WindowMinutes,
+					resetsAtUtc = x.Secondary.ResetsAtUtc?.ToString("O")
+				},
+			planType = x.PlanType,
+			credits = new
+			{
+				hasCredits = x.HasCredits,
+				unlimited = x.UnlimitedCredits,
+				balance = x.CreditBalance
+			},
 			summary = x.Summary,
 			source = x.Source,
 			updatedAtUtc = x.UpdatedAtUtc.ToString("O")

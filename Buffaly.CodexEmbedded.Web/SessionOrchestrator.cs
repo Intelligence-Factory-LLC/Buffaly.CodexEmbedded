@@ -3222,6 +3222,24 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			Used: signal.Used,
 			RetryAfterSeconds: signal.RetryAfterSeconds,
 			ResetAtUtc: signal.ResetAtUtc,
+			Primary: signal.Primary is null
+				? null
+				: new SessionRateLimitWindowSnapshot(
+					UsedPercent: signal.Primary.UsedPercent,
+					RemainingPercent: signal.Primary.RemainingPercent,
+					WindowMinutes: signal.Primary.WindowMinutes,
+					ResetsAtUtc: signal.Primary.ResetsAtUtc),
+			Secondary: signal.Secondary is null
+				? null
+				: new SessionRateLimitWindowSnapshot(
+					UsedPercent: signal.Secondary.UsedPercent,
+					RemainingPercent: signal.Secondary.RemainingPercent,
+					WindowMinutes: signal.Secondary.WindowMinutes,
+					ResetsAtUtc: signal.Secondary.ResetsAtUtc),
+			PlanType: signal.PlanType,
+			HasCredits: signal.HasCredits,
+			UnlimitedCredits: signal.UnlimitedCredits,
+			CreditBalance: signal.CreditBalance,
 			Summary: signal.Summary,
 			Source: signal.Source,
 			UpdatedAtUtc: DateTimeOffset.UtcNow);
@@ -3238,6 +3256,31 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				used = signal.Used,
 				retryAfterSeconds = signal.RetryAfterSeconds,
 				resetAtUtc = signal.ResetAtUtc?.ToString("O"),
+				primary = signal.Primary is null
+					? null
+					: new
+					{
+						usedPercent = signal.Primary.UsedPercent,
+						remainingPercent = signal.Primary.RemainingPercent,
+						windowMinutes = signal.Primary.WindowMinutes,
+						resetsAtUtc = signal.Primary.ResetsAtUtc?.ToString("O")
+					},
+				secondary = signal.Secondary is null
+					? null
+					: new
+					{
+						usedPercent = signal.Secondary.UsedPercent,
+						remainingPercent = signal.Secondary.RemainingPercent,
+						windowMinutes = signal.Secondary.WindowMinutes,
+						resetsAtUtc = signal.Secondary.ResetsAtUtc?.ToString("O")
+					},
+				planType = signal.PlanType,
+				credits = new
+				{
+					hasCredits = signal.HasCredits,
+					unlimited = signal.UnlimitedCredits,
+					balance = signal.CreditBalance
+				},
 				summary = signal.Summary,
 				source = signal.Source
 			});
@@ -3514,7 +3557,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	{
 		if (!string.Equals(method, "account/rateLimits/updated", StringComparison.Ordinal) &&
 			!string.Equals(method, "account/rate_limits/updated", StringComparison.Ordinal) &&
-			!string.Equals(method, "codex/event/account_rate_limits_updated", StringComparison.Ordinal))
+			!string.Equals(method, "codex/event/account_rate_limits_updated", StringComparison.Ordinal) &&
+			!string.Equals(method, "token_count", StringComparison.Ordinal) &&
+			!string.Equals(method, "codex/event/token_count", StringComparison.Ordinal))
 		{
 			return null;
 		}
@@ -3526,7 +3571,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	{
 		if (!string.Equals(payloadType, "rate_limits_updated", StringComparison.Ordinal) &&
 			!string.Equals(payloadType, "rateLimitsUpdated", StringComparison.Ordinal) &&
-			!string.Equals(payloadType, "account_rate_limits_updated", StringComparison.Ordinal))
+			!string.Equals(payloadType, "account_rate_limits_updated", StringComparison.Ordinal) &&
+			!string.Equals(payloadType, "token_count", StringComparison.Ordinal) &&
+			!string.Equals(payloadType, "tokenCount", StringComparison.Ordinal))
 		{
 			return null;
 		}
@@ -3603,74 +3650,128 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	private static CoreRateLimitsSignal BuildRateLimitsSignal(JsonElement root, string source)
 	{
-		var scope = TryGetAnyPathString(root,
+		var rateLimitsRoot = ResolveRateLimitsRoot(root);
+		var primary = TryBuildRateLimitWindow(rateLimitsRoot, "primary", "primary");
+		var secondary = TryBuildRateLimitWindow(rateLimitsRoot, "secondary", "secondary");
+		var scope = TryGetAnyPathString(rateLimitsRoot,
+			new[] { "scope" },
+			new[] { "name" },
+			new[] { "limit_id" },
+			new[] { "limitId" },
+			new[] { "limit_name" },
+			new[] { "limitName" },
+			new[] { "msg", "scope" },
+			new[] { "rateLimit", "scope" },
+			new[] { "rate_limit", "scope" })
+			?? TryGetAnyPathString(root,
 			new[] { "scope" },
 			new[] { "name" },
 			new[] { "msg", "scope" },
 			new[] { "rateLimit", "scope" },
 			new[] { "rate_limit", "scope" });
-		var remaining = TryGetAnyPathDouble(root,
+		var remaining = TryGetAnyPathDouble(rateLimitsRoot,
+			new[] { "remaining" },
+			new[] { "msg", "remaining" },
+			new[] { "limits", "remaining" },
+			new[] { "rateLimit", "remaining" },
+			new[] { "rate_limit", "remaining" })
+			?? TryGetAnyPathDouble(root,
 			new[] { "remaining" },
 			new[] { "msg", "remaining" },
 			new[] { "limits", "remaining" },
 			new[] { "rateLimit", "remaining" },
 			new[] { "rate_limit", "remaining" });
-		var limit = TryGetAnyPathDouble(root,
+		var limit = TryGetAnyPathDouble(rateLimitsRoot,
+			new[] { "limit" },
+			new[] { "max" },
+			new[] { "msg", "limit" },
+			new[] { "limits", "limit" },
+			new[] { "rateLimit", "limit" },
+			new[] { "rate_limit", "limit" })
+			?? TryGetAnyPathDouble(root,
 			new[] { "limit" },
 			new[] { "max" },
 			new[] { "msg", "limit" },
 			new[] { "limits", "limit" },
 			new[] { "rateLimit", "limit" },
 			new[] { "rate_limit", "limit" });
-		var used = TryGetAnyPathDouble(root,
+		var used = TryGetAnyPathDouble(rateLimitsRoot,
+			new[] { "used" },
+			new[] { "msg", "used" },
+			new[] { "limits", "used" },
+			new[] { "rateLimit", "used" },
+			new[] { "rate_limit", "used" })
+			?? TryGetAnyPathDouble(root,
 			new[] { "used" },
 			new[] { "msg", "used" },
 			new[] { "limits", "used" },
 			new[] { "rateLimit", "used" },
 			new[] { "rate_limit", "used" });
-		var retryAfterSeconds = TryGetAnyPathDouble(root,
+		var retryAfterSeconds = TryGetAnyPathDouble(rateLimitsRoot,
+			new[] { "retryAfterSeconds" },
+			new[] { "retry_after_seconds" },
+			new[] { "retry_after" },
+			new[] { "msg", "retryAfterSeconds" },
+			new[] { "msg", "retry_after_seconds" })
+			?? TryGetAnyPathDouble(root,
 			new[] { "retryAfterSeconds" },
 			new[] { "retry_after_seconds" },
 			new[] { "retry_after" },
 			new[] { "msg", "retryAfterSeconds" },
 			new[] { "msg", "retry_after_seconds" });
-		var resetAtUtc = TryGetAnyPathDate(root,
+		var resetAtUtc = TryGetAnyPathDate(rateLimitsRoot,
 			new[] { "resetAtUtc" },
 			new[] { "resetAt" },
 			new[] { "reset_at" },
+			new[] { "resetsAt" },
+			new[] { "resets_at" },
+			new[] { "msg", "resetAtUtc" },
+			new[] { "msg", "resetAt" },
+			new[] { "msg", "reset_at" })
+			?? TryGetAnyPathDate(root,
+			new[] { "resetAtUtc" },
+			new[] { "resetAt" },
+			new[] { "reset_at" },
+			new[] { "resetsAt" },
+			new[] { "resets_at" },
 			new[] { "msg", "resetAtUtc" },
 			new[] { "msg", "resetAt" },
 			new[] { "msg", "reset_at" });
-		var summary = TryGetAnyPathString(root,
+		var planType = TryGetAnyPathString(rateLimitsRoot,
+			new[] { "plan_type" },
+			new[] { "planType" },
+			new[] { "msg", "plan_type" },
+			new[] { "msg", "planType" })
+			?? TryGetAnyPathString(root,
+			new[] { "plan_type" },
+			new[] { "planType" },
+			new[] { "msg", "plan_type" },
+			new[] { "msg", "planType" });
+		var hasCredits = TryGetAnyPathBool(rateLimitsRoot,
+			new[] { "credits", "has_credits" },
+			new[] { "credits", "hasCredits" },
+			new[] { "msg", "credits", "has_credits" },
+			new[] { "msg", "credits", "hasCredits" });
+		var unlimitedCredits = TryGetAnyPathBool(rateLimitsRoot,
+			new[] { "credits", "unlimited" },
+			new[] { "msg", "credits", "unlimited" });
+		var creditBalance = TryGetAnyPathDouble(rateLimitsRoot,
+			new[] { "credits", "balance" },
+			new[] { "msg", "credits", "balance" });
+		var summary = TryGetAnyPathString(rateLimitsRoot,
+			new[] { "summary" },
+			new[] { "message" },
+			new[] { "msg", "summary" },
+			new[] { "msg", "message" })
+			?? TryGetAnyPathString(root,
 			new[] { "summary" },
 			new[] { "message" },
 			new[] { "msg", "summary" },
 			new[] { "msg", "message" });
-		if (string.IsNullOrWhiteSpace(summary))
+		if (string.IsNullOrWhiteSpace(summary) ||
+			string.Equals(summary.Trim(), "Rate limits updated", StringComparison.OrdinalIgnoreCase))
 		{
-			var parts = new List<string>();
-			if (!string.IsNullOrWhiteSpace(scope))
-			{
-				parts.Add(scope!);
-			}
-			if (remaining.HasValue && limit.HasValue && limit.Value > 0)
-			{
-				parts.Add($"{remaining.Value:0.###}/{limit.Value:0.###} remaining");
-			}
-			else if (remaining.HasValue)
-			{
-				parts.Add($"{remaining.Value:0.###} remaining");
-			}
-			if (retryAfterSeconds.HasValue && retryAfterSeconds.Value > 0)
-			{
-				parts.Add($"retry after {Math.Round(retryAfterSeconds.Value):0}s");
-			}
-			else if (resetAtUtc.HasValue)
-			{
-				parts.Add($"resets {resetAtUtc.Value:O}");
-			}
-
-			summary = parts.Count > 0 ? string.Join(" | ", parts) : "Rate limits updated";
+			summary = BuildRateLimitsSummary(scope, primary, secondary, remaining, limit, retryAfterSeconds, resetAtUtc);
 		}
 
 		var fingerprint = string.Join("|",
@@ -3680,6 +3781,18 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			NormalizeForFingerprint(used),
 			NormalizeForFingerprint(retryAfterSeconds),
 			NormalizeForFingerprint(resetAtUtc?.ToString("O")),
+			NormalizeForFingerprint(primary?.UsedPercent),
+			NormalizeForFingerprint(primary?.RemainingPercent),
+			NormalizeForFingerprint(primary?.WindowMinutes),
+			NormalizeForFingerprint(primary?.ResetsAtUtc?.ToString("O")),
+			NormalizeForFingerprint(secondary?.UsedPercent),
+			NormalizeForFingerprint(secondary?.RemainingPercent),
+			NormalizeForFingerprint(secondary?.WindowMinutes),
+			NormalizeForFingerprint(secondary?.ResetsAtUtc?.ToString("O")),
+			NormalizeForFingerprint(planType),
+			NormalizeForFingerprint(hasCredits),
+			NormalizeForFingerprint(unlimitedCredits),
+			NormalizeForFingerprint(creditBalance),
 			NormalizeForFingerprint(summary));
 		return new CoreRateLimitsSignal(
 			scope,
@@ -3688,9 +3801,202 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			used,
 			retryAfterSeconds,
 			resetAtUtc,
+			primary,
+			secondary,
+			planType,
+			hasCredits,
+			unlimitedCredits,
+			creditBalance,
 			summary!,
 			source,
 			fingerprint);
+	}
+
+	private static string BuildRateLimitsSummary(
+		string? scope,
+		CoreRateLimitWindow? primary,
+		CoreRateLimitWindow? secondary,
+		double? remaining,
+		double? limit,
+		double? retryAfterSeconds,
+		DateTimeOffset? resetAtUtc)
+	{
+		var parts = new List<string>();
+		if (!string.IsNullOrWhiteSpace(scope))
+		{
+			parts.Add(scope!);
+		}
+
+		if (primary is not null)
+		{
+			var text = FormatRateLimitWindowSummary(primary, fallbackLabel: "primary");
+			if (!string.IsNullOrWhiteSpace(text))
+			{
+				parts.Add(text);
+			}
+		}
+
+		if (secondary is not null)
+		{
+			var text = FormatRateLimitWindowSummary(secondary, fallbackLabel: "secondary");
+			if (!string.IsNullOrWhiteSpace(text))
+			{
+				parts.Add(text);
+			}
+		}
+
+		if (remaining.HasValue && limit.HasValue && limit.Value > 0)
+		{
+			parts.Add($"{remaining.Value:0.###}/{limit.Value:0.###} remaining");
+		}
+		else if (remaining.HasValue)
+		{
+			parts.Add($"{remaining.Value:0.###} remaining");
+		}
+
+		if (retryAfterSeconds.HasValue && retryAfterSeconds.Value > 0)
+		{
+			parts.Add($"retry after {Math.Round(retryAfterSeconds.Value):0}s");
+		}
+		else if (resetAtUtc.HasValue)
+		{
+			parts.Add($"resets {resetAtUtc.Value:O}");
+		}
+
+		return parts.Count > 0 ? string.Join(" | ", parts) : "Rate limits updated";
+	}
+
+	private static string? FormatRateLimitWindowSummary(CoreRateLimitWindow window, string fallbackLabel)
+	{
+		var label = FormatRateLimitWindowLabel(window.WindowMinutes, fallbackLabel);
+		if (window.RemainingPercent.HasValue)
+		{
+			return $"{label} {window.RemainingPercent.Value:0.#}% remaining";
+		}
+
+		if (window.UsedPercent.HasValue)
+		{
+			return $"{label} {window.UsedPercent.Value:0.#}% used";
+		}
+
+		return null;
+	}
+
+	private static CoreRateLimitWindow? TryBuildRateLimitWindow(JsonElement root, string snakeName, string camelName)
+	{
+		var usedPercent = TryGetAnyPathDouble(root,
+			new[] { snakeName, "used_percent" },
+			new[] { snakeName, "usedPercent" },
+			new[] { camelName, "usedPercent" },
+			new[] { camelName, "used_percent" });
+		var windowMinutes = TryGetAnyPathDouble(root,
+			new[] { snakeName, "window_minutes" },
+			new[] { snakeName, "windowDurationMins" },
+			new[] { snakeName, "windowMinutes" },
+			new[] { camelName, "windowDurationMins" },
+			new[] { camelName, "windowMinutes" },
+			new[] { camelName, "window_minutes" });
+		var resetsAtUtc = TryGetAnyPathDate(root,
+			new[] { snakeName, "resets_at" },
+			new[] { snakeName, "resetsAt" },
+			new[] { snakeName, "resetAtUtc" },
+			new[] { snakeName, "reset_at" },
+			new[] { camelName, "resetsAt" },
+			new[] { camelName, "resets_at" },
+			new[] { camelName, "resetAtUtc" },
+			new[] { camelName, "reset_at" });
+		var remainingPercent = usedPercent.HasValue
+			? Math.Clamp(100 - usedPercent.Value, 0, 100)
+			: (double?)null;
+		if (!usedPercent.HasValue && !windowMinutes.HasValue && !resetsAtUtc.HasValue)
+		{
+			return null;
+		}
+
+		return new CoreRateLimitWindow(
+			UsedPercent: usedPercent,
+			RemainingPercent: remainingPercent,
+			WindowMinutes: windowMinutes,
+			ResetsAtUtc: resetsAtUtc);
+	}
+
+	private static JsonElement ResolveRateLimitsRoot(JsonElement root)
+	{
+		if (TryGetPathObject(root, out var nested, "rate_limits"))
+		{
+			return nested;
+		}
+
+		if (TryGetPathObject(root, out nested, "rateLimits"))
+		{
+			return nested;
+		}
+
+		if (TryGetPathObject(root, out nested, "msg", "rate_limits"))
+		{
+			return nested;
+		}
+
+		if (TryGetPathObject(root, out nested, "msg", "rateLimits"))
+		{
+			return nested;
+		}
+
+		return root;
+	}
+
+	private static bool TryGetPathObject(JsonElement root, out JsonElement value, params string[] path)
+	{
+		value = root;
+		foreach (var segment in path)
+		{
+			if (value.ValueKind != JsonValueKind.Object || !value.TryGetProperty(segment, out value))
+			{
+				value = default;
+				return false;
+			}
+		}
+
+		if (value.ValueKind != JsonValueKind.Object)
+		{
+			value = default;
+			return false;
+		}
+
+		return true;
+	}
+
+	private static string FormatRateLimitWindowLabel(double? windowMinutes, string fallback)
+	{
+		if (!windowMinutes.HasValue || windowMinutes.Value <= 0)
+		{
+			return fallback;
+		}
+
+		var rounded = Math.Round(windowMinutes.Value, MidpointRounding.AwayFromZero);
+		if (Math.Abs(rounded - 300) <= 1)
+		{
+			return "5h";
+		}
+
+		if (Math.Abs(rounded - 10080) <= 1)
+		{
+			return "weekly";
+		}
+
+		if (rounded % 1440 == 0)
+		{
+			var days = rounded / 1440;
+			return days == 1 ? "1d" : $"{days:0}d";
+		}
+
+		if (rounded % 60 == 0)
+		{
+			var hours = rounded / 60;
+			return hours == 1 ? "1h" : $"{hours:0}h";
+		}
+
+		return rounded == 1 ? "1m" : $"{rounded:0}m";
 	}
 
 	private static CoreSessionConfiguredSignal? BuildSessionConfiguredSignal(JsonElement root, string source)
@@ -4012,6 +4318,35 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		return null;
 	}
 
+	private static bool? TryGetAnyPathBool(JsonElement root, params string[][] paths)
+	{
+		foreach (var path in paths)
+		{
+			var raw = WebCodexUtils.TryGetPathString(root, path);
+			if (string.IsNullOrWhiteSpace(raw))
+			{
+				continue;
+			}
+
+			if (bool.TryParse(raw, out var parsedBool))
+			{
+				return parsedBool;
+			}
+
+			if (string.Equals(raw, "1", StringComparison.Ordinal))
+			{
+				return true;
+			}
+
+			if (string.Equals(raw, "0", StringComparison.Ordinal))
+			{
+				return false;
+			}
+		}
+
+		return null;
+	}
+
 	private static DateTimeOffset? TryGetAnyPathDate(JsonElement root, params string[][] paths)
 	{
 		foreach (var path in paths)
@@ -4025,6 +4360,22 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			if (DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed))
 			{
 				return parsed.ToUniversalTime();
+			}
+
+			if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var unixRaw))
+			{
+				try
+				{
+					var isMilliseconds = Math.Abs(unixRaw) >= 1_000_000_000_000d;
+					var unixRounded = (long)Math.Round(unixRaw, MidpointRounding.AwayFromZero);
+					var unixValue = isMilliseconds
+						? DateTimeOffset.FromUnixTimeMilliseconds(unixRounded)
+						: DateTimeOffset.FromUnixTimeSeconds(unixRounded);
+					return unixValue.ToUniversalTime();
+				}
+				catch
+				{
+				}
 			}
 		}
 
@@ -4245,9 +4596,21 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		double? Used,
 		double? RetryAfterSeconds,
 		DateTimeOffset? ResetAtUtc,
+		CoreRateLimitWindow? Primary,
+		CoreRateLimitWindow? Secondary,
+		string? PlanType,
+		bool? HasCredits,
+		bool? UnlimitedCredits,
+		double? CreditBalance,
 		string Summary,
 		string Source,
 		string Fingerprint);
+
+	private sealed record CoreRateLimitWindow(
+		double? UsedPercent,
+		double? RemainingPercent,
+		double? WindowMinutes,
+		DateTimeOffset? ResetsAtUtc);
 
 	private sealed record CoreSessionConfiguredSignal(
 		string? Model,
@@ -4931,9 +5294,21 @@ internal sealed record SessionRateLimitSnapshot(
 	double? Used,
 	double? RetryAfterSeconds,
 	DateTimeOffset? ResetAtUtc,
+	SessionRateLimitWindowSnapshot? Primary,
+	SessionRateLimitWindowSnapshot? Secondary,
+	string? PlanType,
+	bool? HasCredits,
+	bool? UnlimitedCredits,
+	double? CreditBalance,
 	string Summary,
 	string Source,
 	DateTimeOffset UpdatedAtUtc);
+
+internal sealed record SessionRateLimitWindowSnapshot(
+	double? UsedPercent,
+	double? RemainingPercent,
+	double? WindowMinutes,
+	DateTimeOffset? ResetsAtUtc);
 
 	internal sealed record QueuedTurnSummarySnapshot(
 		string QueueItemId,
