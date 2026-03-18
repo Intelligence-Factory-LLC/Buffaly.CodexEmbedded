@@ -250,6 +250,39 @@ internal static class WebEndpointMappings
 
 	public static void MapTimelineAndRuntimeLogEndpoints(this WebApplication app)
 	{
+		app.MapPost("/api/diag/client-event", async (HttpRequest request, CancellationToken cancellationToken) =>
+		{
+			ClientDiagEventPayload? payload;
+			try
+			{
+				payload = await JsonSerializer.DeserializeAsync<ClientDiagEventPayload>(
+					request.Body,
+					RecapJsonOptions,
+					cancellationToken);
+			}
+			catch (Exception ex)
+			{
+				return Results.BadRequest(new { message = $"Invalid diagnostic payload JSON: {ex.Message}" });
+			}
+
+			if (payload is null)
+			{
+				return Results.BadRequest(new { message = "Diagnostic payload is required." });
+			}
+
+			var source = SanitizeDiagToken(payload.Source, fallback: "client", maxLength: 32);
+			var stage = SanitizeDiagToken(payload.Stage, fallback: "(none)", maxLength: 64);
+			var threadId = SanitizeDiagToken(payload.ThreadId, fallback: "(none)", maxLength: 128);
+			var sessionId = SanitizeDiagToken(payload.SessionId, fallback: "(none)", maxLength: 128);
+			var timestampUtc = SanitizeDiagToken(payload.TimestampUtc, fallback: "(none)", maxLength: 64);
+			var details = SummarizeDiagDetails(payload.Details, maxLength: 3000);
+			Logs.DebugLog.WriteEvent(
+				"TimelineDiag.Client",
+				$"source={source} stage={stage} thread={threadId} session={sessionId} ts={timestampUtc} details={details}");
+
+			return Results.Ok(new { accepted = true });
+		});
+
 		app.MapGet("/api/logs/watch", (HttpRequest request, WebRuntimeDefaults defaults) =>
 		{
 			var threadId = request.Query["threadId"].ToString();
@@ -620,6 +653,60 @@ internal static class WebEndpointMappings
 		return long.TryParse(raw, out var value) && value >= 0 ? value : null;
 	}
 
+	private static string SanitizeDiagToken(string? value, string fallback, int maxLength)
+	{
+		var normalized = string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+		if (normalized.Length > maxLength)
+		{
+			normalized = normalized[..maxLength];
+		}
+
+		return normalized.Replace('\r', ' ').Replace('\n', ' ');
+	}
+
+	private static string SummarizeDiagDetails(Dictionary<string, JsonElement>? details, int maxLength)
+	{
+		if (details is null || details.Count == 0)
+		{
+			return "(none)";
+		}
+
+		var pairs = new List<string>();
+		foreach (var pair in details.OrderBy(x => x.Key, StringComparer.Ordinal))
+		{
+			var key = SanitizeDiagToken(pair.Key, fallback: "(key)", maxLength: 64);
+			var value = pair.Value.ValueKind switch
+			{
+				JsonValueKind.String => pair.Value.GetString() ?? string.Empty,
+				JsonValueKind.Number => pair.Value.GetRawText(),
+				JsonValueKind.True => "true",
+				JsonValueKind.False => "false",
+				JsonValueKind.Null => "null",
+				_ => pair.Value.GetRawText()
+			};
+
+			if (value.Length > 256)
+			{
+				value = $"{value[..256]}...(truncated {value.Length - 256} chars)";
+			}
+
+			pairs.Add($"{key}={SanitizeDiagToken(value, fallback: "(empty)", maxLength: 512)}");
+			if (pairs.Count >= 60)
+			{
+				pairs.Add($"...(truncated {details.Count - 60} keys)");
+				break;
+			}
+		}
+
+		var joined = string.Join(" ", pairs);
+		if (joined.Length > maxLength)
+		{
+			joined = $"{joined[..maxLength]}...(truncated {joined.Length - maxLength} chars)";
+		}
+
+		return joined;
+	}
+
 	private static void WriteTimelineDiagnostics(
 		string endpoint,
 		string requestedThreadId,
@@ -690,6 +777,16 @@ internal static class WebEndpointMappings
 			isDefault = settings.IsDefault,
 			settingsFilePath = settings.SettingsFilePath
 		};
+	}
+
+	private sealed record ClientDiagEventPayload
+	{
+		public string? Source { get; init; }
+		public string? Stage { get; init; }
+		public string? ThreadId { get; init; }
+		public string? SessionId { get; init; }
+		public string? TimestampUtc { get; init; }
+		public Dictionary<string, JsonElement>? Details { get; init; }
 	}
 
 	private static void MapStaticHtmlPage(WebApplication app, string route, string fileName)

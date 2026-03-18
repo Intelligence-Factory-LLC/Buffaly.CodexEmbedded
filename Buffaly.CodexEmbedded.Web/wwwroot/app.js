@@ -1273,6 +1273,92 @@ function logTimelineDiag(stage, details = {}) {
   }
 
   appendLog(`[timeline_diag] ${pieces.join(" ")}`);
+  emitTimelineDiagToServer(stage, details);
+}
+
+function emitTimelineDiagToServer(stage, details = {}) {
+  if (!timelineDiagEnabled) {
+    return;
+  }
+
+  const stageName = typeof stage === "string" ? stage.trim() : "";
+  if (!stageName) {
+    return;
+  }
+
+  const payloadDetails = {};
+  for (const [key, value] of Object.entries(details || {})) {
+    const normalizedKey = typeof key === "string" ? key.trim() : "";
+    if (!normalizedKey) {
+      continue;
+    }
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      payloadDetails[normalizedKey] = Math.round(value * 100) / 100;
+      continue;
+    }
+
+    if (typeof value === "boolean") {
+      payloadDetails[normalizedKey] = value;
+      continue;
+    }
+
+    if (value === null || value === undefined) {
+      payloadDetails[normalizedKey] = null;
+      continue;
+    }
+
+    const text = String(value);
+    payloadDetails[normalizedKey] = text.length > 256
+      ? `${text.slice(0, 256)}...(truncated ${text.length - 256} chars)`
+      : text;
+  }
+
+  const payload = {
+    source: "timeline",
+    stage: stageName,
+    threadId: normalizeThreadId(getActiveSessionState()?.threadId || ""),
+    sessionId: typeof activeSessionId === "string" ? activeSessionId : "",
+    timestampUtc: new Date().toISOString(),
+    details: payloadDetails
+  };
+
+  let raw = "";
+  try {
+    raw = JSON.stringify(payload);
+  } catch {
+    return;
+  }
+
+  if (!raw) {
+    return;
+  }
+
+  if (raw.length > 12000) {
+    raw = `${raw.slice(0, 12000)}...(truncated ${raw.length - 12000} chars)`;
+  }
+
+  const endpointUrl = new URL("api/diag/client-event", document.baseURI).toString();
+  try {
+    if (typeof navigator !== "undefined" && navigator && typeof navigator.sendBeacon === "function" && typeof Blob !== "undefined") {
+      const blob = new Blob([raw], { type: "application/json" });
+      if (navigator.sendBeacon(endpointUrl, blob)) {
+        return;
+      }
+    }
+  } catch {
+    // ignore and fallback to fetch
+  }
+
+  fetch(endpointUrl, {
+    method: "POST",
+    cache: "no-store",
+    keepalive: true,
+    headers: {
+      "content-type": "application/json"
+    },
+    body: raw
+  }).catch(() => {});
 }
 
 async function readJsonResponseWithByteLimit(response, maxBytes, label, statsSink = null) {
