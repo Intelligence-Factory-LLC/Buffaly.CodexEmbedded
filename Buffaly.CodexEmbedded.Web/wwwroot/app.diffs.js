@@ -48,6 +48,8 @@
   let currentFileViewScopeKey = "";
   let panelAvailable = false;
   let currentFiles = [];
+  let currentTotalChangeCount = 0;
+  let hiddenBinaryFileCount = 0;
   let hasVisibleChanges = false;
   let isExpanded = false;
   let notesByKey = new Map();
@@ -459,6 +461,8 @@
   function setEmptyState(message) {
     hasVisibleChanges = false;
     currentFiles = [];
+    currentTotalChangeCount = 0;
+    hiddenBinaryFileCount = 0;
     summaryNode.textContent = message;
     listNode.innerHTML = `<div class="worktree-diff-empty">${escapeHtml(message)}</div>`;
     applyPanelState();
@@ -469,13 +473,37 @@
     const notesCount = notesByKey.size;
     const branch = currentBranch || "detached";
     const contextLabel = contextModeLabel(currentContextMode);
+    const hiddenBinaryText = hiddenBinaryFileCount > 0 ? ` | ${hiddenBinaryFileCount} binary hidden` : "";
     if (currentMode === "commit") {
       const commitLabel = getActiveCommitLabel();
-      summaryNode.textContent = `${changeCount} file change(s) in ${commitLabel} | context ${contextLabel}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}`;
+      summaryNode.textContent = `${changeCount} file change(s) in ${commitLabel} | context ${contextLabel}${hiddenBinaryText}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}`;
       return;
     }
 
-    summaryNode.textContent = `${changeCount} file change(s) in working tree on ${branch} | context ${contextLabel}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}`;
+    summaryNode.textContent = `${changeCount} file change(s) in working tree on ${branch} | context ${contextLabel}${hiddenBinaryText}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}`;
+  }
+
+  function filterVisibleFiles(files) {
+    const all = Array.isArray(files) ? files : [];
+    const visible = [];
+    let hiddenBinary = 0;
+    for (const file of all) {
+      if (!file || typeof file !== "object") {
+        continue;
+      }
+
+      if (file.isBinary === true) {
+        hiddenBinary += 1;
+        continue;
+      }
+
+      visible.push(file);
+    }
+
+    return {
+      visible,
+      hiddenBinary
+    };
   }
 
   function escapeHtml(value) {
@@ -1079,7 +1107,7 @@
     }
 
     saveNotesForScope(currentNotesScopeKey);
-    updateSummary(currentFiles.length);
+    updateSummary(currentTotalChangeCount);
     rerenderFilesPreserveView();
     renderComposerNotes();
     closeNoteModal();
@@ -1100,7 +1128,7 @@
       notesByKey.delete(buildNoteKey(target.path, target.startLine, target.endLine));
     }
     saveNotesForScope(currentNotesScopeKey);
-    updateSummary(currentFiles.length);
+    updateSummary(currentTotalChangeCount);
     rerenderFilesPreserveView();
     renderComposerNotes();
     closeNoteModal();
@@ -1142,7 +1170,7 @@
 
     notesByKey.clear();
     saveNotesForScope(currentNotesScopeKey);
-    updateSummary(currentFiles.length);
+    updateSummary(currentTotalChangeCount);
     rerenderFilesPreserveView();
     renderComposerNotes();
 
@@ -1376,6 +1404,8 @@
       listNode.innerHTML = "";
       summaryNode.textContent = "No active session";
       currentFiles = [];
+      currentTotalChangeCount = 0;
+      hiddenBinaryFileCount = 0;
       isExpanded = false;
       ignoreNextLineClick = false;
       lastRenderKey = "";
@@ -1412,6 +1442,8 @@
       notesByKey = new Map();
       fileOpenStateByPath = new Map();
       fileDrawerStateByPath = new Map();
+      currentTotalChangeCount = 0;
+      hiddenBinaryFileCount = 0;
       availableCommits = [];
       selectedCommitSha = "";
       selectedCommitInfo = null;
@@ -1457,6 +1489,8 @@
           }
           hasVisibleChanges = false;
           currentFiles = [];
+          currentTotalChangeCount = 0;
+          hiddenBinaryFileCount = 0;
           updateSummary(0);
           listNode.innerHTML = "<div class=\"worktree-diff-empty\">No recent commits found.</div>";
           applyPanelState();
@@ -1536,17 +1570,24 @@
         console.info(
           `${new Date().toISOString()} in.diff_count_response cwd=${context.cwd} changeCount=${Number.isFinite(data.changeCount) ? data.changeCount : files.length} fileCount=${files.length} timedOut=${data.isTimedOut === true} isGitRepo=${data.isGitRepo === true}`);
       }
-      hasVisibleChanges = files.length > 0;
-      currentFiles = files;
+      const filtered = filterVisibleFiles(files);
+      currentTotalChangeCount = files.length;
+      hiddenBinaryFileCount = filtered.hiddenBinary;
+      hasVisibleChanges = filtered.visible.length > 0;
+      currentFiles = filtered.visible;
       captureFileOpenState();
       if (hasVisibleChanges) {
-        renderFiles(files);
+        renderFiles(filtered.visible);
       } else {
-        listNode.innerHTML = currentMode === "commit"
-          ? "<div class=\"worktree-diff-empty\">No file changes in selected commit.</div>"
-          : "<div class=\"worktree-diff-empty\">Working tree is clean.</div>";
+        if (hiddenBinaryFileCount > 0) {
+          listNode.innerHTML = `<div class="worktree-diff-empty">All ${hiddenBinaryFileCount} change(s) are binary and hidden.</div>`;
+        } else {
+          listNode.innerHTML = currentMode === "commit"
+            ? "<div class=\"worktree-diff-empty\">No file changes in selected commit.</div>"
+            : "<div class=\"worktree-diff-empty\">Working tree is clean.</div>";
+        }
       }
-      updateSummary(files.length);
+      updateSummary(currentTotalChangeCount);
       applyPanelState();
       renderComposerNotes();
     } catch (error) {
@@ -1559,6 +1600,8 @@
       panelAvailable = true;
       hasVisibleChanges = false;
       currentFiles = [];
+      currentTotalChangeCount = 0;
+      hiddenBinaryFileCount = 0;
       ignoreNextLineClick = false;
       summaryNode.textContent = `Diff load failed: ${message}`;
       listNode.innerHTML = `<div class="worktree-diff-empty">${escapeHtml(`Diff load failed: ${message}`)}</div>`;
@@ -1763,7 +1806,7 @@
       if (key && notesByKey.has(key)) {
         notesByKey.delete(key);
         saveNotesForScope(currentNotesScopeKey);
-        updateSummary(currentFiles.length);
+        updateSummary(currentTotalChangeCount);
         rerenderFilesPreserveView();
         renderComposerNotes();
       }
@@ -1777,7 +1820,7 @@
 
     notesByKey.clear();
     saveNotesForScope(currentNotesScopeKey);
-    updateSummary(currentFiles.length);
+    updateSummary(currentTotalChangeCount);
     rerenderFilesPreserveView();
     renderComposerNotes();
   });
