@@ -187,6 +187,12 @@
 								<button id="worktreeDiffModeCommitBtn" class="worktree-diff-mode-btn" type="button" aria-pressed="false">Recent Commit</button>
 							</div>
 							<select id="worktreeDiffCommitSelect" class="worktree-diff-commit-select hidden" aria-label="Select recent commit"></select>
+							<select id="worktreeDiffContextSelect" class="worktree-diff-context-select" aria-label="Diff context lines">
+								<option value="3">Context +3</option>
+								<option value="10">Context +10</option>
+								<option value="30">Context +30</option>
+								<option value="full">Full Context</option>
+							</select>
 							<div class="worktree-diff-actions">
 								<button id="worktreeDiffToggleBtn" class="worktree-diff-refresh-btn" type="button">Close</button>
 								<button id="worktreeDiffRefreshBtn" class="worktree-diff-refresh-btn" type="button">Refresh</button>
@@ -455,6 +461,6 @@
 	<script src="scribe.js?v=20260313-transcribe-flow-fix1"></script>
 	<script src="app.shared.js?v=20260228-cleanup1"></script>
 	<script src="app.js?v=20260318-draft-fallback-fix1"></script>
-	<script src="app.diffs.js?v=20260326-commit-history-diff2"></script>
+	<script src="app.diffs.js?v=20260326-diff-context-drawer1"></script>
 </body>
 </html>

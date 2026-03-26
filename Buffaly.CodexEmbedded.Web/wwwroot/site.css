@@ -3476,6 +3476,17 @@ body {
 	max-width: min(52vw, 430px);
 }
 
+.worktree-diff-context-select {
+	border: 1px solid #cbd5e1;
+	border-radius: 6px;
+	background: #ffffff;
+	color: #0f172a;
+	font-size: 0.72rem;
+	font-weight: 600;
+	padding: 0.18rem 0.38rem;
+	min-width: 120px;
+}
+
 .worktree-diff-actions {
 	display: flex;
 	align-items: center;
@@ -3606,6 +3617,88 @@ body {
 	border-top: 1px solid #e2e8f0;
 }
 
+.worktree-diff-detail-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.3rem;
+	margin: 0 0 0.35rem;
+}
+
+.worktree-diff-open-file-btn {
+	border: 1px solid #cbd5e1;
+	border-radius: 6px;
+	background: #f8fafc;
+	color: #1e293b;
+	font-size: 0.68rem;
+	font-weight: 700;
+	padding: 0.12rem 0.42rem;
+}
+
+.worktree-diff-open-file-btn:disabled {
+	opacity: 0.65;
+	cursor: wait;
+}
+
+.worktree-diff-file-drawer {
+	border: 1px solid #cbd5e1;
+	border-radius: 8px;
+	background: #f8fafc;
+	margin: 0 0 0.35rem;
+	max-height: min(42vh, 460px);
+	overflow: auto;
+}
+
+.worktree-diff-file-drawer-header {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	background: #e2e8f0;
+	color: #0f172a;
+	font-size: 0.68rem;
+	font-weight: 700;
+	padding: 0.2rem 0.4rem;
+	border-bottom: 1px solid #cbd5e1;
+}
+
+.worktree-diff-file-drawer-body {
+	padding: 0.22rem 0.34rem 0.28rem;
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.7rem;
+	line-height: 1.25;
+}
+
+.worktree-diff-file-line {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.45rem;
+}
+
+.worktree-diff-file-line-no {
+	flex: 0 0 auto;
+	width: 3.6rem;
+	text-align: right;
+	color: #64748b;
+	user-select: none;
+}
+
+.worktree-diff-file-line-text {
+	flex: 1;
+	min-width: 0;
+	white-space: pre-wrap;
+	word-break: break-word;
+	color: #0f172a;
+}
+
+.worktree-diff-file-line-changed {
+	background: rgba(59, 130, 246, 0.12);
+}
+
+.worktree-diff-file-empty {
+	font-size: 0.72rem;
+	color: #475569;
+	padding: 0.2rem 0.1rem;
+}
+
 .worktree-diff-pre {
 	margin: 0;
 	white-space: pre-wrap;
@@ -3628,6 +3721,19 @@ body {
 .worktree-diff-line-noted {
 	border-left: 3px solid #f59e0b;
 	padding-left: 0.3rem;
+}
+
+.worktree-diff-hunk-breadcrumb {
+	display: inline-block;
+	margin-left: 0.45rem;
+	padding: 0.03rem 0.34rem;
+	border: 1px solid #93c5fd;
+	border-radius: 999px;
+	background: #eff6ff;
+	color: #1d4ed8;
+	font-size: 0.62rem;
+	font-weight: 700;
+	vertical-align: middle;
 }
 
 .worktree-diff-note-list {
@@ -4547,6 +4653,12 @@ html[data-theme="dark"] .worktree-diff-commit-select {
 	color: #e2e8f0;
 }
 
+html[data-theme="dark"] .worktree-diff-context-select {
+	background: #0f172a;
+	border-color: #334155;
+	color: #e2e8f0;
+}
+
 html[data-theme="dark"] .worktree-diff-file {
 	background: #0f172a;
 	border-color: #334155;
@@ -4575,6 +4687,39 @@ html[data-theme="dark"] .worktree-diff-detail {
 	border-top-color: #334155;
 }
 
+html[data-theme="dark"] .worktree-diff-open-file-btn {
+	background: #111827;
+	border-color: #475569;
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .worktree-diff-file-drawer {
+	background: #0b1220;
+	border-color: #334155;
+}
+
+html[data-theme="dark"] .worktree-diff-file-drawer-header {
+	background: #1e293b;
+	border-bottom-color: #334155;
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .worktree-diff-file-line-no {
+	color: #94a3b8;
+}
+
+html[data-theme="dark"] .worktree-diff-file-line-text {
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .worktree-diff-file-line-changed {
+	background: rgba(59, 130, 246, 0.25);
+}
+
+html[data-theme="dark"] .worktree-diff-file-empty {
+	color: #94a3b8;
+}
+
 html[data-theme="dark"] .worktree-diff-line-clickable:hover {
 	outline-color: #3b82f6;
 }
@@ -4587,6 +4732,12 @@ html[data-theme="dark"] .worktree-diff-note-pill {
 	background: rgba(245, 158, 11, 0.16);
 	border-color: rgba(245, 158, 11, 0.55);
 	color: #fcd34d;
+}
+
+html[data-theme="dark"] .worktree-diff-hunk-breadcrumb {
+	background: rgba(37, 99, 235, 0.22);
+	border-color: rgba(96, 165, 250, 0.6);
+	color: #bfdbfe;
 }
 
 html[data-theme="dark"] .diff-notes-composer-label,

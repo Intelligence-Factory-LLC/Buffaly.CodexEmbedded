@@ -543,12 +543,13 @@ internal static class WebEndpointMappings
 
 			var maxFiles = QueryValueParser.GetPositiveInt(request.Query["maxFiles"], fallback: 200, max: 1000);
 			var maxPatchChars = QueryValueParser.GetPositiveInt(request.Query["maxPatchChars"], fallback: 250000, max: 1000000);
+			var contextLines = QueryValueParser.GetPositiveInt(request.Query["contextLines"], fallback: 3, max: 200000);
 			Logs.DebugLog.WriteEvent(
 				"Audit.Diff",
-				$"event=diff_count_requested cwd={cwd} maxFiles={maxFiles} maxPatchChars={maxPatchChars}");
+				$"event=diff_count_requested cwd={cwd} maxFiles={maxFiles} maxPatchChars={maxPatchChars} contextLines={contextLines}");
 			try
 			{
-				var snapshot = gitDiffService.GetSnapshot(cwd, maxFiles, maxPatchChars, cancellationToken);
+				var snapshot = gitDiffService.GetSnapshot(cwd, maxFiles, maxPatchChars, contextLines, cancellationToken);
 				Logs.DebugLog.WriteEvent(
 					"Audit.Diff",
 					$"event=diff_count_completed cwd={cwd} repoRoot={snapshot.RepoRoot ?? "(none)"} isGitRepo={snapshot.IsGitRepo} changeCount={snapshot.ChangeCount} fileCount={snapshot.Files.Count} timedOut={snapshot.IsTimedOut}");
@@ -654,12 +655,13 @@ internal static class WebEndpointMappings
 
 			var maxFiles = QueryValueParser.GetPositiveInt(request.Query["maxFiles"], fallback: 240, max: 1000);
 			var maxPatchChars = QueryValueParser.GetPositiveInt(request.Query["maxPatchChars"], fallback: 250000, max: 1000000);
+			var contextLines = QueryValueParser.GetPositiveInt(request.Query["contextLines"], fallback: 3, max: 200000);
 			Logs.DebugLog.WriteEvent(
 				"Audit.Diff",
-				$"event=commit_diff_requested cwd={cwd} commit={commit} maxFiles={maxFiles} maxPatchChars={maxPatchChars}");
+				$"event=commit_diff_requested cwd={cwd} commit={commit} maxFiles={maxFiles} maxPatchChars={maxPatchChars} contextLines={contextLines}");
 			try
 			{
-				var snapshot = gitDiffService.GetCommitSnapshot(cwd, commit, maxFiles, maxPatchChars, cancellationToken);
+				var snapshot = gitDiffService.GetCommitSnapshot(cwd, commit, maxFiles, maxPatchChars, contextLines, cancellationToken);
 				Logs.DebugLog.WriteEvent(
 					"Audit.Diff",
 					$"event=commit_diff_completed cwd={cwd} commit={snapshot.CommitSha ?? commit} repoRoot={snapshot.RepoRoot ?? "(none)"} isGitRepo={snapshot.IsGitRepo} changeCount={snapshot.ChangeCount} fileCount={snapshot.Files.Count} timedOut={snapshot.IsTimedOut}");
@@ -702,6 +704,76 @@ internal static class WebEndpointMappings
 				return Results.Problem(
 					statusCode: StatusCodes.Status500InternalServerError,
 					title: "Failed to read git commit diff.",
+					detail: ex.Message);
+			}
+		});
+
+		app.MapGet("/api/worktree/diff/file", (HttpRequest request, GitWorktreeDiffService gitDiffService, CancellationToken cancellationToken) =>
+		{
+			var cwd = request.Query["cwd"].ToString();
+			if (string.IsNullOrWhiteSpace(cwd))
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", "event=diff_file_request_rejected reason=missing_cwd");
+				return Results.BadRequest(new { message = "cwd query parameter is required." });
+			}
+
+			var path = request.Query["path"].ToString();
+			if (string.IsNullOrWhiteSpace(path))
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=diff_file_request_rejected cwd={cwd} reason=missing_path");
+				return Results.BadRequest(new { message = "path query parameter is required." });
+			}
+
+			var commit = request.Query["commit"].ToString();
+			var maxChars = QueryValueParser.GetPositiveInt(request.Query["maxChars"], fallback: 600000, max: 2000000);
+			Logs.DebugLog.WriteEvent(
+				"Audit.Diff",
+				$"event=diff_file_requested cwd={cwd} path={path} commit={(string.IsNullOrWhiteSpace(commit) ? "(working_tree)" : commit)} maxChars={maxChars}");
+			try
+			{
+				var snapshot = gitDiffService.GetFileContentSnapshot(cwd, path, commit, maxChars, cancellationToken);
+				Logs.DebugLog.WriteEvent(
+					"Audit.Diff",
+					$"event=diff_file_completed cwd={cwd} path={snapshot.Path} commit={(snapshot.CommitSha ?? "(working_tree)")} exists={snapshot.Exists} isBinary={snapshot.IsBinary} timedOut={snapshot.IsTimedOut}");
+				return Results.Ok(new
+				{
+					cwd = snapshot.Cwd,
+					repoRoot = snapshot.RepoRoot,
+					branch = snapshot.Branch,
+					headSha = snapshot.HeadSha,
+					isGitRepo = snapshot.IsGitRepo,
+					isTimedOut = snapshot.IsTimedOut,
+					generatedAtUtc = snapshot.GeneratedAtUtc.ToString("O"),
+					path = snapshot.Path,
+					commitSha = snapshot.CommitSha,
+					exists = snapshot.Exists,
+					isBinary = snapshot.IsBinary,
+					isTruncated = snapshot.IsTruncated,
+					content = snapshot.Content,
+					message = snapshot.Message
+				});
+			}
+			catch (DirectoryNotFoundException ex)
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=diff_file_failed cwd={cwd} path={path} error={ex.Message}");
+				return Results.NotFound(new { message = ex.Message });
+			}
+			catch (ArgumentException ex)
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=diff_file_invalid cwd={cwd} path={path} commit={commit} error={ex.Message}");
+				return Results.BadRequest(new { message = ex.Message });
+			}
+			catch (OperationCanceledException)
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=diff_file_canceled cwd={cwd} path={path} commit={commit}");
+				return Results.BadRequest(new { message = "git diff file request was canceled." });
+			}
+			catch (Exception ex)
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=diff_file_failed cwd={cwd} path={path} commit={commit} error={ex.Message}");
+				return Results.Problem(
+					statusCode: StatusCodes.Status500InternalServerError,
+					title: "Failed to read diff file content.",
 					detail: ex.Message);
 			}
 		});
