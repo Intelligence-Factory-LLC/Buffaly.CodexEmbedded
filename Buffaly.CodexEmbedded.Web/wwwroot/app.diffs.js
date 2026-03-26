@@ -246,18 +246,18 @@
   }
 
   function applyPanelState() {
-    const showPanel = panelAvailable && isExpanded;
+    const showPanel = isExpanded;
     panel.classList.toggle("hidden", !showPanel);
     panel.classList.toggle("worktree-diff-collapsed", false);
-    panel.classList.toggle("worktree-diff-fullscreen", panelAvailable && isExpanded);
+    panel.classList.toggle("worktree-diff-fullscreen", isExpanded);
     toggleBtn.textContent = "Close";
     toggleBtn.setAttribute("aria-expanded", showPanel ? "true" : "false");
-    toggleBtn.disabled = !panelAvailable;
-    indicatorBtn.classList.toggle("hidden", !panelAvailable);
-    indicatorCountNode.textContent = panelAvailable ? String(currentFiles.length) : "0";
+    toggleBtn.disabled = false;
+    indicatorBtn.classList.toggle("hidden", false);
+    indicatorCountNode.textContent = String(currentFiles.length);
     const fileLabel = `${currentFiles.length} file${currentFiles.length === 1 ? "" : "s"}`;
-    if (!panelAvailable) {
-      indicatorBtn.setAttribute("aria-label", "Open repository diff");
+    if (!lastCwd) {
+      indicatorBtn.setAttribute("aria-label", "Open repository diff (no active session)");
     } else if (currentMode === "commit") {
       indicatorBtn.setAttribute("aria-label", `Open recent commit diff (${fileLabel} in ${getActiveCommitLabel()})`);
     } else {
@@ -1228,11 +1228,9 @@
   });
 
   indicatorBtn.addEventListener("click", () => {
-    if (!panelAvailable) {
-      return;
-    }
     isExpanded = true;
     applyPanelState();
+    queueRefresh({ force: false });
   });
 
   modeWorktreeBtn.addEventListener("click", () => {
