@@ -436,6 +436,21 @@
 			</div>
 		</div>
 
+		<div id="diffFullFileWindow" class="diff-full-window hidden" role="dialog" aria-modal="true" aria-labelledby="diffFullFileTitle">
+			<div class="diff-full-window-card">
+				<div class="diff-full-window-header">
+					<div id="diffFullFileTitle" class="diff-full-window-title">Full File</div>
+					<div class="diff-full-window-controls">
+						<select id="diffFullFileClassSelect" aria-label="Jump to class"></select>
+						<select id="diffFullFileMethodSelect" aria-label="Jump to method"></select>
+						<button id="diffFullFileCloseBtn" type="button">Close</button>
+					</div>
+				</div>
+				<div id="diffFullFileStatus" class="diff-full-window-status"></div>
+				<div id="diffFullFileBody" class="diff-full-window-body"></div>
+			</div>
+		</div>
+
 		<div class="hidden legacy-session-controls" aria-hidden="true">
 			<button id="newSessionBtn" type="button">New Session</button>
 			<button id="newProjectBtn" type="button">New Project</button>
@@ -461,6 +476,6 @@
 	<script src="scribe.js?v=20260313-transcribe-flow-fix1"></script>
 	<script src="app.shared.js?v=20260228-cleanup1"></script>
 	<script src="app.js?v=20260318-draft-fallback-fix1"></script>
-	<script src="app.diffs.js?v=20260326-diff-context-drawer2"></script>
+	<script src="app.diffs.js?v=20260326-full-file-window1"></script>
 </body>
 </html>

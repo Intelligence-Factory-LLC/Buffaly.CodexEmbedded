@@ -10,6 +10,13 @@
   const modeCommitBtn = document.getElementById("worktreeDiffModeCommitBtn");
   const commitSelect = document.getElementById("worktreeDiffCommitSelect");
   const contextSelect = document.getElementById("worktreeDiffContextSelect");
+  const fullFileWindow = document.getElementById("diffFullFileWindow");
+  const fullFileTitle = document.getElementById("diffFullFileTitle");
+  const fullFileClassSelect = document.getElementById("diffFullFileClassSelect");
+  const fullFileMethodSelect = document.getElementById("diffFullFileMethodSelect");
+  const fullFileCloseBtn = document.getElementById("diffFullFileCloseBtn");
+  const fullFileStatus = document.getElementById("diffFullFileStatus");
+  const fullFileBody = document.getElementById("diffFullFileBody");
   const composerNotesNode = document.getElementById("diffNotesComposer");
   const noteModal = document.getElementById("diffNoteModal");
   const noteModalPath = document.getElementById("diffNoteModalPath");
@@ -25,6 +32,7 @@
   }
 
   const noteModalReady = !!(noteModal && noteModalPath && noteModalTextarea && noteModalSaveBtn && noteModalRemoveBtn && noteModalCancelBtn && noteModalCard && noteModalTitle);
+  const fullFileWindowReady = !!(fullFileWindow && fullFileTitle && fullFileClassSelect && fullFileMethodSelect && fullFileCloseBtn && fullFileStatus && fullFileBody);
 
   const REFRESH_DEBOUNCE_MS = 120;
   const MAX_LINES_PER_FILE = 280;
@@ -53,7 +61,18 @@
   let hasVisibleChanges = false;
   let isExpanded = false;
   let notesByKey = new Map();
-  let fileDrawerStateByPath = new Map();
+  let fullFileLoadingByPath = new Set();
+  let fullFileViewerLoadToken = 0;
+  let fullFileViewerState = {
+    path: "",
+    content: "",
+    changedLines: new Set(),
+    firstChangedLine: 1,
+    classes: [],
+    methods: [],
+    selectedClass: "",
+    selectedMethodKey: ""
+  };
   let currentNoteEdit = null;
   let ignoreNextLineClick = false;
   let fileOpenStateByPath = new Map();
@@ -595,64 +614,6 @@
     return disallowed.has(name) ? "" : name;
   }
 
-  function hunkHeaderContext(line) {
-    if (typeof line !== "string" || !line.startsWith("@@")) {
-      return "";
-    }
-
-    const match = line.match(/^@@\s*-[^ ]+\s+\+[^ ]+\s*@@\s*(.*)$/);
-    return match && typeof match[1] === "string" ? match[1].trim() : "";
-  }
-
-  function buildHunkBreadcrumbByLineNo(patchLines) {
-    const breadcrumbs = new Map();
-    if (!Array.isArray(patchLines) || patchLines.length === 0) {
-      return breadcrumbs;
-    }
-
-    let currentClass = "";
-    for (let i = 0; i < patchLines.length; i += 1) {
-      const line = typeof patchLines[i] === "string" ? patchLines[i] : "";
-      const classFromLine = extractClassName(line);
-      if (classFromLine) {
-        currentClass = classFromLine;
-      }
-
-      if (!line.startsWith("@@")) {
-        continue;
-      }
-
-      const context = hunkHeaderContext(line);
-      let className = extractClassName(context) || currentClass;
-      let methodName = extractMethodName(context);
-      if (!methodName) {
-        for (let j = i + 1; j < Math.min(i + 14, patchLines.length); j += 1) {
-          const candidate = extractMethodName(patchLines[j]);
-          if (candidate) {
-            methodName = candidate;
-            break;
-          }
-        }
-      }
-      if (!className) {
-        for (let j = i; j >= Math.max(i - 20, 0); j -= 1) {
-          const candidateClass = extractClassName(patchLines[j]);
-          if (candidateClass) {
-            className = candidateClass;
-            break;
-          }
-        }
-      }
-
-      const breadcrumb = className && methodName
-        ? `${className} > ${methodName}`
-        : (className || methodName || "scope");
-      breadcrumbs.set(i + 1, breadcrumb);
-    }
-
-    return breadcrumbs;
-  }
-
   function parseHunkNewStart(line) {
     if (typeof line !== "string" || !line.startsWith("@@")) {
       return null;
@@ -710,80 +671,211 @@
     };
   }
 
-  function drawerStateForPath(path) {
-    if (!fileDrawerStateByPath.has(path)) {
-      fileDrawerStateByPath.set(path, {
-        open: false,
-        loading: false,
-        loaded: false,
-        content: "",
-        changedLines: new Set(),
-        firstChangedLine: 1,
-        exists: true,
-        isBinary: false,
-        isTruncated: false,
-        message: "",
-        error: ""
+  function extractSymbolsFromContent(content) {
+    const classes = [];
+    const methods = [];
+    const classSeen = new Set();
+    const methodSeen = new Set();
+    const disallowed = new Set(["if", "for", "while", "switch", "catch", "foreach", "using", "return", "new", "lock"]);
+    const lines = typeof content === "string" ? content.split(/\r?\n/) : [];
+    let currentClass = "";
+    for (let i = 0; i < lines.length; i += 1) {
+      const lineNo = i + 1;
+      const line = lines[i] || "";
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      const className = extractClassName(trimmed);
+      if (className) {
+        currentClass = className;
+        if (!classSeen.has(className)) {
+          classSeen.add(className);
+          classes.push({ name: className, lineNo });
+        }
+      }
+
+      const methodName = extractMethodName(trimmed);
+      if (!methodName || disallowed.has(methodName)) {
+        continue;
+      }
+
+      const looksDeclaration = /\(/.test(trimmed) && (/\)\s*(\{|=>|;)/.test(trimmed) || /\)\s*$/.test(trimmed));
+      if (!looksDeclaration) {
+        continue;
+      }
+
+      const owner = currentClass || "";
+      const methodKey = `${owner}|${methodName}`;
+      if (methodSeen.has(methodKey)) {
+        continue;
+      }
+
+      methodSeen.add(methodKey);
+      methods.push({
+        key: `${lineNo}:${methodName}`,
+        name: methodName,
+        className: owner,
+        lineNo
       });
     }
 
-    return fileDrawerStateByPath.get(path);
+    return { classes, methods };
   }
 
-  function buildFullFileDrawerMarkup(file) {
-    const state = fileDrawerStateByPath.get(file.path);
-    const isOpen = state && state.open === true;
-    const actionLabel = isOpen ? "Hide Full File" : "Open Full File";
-    const disabled = state && state.loading === true;
-    const actionMarkup = `<div class="worktree-diff-detail-actions"><button type="button" class="worktree-diff-open-file-btn" data-open-full-file="1" data-open-full-file-path="${escapeAttribute(file.path)}"${disabled ? " disabled" : ""}>${actionLabel}</button></div>`;
-    if (!isOpen) {
-      return actionMarkup;
+  function buildFullFileActionMarkup(file) {
+    const loading = fullFileLoadingByPath.has(file.path);
+    const label = loading ? "Loading..." : "Open Full File";
+    return `<div class="worktree-diff-detail-actions"><button type="button" class="worktree-diff-open-file-btn" data-open-full-file="1" data-open-full-file-path="${escapeAttribute(file.path)}"${loading ? " disabled" : ""}>${label}</button></div>`;
+  }
+
+  function methodLabel(method) {
+    if (!method) {
+      return "";
     }
 
-    if (!state) {
-      return `${actionMarkup}<div class="worktree-diff-file-empty">File view unavailable.</div>`;
+    return method.className
+      ? `${method.className} > ${method.name}`
+      : method.name;
+  }
+
+  function jumpFullFileWindowToLine(lineNo) {
+    if (!fullFileWindowReady || !Number.isFinite(lineNo) || lineNo <= 0) {
+      return;
     }
 
-    if (state.loading) {
-      return `${actionMarkup}<div class="worktree-diff-file-empty">Loading file content...</div>`;
+    const lineNode = fullFileBody.querySelector(`[data-full-window-line="${lineNo}"]`);
+    if (!lineNode) {
+      return;
     }
 
-    if (state.error) {
-      return `${actionMarkup}<div class="worktree-diff-file-empty">${escapeHtml(state.error)}</div>`;
+    lineNode.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+
+  function renderFullFileWindowBody(content, changedLines) {
+    if (!fullFileWindowReady) {
+      return;
     }
 
-    if (state.exists !== true) {
-      return `${actionMarkup}<div class="worktree-diff-file-empty">${escapeHtml(state.message || "File not found.")}</div>`;
+    const lines = typeof content === "string" ? content.split(/\r?\n/) : [];
+    if (lines.length === 0) {
+      fullFileBody.innerHTML = "<div class=\"worktree-diff-file-empty\">File content is empty.</div>";
+      return;
     }
 
-    if (state.isBinary === true) {
-      return `${actionMarkup}<div class="worktree-diff-file-empty">${escapeHtml(state.message || "Binary file cannot be displayed inline.")}</div>`;
-    }
-
-    const rawLines = typeof state.content === "string" ? state.content.split(/\r?\n/) : [];
-    if (rawLines.length === 0) {
-      return `${actionMarkup}<div class="worktree-diff-file-empty">File content is empty.</div>`;
-    }
-
-    const bodyMarkup = rawLines.map((line, index) => {
+    const html = lines.map((line, index) => {
       const lineNo = index + 1;
-      const lineClass = state.changedLines && state.changedLines.has(lineNo)
-        ? "worktree-diff-file-line worktree-diff-file-line-changed"
-        : "worktree-diff-file-line";
-      return `<div class="${lineClass}" data-full-file-line="${lineNo}">
-        <span class="worktree-diff-file-line-no">${lineNo}</span>
-        <span class="worktree-diff-file-line-text">${escapeHtml(line)}</span>
+      const lineClass = changedLines && changedLines.has(lineNo)
+        ? "diff-full-window-line diff-full-window-line-changed"
+        : "diff-full-window-line";
+      return `<div class="${lineClass}" data-full-window-line="${lineNo}">
+        <span class="diff-full-window-line-no">${lineNo}</span>
+        <span class="diff-full-window-line-text">${escapeHtml(line)}</span>
       </div>`;
     }).join("");
+    fullFileBody.innerHTML = html;
+  }
 
-    const drawerTitle = state.isTruncated === true
-      ? `${file.path} (truncated)`
-      : file.path;
-    return `${actionMarkup}
-      <div class="worktree-diff-file-drawer" data-full-file-drawer="${escapeAttribute(file.path)}">
-        <div class="worktree-diff-file-drawer-header">${escapeHtml(drawerTitle)}</div>
-        <div class="worktree-diff-file-drawer-body">${bodyMarkup}</div>
-      </div>`;
+  function renderFullFileWindowMethodOptions() {
+    if (!fullFileWindowReady) {
+      return;
+    }
+
+    const selectedClass = fullFileViewerState.selectedClass || "";
+    const methods = Array.isArray(fullFileViewerState.methods)
+      ? fullFileViewerState.methods.filter((x) => !selectedClass || x.className === selectedClass)
+      : [];
+    const options = ["<option value=\"\">Methods</option>"];
+    for (const method of methods) {
+      options.push(`<option value="${escapeAttribute(method.key)}">${escapeHtml(methodLabel(method))}</option>`);
+    }
+    fullFileMethodSelect.innerHTML = options.join("");
+    const selectedKey = fullFileViewerState.selectedMethodKey || "";
+    if (selectedKey && methods.some((x) => x.key === selectedKey)) {
+      fullFileMethodSelect.value = selectedKey;
+    } else {
+      fullFileViewerState.selectedMethodKey = "";
+      fullFileMethodSelect.value = "";
+    }
+    fullFileMethodSelect.disabled = methods.length === 0;
+  }
+
+  function findFullFileClassByName(name) {
+    if (!name) {
+      return null;
+    }
+
+    const classes = Array.isArray(fullFileViewerState.classes) ? fullFileViewerState.classes : [];
+    for (const entry of classes) {
+      if (entry && entry.name === name) {
+        return entry;
+      }
+    }
+
+    return null;
+  }
+
+  function findFullFileMethodByKey(key) {
+    if (!key) {
+      return null;
+    }
+
+    const methods = Array.isArray(fullFileViewerState.methods) ? fullFileViewerState.methods : [];
+    for (const entry of methods) {
+      if (entry && entry.key === key) {
+        return entry;
+      }
+    }
+
+    return null;
+  }
+
+  function renderFullFileWindowClassOptions() {
+    if (!fullFileWindowReady) {
+      return;
+    }
+
+    const classes = Array.isArray(fullFileViewerState.classes) ? fullFileViewerState.classes : [];
+    const options = ["<option value=\"\">Classes</option>"];
+    for (const entry of classes) {
+      options.push(`<option value="${escapeAttribute(entry.name)}">${escapeHtml(entry.name)}</option>`);
+    }
+    fullFileClassSelect.innerHTML = options.join("");
+    const selectedClass = fullFileViewerState.selectedClass || "";
+    if (selectedClass && classes.some((x) => x.name === selectedClass)) {
+      fullFileClassSelect.value = selectedClass;
+    } else {
+      fullFileViewerState.selectedClass = "";
+      fullFileClassSelect.value = "";
+    }
+    fullFileClassSelect.disabled = classes.length === 0;
+    renderFullFileWindowMethodOptions();
+  }
+
+  function closeFullFileWindow() {
+    if (!fullFileWindowReady) {
+      return;
+    }
+
+    fullFileWindow.classList.add("hidden");
+    fullFileViewerState = {
+      path: "",
+      content: "",
+      changedLines: new Set(),
+      firstChangedLine: 1,
+      classes: [],
+      methods: [],
+      selectedClass: "",
+      selectedMethodKey: ""
+    };
+    fullFileTitle.textContent = "Full File";
+    fullFileStatus.textContent = "";
+    fullFileBody.innerHTML = "";
+    fullFileClassSelect.innerHTML = "<option value=\"\">Classes</option>";
+    fullFileClassSelect.disabled = true;
+    fullFileMethodSelect.innerHTML = "<option value=\"\">Methods</option>";
+    fullFileMethodSelect.disabled = true;
   }
 
   function notesForPath(path) {
@@ -847,9 +939,8 @@
       const patchLines = patchText ? patchText.split(/\r?\n/) : [];
       const shownLines = patchLines.slice(0, MAX_LINES_PER_FILE);
       const truncated = patchLines.length > shownLines.length;
-      const hunkBreadcrumbByLineNo = buildHunkBreadcrumbByLineNo(shownLines);
       const noteMarkup = buildFileNotesMarkup(file.path);
-      const drawerMarkup = buildFullFileDrawerMarkup(file);
+      const actionMarkup = buildFullFileActionMarkup(file);
       const lineMarkup = isBinary
         ? `<span class="watcher-diff-line">Binary file changed. Diff body is hidden.</span>`
         : shownLines.length > 0
@@ -864,11 +955,7 @@
             if (lineHasNote) {
               classes.push("worktree-diff-line-noted");
             }
-            const breadcrumb = hunkBreadcrumbByLineNo.get(lineNo) || "";
-            const breadcrumbMarkup = line.startsWith("@@") && breadcrumb
-              ? `<span class="worktree-diff-hunk-breadcrumb">${escapeHtml(breadcrumb)}</span>`
-              : "";
-            return `<span class="${classes.join(" ")}" data-diff-line-no="${lineNo}" data-diff-line-text="${escapeHtml(line)}" title="Click to add note. Shift-click to select a range.">${escapeHtml(line)}${breadcrumbMarkup}</span>`;
+            return `<span class="${classes.join(" ")}" data-diff-line-no="${lineNo}" data-diff-line-text="${escapeHtml(line)}" title="Click to add note. Shift-click to select a range.">${escapeHtml(line)}</span>`;
           }).join("")
           : `<span class="watcher-diff-line">No patch available for this file yet.</span>`;
 
@@ -886,7 +973,7 @@
           <div class="worktree-diff-detail">
             ${originalPath ? `<div class="worktree-diff-truncated">Renamed from ${originalPath}</div>` : ""}
             ${noteMarkup}
-            ${drawerMarkup}
+            ${actionMarkup}
             <pre class="worktree-diff-pre">${lineMarkup}</pre>
             ${truncated ? `<p class="worktree-diff-truncated">Patch truncated to ${MAX_LINES_PER_FILE} lines.</p>` : ""}
           </div>
@@ -1183,51 +1270,46 @@
   window.codexDiffNotesConsumePromptMetadata = consumePromptMetadata;
   window.codexDiffNotesHasPending = () => notesByKey.size > 0;
 
-  function scheduleFullFileFocus(path) {
-    const state = fileDrawerStateByPath.get(path);
-    if (!state || state.open !== true || state.loaded !== true) {
+  async function openFullFileWindow(path) {
+    if (!fullFileWindowReady) {
       return;
     }
 
-    const focusLine = Number.isFinite(state.firstChangedLine) && state.firstChangedLine > 0
-      ? state.firstChangedLine
-      : 1;
-    window.setTimeout(() => {
-      const drawerNode = listNode.querySelector(`[data-full-file-drawer="${CSS.escape(path)}"]`);
-      if (!drawerNode) {
-        return;
-      }
+    const file = currentFiles.find((x) => x && typeof x.path === "string" && x.path === path);
+    if (!file) {
+      return;
+    }
 
-      const lineNode = drawerNode.querySelector(`[data-full-file-line="${focusLine}"]`);
-      if (lineNode && typeof lineNode.scrollIntoView === "function") {
-        lineNode.scrollIntoView({ block: "center", behavior: "smooth" });
-        return;
-      }
-
-      if (typeof drawerNode.scrollTo === "function") {
-        drawerNode.scrollTo({ top: 0, behavior: "smooth" });
-      }
-    }, 40);
-  }
-
-  async function loadFullFileDrawerContent(path, patchText) {
-    const state = drawerStateForPath(path);
     const activeContext = getActiveContext();
     if (!activeContext || !activeContext.cwd) {
-      state.loading = false;
-      state.loaded = false;
-      state.error = "No active session context.";
-      rerenderFilesPreserveView();
       return;
     }
 
-    const changed = collectChangedLinesFromPatch(typeof patchText === "string" ? patchText : "");
-    state.changedLines = changed.changed;
-    state.firstChangedLine = changed.first;
-    state.loading = true;
-    state.loaded = false;
-    state.error = "";
+    const patchText = typeof file.patch === "string" ? file.patch : "";
+    const changed = collectChangedLinesFromPatch(patchText);
+    const loadToken = ++fullFileViewerLoadToken;
+
+    fullFileLoadingByPath.add(path);
     rerenderFilesPreserveView();
+
+    fullFileViewerState = {
+      path,
+      content: "",
+      changedLines: changed.changed,
+      firstChangedLine: changed.first,
+      classes: [],
+      methods: [],
+      selectedClass: "",
+      selectedMethodKey: ""
+    };
+    fullFileTitle.textContent = path;
+    fullFileStatus.textContent = "Loading full file content...";
+    fullFileBody.innerHTML = "";
+    fullFileClassSelect.innerHTML = "<option value=\"\">Classes</option>";
+    fullFileClassSelect.disabled = true;
+    fullFileMethodSelect.innerHTML = "<option value=\"\">Methods</option>";
+    fullFileMethodSelect.disabled = true;
+    fullFileWindow.classList.remove("hidden");
 
     try {
       const url = new URL("api/worktree/diff/file", document.baseURI);
@@ -1247,48 +1329,46 @@
       }
 
       const data = await response.json();
-      state.loading = false;
-      state.loaded = true;
-      state.exists = data.exists === true;
-      state.isBinary = data.isBinary === true;
-      state.isTruncated = data.isTruncated === true;
-      state.content = typeof data.content === "string" ? data.content : "";
-      state.message = typeof data.message === "string" ? data.message : "";
-      state.error = "";
-      rerenderFilesPreserveView();
-      scheduleFullFileFocus(path);
+      if (loadToken !== fullFileViewerLoadToken) {
+        return;
+      }
+
+      if (data.exists !== true) {
+        fullFileStatus.textContent = typeof data.message === "string" && data.message ? data.message : "File not found.";
+        fullFileBody.innerHTML = "";
+        return;
+      }
+
+      if (data.isBinary === true) {
+        fullFileStatus.textContent = typeof data.message === "string" && data.message ? data.message : "Binary file cannot be displayed.";
+        fullFileBody.innerHTML = "";
+        return;
+      }
+
+      const content = typeof data.content === "string" ? data.content : "";
+      fullFileViewerState.content = content;
+      const symbols = extractSymbolsFromContent(content);
+      fullFileViewerState.classes = symbols.classes;
+      fullFileViewerState.methods = symbols.methods;
+      fullFileStatus.textContent = data.isTruncated === true
+        ? "Showing truncated file content."
+        : "Use Classes and Methods dropdowns to jump.";
+      renderFullFileWindowBody(content, fullFileViewerState.changedLines);
+      renderFullFileWindowClassOptions();
+      window.setTimeout(() => {
+        jumpFullFileWindowToLine(fullFileViewerState.firstChangedLine || 1);
+      }, 40);
     } catch (error) {
-      state.loading = false;
-      state.loaded = false;
-      state.error = error instanceof Error ? error.message : String(error);
+      if (loadToken !== fullFileViewerLoadToken) {
+        return;
+      }
+
+      fullFileStatus.textContent = `Failed to load file: ${error instanceof Error ? error.message : String(error)}`;
+      fullFileBody.innerHTML = "";
+    } finally {
+      fullFileLoadingByPath.delete(path);
       rerenderFilesPreserveView();
     }
-  }
-
-  function toggleFullFileDrawer(path) {
-    const file = currentFiles.find((x) => x && typeof x.path === "string" && x.path === path);
-    if (!file) {
-      return;
-    }
-
-    const state = drawerStateForPath(path);
-    if (state.open === true) {
-      state.open = false;
-      rerenderFilesPreserveView();
-      return;
-    }
-
-    state.open = true;
-    const changed = collectChangedLinesFromPatch(typeof file.patch === "string" ? file.patch : "");
-    state.changedLines = changed.changed;
-    state.firstChangedLine = changed.first;
-    rerenderFilesPreserveView();
-    if (state.loaded === true) {
-      scheduleFullFileFocus(path);
-      return;
-    }
-
-    loadFullFileDrawerContent(path, typeof file.patch === "string" ? file.patch : "").catch(() => { });
   }
 
   async function fetchCurrentWorktreeSnapshot(context, force) {
@@ -1418,7 +1498,8 @@
       currentNotesScopeKey = "";
       currentFileViewScopeKey = "";
       notesByKey = new Map();
-      fileDrawerStateByPath = new Map();
+      fullFileLoadingByPath = new Set();
+      closeFullFileWindow();
       contextSelect.disabled = false;
       renderCommitOptions();
       applyPanelState();
@@ -1441,7 +1522,8 @@
       currentFileViewScopeKey = "";
       notesByKey = new Map();
       fileOpenStateByPath = new Map();
-      fileDrawerStateByPath = new Map();
+      fullFileLoadingByPath = new Set();
+      closeFullFileWindow();
       currentTotalChangeCount = 0;
       hiddenBinaryFileCount = 0;
       availableCommits = [];
@@ -1537,7 +1619,8 @@
       }
       if (scopeKey !== currentFileViewScopeKey) {
         fileOpenStateByPath = new Map();
-        fileDrawerStateByPath = new Map();
+        fullFileLoadingByPath = new Set();
+        closeFullFileWindow();
         ignoreNextLineClick = false;
         currentFileViewScopeKey = scopeKey;
       }
@@ -1717,6 +1800,44 @@
     queueRefresh({ force: true });
   });
 
+  if (fullFileWindowReady) {
+    fullFileCloseBtn.addEventListener("click", () => {
+      closeFullFileWindow();
+    });
+
+    fullFileClassSelect.addEventListener("change", () => {
+      const className = typeof fullFileClassSelect.value === "string" ? fullFileClassSelect.value : "";
+      fullFileViewerState.selectedClass = className;
+      fullFileViewerState.selectedMethodKey = "";
+      renderFullFileWindowMethodOptions();
+      const classEntry = findFullFileClassByName(className);
+      if (classEntry && Number.isFinite(classEntry.lineNo)) {
+        jumpFullFileWindowToLine(classEntry.lineNo);
+      }
+    });
+
+    fullFileMethodSelect.addEventListener("change", () => {
+      const methodKey = typeof fullFileMethodSelect.value === "string" ? fullFileMethodSelect.value : "";
+      fullFileViewerState.selectedMethodKey = methodKey;
+      const methodEntry = findFullFileMethodByKey(methodKey);
+      if (methodEntry && Number.isFinite(methodEntry.lineNo)) {
+        jumpFullFileWindowToLine(methodEntry.lineNo);
+      }
+    });
+
+    fullFileWindow.addEventListener("click", (event) => {
+      if (event.target === fullFileWindow) {
+        closeFullFileWindow();
+      }
+    });
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !fullFileWindow.classList.contains("hidden")) {
+        closeFullFileWindow();
+      }
+    });
+  }
+
   refreshBtn.addEventListener("click", () => {
     fetchAndRenderDiff(true).catch(() => { });
   });
@@ -1755,7 +1876,7 @@
       event.preventDefault();
       const path = fullFileBtn.getAttribute("data-open-full-file-path") || "";
       if (path) {
-        toggleFullFileDrawer(path);
+        openFullFileWindow(path).catch(() => { });
       }
       return;
     }
