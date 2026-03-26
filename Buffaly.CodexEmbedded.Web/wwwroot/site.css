@@ -3592,6 +3592,30 @@ body {
 	padding: 0.2rem 0.1rem 0.15rem;
 }
 
+.worktree-diff-loading {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.46rem;
+	padding: 0.25rem 0.1rem 0.2rem;
+	color: #475569;
+	font-size: 0.78rem;
+}
+
+.worktree-diff-loading-spinner {
+	width: 0.92rem;
+	height: 0.92rem;
+	border-radius: 999px;
+	border: 2px solid #cbd5e1;
+	border-top-color: #1d4ed8;
+	animation: worktree-diff-loading-spin 0.85s linear infinite;
+	flex: 0 0 auto;
+}
+
+@keyframes worktree-diff-loading-spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+
 .worktree-diff-file {
 	border: 1px solid #dbe3ee;
 	border-radius: 8px;
@@ -4798,8 +4822,14 @@ html[data-theme="dark"] .worktree-diff-title {
 
 html[data-theme="dark"] .worktree-diff-summary,
 html[data-theme="dark"] .worktree-diff-empty,
+html[data-theme="dark"] .worktree-diff-loading,
 html[data-theme="dark"] .worktree-diff-truncated {
 	color: #94a3b8;
+}
+
+html[data-theme="dark"] .worktree-diff-loading-spinner {
+	border-color: #334155;
+	border-top-color: #60a5fa;
 }
 
 html[data-theme="dark"] .worktree-diff-refresh-btn {

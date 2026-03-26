@@ -502,6 +502,16 @@
     renderComposerNotes();
   }
 
+  function showLoadingState(message) {
+    hasVisibleChanges = false;
+    currentFiles = [];
+    currentTotalChangeCount = 0;
+    hiddenBinaryFileCount = 0;
+    summaryNode.textContent = message;
+    listNode.innerHTML = `<div class="worktree-diff-loading" role="status" aria-live="polite"><span class="worktree-diff-loading-spinner" aria-hidden="true"></span><span class="worktree-diff-loading-text">${escapeHtml(message)}</span></div>`;
+    applyPanelState();
+  }
+
   function updateSummary(changeCount) {
     const notesCount = notesByKey.size;
     const branch = currentBranch || "detached";
@@ -1886,6 +1896,10 @@
     selectedCommitSha = nextSha;
     selectedCommitInfo = findSelectedCommitInfo();
     lastRenderKey = "";
+    refreshBtn.disabled = true;
+    commitSelect.disabled = true;
+    closeFullFileWindow();
+    showLoadingState(`Loading ${getActiveCommitLabel()}...`);
     queueRefresh({ force: true });
   });
 
