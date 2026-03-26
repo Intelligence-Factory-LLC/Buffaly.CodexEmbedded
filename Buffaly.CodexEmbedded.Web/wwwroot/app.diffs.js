@@ -75,6 +75,7 @@
   };
   let currentNoteEdit = null;
   let ignoreNextLineClick = false;
+  let ignoreNextFullFileLineClick = false;
   let fileOpenStateByPath = new Map();
   let modalOffset = { x: 0, y: 0 };
   let modalDragState = null;
@@ -166,8 +167,17 @@
     return `${STORAGE_NOTES_PREFIX}${scopeKey || ""}`;
   }
 
-  function buildNoteKey(path, startLine, endLine) {
-    return `${path}::${startLine}-${endLine}`;
+  function normalizeNoteOrigin(origin) {
+    return origin === "file" ? "file" : "diff";
+  }
+
+  function buildNoteKey(path, startLine, endLine, origin = "diff") {
+    return `${normalizeNoteOrigin(origin)}::${path}::${startLine}-${endLine}`;
+  }
+
+  function noteLineLabel(startLine, endLine, origin = "diff") {
+    const prefix = normalizeNoteOrigin(origin) === "file" ? "file line " : "diff line ";
+    return formatLineSpan(startLine, endLine).replace("L", prefix);
   }
 
   function normalizeNoteFromStorage(item) {
@@ -205,7 +215,8 @@
       startLine: fixedStart,
       endLine: fixedEnd,
       note,
-      snippet: typeof item.snippet === "string" ? item.snippet : ""
+      snippet: typeof item.snippet === "string" ? item.snippet : "",
+      origin: normalizeNoteOrigin(typeof item.origin === "string" ? item.origin : "diff")
     };
   }
 
@@ -233,7 +244,7 @@
         }
 
         next.set(
-          buildNoteKey(normalized.path, normalized.startLine, normalized.endLine),
+          buildNoteKey(normalized.path, normalized.startLine, normalized.endLine, normalized.origin),
           normalized
         );
       }
@@ -254,7 +265,8 @@
         startLine: x.startLine,
         endLine: x.endLine,
         note: x.note,
-        snippet: x.snippet || ""
+        snippet: x.snippet || "",
+        origin: normalizeNoteOrigin(x.origin)
       }));
       window.localStorage.setItem(notesStorageKey(scopeKey), JSON.stringify(payload));
     } catch {
@@ -464,16 +476,18 @@
     }
 
     const pills = notes.map((note) => {
-      const key = buildNoteKey(note.path, note.startLine, note.endLine);
-      const prefix = formatLineSpan(note.startLine, note.endLine);
-      const text = `${prefix} ${note.path}: ${note.note}`;
+      const origin = normalizeNoteOrigin(note.origin);
+      const key = buildNoteKey(note.path, note.startLine, note.endLine, origin);
+      const prefix = origin === "file" ? "File" : "Diff";
+      const lineText = noteLineLabel(note.startLine, note.endLine, origin);
+      const text = `[${prefix}] ${lineText} ${note.path}: ${note.note}`;
       return `<span class="diff-notes-composer-pill" title="${escapeAttribute(text)}">
         <span class="diff-notes-composer-pill-text">${escapeHtml(text)}</span>
-        <button type="button" class="diff-notes-composer-pill-remove" data-diff-note-remove="${escapeAttribute(key)}" aria-label="Remove diff note">&times;</button>
+        <button type="button" class="diff-notes-composer-pill-remove" data-diff-note-remove="${escapeAttribute(key)}" aria-label="Remove note">&times;</button>
       </span>`;
     }).join("");
 
-    composerNotesNode.innerHTML = `<span class="diff-notes-composer-label">Diff notes (${notes.length})</span>${pills}<button type="button" class="diff-notes-composer-clear" data-diff-note-clear="1">Clear</button>`;
+    composerNotesNode.innerHTML = `<span class="diff-notes-composer-label">Code notes (${notes.length})</span>${pills}<button type="button" class="diff-notes-composer-clear" data-diff-note-clear="1">Clear</button>`;
     composerNotesNode.classList.remove("hidden");
   }
 
@@ -766,15 +780,26 @@
 
     const html = lines.map((line, index) => {
       const lineNo = index + 1;
-      const lineClass = changedLines && changedLines.has(lineNo)
-        ? "diff-full-window-line diff-full-window-line-changed"
-        : "diff-full-window-line";
-      return `<div class="${lineClass}" data-full-window-line="${lineNo}">
+      const classes = ["diff-full-window-line", "diff-full-window-line-clickable"];
+      if (changedLines && changedLines.has(lineNo)) {
+        classes.push("diff-full-window-line-changed");
+      }
+      if (hasLineNote(fullFileViewerState.path, lineNo, "file")) {
+        classes.push("diff-full-window-line-noted");
+      }
+      return `<div class="${classes.join(" ")}" data-full-window-line="${lineNo}" data-full-window-line-text="${escapeHtml(line)}" title="Click to add note. Shift-select lines to annotate a range.">
         <span class="diff-full-window-line-no">${lineNo}</span>
         <span class="diff-full-window-line-text">${escapeHtml(line)}</span>
       </div>`;
     }).join("");
     fullFileBody.innerHTML = html;
+  }
+
+  function rerenderFullFileWindowIfOpen() {
+    if (!fullFileWindowReady || fullFileWindow.classList.contains("hidden")) {
+      return;
+    }
+    renderFullFileWindowBody(fullFileViewerState.content, fullFileViewerState.changedLines);
   }
 
   function renderFullFileWindowMethodOptions() {
@@ -876,11 +901,13 @@
     fullFileClassSelect.disabled = true;
     fullFileMethodSelect.innerHTML = "<option value=\"\">Methods</option>";
     fullFileMethodSelect.disabled = true;
+    ignoreNextFullFileLineClick = false;
   }
 
-  function notesForPath(path) {
+  function notesForPath(path, origin = null) {
+    const normalizedOrigin = origin ? normalizeNoteOrigin(origin) : "";
     return Array.from(notesByKey.values())
-      .filter((x) => x.path === path)
+      .filter((x) => x.path === path && (!normalizedOrigin || normalizeNoteOrigin(x.origin) === normalizedOrigin))
       .sort((a, b) => {
         if (a.startLine !== b.startLine) {
           return a.startLine - b.startLine;
@@ -889,8 +916,8 @@
       });
   }
 
-  function hasLineNote(path, lineNo) {
-    const notes = notesForPath(path);
+  function hasLineNote(path, lineNo, origin = null) {
+    const notes = notesForPath(path, origin);
     for (const note of notes) {
       if (lineNo >= note.startLine && lineNo <= note.endLine) {
         return true;
@@ -900,13 +927,13 @@
   }
 
   function buildFileNotesMarkup(path) {
-    const notes = notesForPath(path);
+    const notes = notesForPath(path, "diff");
     if (notes.length === 0) {
       return "";
     }
 
     const items = notes.map((x) => {
-      const lineText = formatLineSpan(x.startLine, x.endLine);
+      const lineText = noteLineLabel(x.startLine, x.endLine, "diff");
       const noteTitle = escapeHtml(x.note);
       return `<button type="button" class="worktree-diff-note-pill" data-note-jump="1" data-note-path="${escapeHtml(path)}" data-note-start="${x.startLine}" data-note-end="${x.endLine}" title="${noteTitle}">${lineText}: ${noteTitle}</button>`;
     }).join("");
@@ -947,7 +974,7 @@
           ? shownLines.map((line, index) => {
             const lineNo = index + 1;
             const lineClass = classForDiffLine(line);
-            const lineHasNote = hasLineNote(file.path, lineNo);
+            const lineHasNote = hasLineNote(file.path, lineNo, "diff");
             const classes = ["watcher-diff-line", "worktree-diff-line-clickable"];
             if (lineClass) {
               classes.push(lineClass);
@@ -1010,8 +1037,9 @@
     lineNode.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
-  function applyNoteToState(path, startLine, endLine, note, snippet) {
-    const key = buildNoteKey(path, startLine, endLine);
+  function applyNoteToState(path, startLine, endLine, note, snippet, origin = "diff") {
+    const normalizedOrigin = normalizeNoteOrigin(origin);
+    const key = buildNoteKey(path, startLine, endLine, normalizedOrigin);
     const cleaned = (note || "").trim();
     if (!cleaned) {
       notesByKey.delete(key);
@@ -1023,25 +1051,28 @@
       startLine,
       endLine,
       note: cleaned,
-      snippet: snippet || ""
+      snippet: snippet || "",
+      origin: normalizedOrigin
     });
   }
 
-  function openNoteModal(path, startLine, endLine, snippet) {
+  function openNoteModal(path, startLine, endLine, snippet, origin = "diff") {
     if (!noteModalReady) {
       return;
     }
 
-    const key = buildNoteKey(path, startLine, endLine);
+    const normalizedOrigin = normalizeNoteOrigin(origin);
+    const key = buildNoteKey(path, startLine, endLine, normalizedOrigin);
     const existing = notesByKey.get(key);
     const initial = existing && typeof existing.note === "string" ? existing.note : "";
-    const lineLabel = formatLineSpan(startLine, endLine).replace("L", "diff line ");
+    const lineLabel = noteLineLabel(startLine, endLine, normalizedOrigin);
 
     currentNoteEdit = {
       path,
       startLine,
       endLine,
-      snippet: snippet || ""
+      snippet: snippet || "",
+      origin: normalizedOrigin
     };
 
     noteModalPath.textContent = `${path} (${lineLabel})`;
@@ -1066,22 +1097,23 @@
         path: x.path,
         startLine: x.startLine,
         endLine: x.endLine,
-        snippet: x.snippet || ""
+        snippet: x.snippet || "",
+        origin: normalizeNoteOrigin(x.origin)
       }))
     };
 
     if (targets.length === 1) {
       const only = targets[0];
-      const key = buildNoteKey(only.path, only.startLine, only.endLine);
+      const key = buildNoteKey(only.path, only.startLine, only.endLine, only.origin);
       const existing = notesByKey.get(key);
       const initial = existing && typeof existing.note === "string" ? existing.note : "";
-      const lineLabel = formatLineSpan(only.startLine, only.endLine).replace("L", "diff line ");
+      const lineLabel = noteLineLabel(only.startLine, only.endLine, only.origin);
       noteModalPath.textContent = `${only.path} (${lineLabel})`;
       noteModalTextarea.value = initial;
       noteModalRemoveBtn.disabled = !notesByKey.has(key);
     } else {
       const fileCount = new Set(targets.map((x) => x.path)).size;
-      const anyExisting = targets.some((x) => notesByKey.has(buildNoteKey(x.path, x.startLine, x.endLine)));
+      const anyExisting = targets.some((x) => notesByKey.has(buildNoteKey(x.path, x.startLine, x.endLine, x.origin)));
       noteModalPath.textContent = `${targets.length} ranges selected across ${fileCount} file(s)`;
       noteModalTextarea.value = "";
       noteModalRemoveBtn.disabled = !anyExisting;
@@ -1155,11 +1187,74 @@
         path: x.path,
         startLine: x.startLine,
         endLine: x.endLine,
-        snippet: x.snippets.filter(Boolean).join("\n").trim()
+        snippet: x.snippets.filter(Boolean).join("\n").trim(),
+        origin: "diff"
       }))
       .sort((a, b) => a.path.localeCompare(b.path) || a.startLine - b.startLine);
 
     return targets;
+  }
+
+  function collectFullFileSelectionTargets() {
+    if (!fullFileWindowReady || !fullFileViewerState.path) {
+      return [];
+    }
+
+    const selection = window.getSelection ? window.getSelection() : null;
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      return [];
+    }
+
+    const range = selection.getRangeAt(0);
+    const anchorNode = selection.anchorNode;
+    const focusNode = selection.focusNode;
+    const withinFullFile = (anchorNode && fullFileBody.contains(anchorNode))
+      || (focusNode && fullFileBody.contains(focusNode))
+      || fullFileBody.contains(range.commonAncestorContainer);
+    if (!withinFullFile) {
+      return [];
+    }
+
+    const lineNodes = Array.from(fullFileBody.querySelectorAll("[data-full-window-line]"));
+    let startLine = Number.POSITIVE_INFINITY;
+    let endLine = 0;
+    const snippetLines = [];
+    for (const node of lineNodes) {
+      if (!(node instanceof Element)) {
+        continue;
+      }
+
+      let intersects = false;
+      try {
+        intersects = range.intersectsNode(node);
+      } catch {
+        intersects = false;
+      }
+      if (!intersects) {
+        continue;
+      }
+
+      const lineNo = Number.parseInt(node.getAttribute("data-full-window-line") || "", 10);
+      if (!Number.isFinite(lineNo) || lineNo <= 0) {
+        continue;
+      }
+
+      startLine = Math.min(startLine, lineNo);
+      endLine = Math.max(endLine, lineNo);
+      snippetLines.push((node.getAttribute("data-full-window-line-text") || node.textContent || "").trim());
+    }
+
+    if (!Number.isFinite(startLine) || startLine <= 0 || endLine <= 0) {
+      return [];
+    }
+
+    return [{
+      path: fullFileViewerState.path,
+      startLine,
+      endLine,
+      snippet: snippetLines.filter(Boolean).join("\n").trim(),
+      origin: "file"
+    }];
   }
 
   function closeNoteModal() {
@@ -1189,13 +1284,15 @@
         target.startLine,
         target.endLine,
         noteText,
-        target.snippet
+        target.snippet,
+        target.origin
       );
     }
 
     saveNotesForScope(currentNotesScopeKey);
     updateSummary(currentTotalChangeCount);
     rerenderFilesPreserveView();
+    rerenderFullFileWindowIfOpen();
     renderComposerNotes();
     closeNoteModal();
   }
@@ -1212,11 +1309,12 @@
       ? currentNoteEdit.targets
       : [currentNoteEdit];
     for (const target of targets) {
-      notesByKey.delete(buildNoteKey(target.path, target.startLine, target.endLine));
+      notesByKey.delete(buildNoteKey(target.path, target.startLine, target.endLine, target.origin));
     }
     saveNotesForScope(currentNotesScopeKey);
     updateSummary(currentTotalChangeCount);
     rerenderFilesPreserveView();
+    rerenderFullFileWindowIfOpen();
     renderComposerNotes();
     closeNoteModal();
   }
@@ -1241,12 +1339,17 @@
     const lines = [
       "[Diff source]",
       `- mode=${currentMode}; branch=${currentBranch || "detached"}; context=${contextModeLabel(currentContextMode)}${currentMode === "commit" && selectedCommitSha ? `; commit=${selectedCommitSha}` : ""}`,
-      "[Diff line notes]"
+      "[Code notes]"
     ];
     for (const item of ordered) {
-      const linePart = item.startLine === item.endLine
-        ? `diffLine=${item.startLine}`
-        : `diffLineStart=${item.startLine}; diffLineEnd=${item.endLine}`;
+      const origin = normalizeNoteOrigin(item.origin);
+      const linePart = origin === "file"
+        ? (item.startLine === item.endLine
+          ? `fileLine=${item.startLine}`
+          : `fileLineStart=${item.startLine}; fileLineEnd=${item.endLine}`)
+        : (item.startLine === item.endLine
+          ? `diffLine=${item.startLine}`
+          : `diffLineStart=${item.startLine}; diffLineEnd=${item.endLine}`);
       const base = `- file=${item.path}; ${linePart}; note=${item.note}`;
       if (item.snippet) {
         lines.push(`${base}; snippet=${item.snippet}`);
@@ -1259,6 +1362,7 @@
     saveNotesForScope(currentNotesScopeKey);
     updateSummary(currentTotalChangeCount);
     rerenderFilesPreserveView();
+    rerenderFullFileWindowIfOpen();
     renderComposerNotes();
 
     return {
@@ -1825,6 +1929,40 @@
       }
     });
 
+    fullFileBody.addEventListener("click", (event) => {
+      if (ignoreNextFullFileLineClick) {
+        ignoreNextFullFileLineClick = false;
+        return;
+      }
+
+      const lineNode = event.target instanceof Element ? event.target.closest("[data-full-window-line]") : null;
+      if (!lineNode) {
+        return;
+      }
+
+      const lineNo = Number.parseInt(lineNode.getAttribute("data-full-window-line") || "", 10);
+      const lineText = lineNode.getAttribute("data-full-window-line-text") || "";
+      if (!fullFileViewerState.path || !Number.isFinite(lineNo) || lineNo <= 0) {
+        return;
+      }
+
+      openNoteModal(fullFileViewerState.path, lineNo, lineNo, (lineText || "").trim(), "file");
+    });
+
+    fullFileBody.addEventListener("mouseup", () => {
+      const targets = collectFullFileSelectionTargets();
+      if (!Array.isArray(targets) || targets.length === 0) {
+        return;
+      }
+
+      ignoreNextFullFileLineClick = true;
+      openNoteModalForTargets(targets);
+      const selection = window.getSelection ? window.getSelection() : null;
+      if (selection && typeof selection.removeAllRanges === "function") {
+        selection.removeAllRanges();
+      }
+    });
+
     fullFileWindow.addEventListener("click", (event) => {
       if (event.target === fullFileWindow) {
         closeFullFileWindow();
@@ -1898,7 +2036,7 @@
       return;
     }
     if (noteModalReady) {
-      openNoteModal(path, lineNo, lineNo, (lineText || "").trim());
+      openNoteModal(path, lineNo, lineNo, (lineText || "").trim(), "diff");
     }
   });
 
@@ -1929,6 +2067,7 @@
         saveNotesForScope(currentNotesScopeKey);
         updateSummary(currentTotalChangeCount);
         rerenderFilesPreserveView();
+        rerenderFullFileWindowIfOpen();
         renderComposerNotes();
       }
       return;
@@ -1943,6 +2082,7 @@
     saveNotesForScope(currentNotesScopeKey);
     updateSummary(currentTotalChangeCount);
     rerenderFilesPreserveView();
+    rerenderFullFileWindowIfOpen();
     renderComposerNotes();
   });
 

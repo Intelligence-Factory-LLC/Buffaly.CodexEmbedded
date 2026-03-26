@@ -3766,6 +3766,15 @@ body {
 	gap: 0.45rem;
 }
 
+.diff-full-window-line-clickable {
+	cursor: pointer;
+}
+
+.diff-full-window-line-clickable:hover {
+	outline: 1px dashed #60a5fa;
+	outline-offset: -1px;
+}
+
 .diff-full-window-line-no {
 	flex: 0 0 auto;
 	width: 4rem;
@@ -3784,6 +3793,11 @@ body {
 
 .diff-full-window-line-changed {
 	background: rgba(59, 130, 246, 0.1);
+}
+
+.diff-full-window-line-noted {
+	border-left: 3px solid #f59e0b;
+	padding-left: 0.3rem;
 }
 
 .worktree-diff-file-drawer {
@@ -4885,6 +4899,14 @@ html[data-theme="dark"] .diff-full-window-line-text {
 
 html[data-theme="dark"] .diff-full-window-line-changed {
 	background: rgba(59, 130, 246, 0.24);
+}
+
+html[data-theme="dark"] .diff-full-window-line-clickable:hover {
+	outline-color: #3b82f6;
+}
+
+html[data-theme="dark"] .diff-full-window-line-noted {
+	border-left-color: #f59e0b;
 }
 
 html[data-theme="dark"] .worktree-diff-file-drawer {
