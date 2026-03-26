@@ -107,6 +107,9 @@ let lastDiffRefreshAssistantSignatureByThread = new Map();
 let openAiKeyStatusCache = null; // { hasKey, checkedAtMs }
 let blockedAutoRestoreThreadId = "";
 let startupRestoreAttemptThreadId = "";
+let latestRateLimitSnapshot = null; // latest account-level usage snapshot from backend endpoint
+let rateLimitSnapshotFetchInFlight = null;
+let lastRateLimitSnapshotFetchAtMs = 0;
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -146,6 +149,7 @@ const TIMELINE_SELECTION_MAX_PROMPT_CHARS = 4000;
 const BUILD_FIX_POLL_INTERVAL_MS = 2000;
 const BUILD_FIX_MAX_CHARS = 12000;
 const OPENAI_KEY_STATUS_CACHE_MS = 15000;
+const RATE_LIMIT_SNAPSHOT_FETCH_MIN_INTERVAL_MS = 15000;
 const PROMPT_INPUT_MAX_HEIGHT_DESKTOP_PX = 360;
 const PROMPT_INPUT_MAX_HEIGHT_MOBILE_PX = 192;
 const UI_AUDIT_OUTGOING_TYPES = new Set([
@@ -6485,6 +6489,61 @@ function renderSessionMetaUsageWeeklyProgress(container, rateLimit) {
   container.replaceChildren(wrap);
 }
 
+function getAnyKnownRateLimitPayload() {
+  for (const payload of rateLimitBySession.values()) {
+    if (payload && typeof payload === "object") {
+      return payload;
+    }
+  }
+
+  if (latestRateLimitSnapshot && typeof latestRateLimitSnapshot === "object") {
+    return latestRateLimitSnapshot;
+  }
+
+  return null;
+}
+
+function refreshLatestRateLimitSnapshot(force = false) {
+  const nowMs = Date.now();
+  if (!force && nowMs - lastRateLimitSnapshotFetchAtMs < RATE_LIMIT_SNAPSHOT_FETCH_MIN_INTERVAL_MS) {
+    return;
+  }
+
+  if (rateLimitSnapshotFetchInFlight) {
+    return;
+  }
+
+  lastRateLimitSnapshotFetchAtMs = nowMs;
+  const url = new URL("api/settings/codex-usage/status", document.baseURI);
+  rateLimitSnapshotFetchInFlight = fetch(url, { cache: "no-store" })
+    .then(async (response) => {
+      if (!response.ok) {
+        return null;
+      }
+
+      const payload = await response.json();
+      if (!payload || typeof payload !== "object") {
+        return null;
+      }
+
+      const latest = payload.latest && typeof payload.latest === "object" ? payload.latest : null;
+      if (!latest) {
+        return null;
+      }
+
+      latestRateLimitSnapshot = latest;
+      if (!rateLimitBySession.has(activeSessionId || "")) {
+        refreshSessionMetaUsage();
+      }
+
+      return latest;
+    })
+    .catch(() => null)
+    .finally(() => {
+      rateLimitSnapshotFetchInFlight = null;
+    });
+}
+
 function refreshSessionMetaUsage() {
   if (!sessionMetaUsageItem || !sessionMetaUsageValue) {
     return;
@@ -6499,9 +6558,14 @@ function refreshSessionMetaUsage() {
   }
 
   const sessionId = typeof activeSessionId === "string" ? activeSessionId : "";
-  const rateLimit = sessionId ? (rateLimitBySession.get(sessionId) || null) : null;
+  const rateLimit = sessionId
+    ? (rateLimitBySession.get(sessionId) || getAnyKnownRateLimitPayload())
+    : getAnyKnownRateLimitPayload();
   sessionMetaUsageItem.classList.remove("hidden");
   renderSessionMetaUsageWeeklyProgress(sessionMetaUsageValue, rateLimit);
+  if (!rateLimit) {
+    refreshLatestRateLimitSnapshot();
+  }
 
   const titleParts = [];
   if (rateLimit && typeof rateLimit === "object") {
@@ -8467,6 +8531,7 @@ function handleServerEvent(frame) {
 
     case "rate_limits_updated": {
       const sessionId = payload.sessionId || null;
+      latestRateLimitSnapshot = payload && typeof payload === "object" ? payload : latestRateLimitSnapshot;
       if (sessionId) {
         rateLimitBySession.set(sessionId, payload);
         if (sessionId === activeSessionId) {
