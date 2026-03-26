@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -12,6 +13,226 @@ internal sealed class GitWorktreeDiffService
 		int maxPatchChars,
 		CancellationToken cancellationToken)
 	{
+		var repo = ResolveRepoContext(cwd, cancellationToken);
+		if (!repo.IsGitRepo || string.IsNullOrWhiteSpace(repo.RepoRoot))
+		{
+			return new GitWorktreeDiffSnapshot(
+				Cwd: repo.Cwd,
+				RepoRoot: null,
+				Branch: null,
+				HeadSha: null,
+				IsGitRepo: false,
+				IsTimedOut: repo.IsTimedOut,
+				GeneratedAtUtc: DateTimeOffset.UtcNow,
+				ChangeCount: 0,
+				Files: Array.Empty<GitWorktreeFileDiff>());
+		}
+
+		var statusResult = RunGit(repo.RepoRoot, "status --porcelain=v1", timeoutMs: 6000, cancellationToken);
+		if (!statusResult.Success)
+		{
+			return new GitWorktreeDiffSnapshot(
+				Cwd: repo.Cwd,
+				RepoRoot: repo.RepoRoot,
+				Branch: repo.Branch,
+				HeadSha: repo.HeadSha,
+				IsGitRepo: true,
+				IsTimedOut: statusResult.TimedOut,
+				GeneratedAtUtc: DateTimeOffset.UtcNow,
+				ChangeCount: 0,
+				Files: Array.Empty<GitWorktreeFileDiff>());
+		}
+
+		var patchResult = RunGit(repo.RepoRoot, "diff --no-color --find-renames HEAD", timeoutMs: 12000, cancellationToken);
+		var numStatResult = RunGit(repo.RepoRoot, "diff --no-color --numstat HEAD", timeoutMs: 6000, cancellationToken);
+		var patchByPath = ParsePatchByPath(TrimToLength(patchResult.StdOut, maxPatchChars));
+		var binaryPaths = ParseBinaryPathsFromNumStat(numStatResult.StdOut);
+		var files = BuildFileDiffs(
+			ParseStatus(statusResult.StdOut),
+			patchByPath,
+			binaryPaths,
+			maxFiles);
+
+		return new GitWorktreeDiffSnapshot(
+			Cwd: repo.Cwd,
+			RepoRoot: repo.RepoRoot,
+			Branch: repo.Branch,
+			HeadSha: repo.HeadSha,
+			IsGitRepo: true,
+			IsTimedOut: patchResult.TimedOut || numStatResult.TimedOut,
+			GeneratedAtUtc: DateTimeOffset.UtcNow,
+			ChangeCount: files.Length,
+			Files: files);
+	}
+
+	public GitRecentCommitCatalogSnapshot GetRecentCommits(
+		string cwd,
+		int limit,
+		CancellationToken cancellationToken)
+	{
+		var repo = ResolveRepoContext(cwd, cancellationToken);
+		if (!repo.IsGitRepo || string.IsNullOrWhiteSpace(repo.RepoRoot))
+		{
+			return new GitRecentCommitCatalogSnapshot(
+				Cwd: repo.Cwd,
+				RepoRoot: null,
+				Branch: null,
+				HeadSha: null,
+				IsGitRepo: false,
+				IsTimedOut: repo.IsTimedOut,
+				GeneratedAtUtc: DateTimeOffset.UtcNow,
+				Commits: Array.Empty<GitRecentCommitInfo>());
+		}
+
+		var safeLimit = Math.Clamp(limit, 1, 200);
+		var logResult = RunGit(
+			repo.RepoRoot,
+			$"log -n {safeLimit} --date=iso-strict --pretty=format:%H%x1f%h%x1f%ad%x1f%an%x1f%s",
+			timeoutMs: 7000,
+			cancellationToken);
+		if (!logResult.Success)
+		{
+			return new GitRecentCommitCatalogSnapshot(
+				Cwd: repo.Cwd,
+				RepoRoot: repo.RepoRoot,
+				Branch: repo.Branch,
+				HeadSha: repo.HeadSha,
+				IsGitRepo: true,
+				IsTimedOut: logResult.TimedOut,
+				GeneratedAtUtc: DateTimeOffset.UtcNow,
+				Commits: Array.Empty<GitRecentCommitInfo>());
+		}
+
+		var commits = ParseRecentCommitLog(logResult.StdOut);
+		return new GitRecentCommitCatalogSnapshot(
+			Cwd: repo.Cwd,
+			RepoRoot: repo.RepoRoot,
+			Branch: repo.Branch,
+			HeadSha: repo.HeadSha,
+			IsGitRepo: true,
+			IsTimedOut: logResult.TimedOut,
+			GeneratedAtUtc: DateTimeOffset.UtcNow,
+			Commits: commits);
+	}
+
+	public GitCommitDiffSnapshot GetCommitSnapshot(
+		string cwd,
+		string commitSha,
+		int maxFiles,
+		int maxPatchChars,
+		CancellationToken cancellationToken)
+	{
+		if (string.IsNullOrWhiteSpace(commitSha))
+		{
+			throw new ArgumentException("commit query parameter is required.", nameof(commitSha));
+		}
+
+		var repo = ResolveRepoContext(cwd, cancellationToken);
+		if (!repo.IsGitRepo || string.IsNullOrWhiteSpace(repo.RepoRoot))
+		{
+			return new GitCommitDiffSnapshot(
+				Cwd: repo.Cwd,
+				RepoRoot: null,
+				Branch: null,
+				HeadSha: null,
+				IsGitRepo: false,
+				IsTimedOut: repo.IsTimedOut,
+				GeneratedAtUtc: DateTimeOffset.UtcNow,
+				CommitSha: null,
+				CommitShortSha: null,
+				CommitSubject: null,
+				CommitAuthorName: null,
+				CommitCommittedAtUtc: null,
+				ChangeCount: 0,
+				Files: Array.Empty<GitWorktreeFileDiff>());
+		}
+
+		var commitToken = commitSha.Trim();
+		var resolvedCommitResult = RunGit(
+			repo.RepoRoot,
+			$"rev-parse --verify {QuoteGitArgument(commitToken)}^{{commit}}",
+			timeoutMs: 4000,
+			cancellationToken);
+		if (!resolvedCommitResult.Success || string.IsNullOrWhiteSpace(resolvedCommitResult.StdOut))
+		{
+			throw new ArgumentException($"Commit was not found: '{commitToken}'.", nameof(commitSha));
+		}
+
+		var resolvedCommitSha = resolvedCommitResult.StdOut.Trim();
+		var metadataResult = RunGit(
+			repo.RepoRoot,
+			$"show -s --no-color --date=iso-strict --pretty=format:%H%x1f%h%x1f%ad%x1f%an%x1f%s {QuoteGitArgument(resolvedCommitSha)}",
+			timeoutMs: 5000,
+			cancellationToken);
+		var metadata = ParseCommitMetadata(metadataResult.StdOut)
+			?? new GitCommitMetadata(
+				Sha: resolvedCommitSha,
+				ShortSha: resolvedCommitSha.Length > 8 ? resolvedCommitSha[..8] : resolvedCommitSha,
+				Subject: string.Empty,
+				AuthorName: string.Empty,
+				CommittedAtUtc: null);
+
+		var patchResult = RunGit(
+			repo.RepoRoot,
+			$"show --no-color --find-renames --format= {QuoteGitArgument(resolvedCommitSha)}",
+			timeoutMs: 12000,
+			cancellationToken);
+		var numStatResult = RunGit(
+			repo.RepoRoot,
+			$"show --no-color --numstat --format= {QuoteGitArgument(resolvedCommitSha)}",
+			timeoutMs: 7000,
+			cancellationToken);
+		var nameStatusResult = RunGit(
+			repo.RepoRoot,
+			$"show --no-color --find-renames --name-status --format= {QuoteGitArgument(resolvedCommitSha)}",
+			timeoutMs: 7000,
+			cancellationToken);
+		if (!nameStatusResult.Success)
+		{
+			return new GitCommitDiffSnapshot(
+				Cwd: repo.Cwd,
+				RepoRoot: repo.RepoRoot,
+				Branch: repo.Branch,
+				HeadSha: repo.HeadSha,
+				IsGitRepo: true,
+				IsTimedOut: patchResult.TimedOut || numStatResult.TimedOut || nameStatusResult.TimedOut,
+				GeneratedAtUtc: DateTimeOffset.UtcNow,
+				CommitSha: metadata.Sha,
+				CommitShortSha: metadata.ShortSha,
+				CommitSubject: metadata.Subject,
+				CommitAuthorName: metadata.AuthorName,
+				CommitCommittedAtUtc: metadata.CommittedAtUtc,
+				ChangeCount: 0,
+				Files: Array.Empty<GitWorktreeFileDiff>());
+		}
+
+		var patchByPath = ParsePatchByPath(TrimToLength(patchResult.StdOut, maxPatchChars));
+		var binaryPaths = ParseBinaryPathsFromNumStat(numStatResult.StdOut);
+		var files = BuildFileDiffs(
+			ParseNameStatus(nameStatusResult.StdOut),
+			patchByPath,
+			binaryPaths,
+			maxFiles);
+
+		return new GitCommitDiffSnapshot(
+			Cwd: repo.Cwd,
+			RepoRoot: repo.RepoRoot,
+			Branch: repo.Branch,
+			HeadSha: repo.HeadSha,
+			IsGitRepo: true,
+			IsTimedOut: patchResult.TimedOut || numStatResult.TimedOut || nameStatusResult.TimedOut,
+			GeneratedAtUtc: DateTimeOffset.UtcNow,
+			CommitSha: metadata.Sha,
+			CommitShortSha: metadata.ShortSha,
+			CommitSubject: metadata.Subject,
+			CommitAuthorName: metadata.AuthorName,
+			CommitCommittedAtUtc: metadata.CommittedAtUtc,
+			ChangeCount: files.Length,
+			Files: files);
+	}
+
+	private static GitRepoContext ResolveRepoContext(string cwd, CancellationToken cancellationToken)
+	{
 		var normalizedCwd = string.IsNullOrWhiteSpace(cwd)
 			? string.Empty
 			: Path.GetFullPath(cwd.Trim());
@@ -23,53 +244,47 @@ internal sealed class GitWorktreeDiffService
 		var repoRootResult = RunGit(normalizedCwd, "rev-parse --show-toplevel", timeoutMs: 4000, cancellationToken);
 		if (!repoRootResult.Success || string.IsNullOrWhiteSpace(repoRootResult.StdOut))
 		{
-			return new GitWorktreeDiffSnapshot(
+			return new GitRepoContext(
 				Cwd: normalizedCwd,
 				RepoRoot: null,
 				Branch: null,
 				HeadSha: null,
 				IsGitRepo: false,
-				IsTimedOut: repoRootResult.TimedOut,
-				GeneratedAtUtc: DateTimeOffset.UtcNow,
-				ChangeCount: 0,
-				Files: Array.Empty<GitWorktreeFileDiff>());
+				IsTimedOut: repoRootResult.TimedOut);
 		}
 
 		var repoRoot = repoRootResult.StdOut.Trim();
-		var branch = RunGit(repoRoot, "rev-parse --abbrev-ref HEAD", timeoutMs: 4000, cancellationToken).StdOut.Trim();
-		var headSha = RunGit(repoRoot, "rev-parse HEAD", timeoutMs: 4000, cancellationToken).StdOut.Trim();
+		var branchResult = RunGit(repoRoot, "rev-parse --abbrev-ref HEAD", timeoutMs: 4000, cancellationToken);
+		var headResult = RunGit(repoRoot, "rev-parse HEAD", timeoutMs: 4000, cancellationToken);
+		var branch = branchResult.StdOut.Trim();
+		var headSha = headResult.StdOut.Trim();
+		return new GitRepoContext(
+			Cwd: normalizedCwd,
+			RepoRoot: repoRoot,
+			Branch: string.IsNullOrWhiteSpace(branch) ? null : branch,
+			HeadSha: string.IsNullOrWhiteSpace(headSha) ? null : headSha,
+			IsGitRepo: true,
+			IsTimedOut: repoRootResult.TimedOut || branchResult.TimedOut || headResult.TimedOut);
+	}
 
-		var statusResult = RunGit(repoRoot, "status --porcelain=v1", timeoutMs: 6000, cancellationToken);
-		if (!statusResult.Success)
-		{
-			return new GitWorktreeDiffSnapshot(
-				Cwd: normalizedCwd,
-				RepoRoot: repoRoot,
-				Branch: branch,
-				HeadSha: headSha,
-				IsGitRepo: true,
-				IsTimedOut: statusResult.TimedOut,
-				GeneratedAtUtc: DateTimeOffset.UtcNow,
-				ChangeCount: 0,
-				Files: Array.Empty<GitWorktreeFileDiff>());
-		}
-
-		var patchResult = RunGit(repoRoot, "diff --no-color --find-renames HEAD", timeoutMs: 12000, cancellationToken);
-		var numStatResult = RunGit(repoRoot, "diff --no-color --numstat HEAD", timeoutMs: 6000, cancellationToken);
-		var patchByPath = ParsePatchByPath(TrimToLength(patchResult.StdOut, maxPatchChars));
-		var binaryPaths = ParseBinaryPathsFromNumStat(numStatResult.StdOut);
-		var files = ParseStatus(statusResult.StdOut)
+	private static GitWorktreeFileDiff[] BuildFileDiffs(
+		IReadOnlyList<GitStatusFile> files,
+		Dictionary<string, string> patchByPath,
+		HashSet<string> binaryPaths,
+		int maxFiles)
+	{
+		return files
 			.Take(Math.Max(1, maxFiles))
 			.Select(file =>
 			{
 				var patch = string.Empty;
-				var hasPatch = patchByPath.TryGetValue(file.Path, out var byPathPatch);
-				var isBinary = binaryPaths.Contains(file.Path);
+				var hasPatch = TryGetPatchForFile(patchByPath, file, out var byPathPatch);
+				var isBinary = binaryPaths.Contains(file.Path) || (!string.IsNullOrWhiteSpace(file.OriginalPath) && binaryPaths.Contains(file.OriginalPath));
 				if (hasPatch && !string.IsNullOrWhiteSpace(byPathPatch))
 				{
-					if (byPathPatch.Contains("\nBinary files ", StringComparison.Ordinal) ||
-						byPathPatch.Contains("\nGIT binary patch", StringComparison.Ordinal) ||
-						byPathPatch.StartsWith("Binary files ", StringComparison.Ordinal))
+					if (byPathPatch.Contains("\nBinary files ", StringComparison.Ordinal)
+						|| byPathPatch.Contains("\nGIT binary patch", StringComparison.Ordinal)
+						|| byPathPatch.StartsWith("Binary files ", StringComparison.Ordinal))
 					{
 						isBinary = true;
 					}
@@ -78,6 +293,7 @@ internal sealed class GitWorktreeDiffService
 						patch = byPathPatch;
 					}
 				}
+
 				return new GitWorktreeFileDiff(
 					StatusCode: file.StatusCode,
 					StatusLabel: file.StatusLabel,
@@ -87,17 +303,32 @@ internal sealed class GitWorktreeDiffService
 					IsBinary: isBinary);
 			})
 			.ToArray();
+	}
 
-		return new GitWorktreeDiffSnapshot(
-			Cwd: normalizedCwd,
-			RepoRoot: repoRoot,
-			Branch: string.IsNullOrWhiteSpace(branch) ? null : branch,
-			HeadSha: string.IsNullOrWhiteSpace(headSha) ? null : headSha,
-			IsGitRepo: true,
-			IsTimedOut: patchResult.TimedOut,
-			GeneratedAtUtc: DateTimeOffset.UtcNow,
-			ChangeCount: files.Length,
-			Files: files);
+	private static bool TryGetPatchForFile(
+		Dictionary<string, string> patchByPath,
+		GitStatusFile file,
+		out string patch)
+	{
+		if (patchByPath.TryGetValue(file.Path, out patch!))
+		{
+			return true;
+		}
+
+		if (!string.IsNullOrWhiteSpace(file.OriginalPath)
+			&& patchByPath.TryGetValue(file.OriginalPath, out patch!))
+		{
+			return true;
+		}
+
+		patch = string.Empty;
+		return false;
+	}
+
+	private static string QuoteGitArgument(string value)
+	{
+		var escaped = (value ?? string.Empty).Replace("\"", "\\\"");
+		return $"\"{escaped}\"";
 	}
 
 	private static string TrimToLength(string value, int maxChars)
@@ -144,7 +375,11 @@ internal sealed class GitWorktreeDiffService
 				var match = DiffHeaderRegex.Match(line);
 				if (match.Success)
 				{
-					currentPath = match.Groups[2].Value.Trim();
+					var oldPath = match.Groups[1].Value.Trim();
+					var newPath = match.Groups[2].Value.Trim();
+					currentPath = string.Equals(newPath, "dev/null", StringComparison.Ordinal)
+						? oldPath
+						: newPath;
 				}
 			}
 
@@ -203,6 +438,68 @@ internal sealed class GitWorktreeDiffService
 		return result;
 	}
 
+	private static IReadOnlyList<GitStatusFile> ParseNameStatus(string output)
+	{
+		var result = new List<GitStatusFile>();
+		if (string.IsNullOrWhiteSpace(output))
+		{
+			return result;
+		}
+
+		foreach (var rawLine in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+		{
+			var line = rawLine.TrimEnd('\r');
+			if (string.IsNullOrWhiteSpace(line))
+			{
+				continue;
+			}
+
+			var parts = line.Split('\t');
+			if (parts.Length < 2)
+			{
+				continue;
+			}
+
+			var rawStatus = parts[0].Trim();
+			if (string.IsNullOrWhiteSpace(rawStatus))
+			{
+				continue;
+			}
+
+			var statusChar = char.ToUpperInvariant(rawStatus[0]);
+			var statusCode = statusChar.ToString();
+			string? originalPath = null;
+			string path;
+			if (statusChar == 'R' || statusChar == 'C')
+			{
+				if (parts.Length < 3)
+				{
+					continue;
+				}
+
+				originalPath = parts[1].Trim();
+				path = parts[2].Trim();
+			}
+			else
+			{
+				path = parts[1].Trim();
+			}
+
+			if (string.IsNullOrWhiteSpace(path))
+			{
+				continue;
+			}
+
+			result.Add(new GitStatusFile(
+				StatusCode: statusCode,
+				StatusLabel: DescribeSingleStatus(statusChar),
+				Path: path,
+				OriginalPath: string.IsNullOrWhiteSpace(originalPath) ? null : originalPath));
+		}
+
+		return result;
+	}
+
 	private static HashSet<string> ParseBinaryPathsFromNumStat(string output)
 	{
 		var result = new HashSet<string>(StringComparer.Ordinal);
@@ -237,6 +534,94 @@ internal sealed class GitWorktreeDiffService
 		return result;
 	}
 
+	private static IReadOnlyList<GitRecentCommitInfo> ParseRecentCommitLog(string output)
+	{
+		var commits = new List<GitRecentCommitInfo>();
+		if (string.IsNullOrWhiteSpace(output))
+		{
+			return commits;
+		}
+
+		foreach (var rawLine in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+		{
+			var commit = ParseCommitLine(rawLine);
+			if (commit is null)
+			{
+				continue;
+			}
+
+			commits.Add(new GitRecentCommitInfo(
+				Sha: commit.Sha,
+				ShortSha: commit.ShortSha,
+				Subject: commit.Subject,
+				AuthorName: commit.AuthorName,
+				CommittedAtUtc: commit.CommittedAtUtc));
+		}
+
+		return commits;
+	}
+
+	private static GitCommitMetadata? ParseCommitMetadata(string output)
+	{
+		if (string.IsNullOrWhiteSpace(output))
+		{
+			return null;
+		}
+
+		foreach (var rawLine in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+		{
+			var parsed = ParseCommitLine(rawLine);
+			if (parsed is not null)
+			{
+				return parsed;
+			}
+		}
+
+		return null;
+	}
+
+	private static GitCommitMetadata? ParseCommitLine(string rawLine)
+	{
+		var line = (rawLine ?? string.Empty).TrimEnd('\r');
+		if (string.IsNullOrWhiteSpace(line))
+		{
+			return null;
+		}
+
+		var parts = line.Split('\u001f');
+		if (parts.Length < 5)
+		{
+			return null;
+		}
+
+		var sha = parts[0].Trim();
+		var shortSha = parts[1].Trim();
+		var committedAtRaw = parts[2].Trim();
+		var author = parts[3].Trim();
+		var subject = parts[4].Trim();
+		if (string.IsNullOrWhiteSpace(sha))
+		{
+			return null;
+		}
+
+		DateTimeOffset? committedAtUtc = null;
+		if (DateTimeOffset.TryParse(
+			committedAtRaw,
+			CultureInfo.InvariantCulture,
+			DateTimeStyles.AllowWhiteSpaces,
+			out var parsedDate))
+		{
+			committedAtUtc = parsedDate.ToUniversalTime();
+		}
+
+		return new GitCommitMetadata(
+			Sha: sha,
+			ShortSha: string.IsNullOrWhiteSpace(shortSha) ? (sha.Length > 8 ? sha[..8] : sha) : shortSha,
+			Subject: subject,
+			AuthorName: author,
+			CommittedAtUtc: committedAtUtc);
+	}
+
 	private static string DescribeStatus(char x, char y)
 	{
 		if (x == '?' && y == '?')
@@ -244,32 +629,33 @@ internal sealed class GitWorktreeDiffService
 			return "Untracked";
 		}
 
-		if (x == 'U' || y == 'U')
+		if (x != ' ')
 		{
-			return "Unmerged";
+			return DescribeSingleStatus(char.ToUpperInvariant(x));
 		}
 
-		if (x == 'R' || y == 'R')
+		if (y != ' ')
 		{
-			return "Renamed";
-		}
-
-		if (x == 'A' || y == 'A')
-		{
-			return "Added";
-		}
-
-		if (x == 'D' || y == 'D')
-		{
-			return "Deleted";
-		}
-
-		if (x == 'M' || y == 'M')
-		{
-			return "Modified";
+			return DescribeSingleStatus(char.ToUpperInvariant(y));
 		}
 
 		return "Changed";
+	}
+
+	private static string DescribeSingleStatus(char status)
+	{
+		return status switch
+		{
+			'U' => "Unmerged",
+			'R' => "Renamed",
+			'C' => "Copied",
+			'A' => "Added",
+			'D' => "Deleted",
+			'M' => "Modified",
+			'T' => "Type changed",
+			'?' => "Untracked",
+			_ => "Changed"
+		};
 	}
 
 	private static GitCommandResult RunGit(
@@ -317,11 +703,26 @@ internal sealed class GitWorktreeDiffService
 		return new GitCommandResult(process.ExitCode == 0, false, stdOut ?? string.Empty, stdErr ?? string.Empty);
 	}
 
+	private sealed record GitRepoContext(
+		string Cwd,
+		string? RepoRoot,
+		string? Branch,
+		string? HeadSha,
+		bool IsGitRepo,
+		bool IsTimedOut);
+
 	private sealed record GitStatusFile(
 		string StatusCode,
 		string StatusLabel,
 		string Path,
 		string? OriginalPath);
+
+	private sealed record GitCommitMetadata(
+		string Sha,
+		string ShortSha,
+		string Subject,
+		string AuthorName,
+		DateTimeOffset? CommittedAtUtc);
 
 	private sealed record GitCommandResult(
 		bool Success,
@@ -340,6 +741,39 @@ internal sealed record GitWorktreeDiffSnapshot(
 	DateTimeOffset GeneratedAtUtc,
 	int ChangeCount,
 	IReadOnlyList<GitWorktreeFileDiff> Files);
+
+internal sealed record GitCommitDiffSnapshot(
+	string Cwd,
+	string? RepoRoot,
+	string? Branch,
+	string? HeadSha,
+	bool IsGitRepo,
+	bool IsTimedOut,
+	DateTimeOffset GeneratedAtUtc,
+	string? CommitSha,
+	string? CommitShortSha,
+	string? CommitSubject,
+	string? CommitAuthorName,
+	DateTimeOffset? CommitCommittedAtUtc,
+	int ChangeCount,
+	IReadOnlyList<GitWorktreeFileDiff> Files);
+
+internal sealed record GitRecentCommitCatalogSnapshot(
+	string Cwd,
+	string? RepoRoot,
+	string? Branch,
+	string? HeadSha,
+	bool IsGitRepo,
+	bool IsTimedOut,
+	DateTimeOffset GeneratedAtUtc,
+	IReadOnlyList<GitRecentCommitInfo> Commits);
+
+internal sealed record GitRecentCommitInfo(
+	string Sha,
+	string ShortSha,
+	string Subject,
+	string AuthorName,
+	DateTimeOffset? CommittedAtUtc);
 
 internal sealed record GitWorktreeFileDiff(
 	string StatusCode,

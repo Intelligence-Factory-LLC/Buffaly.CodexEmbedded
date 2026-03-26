@@ -585,6 +585,127 @@ internal static class WebEndpointMappings
 			}
 		});
 
+		app.MapGet("/api/worktree/diff/commits", (HttpRequest request, GitWorktreeDiffService gitDiffService, CancellationToken cancellationToken) =>
+		{
+			var cwd = request.Query["cwd"].ToString();
+			if (string.IsNullOrWhiteSpace(cwd))
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", "event=commit_list_request_rejected reason=missing_cwd");
+				return Results.BadRequest(new { message = "cwd query parameter is required." });
+			}
+
+			var limit = QueryValueParser.GetPositiveInt(request.Query["limit"], fallback: 40, max: 200);
+			Logs.DebugLog.WriteEvent(
+				"Audit.Diff",
+				$"event=commit_list_requested cwd={cwd} limit={limit}");
+			try
+			{
+				var snapshot = gitDiffService.GetRecentCommits(cwd, limit, cancellationToken);
+				Logs.DebugLog.WriteEvent(
+					"Audit.Diff",
+					$"event=commit_list_completed cwd={cwd} repoRoot={snapshot.RepoRoot ?? "(none)"} isGitRepo={snapshot.IsGitRepo} commitCount={snapshot.Commits.Count} timedOut={snapshot.IsTimedOut}");
+				return Results.Ok(new
+				{
+					cwd = snapshot.Cwd,
+					repoRoot = snapshot.RepoRoot,
+					branch = snapshot.Branch,
+					headSha = snapshot.HeadSha,
+					isGitRepo = snapshot.IsGitRepo,
+					isTimedOut = snapshot.IsTimedOut,
+					generatedAtUtc = snapshot.GeneratedAtUtc.ToString("O"),
+					commits = snapshot.Commits
+				});
+			}
+			catch (DirectoryNotFoundException ex)
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=commit_list_failed cwd={cwd} error={ex.Message}");
+				return Results.NotFound(new { message = ex.Message });
+			}
+			catch (OperationCanceledException)
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=commit_list_canceled cwd={cwd}");
+				return Results.BadRequest(new { message = "git commit list request was canceled." });
+			}
+			catch (Exception ex)
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=commit_list_failed cwd={cwd} error={ex.Message}");
+				return Results.Problem(
+					statusCode: StatusCodes.Status500InternalServerError,
+					title: "Failed to read recent commits.",
+					detail: ex.Message);
+			}
+		});
+
+		app.MapGet("/api/worktree/diff/commit", (HttpRequest request, GitWorktreeDiffService gitDiffService, CancellationToken cancellationToken) =>
+		{
+			var cwd = request.Query["cwd"].ToString();
+			if (string.IsNullOrWhiteSpace(cwd))
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", "event=commit_diff_request_rejected reason=missing_cwd");
+				return Results.BadRequest(new { message = "cwd query parameter is required." });
+			}
+
+			var commit = request.Query["commit"].ToString();
+			if (string.IsNullOrWhiteSpace(commit))
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=commit_diff_request_rejected cwd={cwd} reason=missing_commit");
+				return Results.BadRequest(new { message = "commit query parameter is required." });
+			}
+
+			var maxFiles = QueryValueParser.GetPositiveInt(request.Query["maxFiles"], fallback: 240, max: 1000);
+			var maxPatchChars = QueryValueParser.GetPositiveInt(request.Query["maxPatchChars"], fallback: 250000, max: 1000000);
+			Logs.DebugLog.WriteEvent(
+				"Audit.Diff",
+				$"event=commit_diff_requested cwd={cwd} commit={commit} maxFiles={maxFiles} maxPatchChars={maxPatchChars}");
+			try
+			{
+				var snapshot = gitDiffService.GetCommitSnapshot(cwd, commit, maxFiles, maxPatchChars, cancellationToken);
+				Logs.DebugLog.WriteEvent(
+					"Audit.Diff",
+					$"event=commit_diff_completed cwd={cwd} commit={snapshot.CommitSha ?? commit} repoRoot={snapshot.RepoRoot ?? "(none)"} isGitRepo={snapshot.IsGitRepo} changeCount={snapshot.ChangeCount} fileCount={snapshot.Files.Count} timedOut={snapshot.IsTimedOut}");
+				return Results.Ok(new
+				{
+					cwd = snapshot.Cwd,
+					repoRoot = snapshot.RepoRoot,
+					branch = snapshot.Branch,
+					headSha = snapshot.HeadSha,
+					isGitRepo = snapshot.IsGitRepo,
+					isTimedOut = snapshot.IsTimedOut,
+					generatedAtUtc = snapshot.GeneratedAtUtc.ToString("O"),
+					commitSha = snapshot.CommitSha,
+					commitShortSha = snapshot.CommitShortSha,
+					commitSubject = snapshot.CommitSubject,
+					commitAuthorName = snapshot.CommitAuthorName,
+					commitCommittedAtUtc = snapshot.CommitCommittedAtUtc?.ToString("O"),
+					changeCount = snapshot.ChangeCount,
+					files = snapshot.Files
+				});
+			}
+			catch (DirectoryNotFoundException ex)
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=commit_diff_failed cwd={cwd} commit={commit} error={ex.Message}");
+				return Results.NotFound(new { message = ex.Message });
+			}
+			catch (ArgumentException ex)
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=commit_diff_invalid cwd={cwd} commit={commit} error={ex.Message}");
+				return Results.BadRequest(new { message = ex.Message });
+			}
+			catch (OperationCanceledException)
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=commit_diff_canceled cwd={cwd} commit={commit}");
+				return Results.BadRequest(new { message = "git commit diff request was canceled." });
+			}
+			catch (Exception ex)
+			{
+				Logs.DebugLog.WriteEvent("Audit.Diff", $"event=commit_diff_failed cwd={cwd} commit={commit} error={ex.Message}");
+				return Results.Problem(
+					statusCode: StatusCodes.Status500InternalServerError,
+					title: "Failed to read git commit diff.",
+					detail: ex.Message);
+			}
+		});
+
 		app.MapGet("/api/logs/realtime/current", (HttpRequest request, WebRuntimeDefaults defaults) =>
 		{
 			var maxLines = QueryValueParser.GetPositiveInt(request.Query["maxLines"], fallback: 200, max: 1000);

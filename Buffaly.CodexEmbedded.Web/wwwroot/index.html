@@ -94,7 +94,7 @@
 					</div>
 					<div id="sessionMeta" class="conversation-meta">
 						<span id="conversationModelSummary" class="conversation-model-summary">default | default</span>
-						<button id="worktreeDiffIndicatorBtn" class="worktree-diff-indicator-btn hidden" type="button" title="Open working tree diff" aria-label="Open working tree diff">
+						<button id="worktreeDiffIndicatorBtn" class="worktree-diff-indicator-btn hidden" type="button" title="Open repository diff" aria-label="Open repository diff">
 							<i class="bi bi-file-earmark-diff" aria-hidden="true"></i>
 							<span id="worktreeDiffIndicatorCount" class="worktree-diff-indicator-count">0</span>
 						</button>
@@ -175,15 +175,22 @@
 						</div>
 					</div>
 				</div>
-				<section id="worktreeDiffPanel" class="worktree-diff-panel hidden" aria-label="Working tree diff">
+				<section id="worktreeDiffPanel" class="worktree-diff-panel hidden" aria-label="Repository diff">
 					<div class="worktree-diff-header">
 						<div class="worktree-diff-title-wrap">
-							<span class="worktree-diff-title">Working Tree Diff</span>
+							<span class="worktree-diff-title">Repository Diff</span>
 							<span id="worktreeDiffSummary" class="worktree-diff-summary">No active session</span>
 						</div>
-						<div class="worktree-diff-actions">
-							<button id="worktreeDiffToggleBtn" class="worktree-diff-refresh-btn" type="button">Close</button>
-							<button id="worktreeDiffRefreshBtn" class="worktree-diff-refresh-btn" type="button">Refresh</button>
+						<div class="worktree-diff-toolbar">
+							<div class="worktree-diff-mode-group" role="group" aria-label="Diff source">
+								<button id="worktreeDiffModeWorktreeBtn" class="worktree-diff-mode-btn active" type="button" aria-pressed="true">Working Tree</button>
+								<button id="worktreeDiffModeCommitBtn" class="worktree-diff-mode-btn" type="button" aria-pressed="false">Recent Commit</button>
+							</div>
+							<select id="worktreeDiffCommitSelect" class="worktree-diff-commit-select hidden" aria-label="Select recent commit"></select>
+							<div class="worktree-diff-actions">
+								<button id="worktreeDiffToggleBtn" class="worktree-diff-refresh-btn" type="button">Close</button>
+								<button id="worktreeDiffRefreshBtn" class="worktree-diff-refresh-btn" type="button">Refresh</button>
+							</div>
 						</div>
 					</div>
 					<div id="worktreeDiffList" class="worktree-diff-list"></div>
@@ -448,6 +455,6 @@
 	<script src="scribe.js?v=20260313-transcribe-flow-fix1"></script>
 	<script src="app.shared.js?v=20260228-cleanup1"></script>
 	<script src="app.js?v=20260318-draft-fallback-fix1"></script>
-	<script src="app.diffs.js?v=20260314-diff-event-refresh1"></script>
+	<script src="app.diffs.js?v=20260326-commit-history-diff1"></script>
 </body>
 </html>

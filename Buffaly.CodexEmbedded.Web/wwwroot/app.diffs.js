@@ -6,6 +6,9 @@
   const toggleBtn = document.getElementById("worktreeDiffToggleBtn");
   const indicatorBtn = document.getElementById("worktreeDiffIndicatorBtn");
   const indicatorCountNode = document.getElementById("worktreeDiffIndicatorCount");
+  const modeWorktreeBtn = document.getElementById("worktreeDiffModeWorktreeBtn");
+  const modeCommitBtn = document.getElementById("worktreeDiffModeCommitBtn");
+  const commitSelect = document.getElementById("worktreeDiffCommitSelect");
   const composerNotesNode = document.getElementById("diffNotesComposer");
   const noteModal = document.getElementById("diffNoteModal");
   const noteModalPath = document.getElementById("diffNoteModalPath");
@@ -16,7 +19,7 @@
   const noteModalCard = noteModal ? noteModal.querySelector(".diff-note-modal-card") : null;
   const noteModalTitle = document.getElementById("diffNoteModalTitle");
 
-  if (!panel || !summaryNode || !listNode || !refreshBtn || !toggleBtn || !indicatorBtn || !indicatorCountNode || !composerNotesNode) {
+  if (!panel || !summaryNode || !listNode || !refreshBtn || !toggleBtn || !indicatorBtn || !indicatorCountNode || !modeWorktreeBtn || !modeCommitBtn || !commitSelect || !composerNotesNode) {
     return;
   }
 
@@ -31,7 +34,15 @@
   let refreshPendingForce = false;
   let lastRenderKey = "";
   let lastCwd = "";
+  let currentRepoRoot = "";
   let currentBranch = "";
+  let currentMode = "worktree";
+  let availableCommits = [];
+  let selectedCommitSha = "";
+  let selectedCommitInfo = null;
+  let currentNotesScopeKey = "";
+  let currentFileViewScopeKey = "";
+  let panelAvailable = false;
   let currentFiles = [];
   let hasVisibleChanges = false;
   let isExpanded = false;
@@ -70,8 +81,19 @@
     };
   }
 
-  function notesStorageKey(cwd) {
-    return `${STORAGE_NOTES_PREFIX}${cwd || ""}`;
+  function buildDiffScopeKey(cwd, mode, commitSha) {
+    const normalizedCwd = typeof cwd === "string" ? cwd.trim() : "";
+    const normalizedMode = mode === "commit" ? "commit" : "worktree";
+    if (normalizedMode === "commit") {
+      const normalizedCommit = typeof commitSha === "string" ? commitSha.trim() : "";
+      return `${normalizedCwd}::${normalizedMode}::${normalizedCommit}`;
+    }
+
+    return `${normalizedCwd}::${normalizedMode}`;
+  }
+
+  function notesStorageKey(scopeKey) {
+    return `${STORAGE_NOTES_PREFIX}${scopeKey || ""}`;
   }
 
   function buildNoteKey(path, startLine, endLine) {
@@ -117,14 +139,14 @@
     };
   }
 
-  function loadNotesForCwd(cwd) {
+  function loadNotesForScope(scopeKey) {
     const next = new Map();
-    if (!cwd) {
+    if (!scopeKey) {
       return next;
     }
 
     try {
-      const raw = window.localStorage.getItem(notesStorageKey(cwd));
+      const raw = window.localStorage.getItem(notesStorageKey(scopeKey));
       if (!raw) {
         return next;
       }
@@ -151,8 +173,8 @@
     return next;
   }
 
-  function saveNotesForCwd(cwd) {
-    if (!cwd) {
+  function saveNotesForScope(scopeKey) {
+    if (!scopeKey) {
       return;
     }
 
@@ -164,9 +186,19 @@
         note: x.note,
         snippet: x.snippet || ""
       }));
-      window.localStorage.setItem(notesStorageKey(cwd), JSON.stringify(payload));
+      window.localStorage.setItem(notesStorageKey(scopeKey), JSON.stringify(payload));
     } catch {
     }
+  }
+
+  function switchNotesScope(scopeKey) {
+    if (scopeKey === currentNotesScopeKey) {
+      return false;
+    }
+
+    currentNotesScopeKey = scopeKey;
+    notesByKey = loadNotesForScope(scopeKey);
+    return true;
   }
 
   function captureFileOpenState() {
@@ -194,19 +226,45 @@
     restoreListScroll(priorScrollTop);
   }
 
+  function applyModeUiState() {
+    const isCommitMode = currentMode === "commit";
+    modeWorktreeBtn.classList.toggle("active", !isCommitMode);
+    modeCommitBtn.classList.toggle("active", isCommitMode);
+    modeWorktreeBtn.setAttribute("aria-pressed", !isCommitMode ? "true" : "false");
+    modeCommitBtn.setAttribute("aria-pressed", isCommitMode ? "true" : "false");
+    commitSelect.classList.toggle("hidden", !isCommitMode);
+  }
+
+  function getActiveCommitLabel() {
+    if (!selectedCommitInfo) {
+      return selectedCommitSha ? selectedCommitSha.slice(0, 12) : "commit";
+    }
+
+    const shortSha = selectedCommitInfo.shortSha || (selectedCommitInfo.sha || "").slice(0, 12);
+    const subject = typeof selectedCommitInfo.subject === "string" ? selectedCommitInfo.subject.trim() : "";
+    return subject ? `${shortSha} ${subject}` : shortSha || "commit";
+  }
+
   function applyPanelState() {
-    const showPanel = hasVisibleChanges && isExpanded;
+    const showPanel = panelAvailable && isExpanded;
     panel.classList.toggle("hidden", !showPanel);
     panel.classList.toggle("worktree-diff-collapsed", false);
-    panel.classList.toggle("worktree-diff-fullscreen", hasVisibleChanges && isExpanded);
+    panel.classList.toggle("worktree-diff-fullscreen", panelAvailable && isExpanded);
     toggleBtn.textContent = "Close";
     toggleBtn.setAttribute("aria-expanded", showPanel ? "true" : "false");
-    toggleBtn.disabled = !hasVisibleChanges;
-    indicatorBtn.classList.toggle("hidden", !hasVisibleChanges);
-    indicatorCountNode.textContent = hasVisibleChanges ? String(currentFiles.length) : "0";
-    indicatorBtn.setAttribute("aria-label", hasVisibleChanges
-      ? `Open working tree diff (${currentFiles.length} changed file${currentFiles.length === 1 ? "" : "s"})`
-      : "Open working tree diff");
+    toggleBtn.disabled = !panelAvailable;
+    indicatorBtn.classList.toggle("hidden", !panelAvailable);
+    indicatorCountNode.textContent = panelAvailable ? String(currentFiles.length) : "0";
+    const fileLabel = `${currentFiles.length} file${currentFiles.length === 1 ? "" : "s"}`;
+    if (!panelAvailable) {
+      indicatorBtn.setAttribute("aria-label", "Open repository diff");
+    } else if (currentMode === "commit") {
+      indicatorBtn.setAttribute("aria-label", `Open recent commit diff (${fileLabel} in ${getActiveCommitLabel()})`);
+    } else {
+      indicatorBtn.setAttribute("aria-label", `Open working tree diff (${fileLabel})`);
+    }
+    indicatorBtn.title = indicatorBtn.getAttribute("aria-label") || "Open repository diff";
+    applyModeUiState();
   }
 
   function escapeAttribute(value) {
@@ -215,6 +273,104 @@
 
   function formatLineSpan(startLine, endLine) {
     return startLine === endLine ? `L${startLine}` : `L${startLine}-${endLine}`;
+  }
+
+  function formatCommitTime(isoText) {
+    if (typeof isoText !== "string" || !isoText.trim()) {
+      return "";
+    }
+
+    const stamp = new Date(isoText);
+    if (Number.isNaN(stamp.getTime())) {
+      return "";
+    }
+
+    return stamp.toLocaleString(undefined, {
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  }
+
+  function normalizeCommitInfo(commit) {
+    if (!commit || typeof commit !== "object") {
+      return null;
+    }
+
+    const sha = typeof commit.sha === "string" ? commit.sha.trim() : "";
+    if (!sha) {
+      return null;
+    }
+
+    const shortShaRaw = typeof commit.shortSha === "string" ? commit.shortSha.trim() : "";
+    return {
+      sha,
+      shortSha: shortShaRaw || sha.slice(0, 12),
+      subject: typeof commit.subject === "string" ? commit.subject.trim() : "",
+      authorName: typeof commit.authorName === "string" ? commit.authorName.trim() : "",
+      committedAtUtc: typeof commit.committedAtUtc === "string" ? commit.committedAtUtc : ""
+    };
+  }
+
+  function renderCommitOptions() {
+    if (currentMode !== "commit") {
+      commitSelect.innerHTML = "";
+      commitSelect.disabled = true;
+      return;
+    }
+
+    if (!Array.isArray(availableCommits) || availableCommits.length === 0) {
+      commitSelect.innerHTML = "<option value=\"\">No recent commits</option>";
+      commitSelect.disabled = true;
+      return;
+    }
+
+    const options = [];
+    for (const commit of availableCommits) {
+      const normalized = normalizeCommitInfo(commit);
+      if (!normalized) {
+        continue;
+      }
+
+      const when = formatCommitTime(normalized.committedAtUtc);
+      const subject = normalized.subject || "(no subject)";
+      const author = normalized.authorName || "unknown";
+      const label = `${normalized.shortSha} ${subject}`;
+      const title = when
+        ? `${normalized.sha} | ${author} | ${when}`
+        : `${normalized.sha} | ${author}`;
+      options.push(`<option value="${escapeAttribute(normalized.sha)}" title="${escapeAttribute(title)}">${escapeHtml(label)}</option>`);
+    }
+
+    if (options.length === 0) {
+      commitSelect.innerHTML = "<option value=\"\">No recent commits</option>";
+      commitSelect.disabled = true;
+      return;
+    }
+
+    commitSelect.innerHTML = options.join("");
+    if (!selectedCommitSha || !availableCommits.some((x) => (x && typeof x.sha === "string" && x.sha === selectedCommitSha))) {
+      selectedCommitSha = availableCommits[0].sha;
+    }
+
+    commitSelect.value = selectedCommitSha;
+    commitSelect.disabled = pollInFlight !== false;
+  }
+
+  function setDiffMode(mode) {
+    const nextMode = mode === "commit" ? "commit" : "worktree";
+    if (currentMode === nextMode) {
+      return;
+    }
+
+    currentMode = nextMode;
+    lastRenderKey = "";
+    if (currentMode === "worktree") {
+      selectedCommitInfo = null;
+    }
+    applyModeUiState();
+    queueRefresh({ force: true });
   }
 
   function renderComposerNotes() {
@@ -252,11 +408,9 @@
 
   function setEmptyState(message) {
     hasVisibleChanges = false;
-    isExpanded = false;
     currentFiles = [];
-    rangeAnchor = null;
     summaryNode.textContent = message;
-    listNode.innerHTML = "";
+    listNode.innerHTML = `<div class="worktree-diff-empty">${escapeHtml(message)}</div>`;
     applyPanelState();
     renderComposerNotes();
   }
@@ -264,7 +418,13 @@
   function updateSummary(changeCount) {
     const notesCount = notesByKey.size;
     const branch = currentBranch || "detached";
-    summaryNode.textContent = `${changeCount} change(s) on ${branch}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}`;
+    if (currentMode === "commit") {
+      const commitLabel = getActiveCommitLabel();
+      summaryNode.textContent = `${changeCount} file change(s) in ${commitLabel}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}`;
+      return;
+    }
+
+    summaryNode.textContent = `${changeCount} file change(s) in working tree on ${branch}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}`;
   }
 
   function escapeHtml(value) {
@@ -629,7 +789,7 @@
       );
     }
 
-    saveNotesForCwd(lastCwd);
+    saveNotesForScope(currentNotesScopeKey);
     updateSummary(currentFiles.length);
     rerenderFilesPreserveView();
     renderComposerNotes();
@@ -650,7 +810,7 @@
     for (const target of targets) {
       notesByKey.delete(buildNoteKey(target.path, target.startLine, target.endLine));
     }
-    saveNotesForCwd(lastCwd);
+    saveNotesForScope(currentNotesScopeKey);
     updateSummary(currentFiles.length);
     rerenderFilesPreserveView();
     renderComposerNotes();
@@ -674,7 +834,11 @@
         return a.endLine - b.endLine;
       });
 
-    const lines = ["[Diff line notes]"];
+    const lines = [
+      "[Diff source]",
+      `- mode=${currentMode}; branch=${currentBranch || "detached"}${currentMode === "commit" && selectedCommitSha ? `; commit=${selectedCommitSha}` : ""}`,
+      "[Diff line notes]"
+    ];
     for (const item of ordered) {
       const linePart = item.startLine === item.endLine
         ? `diffLine=${item.startLine}`
@@ -688,7 +852,7 @@
     }
 
     notesByKey.clear();
-    saveNotesForCwd(lastCwd);
+    saveNotesForScope(currentNotesScopeKey);
     updateSummary(currentFiles.length);
     rerenderFilesPreserveView();
     renderComposerNotes();
@@ -701,6 +865,97 @@
 
   window.codexDiffNotesConsumePromptMetadata = consumePromptMetadata;
   window.codexDiffNotesHasPending = () => notesByKey.size > 0;
+
+  async function fetchCurrentWorktreeSnapshot(context, force) {
+    const url = new URL("api/worktree/diff/current", document.baseURI);
+    url.searchParams.set("cwd", context.cwd);
+    url.searchParams.set("maxFiles", "240");
+    url.searchParams.set("maxPatchChars", "800000");
+    if (typeof window.uiAuditLog === "function") {
+      window.uiAuditLog("out.diff_count_request", {
+        cwd: context.cwd,
+        force: force === true
+      });
+    }
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    return await response.json();
+  }
+
+  async function fetchRecentCommitCatalog(context, force) {
+    const url = new URL("api/worktree/diff/commits", document.baseURI);
+    url.searchParams.set("cwd", context.cwd);
+    url.searchParams.set("limit", "60");
+    if (typeof window.uiAuditLog === "function") {
+      window.uiAuditLog("out.diff_commit_list_request", {
+        cwd: context.cwd,
+        force: force === true
+      });
+    }
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    return await response.json();
+  }
+
+  async function fetchCommitSnapshot(context, commitSha) {
+    const url = new URL("api/worktree/diff/commit", document.baseURI);
+    url.searchParams.set("cwd", context.cwd);
+    url.searchParams.set("commit", commitSha);
+    url.searchParams.set("maxFiles", "240");
+    url.searchParams.set("maxPatchChars", "800000");
+    if (typeof window.uiAuditLog === "function") {
+      window.uiAuditLog("out.diff_commit_request", {
+        cwd: context.cwd,
+        commit: commitSha
+      });
+    }
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    return await response.json();
+  }
+
+  function buildFilesFingerprint(files) {
+    return files.map((x) => `${x.statusCode || ""}:${x.path || ""}:${(x.patch || "").length}:${x.isBinary === true ? "1" : "0"}`).join("|");
+  }
+
+  function findSelectedCommitInfo() {
+    if (!selectedCommitSha) {
+      return null;
+    }
+
+    for (const commit of availableCommits) {
+      const normalized = normalizeCommitInfo(commit);
+      if (!normalized) {
+        continue;
+      }
+      if (normalized.sha === selectedCommitSha) {
+        return normalized;
+      }
+    }
+
+    return null;
+  }
 
   async function fetchAndRenderDiff(force) {
     if (pollInFlight) {
@@ -717,6 +972,7 @@
           console.info(`${new Date().toISOString()} diff.context_unavailable`);
         }
       }
+      panelAvailable = false;
       hasVisibleChanges = false;
       listNode.innerHTML = "";
       summaryNode.textContent = "No active session";
@@ -725,6 +981,15 @@
       ignoreNextLineClick = false;
       lastRenderKey = "";
       lastCwd = "";
+      currentRepoRoot = "";
+      currentBranch = "";
+      availableCommits = [];
+      selectedCommitSha = "";
+      selectedCommitInfo = null;
+      currentNotesScopeKey = "";
+      currentFileViewScopeKey = "";
+      notesByKey = new Map();
+      renderCommitOptions();
       applyPanelState();
       renderComposerNotes();
       return;
@@ -739,44 +1004,113 @@
     }
 
     if (context.cwd !== lastCwd) {
-      notesByKey = loadNotesForCwd(context.cwd);
+      currentRepoRoot = "";
+      currentBranch = "";
+      currentNotesScopeKey = "";
+      currentFileViewScopeKey = "";
+      notesByKey = new Map();
       fileOpenStateByPath = new Map();
+      availableCommits = [];
+      selectedCommitSha = "";
+      selectedCommitInfo = null;
       ignoreNextLineClick = false;
+      lastRenderKey = "";
       lastCwd = context.cwd;
+      renderCommitOptions();
       renderComposerNotes();
     }
 
     pollInFlight = true;
     refreshBtn.disabled = true;
+    commitSelect.disabled = true;
     try {
-      const url = new URL("api/worktree/diff/current", document.baseURI);
-      url.searchParams.set("cwd", context.cwd);
-      url.searchParams.set("maxFiles", "240");
-      url.searchParams.set("maxPatchChars", "800000");
-      if (typeof window.uiAuditLog === "function") {
-        window.uiAuditLog("out.diff_count_request", {
-          cwd: context.cwd,
-          force: force === true
+      let data;
+      let files = [];
+      if (currentMode === "commit") {
+        const commitCatalog = await fetchRecentCommitCatalog(context, force);
+        currentRepoRoot = typeof commitCatalog.repoRoot === "string" ? commitCatalog.repoRoot : "";
+        currentBranch = typeof commitCatalog.branch === "string" && commitCatalog.branch.trim() ? commitCatalog.branch.trim() : "detached";
+        panelAvailable = commitCatalog.isGitRepo === true;
+        availableCommits = Array.isArray(commitCatalog.commits)
+          ? commitCatalog.commits.map((x) => normalizeCommitInfo(x)).filter((x) => !!x)
+          : [];
+
+        if (!panelAvailable) {
+          setEmptyState("Not a git repository");
+          return;
+        }
+
+        if (!selectedCommitSha || !availableCommits.some((x) => x.sha === selectedCommitSha)) {
+          selectedCommitSha = availableCommits.length > 0 ? availableCommits[0].sha : "";
+        }
+        selectedCommitInfo = findSelectedCommitInfo();
+        renderCommitOptions();
+
+        if (!selectedCommitSha) {
+          const scopeKey = buildDiffScopeKey(context.cwd, currentMode, "");
+          const notesChanged = switchNotesScope(scopeKey);
+          if (notesChanged) {
+            renderComposerNotes();
+          }
+          hasVisibleChanges = false;
+          currentFiles = [];
+          updateSummary(0);
+          listNode.innerHTML = "<div class=\"worktree-diff-empty\">No recent commits found.</div>";
+          applyPanelState();
+          return;
+        }
+
+        data = await fetchCommitSnapshot(context, selectedCommitSha);
+        files = Array.isArray(data.files) ? data.files : [];
+        panelAvailable = data.isGitRepo === true;
+        currentRepoRoot = typeof data.repoRoot === "string" ? data.repoRoot : "";
+        currentBranch = typeof data.branch === "string" && data.branch.trim() ? data.branch.trim() : "detached";
+        const fromSnapshot = normalizeCommitInfo({
+          sha: data.commitSha,
+          shortSha: data.commitShortSha,
+          subject: data.commitSubject,
+          authorName: data.commitAuthorName,
+          committedAtUtc: data.commitCommittedAtUtc
         });
-      } else if (typeof console !== "undefined" && typeof console.info === "function") {
-        console.info(`${new Date().toISOString()} out.diff_count_request cwd=${context.cwd} force=${force === true}`);
-      }
-      const response = await fetch(url.toString(), {
-        method: "GET",
-        headers: { Accept: "application/json" }
-      });
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        if (fromSnapshot) {
+          selectedCommitInfo = fromSnapshot;
+          selectedCommitSha = fromSnapshot.sha;
+        } else {
+          selectedCommitInfo = findSelectedCommitInfo();
+        }
+        renderCommitOptions();
+      } else {
+        data = await fetchCurrentWorktreeSnapshot(context, force);
+        files = Array.isArray(data.files) ? data.files : [];
+        panelAvailable = data.isGitRepo === true;
+        currentRepoRoot = typeof data.repoRoot === "string" ? data.repoRoot : "";
+        currentBranch = typeof data.branch === "string" && data.branch.trim() ? data.branch.trim() : "detached";
+        selectedCommitInfo = null;
       }
 
-      const data = await response.json();
-      const files = Array.isArray(data.files) ? data.files : [];
+      if (!panelAvailable) {
+        setEmptyState("Not a git repository");
+        return;
+      }
+
+      const scopeKey = buildDiffScopeKey(context.cwd, currentMode, currentMode === "commit" ? selectedCommitSha : "");
+      const notesChanged = switchNotesScope(scopeKey);
+      if (notesChanged) {
+        renderComposerNotes();
+      }
+      if (scopeKey !== currentFileViewScopeKey) {
+        fileOpenStateByPath = new Map();
+        ignoreNextLineClick = false;
+        currentFileViewScopeKey = scopeKey;
+      }
+
       const renderKey = [
         context.cwd,
-        data.headSha || "",
+        currentMode,
+        currentMode === "commit" ? (selectedCommitSha || "") : (data.headSha || ""),
         String(files.length),
         String(data.isTimedOut === true),
-        files.map((x) => `${x.statusCode || ""}:${x.path || ""}:${(x.patch || "").length}:${x.isBinary === true ? "1" : "0"}`).join("|")
+        buildFilesFingerprint(files)
       ].join("::");
 
       if (!force && renderKey === lastRenderKey) {
@@ -787,6 +1121,7 @@
       if (typeof window.uiAuditLog === "function") {
         window.uiAuditLog("in.diff_count_response", {
           cwd: context.cwd,
+          mode: currentMode,
           changeCount: Number.isFinite(data.changeCount) ? data.changeCount : files.length,
           fileCount: files.length,
           timedOut: data.isTimedOut === true,
@@ -796,25 +1131,15 @@
         console.info(
           `${new Date().toISOString()} in.diff_count_response cwd=${context.cwd} changeCount=${Number.isFinite(data.changeCount) ? data.changeCount : files.length} fileCount=${files.length} timedOut=${data.isTimedOut === true} isGitRepo=${data.isGitRepo === true}`);
       }
-      currentBranch = typeof data.branch === "string" && data.branch.trim() ? data.branch.trim() : "detached";
-
-      if (data.isGitRepo !== true) {
-        setEmptyState("Not a git repository");
-        return;
-      }
-
       hasVisibleChanges = files.length > 0;
       currentFiles = files;
-      if (!hasVisibleChanges) {
-        isExpanded = false;
-        ignoreNextLineClick = false;
-      }
-
       captureFileOpenState();
       if (hasVisibleChanges) {
         renderFiles(files);
       } else {
-        listNode.innerHTML = "";
+        listNode.innerHTML = currentMode === "commit"
+          ? "<div class=\"worktree-diff-empty\">No file changes in selected commit.</div>"
+          : "<div class=\"worktree-diff-empty\">Working tree is clean.</div>";
       }
       updateSummary(files.length);
       applyPanelState();
@@ -826,17 +1151,18 @@
       } else if (typeof console !== "undefined" && typeof console.warn === "function") {
         console.warn(`${new Date().toISOString()} in.diff_count_response_failed cwd=${context.cwd} error=${message}`);
       }
+      panelAvailable = true;
       hasVisibleChanges = false;
       currentFiles = [];
-      isExpanded = false;
       ignoreNextLineClick = false;
       summaryNode.textContent = `Diff load failed: ${message}`;
-      listNode.innerHTML = "";
+      listNode.innerHTML = `<div class="worktree-diff-empty">${escapeHtml(`Diff load failed: ${message}`)}</div>`;
       applyPanelState();
       renderComposerNotes();
     } finally {
       refreshBtn.disabled = false;
       pollInFlight = false;
+      commitSelect.disabled = currentMode !== "commit" || availableCommits.length === 0;
     }
   }
 
@@ -902,11 +1228,31 @@
   });
 
   indicatorBtn.addEventListener("click", () => {
-    if (!hasVisibleChanges) {
+    if (!panelAvailable) {
       return;
     }
     isExpanded = true;
     applyPanelState();
+  });
+
+  modeWorktreeBtn.addEventListener("click", () => {
+    setDiffMode("worktree");
+  });
+
+  modeCommitBtn.addEventListener("click", () => {
+    setDiffMode("commit");
+  });
+
+  commitSelect.addEventListener("change", () => {
+    const nextSha = typeof commitSelect.value === "string" ? commitSelect.value.trim() : "";
+    if (!nextSha || nextSha === selectedCommitSha) {
+      return;
+    }
+
+    selectedCommitSha = nextSha;
+    selectedCommitInfo = findSelectedCommitInfo();
+    lastRenderKey = "";
+    queueRefresh({ force: true });
   });
 
   refreshBtn.addEventListener("click", () => {
@@ -987,7 +1333,7 @@
       const key = removeBtn.getAttribute("data-diff-note-remove") || "";
       if (key && notesByKey.has(key)) {
         notesByKey.delete(key);
-        saveNotesForCwd(lastCwd);
+        saveNotesForScope(currentNotesScopeKey);
         updateSummary(currentFiles.length);
         rerenderFilesPreserveView();
         renderComposerNotes();
@@ -1001,7 +1347,7 @@
     }
 
     notesByKey.clear();
-    saveNotesForCwd(lastCwd);
+    saveNotesForScope(currentNotesScopeKey);
     updateSummary(currentFiles.length);
     rerenderFilesPreserveView();
     renderComposerNotes();
@@ -1052,6 +1398,8 @@
     window.addEventListener("mouseup", endModalDrag);
   }
 
+  renderCommitOptions();
+  applyModeUiState();
   applyPanelState();
   renderComposerNotes();
   queueRefresh({ force: true });
