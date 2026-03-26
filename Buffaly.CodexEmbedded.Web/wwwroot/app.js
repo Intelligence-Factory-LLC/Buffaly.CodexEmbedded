@@ -6384,6 +6384,107 @@ function formatRateLimitSummary(rateLimit) {
   return parts.length > 0 ? parts.join(" | ") : "updated";
 }
 
+function readWeeklyRateLimitWindow(rateLimit) {
+  if (!rateLimit || typeof rateLimit !== "object") {
+    return null;
+  }
+
+  const candidates = [];
+  if (rateLimit.secondary && typeof rateLimit.secondary === "object") {
+    candidates.push(rateLimit.secondary);
+  }
+  if (rateLimit.primary && typeof rateLimit.primary === "object") {
+    candidates.push(rateLimit.primary);
+  }
+
+  const matchWeeklyWindow = candidates.find((window) => {
+    const minutes = Number(window?.windowMinutes);
+    return Number.isFinite(minutes) && Math.abs(minutes - 10080) <= 2;
+  });
+  if (matchWeeklyWindow) {
+    return matchWeeklyWindow;
+  }
+
+  return candidates[0] || null;
+}
+
+function formatPercentInt(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return "";
+  }
+
+  return `${Math.max(0, Math.min(100, Math.round(numeric)))}%`;
+}
+
+function getWeeklyRemainingPercent(rateLimit) {
+  const window = readWeeklyRateLimitWindow(rateLimit);
+  if (window && typeof window === "object") {
+    const remaining = Number(window.remainingPercent);
+    if (Number.isFinite(remaining)) {
+      return Math.max(0, Math.min(100, remaining));
+    }
+
+    const used = Number(window.usedPercent);
+    if (Number.isFinite(used)) {
+      return Math.max(0, Math.min(100, 100 - used));
+    }
+  }
+
+  const summary = typeof rateLimit?.summary === "string" ? rateLimit.summary : "";
+  const match = summary.match(/weekly\s+(\d+(?:\.\d+)?)%\s+remaining/i);
+  if (match && match[1]) {
+    const parsed = Number(match[1]);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.min(100, parsed));
+    }
+  }
+
+  return null;
+}
+
+function renderSessionMetaUsageWeeklyProgress(container, rateLimit) {
+  if (!container) {
+    return;
+  }
+
+  const remainingPercent = getWeeklyRemainingPercent(rateLimit);
+  if (!Number.isFinite(remainingPercent)) {
+    container.textContent = formatRateLimitSummary(rateLimit);
+    return;
+  }
+
+  const roundedPercent = Math.max(0, Math.min(100, Math.round(remainingPercent)));
+  const wrap = document.createElement("div");
+  wrap.className = "conversation-usage-progress";
+
+  const text = document.createElement("div");
+  text.className = "conversation-usage-progress-label";
+  text.textContent = `Weekly ${formatPercentInt(roundedPercent)} left`;
+  wrap.appendChild(text);
+
+  const track = document.createElement("div");
+  track.className = "conversation-usage-progress-track";
+  const fill = document.createElement("div");
+  fill.className = "conversation-usage-progress-fill";
+  if (roundedPercent <= 25) {
+    fill.classList.add("critical");
+  } else if (roundedPercent <= 50) {
+    fill.classList.add("warning");
+  }
+
+  fill.style.width = `${roundedPercent}%`;
+  fill.setAttribute("role", "progressbar");
+  fill.setAttribute("aria-valuemin", "0");
+  fill.setAttribute("aria-valuemax", "100");
+  fill.setAttribute("aria-valuenow", String(roundedPercent));
+  fill.setAttribute("aria-label", `Weekly usage left ${roundedPercent}%`);
+  track.appendChild(fill);
+  wrap.appendChild(track);
+
+  container.replaceChildren(wrap);
+}
+
 function refreshSessionMetaUsage() {
   if (!sessionMetaUsageItem || !sessionMetaUsageValue) {
     return;
@@ -6400,7 +6501,7 @@ function refreshSessionMetaUsage() {
   const sessionId = typeof activeSessionId === "string" ? activeSessionId : "";
   const rateLimit = sessionId ? (rateLimitBySession.get(sessionId) || null) : null;
   sessionMetaUsageItem.classList.remove("hidden");
-  sessionMetaUsageValue.textContent = formatRateLimitSummary(rateLimit);
+  renderSessionMetaUsageWeeklyProgress(sessionMetaUsageValue, rateLimit);
 
   const titleParts = [];
   if (rateLimit && typeof rateLimit === "object") {

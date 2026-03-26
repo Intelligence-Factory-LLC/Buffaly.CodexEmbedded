@@ -1087,6 +1087,44 @@ body {
 	display: block;
 }
 
+.conversation-meta-usage-value {
+	padding: 0.3rem 0.38rem;
+}
+
+.conversation-usage-progress {
+	display: flex;
+	flex-direction: column;
+	gap: 0.26rem;
+}
+
+.conversation-usage-progress-label {
+	font-size: 0.72rem;
+	font-weight: 700;
+	color: #334155;
+}
+
+.conversation-usage-progress-track {
+	height: 0.45rem;
+	border-radius: 999px;
+	background: #e5e7eb;
+	overflow: hidden;
+}
+
+.conversation-usage-progress-fill {
+	height: 100%;
+	width: 0;
+	border-radius: inherit;
+	background: #22c55e;
+}
+
+.conversation-usage-progress-fill.warning {
+	background: #f59e0b;
+}
+
+.conversation-usage-progress-fill.critical {
+	background: #ef4444;
+}
+
 .conversation-meta-thread-copy-btn {
 	flex: 0 0 auto;
 	padding: 0.24rem 0.42rem;
@@ -5189,6 +5227,14 @@ html[data-theme="dark"] .conversation-meta-thread-value {
 	background: #0f172a;
 	border-color: #334155;
 	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .conversation-usage-progress-label {
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .conversation-usage-progress-track {
+	background: #334155;
 }
 
 html[data-theme="dark"] .conversation-meta-thread-copy-btn {
