@@ -68,6 +68,7 @@
     content: "",
     changedLines: new Set(),
     firstChangedLine: 1,
+    requestedLineNo: null,
     classes: [],
     methods: [],
     selectedClass: "",
@@ -794,6 +795,9 @@
       if (changedLines && changedLines.has(lineNo)) {
         classes.push("diff-full-window-line-changed");
       }
+      if (Number.isFinite(fullFileViewerState.requestedLineNo) && fullFileViewerState.requestedLineNo === lineNo) {
+        classes.push("diff-full-window-line-requested");
+      }
       if (hasLineNote(fullFileViewerState.path, lineNo, "file")) {
         classes.push("diff-full-window-line-noted");
       }
@@ -930,6 +934,7 @@
       content: "",
       changedLines: new Set(),
       firstChangedLine: 1,
+      requestedLineNo: null,
       classes: [],
       methods: [],
       selectedClass: "",
@@ -1512,6 +1517,7 @@
       content: "",
       changedLines: changed.changed,
       firstChangedLine: requestedLineNo || changed.first,
+      requestedLineNo,
       classes: [],
       methods: [],
       selectedClass: "",

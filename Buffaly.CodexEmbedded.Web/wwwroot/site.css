@@ -3819,6 +3819,11 @@ body {
 	background: rgba(59, 130, 246, 0.1);
 }
 
+.diff-full-window-line-requested {
+	background: rgba(245, 158, 11, 0.22);
+	outline: 1px solid rgba(217, 119, 6, 0.55);
+}
+
 .diff-full-window-line-noted {
 	border-left: 3px solid #f59e0b;
 	padding-left: 0.3rem;
@@ -4929,6 +4934,11 @@ html[data-theme="dark"] .diff-full-window-line-text {
 
 html[data-theme="dark"] .diff-full-window-line-changed {
 	background: rgba(59, 130, 246, 0.24);
+}
+
+html[data-theme="dark"] .diff-full-window-line-requested {
+	background: rgba(245, 158, 11, 0.3);
+	outline-color: rgba(251, 191, 36, 0.75);
 }
 
 html[data-theme="dark"] .diff-full-window-line-clickable:hover {
