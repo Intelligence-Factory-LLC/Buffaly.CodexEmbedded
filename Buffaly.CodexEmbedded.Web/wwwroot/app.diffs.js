@@ -760,7 +760,7 @@
     }
 
     return method.className
-      ? `${method.className} > ${method.name}`
+      ? `${method.className}::${method.name}`
       : method.name;
   }
 
@@ -821,6 +821,25 @@
     const methods = Array.isArray(fullFileViewerState.methods)
       ? fullFileViewerState.methods.filter((x) => !selectedClass || x.className === selectedClass)
       : [];
+    methods.sort((a, b) => {
+      const aClass = typeof a?.className === "string" ? a.className : "";
+      const bClass = typeof b?.className === "string" ? b.className : "";
+      const classCompare = aClass.localeCompare(bClass, undefined, { sensitivity: "base" });
+      if (classCompare !== 0) {
+        return classCompare;
+      }
+
+      const aName = typeof a?.name === "string" ? a.name : "";
+      const bName = typeof b?.name === "string" ? b.name : "";
+      const nameCompare = aName.localeCompare(bName, undefined, { sensitivity: "base" });
+      if (nameCompare !== 0) {
+        return nameCompare;
+      }
+
+      const aLine = Number.isFinite(a?.lineNo) ? a.lineNo : Number.MAX_SAFE_INTEGER;
+      const bLine = Number.isFinite(b?.lineNo) ? b.lineNo : Number.MAX_SAFE_INTEGER;
+      return aLine - bLine;
+    });
     const options = ["<option value=\"\">Methods</option>"];
     for (const method of methods) {
       options.push(`<option value="${escapeAttribute(method.key)}">${escapeHtml(methodLabel(method))}</option>`);
@@ -871,7 +890,19 @@
       return;
     }
 
-    const classes = Array.isArray(fullFileViewerState.classes) ? fullFileViewerState.classes : [];
+    const classes = Array.isArray(fullFileViewerState.classes) ? fullFileViewerState.classes.slice() : [];
+    classes.sort((a, b) => {
+      const aName = typeof a?.name === "string" ? a.name : "";
+      const bName = typeof b?.name === "string" ? b.name : "";
+      const nameCompare = aName.localeCompare(bName, undefined, { sensitivity: "base" });
+      if (nameCompare !== 0) {
+        return nameCompare;
+      }
+
+      const aLine = Number.isFinite(a?.lineNo) ? a.lineNo : Number.MAX_SAFE_INTEGER;
+      const bLine = Number.isFinite(b?.lineNo) ? b.lineNo : Number.MAX_SAFE_INTEGER;
+      return aLine - bLine;
+    });
     const options = ["<option value=\"\">Classes</option>"];
     for (const entry of classes) {
       options.push(`<option value="${escapeAttribute(entry.name)}">${escapeHtml(entry.name)}</option>`);
