@@ -1384,13 +1384,74 @@
   window.codexDiffNotesConsumePromptMetadata = consumePromptMetadata;
   window.codexDiffNotesHasPending = () => notesByKey.size > 0;
 
-  async function openFullFileWindow(path) {
-    if (!fullFileWindowReady) {
-      return;
+  function normalizePathForDiffViewer(path, cwd) {
+    const rawPath = typeof path === "string" ? path.trim() : "";
+    if (!rawPath) {
+      return "";
     }
 
-    const file = currentFiles.find((x) => x && typeof x.path === "string" && x.path === path);
-    if (!file) {
+    const normalizedPath = rawPath.replace(/\\/g, "/");
+    const normalizedCwd = typeof cwd === "string" ? cwd.trim().replace(/\\/g, "/").replace(/\/+$/, "") : "";
+    if (!normalizedCwd) {
+      return normalizedPath;
+    }
+
+    if (normalizedPath.length > normalizedCwd.length + 1
+      && normalizedPath.toLowerCase().startsWith(`${normalizedCwd.toLowerCase()}/`)) {
+      return normalizedPath.slice(normalizedCwd.length + 1);
+    }
+
+    return normalizedPath;
+  }
+
+  function parseFileLinkTarget(rawHref) {
+    const source = typeof rawHref === "string" ? rawHref.trim() : "";
+    if (!source) {
+      return null;
+    }
+
+    let value = source;
+    if (/^file:\/\//i.test(value)) {
+      try {
+        value = decodeURI(value);
+      } catch {
+      }
+      value = value.replace(/^file:\/\/\/?/i, "");
+    } else {
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+        return null;
+      }
+      try {
+        value = decodeURI(value);
+      } catch {
+      }
+    }
+
+    value = value.replace(/[?#].*$/, "");
+    if (!value) {
+      return null;
+    }
+
+    let lineNo = null;
+    const lineMatch = value.match(/:(\d+)(?::\d+)?$/);
+    if (lineMatch) {
+      const parsed = Number.parseInt(lineMatch[1] || "", 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        lineNo = parsed;
+        value = value.slice(0, lineMatch.index);
+      }
+    }
+
+    const normalizedPath = value.replace(/\\/g, "/");
+    if (!normalizedPath) {
+      return null;
+    }
+
+    return { path: normalizedPath, lineNo };
+  }
+
+  async function openFullFileWindow(path, options = {}) {
+    if (!fullFileWindowReady) {
       return;
     }
 
@@ -1399,24 +1460,33 @@
       return;
     }
 
-    const patchText = typeof file.patch === "string" ? file.patch : "";
+    const normalizedPath = normalizePathForDiffViewer(path, activeContext.cwd);
+    if (!normalizedPath) {
+      return;
+    }
+
+    const file = currentFiles.find((x) => x && typeof x.path === "string" && x.path === normalizedPath);
+    const patchText = typeof file?.patch === "string" ? file.patch : "";
     const changed = collectChangedLinesFromPatch(patchText);
+    const requestedLineNo = Number.isFinite(options?.lineNo) && options.lineNo > 0
+      ? Math.floor(options.lineNo)
+      : null;
     const loadToken = ++fullFileViewerLoadToken;
 
-    fullFileLoadingByPath.add(path);
+    fullFileLoadingByPath.add(normalizedPath);
     rerenderFilesPreserveView();
 
     fullFileViewerState = {
-      path,
+      path: normalizedPath,
       content: "",
       changedLines: changed.changed,
-      firstChangedLine: changed.first,
+      firstChangedLine: requestedLineNo || changed.first,
       classes: [],
       methods: [],
       selectedClass: "",
       selectedMethodKey: ""
     };
-    fullFileTitle.textContent = path;
+    fullFileTitle.textContent = normalizedPath;
     fullFileStatus.textContent = "Loading full file content...";
     fullFileBody.innerHTML = "";
     fullFileClassSelect.innerHTML = "<option value=\"\">Classes</option>";
@@ -1428,7 +1498,7 @@
     try {
       const url = new URL("api/worktree/diff/file", document.baseURI);
       url.searchParams.set("cwd", activeContext.cwd);
-      url.searchParams.set("path", path);
+      url.searchParams.set("path", normalizedPath);
       url.searchParams.set("maxChars", "1000000");
       if (currentMode === "commit" && selectedCommitSha) {
         url.searchParams.set("commit", selectedCommitSha);
@@ -1470,7 +1540,7 @@
       renderFullFileWindowBody(content, fullFileViewerState.changedLines);
       renderFullFileWindowClassOptions();
       window.setTimeout(() => {
-        jumpFullFileWindowToLine(fullFileViewerState.firstChangedLine || 1);
+        jumpFullFileWindowToLine(requestedLineNo || fullFileViewerState.firstChangedLine || 1);
       }, 40);
     } catch (error) {
       if (loadToken !== fullFileViewerLoadToken) {
@@ -1480,10 +1550,20 @@
       fullFileStatus.textContent = `Failed to load file: ${error instanceof Error ? error.message : String(error)}`;
       fullFileBody.innerHTML = "";
     } finally {
-      fullFileLoadingByPath.delete(path);
+      fullFileLoadingByPath.delete(normalizedPath);
       rerenderFilesPreserveView();
     }
   }
+
+  window.codexDiffOpenFileFromLink = function codexDiffOpenFileFromLink(rawHref) {
+    const parsed = parseFileLinkTarget(rawHref);
+    if (!parsed || !parsed.path) {
+      return false;
+    }
+
+    openFullFileWindow(parsed.path, { lineNo: parsed.lineNo }).catch(() => { });
+    return true;
+  };
 
   async function fetchCurrentWorktreeSnapshot(context, force) {
     const url = new URL("api/worktree/diff/current", document.baseURI);

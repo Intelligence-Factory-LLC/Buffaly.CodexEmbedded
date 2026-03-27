@@ -2148,9 +2148,22 @@
               if (href) {
                 const link = document.createElement("a");
                 link.textContent = label;
-                link.href = this.toLocalFileHref(href);
+                const localHref = this.toLocalFileHref(href);
+                link.href = localHref;
                 link.target = "_blank";
                 link.rel = "noopener noreferrer";
+                link.addEventListener("click", (event) => {
+                  if (typeof window.codexDiffOpenFileFromLink !== "function") {
+                    return;
+                  }
+
+                  const handled = window.codexDiffOpenFileFromLink(localHref);
+                  if (!handled) {
+                    return;
+                  }
+
+                  event.preventDefault();
+                });
                 parent.appendChild(link);
                 cursor = urlEnd + 1;
                 continue;
