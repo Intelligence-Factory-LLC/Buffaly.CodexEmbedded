@@ -2873,11 +2873,24 @@ function syncNewSessionModelOptions(seedModel = null) {
     ? normalizeModelValue(seedModel)
     : normalizeModelValue(newSessionModelSelect.value || modelValueForCreate() || "");
   newSessionModelSelect.textContent = "";
-  for (const option of Array.from(modelSelect.options)) {
+  const sourceOptions = Array.from(modelSelect.options);
+  for (const option of sourceOptions) {
     const next = document.createElement("option");
     next.value = option.value;
     next.textContent = option.textContent || option.value;
     newSessionModelSelect.appendChild(next);
+  }
+
+  if (newSessionModelSelect.options.length === 0) {
+    const optDefault = document.createElement("option");
+    optDefault.value = "";
+    optDefault.textContent = configuredDefaultModel ? `(default: ${configuredDefaultModel})` : "(default)";
+    newSessionModelSelect.appendChild(optDefault);
+
+    const optCustom = document.createElement("option");
+    optCustom.value = "__custom__";
+    optCustom.textContent = "Custom...";
+    newSessionModelSelect.appendChild(optCustom);
   }
 
   const hasDesired = desired && Array.from(newSessionModelSelect.options).some((option) => option.value === desired);
@@ -3024,6 +3037,7 @@ function openNewSessionModal(cwd, options = {}) {
   newSessionNameInput.value = String(options.threadName || "");
   const hasModelOverride = Object.prototype.hasOwnProperty.call(options, "model");
   syncNewSessionModelOptions(hasModelOverride ? options.model : "");
+  requestModelsListForActiveSession({ force: true });
 
   const seedEffort = normalizeReasoningEffort(options.effort ?? selectedReasoningValue() ?? "");
   newSessionReasoningSelect.value = Array.from(newSessionReasoningSelect.options).some((option) => option.value === seedEffort)
