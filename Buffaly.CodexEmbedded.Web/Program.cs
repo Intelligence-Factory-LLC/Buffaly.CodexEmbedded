@@ -417,7 +417,7 @@ app.MapPost("/api/transcribe", async (
 			audioBytes,
 			file.FileName,
 			file.ContentType,
-			"whisper-1",
+			"gpt-4o-mini-transcribe",
 			context.RequestAborted);
 		return Results.Text(transcript ?? string.Empty, "text/plain; charset=utf-8");
 	}
@@ -427,7 +427,7 @@ app.MapPost("/api/transcribe", async (
 		return Results.Problem(
 			statusCode: StatusCodes.Status502BadGateway,
 			title: "Transcription request failed.",
-			detail: "OpenAI transcription request failed.");
+			detail: ex.Message);
 	}
 	catch (OperationCanceledException)
 	{

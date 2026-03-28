@@ -30,46 +30,38 @@ internal sealed class OpenAiTranscriptionClient
 		try
 		{
 			var client = _httpClientFactory.CreateClient();
-			using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/audio/transcriptions");
-			request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey.Trim());
-
-			using var form = new MultipartFormDataContent();
-			var safeName = string.IsNullOrWhiteSpace(fileName) ? "audio.webm" : fileName.Trim();
-			var safeContentType = string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType.Trim();
-			var safeModel = string.IsNullOrWhiteSpace(model) ? "whisper-1" : model.Trim();
-
-			var audioContent = new ByteArrayContent(audioBytes);
-			if (!MediaTypeHeaderValue.TryParse(safeContentType, out var parsedContentType) || parsedContentType is null)
+			var modelCandidates = BuildModelCandidates(model);
+			OpenAiTranscriptionException? lastError = null;
+			for (var i = 0; i < modelCandidates.Count; i += 1)
 			{
-				parsedContentType = new MediaTypeHeaderValue("application/octet-stream");
-			}
-
-			audioContent.Headers.ContentType = parsedContentType;
-			form.Add(audioContent, "file", safeName);
-			form.Add(new StringContent(safeModel), "model");
-			request.Content = form;
-
-			using var response = await client.SendAsync(request, cancellationToken);
-			var raw = await response.Content.ReadAsStringAsync(cancellationToken);
-			if (!response.IsSuccessStatusCode)
-			{
-				throw new OpenAiTranscriptionException((int)response.StatusCode, BuildFailureMessage((int)response.StatusCode, raw));
-			}
-
-			try
-			{
-				using var doc = JsonDocument.Parse(raw);
-				var root = doc.RootElement;
-				if (root.TryGetProperty("text", out var textElement) && textElement.ValueKind == JsonValueKind.String)
+				var candidate = modelCandidates[i];
+				try
 				{
-					return textElement.GetString() ?? string.Empty;
+					return await TranscribeWithModelAsync(
+						client,
+						apiKey,
+						audioBytes,
+						fileName,
+						contentType,
+						candidate,
+						cancellationToken);
+				}
+				catch (OpenAiTranscriptionException ex)
+				{
+					lastError = ex;
+					if (i >= modelCandidates.Count - 1 || !ShouldTryFallbackModel(ex))
+					{
+						throw;
+					}
 				}
 			}
-			catch (JsonException)
+
+			if (lastError is not null)
 			{
+				throw lastError;
 			}
 
-			return string.Empty;
+			throw new OpenAiTranscriptionException(0, "OpenAI transcription failed with no response.");
 		}
 		catch (HttpRequestException ex)
 		{
@@ -81,12 +73,116 @@ internal sealed class OpenAiTranscriptionClient
 		}
 	}
 
-	private static string BuildFailureMessage(int statusCode, string body)
+	private static IReadOnlyList<string> BuildModelCandidates(string? preferredModel)
+	{
+		var candidates = new List<string>();
+		void AddCandidate(string? value)
+		{
+			var normalized = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
+			if (string.IsNullOrWhiteSpace(normalized))
+			{
+				return;
+			}
+
+			if (!candidates.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+			{
+				candidates.Add(normalized);
+			}
+		}
+
+		AddCandidate(preferredModel);
+		AddCandidate("gpt-4o-mini-transcribe");
+		AddCandidate("gpt-4o-transcribe");
+		AddCandidate("whisper-1");
+		return candidates;
+	}
+
+	private static bool ShouldTryFallbackModel(OpenAiTranscriptionException ex)
+	{
+		if (ex is null)
+		{
+			return false;
+		}
+
+		if (ex.StatusCode != 400 && ex.StatusCode != 404)
+		{
+			return false;
+		}
+
+		var message = (ex.Message ?? string.Empty).ToLowerInvariant();
+		if (!message.Contains("model"))
+		{
+			return false;
+		}
+
+		return message.Contains("not found")
+			|| message.Contains("does not exist")
+			|| message.Contains("not available")
+			|| message.Contains("invalid model")
+			|| message.Contains("unknown model")
+			|| message.Contains("unsupported model")
+			|| message.Contains("do not have access");
+	}
+
+	private static async Task<string> TranscribeWithModelAsync(
+		HttpClient client,
+		string apiKey,
+		byte[] audioBytes,
+		string? fileName,
+		string? contentType,
+		string model,
+		CancellationToken cancellationToken)
+	{
+		using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/audio/transcriptions");
+		request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey.Trim());
+
+		using var form = new MultipartFormDataContent();
+		var safeName = string.IsNullOrWhiteSpace(fileName) ? "audio.webm" : fileName.Trim();
+		var safeContentType = string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType.Trim();
+		var safeModel = string.IsNullOrWhiteSpace(model) ? "gpt-4o-mini-transcribe" : model.Trim();
+
+		var audioContent = new ByteArrayContent(audioBytes);
+		if (!MediaTypeHeaderValue.TryParse(safeContentType, out var parsedContentType) || parsedContentType is null)
+		{
+			parsedContentType = new MediaTypeHeaderValue("application/octet-stream");
+		}
+
+		audioContent.Headers.ContentType = parsedContentType;
+		form.Add(audioContent, "file", safeName);
+		form.Add(new StringContent(safeModel), "model");
+		request.Content = form;
+
+		using var response = await client.SendAsync(request, cancellationToken);
+		var raw = await response.Content.ReadAsStringAsync(cancellationToken);
+		if (!response.IsSuccessStatusCode)
+		{
+			throw new OpenAiTranscriptionException(
+				(int)response.StatusCode,
+				BuildFailureMessage((int)response.StatusCode, safeModel, raw));
+		}
+
+		try
+		{
+			using var doc = JsonDocument.Parse(raw);
+			var root = doc.RootElement;
+			if (root.TryGetProperty("text", out var textElement) && textElement.ValueKind == JsonValueKind.String)
+			{
+				return textElement.GetString() ?? string.Empty;
+			}
+		}
+		catch (JsonException)
+		{
+		}
+
+		return string.Empty;
+	}
+
+	private static string BuildFailureMessage(int statusCode, string model, string body)
 	{
 		var safeBody = string.IsNullOrWhiteSpace(body)
 			? string.Empty
 			: (body.Length > 500 ? body[..500] + "..." : body);
-		return $"OpenAI transcription failed with status {statusCode}.{(string.IsNullOrWhiteSpace(safeBody) ? string.Empty : $" Body: {safeBody}")}";
+		return $"OpenAI transcription failed with status {statusCode} (model={model}).{(string.IsNullOrWhiteSpace(safeBody) ? string.Empty : $" Body: {safeBody}")}";
 	}
 }
 
