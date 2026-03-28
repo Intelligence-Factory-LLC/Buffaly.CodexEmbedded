@@ -77,8 +77,8 @@ jobs:
             artifacts/release/*.zip
             artifacts/release/*.txt
             artifacts/release/*.msi
-          if-no-files-found: error
 
+          retention-days: 30
       - name: Attach files to GitHub release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
