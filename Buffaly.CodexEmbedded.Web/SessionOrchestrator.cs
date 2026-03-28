@@ -496,9 +496,28 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				continue;
 			}
 
+			var entryTaskId = entry.TaskId?.Trim();
+			if (!string.IsNullOrWhiteSpace(entryTaskId) &&
+				(current is null || !string.Equals(current.TaskId, entryTaskId, StringComparison.Ordinal)) &&
+				!string.Equals(entry.Role, "user", StringComparison.Ordinal))
+			{
+				var inferredUserEntry = new TimelineProjectedEntry
+				{
+					Role = "user",
+					Title = "User",
+					Text = "(turn prompt not present in current history window)",
+					Timestamp = entry.Timestamp,
+					RawType = "turn_window_anchor",
+					Compact = true,
+					TaskId = entryTaskId
+				};
+				current = new ConsolidatedTurnBuilder(inferredUserEntry, entryTaskId);
+				turns.Add(current);
+			}
+
 			if (string.Equals(entry.Role, "user", StringComparison.Ordinal))
 			{
-				current = new ConsolidatedTurnBuilder(entry);
+				current = new ConsolidatedTurnBuilder(entry, entryTaskId);
 				turns.Add(current);
 				continue;
 			}
@@ -5229,12 +5248,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	private sealed class ConsolidatedTurnBuilder
 	{
-		public ConsolidatedTurnBuilder(TimelineProjectedEntry userEntry)
+		public ConsolidatedTurnBuilder(TimelineProjectedEntry userEntry, string? taskId)
 		{
 			User = userEntry.Clone();
+			TaskId = string.IsNullOrWhiteSpace(taskId) ? null : taskId.Trim();
 		}
 
 		public TimelineProjectedEntry User { get; }
+		public string? TaskId { get; }
 		public TimelineProjectedEntry? FinalAssistant { get; set; }
 		public List<TurnEntrySnapshot> Intermediate { get; } = new();
 		public bool IsInFlight { get; set; }
