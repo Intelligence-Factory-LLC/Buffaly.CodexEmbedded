@@ -988,12 +988,16 @@
       const shortSha = normalized.shortSha || normalized.sha.slice(0, 7);
       const subject = normalized.subject ? normalized.subject.trim() : "";
       const shortSubject = subject.length > 62 ? `${subject.slice(0, 61)}...` : subject;
-      const statusLabel = status === "completed"
-        ? "Review Completed"
-        : (status === "started" ? "Review Started" : "Not Started");
-      const statusClass = status === "completed"
-        ? "completed"
-        : (status === "started" ? "started" : "not-started");
+      const statusLabel = status === "reviewed"
+        ? "Reviewed"
+        : (status === "completed"
+          ? "Review Completed"
+          : (status === "started" ? "Review Started" : "Not Started"));
+      const statusClass = status === "reviewed"
+        ? "reviewed"
+        : (status === "completed"
+          ? "completed"
+          : (status === "started" ? "started" : "not-started"));
       rows.push(
         `<div class="diff-commit-review-row${normalized.sha === selectedCommitSha ? " active" : ""}">
           <button type="button" class="diff-commit-review-open-btn" data-commit-review-jump="${escapeAttribute(normalized.sha)}" title="${escapeAttribute(subject || normalized.sha)}">Open Diff</button>
@@ -1015,48 +1019,125 @@
     commitReviewSummaryNode.classList.remove("hidden");
   }
 
+  function renderInlineReviewMarkdown(text) {
+    const source = typeof text === "string" ? text : "";
+    if (!source) {
+      return "";
+    }
+
+    let html = "";
+    let cursor = 0;
+    const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
+    let match = linkPattern.exec(source);
+    while (match) {
+      if (match.index > cursor) {
+        html += escapeHtml(source.slice(cursor, match.index));
+      }
+
+      const label = match[1] || "";
+      const href = match[2] || "";
+      const parsed = parseFileLinkTarget(href);
+      if (parsed && parsed.path && Number.isFinite(parsed.lineNo) && parsed.lineNo > 0) {
+        html += `<a href="#" class="diff-review-md-link" data-review-md-link="1" data-review-jump-path="${escapeAttribute(parsed.path)}" data-review-jump-line="${parsed.lineNo}" title="Open ${escapeAttribute(parsed.path)}:${parsed.lineNo}">${escapeHtml(label || `${parsed.path}:${parsed.lineNo}`)}</a>`;
+      } else {
+        html += `<span class="diff-review-md-link-static">${escapeHtml(label || href)}</span>`;
+      }
+
+      cursor = match.index + match[0].length;
+      match = linkPattern.exec(source);
+    }
+    if (cursor < source.length) {
+      html += escapeHtml(source.slice(cursor));
+    }
+
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    return html;
+  }
+
+  function renderReviewMarkdownBody(markdownText) {
+    const lines = typeof markdownText === "string" ? markdownText.split(/\r?\n/) : [];
+    if (lines.length === 0) {
+      return "";
+    }
+
+    const blocks = [];
+    for (const raw of lines) {
+      const line = typeof raw === "string" ? raw : "";
+      const trimmed = line.trim();
+      if (!trimmed) {
+        blocks.push("<div class=\"diff-review-md-spacer\"></div>");
+        continue;
+      }
+
+      if (/^#{1,6}\s+/.test(trimmed)) {
+        const text = trimmed.replace(/^#{1,6}\s+/, "");
+        blocks.push(`<div class="diff-review-md-heading">${renderInlineReviewMarkdown(text)}</div>`);
+        continue;
+      }
+
+      if (/^\d+\.\s+/.test(trimmed)) {
+        const text = trimmed.replace(/^\d+\.\s+/, "");
+        blocks.push(`<div class="diff-review-md-item ordered">${renderInlineReviewMarkdown(text)}</div>`);
+        continue;
+      }
+
+      if (/^-\s+/.test(trimmed)) {
+        const text = trimmed.replace(/^-\s+/, "");
+        blocks.push(`<div class="diff-review-md-item bullet">${renderInlineReviewMarkdown(text)}</div>`);
+        continue;
+      }
+
+      blocks.push(`<div class="diff-review-md-paragraph">${renderInlineReviewMarkdown(trimmed)}</div>`);
+    }
+
+    return blocks.join("");
+  }
+
+  function getPrimaryCompletedReviewRecord(summary) {
+    const records = Array.isArray(summary?.records) ? summary.records : [];
+    const completed = records.filter((record) => record && (record.status === "completed" || record.status === "reviewed"));
+    if (completed.length === 0) {
+      return null;
+    }
+
+    completed.sort((a, b) => {
+      const aTime = typeof a.completedAtUtc === "string" ? a.completedAtUtc : "";
+      const bTime = typeof b.completedAtUtc === "string" ? b.completedAtUtc : "";
+      return bTime.localeCompare(aTime);
+    });
+    return completed[0] || null;
+  }
+
   function renderReviewFindingsPanel() {
-    const findings = getCurrentFlattenedReviewFindings();
-    if (!Array.isArray(findings) || findings.length === 0) {
+    const scopeKey = getCurrentScopeKey();
+    const summary = getScopeReviewSummary(scopeKey);
+    const record = getPrimaryCompletedReviewRecord(summary);
+    if (!record || !record.assistantText || !record.assistantText.trim()) {
       reviewFindingsNode.classList.add("hidden");
       reviewFindingsNode.innerHTML = "";
       return;
     }
 
-    const openCount = findings.filter((x) => x.done !== true).length;
-    const doneCount = findings.length - openCount;
-    const items = findings.map((item) => {
-      const sev = item.severity ? item.severity.toUpperCase() : "INFO";
-      const classes = ["diff-review-item"];
-      if (item.done) {
-        classes.push("is-done");
-      }
-      const canJump = !!item.path && Number.isFinite(item.lineNo) && item.lineNo > 0;
-      const lineLabel = canJump ? `L${item.lineNo}` : "";
-      const jumpMarkup = canJump
-        ? `<button type="button" class="diff-review-item-jump" data-review-jump-path="${escapeAttribute(item.path)}" data-review-jump-line="${item.lineNo}" title="Open ${escapeAttribute(item.path)}:${item.lineNo}">
-          <span class="diff-review-item-severity sev-${escapeAttribute((item.severity || "info").toLowerCase())}">${sev}</span>
-          <span class="diff-review-item-path">${escapeHtml(item.path)}</span>
-          <span class="diff-review-item-line">${lineLabel}</span>
-          <span class="diff-review-item-text">${escapeHtml(item.detail)}</span>
-        </button>`
-        : `<div class="diff-review-item-jump diff-review-item-static">
-          <span class="diff-review-item-severity sev-${escapeAttribute((item.severity || "info").toLowerCase())}">${sev}</span>
-          ${item.reviewLabel ? `<span class="diff-review-item-path">${escapeHtml(item.reviewLabel)}</span>` : ""}
-          <span class="diff-review-item-text">${escapeHtml(item.detail)}</span>
-        </div>`;
-      return `<div class="${classes.join(" ")}">
-        <button type="button" class="diff-review-item-toggle" data-review-toggle="${escapeAttribute(item.key)}" aria-label="${item.done ? "Mark review finding open" : "Mark review finding done"}">${item.done ? "Reopen" : "Done"}</button>
-        ${jumpMarkup}
-      </div>`;
-    }).join("");
+    const targetLabel = record.targetType === "commit" && typeof record.commitSha === "string" && record.commitSha
+      ? `commit ${record.commitSha.slice(0, 7)}`
+      : "worktree";
+    const when = typeof record.completedAtUtc === "string" ? record.completedAtUtc : "";
+    const statusLabel = record.status === "reviewed" ? "Reviewed" : "Review Completed";
+    const bodyHtml = renderReviewMarkdownBody(record.assistantText);
+    const openCount = Number.isFinite(summary.openFindingCount) ? summary.openFindingCount : 0;
+    const notesCount = notesByKey.size;
 
     reviewFindingsNode.innerHTML = `<div class="diff-review-header">
-      <span class="diff-review-title">Review Findings</span>
-      <span class="diff-review-count">${openCount} open / ${doneCount} done</span>
-      <button type="button" class="diff-review-clear-done" data-review-clear-done="1">Clear Done</button>
+      <span class="diff-review-title">Review</span>
+      <span class="diff-review-count">${escapeHtml(statusLabel)} | ${openCount} open | ${notesCount} notes</span>
+      <button type="button" class="diff-review-send-notes" data-review-send-notes="1">Send Notes To Prompt</button>
+      <button type="button" class="diff-review-done-review" data-review-scope-done="1"${record.status === "reviewed" ? " disabled" : ""}>Done Review</button>
     </div>
-    <div class="diff-review-list">${items}</div>`;
+    <div class="diff-review-output-item">
+      <div class="diff-review-output-meta">${escapeHtml(targetLabel)}${when ? ` | ${escapeHtml(when)}` : ""}</div>
+      <div class="diff-review-md-body">${bodyHtml}</div>
+    </div>`;
     reviewFindingsNode.classList.remove("hidden");
   }
 
@@ -2694,7 +2775,7 @@
     closeNoteModal();
   }
 
-  function consumePromptMetadata() {
+  function buildPromptMetadata(consume = true) {
     if (notesByKey.size === 0) {
       return { metadataText: "", noteCount: 0 };
     }
@@ -2733,12 +2814,14 @@
       }
     }
 
-    notesByKey.clear();
-    saveNotesForScope(currentNotesScopeKey);
-    updateSummary(currentTotalChangeCount);
-    rerenderFilesPreserveView();
-    rerenderFullFileWindowIfOpen();
-    renderComposerNotes();
+    if (consume) {
+      notesByKey.clear();
+      saveNotesForScope(currentNotesScopeKey);
+      updateSummary(currentTotalChangeCount);
+      rerenderFilesPreserveView();
+      rerenderFullFileWindowIfOpen();
+      renderComposerNotes();
+    }
 
     return {
       metadataText: lines.join("\n"),
@@ -2746,7 +2829,14 @@
     };
   }
 
+  function consumePromptMetadata() {
+    return buildPromptMetadata(true);
+  }
+
   window.codexDiffNotesConsumePromptMetadata = consumePromptMetadata;
+  window.codexDiffNotesBuildPromptMetadata = function codexDiffNotesBuildPromptMetadata() {
+    return buildPromptMetadata(false);
+  };
   window.codexDiffNotesHasPending = () => notesByKey.size > 0;
 
   function normalizePathForDiffViewer(path, cwd) {
@@ -3644,84 +3734,77 @@
   });
 
   reviewFindingsNode.addEventListener("click", (event) => {
-    const toggleBtnNode = event.target instanceof Element ? event.target.closest("[data-review-toggle]") : null;
-    if (toggleBtnNode) {
-      const key = toggleBtnNode.getAttribute("data-review-toggle") || "";
-      if (!key || !currentReviewStateScopeKey) {
-        return;
-      }
-
-      const findings = getCurrentFlattenedReviewFindings();
-      const finding = findings.find((item) => item && item.key === key) || null;
-      const reviewIds = Array.isArray(finding?.reviewIds)
-        ? finding.reviewIds.filter((value) => typeof value === "string" && value)
-        : [];
-      const setter = window.codexDiffSetReviewFindingDone;
+    const doneReviewBtn = event.target instanceof Element ? event.target.closest("[data-review-scope-done='1']") : null;
+    if (doneReviewBtn) {
+      const scopeKey = getCurrentScopeKey();
+      const doneScope = window.codexDiffMarkReviewScopeDone;
       const refreshCatalog = window.codexDiffRefreshReviewCatalog;
-      if (!finding || reviewIds.length === 0 || typeof setter !== "function") {
+      const context = getActiveContext();
+      if (!scopeKey || typeof doneScope !== "function") {
         return;
       }
 
-      const next = !(finding.done === true);
-      Promise.all(reviewIds.map((reviewId) => setter(reviewId, key, next)))
+      Promise.resolve(doneScope(scopeKey))
         .catch(() => { })
         .then(async () => {
-          const context = getActiveContext();
           if (context && context.cwd && typeof refreshCatalog === "function") {
             await refreshCatalog(context.cwd, { force: true }).catch(() => { });
           }
-          ensureReviewFindingStateScope(currentReviewStateScopeKey);
+          ensureReviewFindingStateScope(scopeKey);
           rerenderFilesPreserveView();
           rerenderFullFileWindowIfOpen();
+          renderCommitReviewSummary();
           renderCommitOptions();
         });
       return;
     }
 
-    const clearDoneBtn = event.target instanceof Element ? event.target.closest("[data-review-clear-done='1']") : null;
-    if (clearDoneBtn) {
-      if (!currentReviewStateScopeKey) {
-        return;
-      }
-      const findings = getCurrentFlattenedReviewFindings();
-      const reviewIds = Array.from(new Set(
-        findings
-          .filter((item) => item && item.done === true && Array.isArray(item.reviewIds))
-          .flatMap((item) => item.reviewIds)
-          .filter((value) => typeof value === "string" && value)
-      ));
-      const clearer = window.codexDiffClearReviewFindingDone;
-      const refreshCatalog = window.codexDiffRefreshReviewCatalog;
-      if (reviewIds.length === 0 || typeof clearer !== "function") {
+    const sendNotesBtn = event.target instanceof Element ? event.target.closest("[data-review-send-notes='1']") : null;
+    if (sendNotesBtn) {
+      const consumeMetadata = window.codexDiffNotesConsumePromptMetadata;
+      const appendPrompt = window.codexAppendTextToPrompt;
+      if (typeof consumeMetadata !== "function" || typeof appendPrompt !== "function") {
         return;
       }
 
-      Promise.all(reviewIds.map((reviewId) => clearer(reviewId)))
-        .catch(() => { })
-        .then(async () => {
-          const context = getActiveContext();
-          if (context && context.cwd && typeof refreshCatalog === "function") {
-            await refreshCatalog(context.cwd, { force: true }).catch(() => { });
-          }
-          ensureReviewFindingStateScope(currentReviewStateScopeKey);
-          rerenderFilesPreserveView();
-          rerenderFullFileWindowIfOpen();
-          renderCommitOptions();
-        });
+      const payload = consumeMetadata();
+      const metadataText = typeof payload?.metadataText === "string" ? payload.metadataText.trim() : "";
+      if (!metadataText) {
+        return;
+      }
+
+      appendPrompt(`Please implement the requested fixes from these review notes.\n\n${metadataText}`, { focus: true });
+      renderReviewFindingsPanel();
+      renderCommitOptions();
       return;
     }
 
-    const jumpBtn = event.target instanceof Element ? event.target.closest("[data-review-jump-path]") : null;
+    const jumpBtn = event.target instanceof Element ? event.target.closest("[data-review-jump-path], [data-review-md-link='1']") : null;
     if (!jumpBtn) {
       return;
     }
 
     const path = jumpBtn.getAttribute("data-review-jump-path") || "";
     const lineNo = Number.parseInt(jumpBtn.getAttribute("data-review-jump-line") || "", 10);
-    if (!path || !Number.isFinite(lineNo) || lineNo <= 0) {
+    if (!path) {
       return;
     }
-    jumpToReviewFinding(path, lineNo);
+
+    if (Number.isFinite(lineNo) && lineNo > 0) {
+      jumpToReviewFinding(path, lineNo);
+      if (noteModalReady) {
+        openNoteModalForTargets([{
+          path,
+          startLine: lineNo,
+          endLine: lineNo,
+          snippet: "",
+          origin: "file"
+        }]);
+      }
+      return;
+    }
+
+    openFullFileWindow(path, {}).catch(() => { });
   });
 
   composerNotesNode.addEventListener("click", (event) => {

@@ -5150,21 +5150,28 @@ function buildReviewScopeSummary(scopeKey) {
   let queuedCount = 0;
   let runningCount = 0;
   let completedCount = 0;
+  let reviewedCount = 0;
   let openFindingCount = 0;
   for (const record of records) {
-    if (record.status === "completed") {
+    if (record.status === "reviewed") {
+      reviewedCount += 1;
+    } else if (record.status === "completed") {
       completedCount += 1;
     } else if (record.status === "running") {
       runningCount += 1;
     } else {
       queuedCount += 1;
     }
-    openFindingCount += Array.isArray(record.findings) ? record.findings.length : 0;
+    if (record.status !== "reviewed") {
+      openFindingCount += Array.isArray(record.findings) ? record.findings.length : 0;
+    }
   }
 
   let status = "not_started";
   if (queuedCount > 0 || runningCount > 0) {
     status = "started";
+  } else if (reviewedCount > 0 && completedCount === 0) {
+    status = "reviewed";
   } else if (completedCount > 0) {
     status = "completed";
   }
@@ -5177,6 +5184,7 @@ function buildReviewScopeSummary(scopeKey) {
     runningCount,
     requestedCount: queuedCount + runningCount,
     completedCount,
+    reviewedCount,
     openFindingCount,
     records
   };
@@ -5186,6 +5194,9 @@ function getReviewFindingsForScope(scopeKey) {
   const records = getReviewRecordsForScope(scopeKey);
   const findings = [];
   for (const record of records) {
+    if (record.status === "reviewed") {
+      continue;
+    }
     const reviewLabel = record.commitSha
       ? `${record.commitSha.slice(0, 7)} review`
       : "worktree review";
@@ -5198,6 +5209,34 @@ function getReviewFindingsForScope(scopeKey) {
     }
   }
   return findings;
+}
+
+async function markReviewScopeDone(scopeKey) {
+  const normalizedScopeKey = typeof scopeKey === "string" ? scopeKey.trim() : "";
+  if (!normalizedScopeKey) {
+    return false;
+  }
+
+  const records = getReviewRecordsForScope(normalizedScopeKey);
+  if (!Array.isArray(records) || records.length === 0) {
+    return false;
+  }
+
+  const targets = records.filter((record) =>
+    record
+    && typeof record.reviewId === "string"
+    && record.reviewId.trim()
+    && record.status !== "reviewed");
+  if (targets.length === 0) {
+    return true;
+  }
+
+  await Promise.all(targets.map((record) => updateReviewStatus(record.reviewId, "reviewed")));
+  const cwd = targets[0] && typeof targets[0].cwd === "string" ? targets[0].cwd : "";
+  if (cwd) {
+    await refreshReviewCatalogForCwd(cwd, { force: true });
+  }
+  return true;
 }
 
 function ingestReviewRecordsFromTurns(threadId, turns) {
@@ -5216,6 +5255,10 @@ window.codexDiffSetReviewFindingDone = async function codexDiffSetReviewFindingD
 
 window.codexDiffClearReviewFindingDone = async function codexDiffClearReviewFindingDone(reviewId) {
   return await clearReviewFindingDone(reviewId);
+};
+
+window.codexDiffMarkReviewScopeDone = async function codexDiffMarkReviewScopeDone(scopeKey) {
+  return await markReviewScopeDone(scopeKey);
 };
 
 window.codexDiffCreateReviewRequest = async function codexDiffCreateReviewRequest(options = {}) {
@@ -10932,6 +10975,29 @@ logFlushTimer = setInterval(() => flushPendingClientLogs(), LOG_FLUSH_INTERVAL_M
 if (timelineDiagEnabled) {
   appendLog("[timeline_diag] enabled (set ?timelineDiag=1 in URL to force-enable on load)");
 }
+
+window.codexAppendTextToPrompt = function codexAppendTextToPrompt(text, options = {}) {
+  if (!promptInput) {
+    return false;
+  }
+
+  const appended = typeof text === "string" ? text.trim() : "";
+  if (!appended) {
+    return false;
+  }
+
+  const current = promptInput.value || "";
+  const separator = current.trim().length > 0 ? "\n\n" : "";
+  const nextValue = `${current}${separator}${appended}`;
+  promptInput.value = nextValue;
+  refreshPromptInputHeight({ reset: nextValue.length === 0 });
+  rememberPromptDraftForState(getActiveSessionState());
+  if (options.focus !== false) {
+    promptInput.focus();
+    promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
+  }
+  return true;
+};
 
 loadRuntimeSecurityConfig()
   .catch((error) => {

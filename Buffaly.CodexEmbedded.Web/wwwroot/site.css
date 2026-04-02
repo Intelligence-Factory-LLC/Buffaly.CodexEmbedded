@@ -1630,6 +1630,10 @@ body {
 	will-change: transform;
 }
 
+.diff-review-modal-card {
+	max-width: min(72vw, 760px);
+}
+
 #diffNoteModalTitle,
 .diff-note-modal-path {
 	cursor: move;
@@ -3564,6 +3568,12 @@ body {
 	padding: 0.18rem 0.48rem;
 }
 
+.worktree-diff-refresh-btn.review-queued {
+	border-color: #15803d;
+	background: #f0fdf4;
+	color: #14532d;
+}
+
 .worktree-diff-refresh-btn:disabled {
 	opacity: 0.6;
 	cursor: wait;
@@ -3829,6 +3839,11 @@ body {
 	padding-left: 0.3rem;
 }
 
+.diff-full-window-line-reviewed {
+	box-shadow: inset 3px 0 0 #ef4444;
+	background: rgba(239, 68, 68, 0.08);
+}
+
 .worktree-diff-file-drawer {
 	border: 1px solid #cbd5e1;
 	border-radius: 8px;
@@ -3913,6 +3928,11 @@ body {
 	padding-left: 0.3rem;
 }
 
+.worktree-diff-line-reviewed {
+	box-shadow: inset 3px 0 0 #ef4444;
+	background: rgba(239, 68, 68, 0.08);
+}
+
 .worktree-diff-hunk-breadcrumb {
 	display: inline-block;
 	margin-left: 0.45rem;
@@ -3947,10 +3967,400 @@ body {
 	white-space: nowrap;
 }
 
+.worktree-diff-review-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.2rem;
+	margin-left: 0.4rem;
+	padding: 0.02rem 0.38rem;
+	border: 1px solid #fca5a5;
+	border-radius: 999px;
+	background: #fef2f2;
+	color: #991b1b;
+	font-size: 0.64rem;
+	font-weight: 700;
+	letter-spacing: 0.01em;
+}
+
 .worktree-diff-truncated {
 	margin: 0.22rem 0 0;
 	font-size: 0.7rem;
 	color: #64748b;
+}
+
+.diff-review-findings {
+	margin: 0 0 0.5rem;
+	padding: 0.42rem 0.48rem;
+	border: 1px solid #fecaca;
+	border-radius: 8px;
+	background: #fff7f7;
+}
+
+.diff-commit-review-summary {
+	display: block;
+	margin: 0 0 0.42rem;
+	padding: 0.34rem 0.4rem;
+	border: 1px solid #fed7aa;
+	border-radius: 8px;
+	background: #fffbeb;
+}
+
+.diff-commit-review-header {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	margin: 0 0 0.28rem;
+}
+
+.diff-commit-review-summary .label {
+	font-size: 0.68rem;
+	font-weight: 700;
+	color: #9a3412;
+	margin-right: 0.2rem;
+}
+
+.diff-commit-review-meta {
+	font-size: 0.66rem;
+	color: #9a3412;
+}
+
+.diff-commit-review-list {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 0.2rem;
+	max-height: min(24vh, 260px);
+	overflow: auto;
+}
+
+.diff-commit-review-empty {
+	font-size: 0.68rem;
+	color: #7c2d12;
+}
+
+.diff-commit-review-row {
+	display: grid;
+	grid-template-columns: auto auto 1fr auto auto;
+	align-items: center;
+	gap: 0.36rem;
+	border: 1px solid #fdba74;
+	border-radius: 8px;
+	background: #ffffff;
+	padding: 0.16rem 0.24rem;
+}
+
+.diff-commit-review-row.active {
+	border-color: #f97316;
+	background: #fff7ed;
+}
+
+.diff-commit-review-open-btn {
+	border: 1px solid #fdba74;
+	border-radius: 6px;
+	background: #fff7ed;
+	color: #9a3412;
+	font-size: 0.62rem;
+	font-weight: 700;
+	padding: 0.06rem 0.34rem;
+	cursor: pointer;
+}
+
+.diff-commit-review-sha {
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.65rem;
+	color: #7c2d12;
+}
+
+.diff-commit-review-subject {
+	font-size: 0.65rem;
+	color: #7c2d12;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.diff-commit-review-status {
+	font-size: 0.62rem;
+	font-weight: 700;
+	border-radius: 999px;
+	padding: 0.04rem 0.34rem;
+}
+
+.diff-commit-review-status.not-started {
+	background: #e2e8f0;
+	color: #334155;
+}
+
+.diff-commit-review-status.started {
+	background: #fef3c7;
+	color: #92400e;
+}
+
+.diff-commit-review-status.completed {
+	background: #dcfce7;
+	color: #166534;
+}
+
+.diff-commit-review-status.reviewed {
+	background: #e0f2fe;
+	color: #0c4a6e;
+}
+
+.diff-commit-review-open-count {
+	font-size: 0.62rem;
+	font-weight: 700;
+	color: #991b1b;
+}
+
+.diff-review-header {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	margin: 0 0 0.35rem;
+}
+
+.diff-review-title {
+	font-weight: 700;
+	font-size: 0.78rem;
+	color: #7f1d1d;
+}
+
+.diff-review-count {
+	font-size: 0.68rem;
+	color: #991b1b;
+}
+
+.diff-review-clear-done {
+	margin-left: auto;
+	border: 1px solid #fecaca;
+	background: #ffffff;
+	color: #991b1b;
+	border-radius: 999px;
+	font-size: 0.66rem;
+	font-weight: 700;
+	padding: 0.12rem 0.48rem;
+	cursor: pointer;
+}
+
+.diff-review-send-notes,
+.diff-review-done-review {
+	margin-left: auto;
+	border: 1px solid #fecaca;
+	background: #ffffff;
+	color: #991b1b;
+	border-radius: 999px;
+	font-size: 0.66rem;
+	font-weight: 700;
+	padding: 0.12rem 0.48rem;
+	cursor: pointer;
+}
+
+.diff-review-send-notes {
+	margin-left: 0.35rem;
+}
+
+.diff-review-done-review:disabled {
+	opacity: 0.62;
+	cursor: default;
+}
+
+.diff-review-list {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 0.26rem;
+	max-height: min(26vh, 260px);
+	overflow: auto;
+	padding-right: 0.08rem;
+}
+
+.diff-review-item {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.32rem;
+	border: 1px solid #fca5a5;
+	background: #ffffff;
+	border-radius: 8px;
+	padding: 0.2rem 0.28rem;
+}
+
+.diff-review-item.is-done {
+	opacity: 0.7;
+	border-color: #cbd5e1;
+}
+
+.diff-review-item-toggle {
+	flex: 0 0 auto;
+	border: 1px solid #fca5a5;
+	background: #fff1f2;
+	color: #9f1239;
+	border-radius: 999px;
+	font-size: 0.62rem;
+	font-weight: 700;
+	padding: 0.08rem 0.36rem;
+	cursor: pointer;
+}
+
+.diff-review-item.is-done .diff-review-item-toggle {
+	border-color: #94a3b8;
+	background: #f8fafc;
+	color: #334155;
+}
+
+.diff-review-item-jump {
+	display: inline-flex;
+	align-items: baseline;
+	flex-wrap: wrap;
+	gap: 0.32rem;
+	flex: 1 1 auto;
+	min-width: 0;
+	border: 0;
+	background: transparent;
+	color: #0f172a;
+	text-align: left;
+	padding: 0;
+	cursor: pointer;
+}
+
+.diff-review-item-static {
+	cursor: default;
+}
+
+.diff-review-item-severity {
+	display: inline-block;
+	padding: 0.02rem 0.28rem;
+	border-radius: 999px;
+	font-size: 0.6rem;
+	font-weight: 700;
+	line-height: 1.1;
+	letter-spacing: 0.01em;
+}
+
+.diff-review-item-severity.sev-critical {
+	background: #7f1d1d;
+	color: #fee2e2;
+}
+
+.diff-review-item-severity.sev-high {
+	background: #b91c1c;
+	color: #fee2e2;
+}
+
+.diff-review-item-severity.sev-medium {
+	background: #ea580c;
+	color: #ffedd5;
+}
+
+.diff-review-item-severity.sev-low,
+.diff-review-item-severity.sev-info {
+	background: #cbd5e1;
+	color: #0f172a;
+}
+
+.diff-review-item-path {
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.67rem;
+	color: #334155;
+}
+
+.diff-review-item-line {
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.66rem;
+	font-weight: 700;
+	color: #1e3a8a;
+}
+
+.diff-review-item-text {
+	font-size: 0.68rem;
+	color: #334155;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.diff-review-output {
+	margin-top: 0.5rem;
+}
+
+.diff-review-output-list {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 0.35rem;
+	max-height: min(34vh, 320px);
+	overflow: auto;
+	padding-right: 0.08rem;
+}
+
+.diff-review-output-item {
+	border: 1px solid #fecaca;
+	background: #ffffff;
+	border-radius: 8px;
+	padding: 0.35rem 0.45rem;
+}
+
+.diff-review-md-body {
+	font-size: 0.69rem;
+	line-height: 1.45;
+	color: #334155;
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 0.2rem;
+}
+
+.diff-review-md-heading {
+	font-weight: 700;
+	color: #7f1d1d;
+}
+
+.diff-review-md-item {
+	padding-left: 0.25rem;
+}
+
+.diff-review-md-item.ordered::before {
+	content: "# ";
+	color: #991b1b;
+	font-weight: 700;
+}
+
+.diff-review-md-item.bullet::before {
+	content: "- ";
+	color: #991b1b;
+	font-weight: 700;
+}
+
+.diff-review-md-paragraph {
+	color: #334155;
+}
+
+.diff-review-md-spacer {
+	height: 0.25rem;
+}
+
+.diff-review-md-link {
+	color: #1d4ed8;
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+.diff-review-md-link-static {
+	color: #334155;
+	font-weight: 600;
+}
+
+.diff-review-output-meta {
+	font-size: 0.66rem;
+	font-weight: 700;
+	color: #9f1239;
+	margin-bottom: 0.2rem;
+}
+
+.diff-review-output-text {
+	margin: 0;
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.67rem;
+	line-height: 1.35;
+	color: #334155;
+	white-space: pre-wrap;
+	word-break: break-word;
+	max-height: min(28vh, 250px);
+	overflow: auto;
 }
 
 .watcher-tool-body-hidden {
@@ -4553,6 +4963,20 @@ html[data-theme="dark"] .sidebar-search-toggle-btn.active {
 	color: #bfdbfe;
 }
 
+html[data-theme="dark"] .worktree-diff-refresh-btn,
+html[data-theme="dark"] .worktree-diff-context-select,
+html[data-theme="dark"] .worktree-diff-commit-select {
+	background: #0f172a;
+	border-color: #334155;
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .worktree-diff-refresh-btn.review-queued {
+	background: #052e16;
+	border-color: #166534;
+	color: #bbf7d0;
+}
+
 html[data-theme="dark"] .sidebar-nav-link,
 html[data-theme="dark"] .new-project-btn,
 html[data-theme="dark"] .project-name,
@@ -4949,6 +5373,11 @@ html[data-theme="dark"] .diff-full-window-line-noted {
 	border-left-color: #f59e0b;
 }
 
+html[data-theme="dark"] .diff-full-window-line-reviewed {
+	box-shadow: inset 3px 0 0 #f87171;
+	background: rgba(248, 113, 113, 0.12);
+}
+
 html[data-theme="dark"] .worktree-diff-file-drawer {
 	background: #0b1220;
 	border-color: #334155;
@@ -4984,10 +5413,180 @@ html[data-theme="dark"] .worktree-diff-line-noted {
 	border-left-color: #f59e0b;
 }
 
+html[data-theme="dark"] .worktree-diff-line-reviewed {
+	box-shadow: inset 3px 0 0 #f87171;
+	background: rgba(248, 113, 113, 0.12);
+}
+
 html[data-theme="dark"] .worktree-diff-note-pill {
 	background: rgba(245, 158, 11, 0.16);
 	border-color: rgba(245, 158, 11, 0.55);
 	color: #fcd34d;
+}
+
+html[data-theme="dark"] .worktree-diff-review-pill {
+	background: rgba(248, 113, 113, 0.14);
+	border-color: rgba(248, 113, 113, 0.5);
+	color: #fecaca;
+}
+
+html[data-theme="dark"] .diff-review-findings {
+	background: rgba(127, 29, 29, 0.2);
+	border-color: rgba(248, 113, 113, 0.45);
+}
+
+html[data-theme="dark"] .diff-commit-review-summary {
+	background: rgba(154, 52, 18, 0.2);
+	border-color: rgba(251, 146, 60, 0.45);
+}
+
+html[data-theme="dark"] .diff-commit-review-summary .label {
+	color: #fdba74;
+}
+
+html[data-theme="dark"] .diff-commit-review-meta {
+	color: #fdba74;
+}
+
+html[data-theme="dark"] .diff-commit-review-empty {
+	color: #fed7aa;
+}
+
+html[data-theme="dark"] .diff-commit-review-row {
+	background: #0f172a;
+	border-color: rgba(251, 146, 60, 0.55);
+}
+
+html[data-theme="dark"] .diff-commit-review-row.active {
+	background: rgba(194, 65, 12, 0.35);
+	border-color: #fb923c;
+}
+
+html[data-theme="dark"] .diff-commit-review-open-btn {
+	background: rgba(154, 52, 18, 0.3);
+	border-color: rgba(251, 146, 60, 0.55);
+	color: #fed7aa;
+}
+
+html[data-theme="dark"] .diff-commit-review-sha {
+	color: #fed7aa;
+}
+
+html[data-theme="dark"] .diff-commit-review-subject {
+	color: #fdba74;
+}
+
+html[data-theme="dark"] .diff-commit-review-status.not-started {
+	background: #334155;
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .diff-commit-review-status.started {
+	background: rgba(180, 83, 9, 0.35);
+	color: #fcd34d;
+}
+
+html[data-theme="dark"] .diff-commit-review-status.completed {
+	background: rgba(22, 101, 52, 0.38);
+	color: #bbf7d0;
+}
+
+html[data-theme="dark"] .diff-commit-review-status.reviewed {
+	background: rgba(2, 132, 199, 0.32);
+	color: #bae6fd;
+}
+
+html[data-theme="dark"] .diff-commit-review-open-count {
+	color: #fecaca;
+}
+
+html[data-theme="dark"] .diff-review-title {
+	color: #fecaca;
+}
+
+html[data-theme="dark"] .diff-review-count {
+	color: #fca5a5;
+}
+
+html[data-theme="dark"] .diff-review-clear-done {
+	background: #0f172a;
+	border-color: rgba(248, 113, 113, 0.45);
+	color: #fecaca;
+}
+
+html[data-theme="dark"] .diff-review-send-notes,
+html[data-theme="dark"] .diff-review-done-review {
+	background: #0f172a;
+	border-color: rgba(248, 113, 113, 0.45);
+	color: #fecaca;
+}
+
+html[data-theme="dark"] .diff-review-item {
+	background: #111827;
+	border-color: rgba(248, 113, 113, 0.55);
+}
+
+html[data-theme="dark"] .diff-review-item.is-done {
+	border-color: #334155;
+}
+
+html[data-theme="dark"] .diff-review-item-toggle {
+	background: rgba(244, 63, 94, 0.2);
+	border-color: rgba(248, 113, 113, 0.55);
+	color: #fecaca;
+}
+
+html[data-theme="dark"] .diff-review-item.is-done .diff-review-item-toggle {
+	background: rgba(51, 65, 85, 0.45);
+	border-color: #475569;
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .diff-review-item-jump {
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .diff-review-item-static {
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .diff-review-item-path {
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .diff-review-item-line {
+	color: #93c5fd;
+}
+
+html[data-theme="dark"] .diff-review-item-text {
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .diff-review-output-item {
+	border-color: #7f1d1d;
+	background: #0f172a;
+}
+
+html[data-theme="dark"] .diff-review-output-meta {
+	color: #fca5a5;
+}
+
+html[data-theme="dark"] .diff-review-output-text {
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .diff-review-md-body,
+html[data-theme="dark"] .diff-review-md-paragraph,
+html[data-theme="dark"] .diff-review-md-link-static {
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .diff-review-md-heading {
+	color: #fecaca;
+}
+
+html[data-theme="dark"] .diff-review-md-link {
+	color: #93c5fd;
 }
 
 html[data-theme="dark"] .worktree-diff-hunk-breadcrumb {

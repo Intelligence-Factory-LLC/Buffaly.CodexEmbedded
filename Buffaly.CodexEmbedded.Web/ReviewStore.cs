@@ -103,6 +103,19 @@ internal sealed class ReviewStore
 			{
 				record.CompletedAtUtc = null;
 			}
+			else if (string.Equals(normalizedStatus, "reviewed", StringComparison.Ordinal))
+			{
+				if (record.StartedAtUtc is null)
+				{
+					record.StartedAtUtc = now;
+					changed = true;
+				}
+				if (record.CompletedAtUtc is null)
+				{
+					record.CompletedAtUtc = now;
+					changed = true;
+				}
+			}
 
 			if (!changed)
 			{
@@ -268,6 +281,10 @@ internal sealed class ReviewStore
 			var nextStatus = turn.AssistantFinal is not null
 				? "completed"
 				: "running";
+			if (string.Equals(record.Status, "reviewed", StringComparison.Ordinal))
+			{
+				nextStatus = "reviewed";
+			}
 			var nextStartedAt = ParseUtc(turn.User.Timestamp) ?? record.StartedAtUtc ?? record.QueuedAtUtc;
 			DateTimeOffset? nextCompletedAt = turn.AssistantFinal is not null
 				? (ParseUtc(turn.AssistantFinal.Timestamp) ?? record.CompletedAtUtc ?? DateTimeOffset.UtcNow)
@@ -390,6 +407,10 @@ internal sealed class ReviewStore
 		if (string.Equals(normalized, "failed", StringComparison.OrdinalIgnoreCase))
 		{
 			return "failed";
+		}
+		if (string.Equals(normalized, "reviewed", StringComparison.OrdinalIgnoreCase))
+		{
+			return "reviewed";
 		}
 		return "queued";
 	}
@@ -539,6 +560,8 @@ internal sealed class ReviewStore
 		var dismissed = dismissedFindingKeys.ToHashSet(StringComparer.Ordinal);
 		var findings = new List<ReviewFindingRecord>();
 		var seen = new HashSet<string>(StringComparer.Ordinal);
+		var currentBlock = new List<string>();
+		var inFindingsSection = false;
 		foreach (var rawLine in (assistantText ?? string.Empty).Split('\n'))
 		{
 			var line = rawLine?.Trim() ?? string.Empty;
@@ -547,19 +570,130 @@ internal sealed class ReviewStore
 				continue;
 			}
 
-			var hasFindingShape =
-				Regex.IsMatch(line, @"^\d+\.\s+", RegexOptions.CultureInvariant) ||
-				Regex.IsMatch(line, @"^[*-]\s+", RegexOptions.CultureInvariant) ||
-				Regex.IsMatch(line, @"\b(critical|high|medium|low)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-			if (!hasFindingShape)
+			var heading = NormalizeSectionHeading(line);
+			if (string.Equals(heading, "findings", StringComparison.OrdinalIgnoreCase))
+			{
+				CommitFindingBlock(currentBlock, cwd, dismissed, seen, findings);
+				currentBlock.Clear();
+				inFindingsSection = true;
+				continue;
+			}
+			if (IsTerminalReviewSectionHeading(heading))
+			{
+				CommitFindingBlock(currentBlock, cwd, dismissed, seen, findings);
+				currentBlock.Clear();
+				inFindingsSection = false;
+				continue;
+			}
+
+			var startsFinding = IsFindingStartLine(line);
+			if (!inFindingsSection && !startsFinding)
 			{
 				continue;
 			}
 
-			var detail = Regex.Replace(line, @"\s+", " ").Trim();
-			var severity = NormalizeSeverity(detail);
-			var hadLink = false;
-			foreach (Match linkMatch in Regex.Matches(line, @"\[([^\]]+)\]\(([^)]+)\)", RegexOptions.CultureInvariant))
+			if (startsFinding)
+			{
+				CommitFindingBlock(currentBlock, cwd, dismissed, seen, findings);
+				currentBlock.Clear();
+				inFindingsSection = true;
+			}
+
+			if (inFindingsSection)
+			{
+				currentBlock.Add(line);
+			}
+		}
+		CommitFindingBlock(currentBlock, cwd, dismissed, seen, findings);
+
+		return findings;
+	}
+
+	private static void CommitFindingBlock(
+		List<string> blockLines,
+		string cwd,
+		HashSet<string> dismissed,
+		HashSet<string> seen,
+		List<ReviewFindingRecord> findings)
+	{
+		if (blockLines is null || blockLines.Count == 0)
+		{
+			return;
+		}
+
+		var parsed = ParseFindingBlock(blockLines, cwd);
+		if (parsed is null || string.IsNullOrWhiteSpace(parsed.Value.Detail))
+		{
+			return;
+		}
+
+		var detail = parsed.Value.Detail;
+		var key = !string.IsNullOrWhiteSpace(parsed.Value.Path) && parsed.Value.LineNo > 0
+			? $"{parsed.Value.Path}|{parsed.Value.LineNo}|{detail}"
+			: $"summary||{detail}";
+		if (!seen.Add(key))
+		{
+			return;
+		}
+
+		findings.Add(new ReviewFindingRecord(
+			key,
+			parsed.Value.Path,
+			parsed.Value.LineNo,
+			parsed.Value.Severity,
+			detail,
+			dismissed.Contains(key)));
+	}
+
+	private static (string Path, int LineNo, string Severity, string Detail)? ParseFindingBlock(IReadOnlyList<string> blockLines, string cwd)
+	{
+		if (blockLines is null || blockLines.Count == 0)
+		{
+			return null;
+		}
+
+		var headerLine = blockLines[0]?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(headerLine))
+		{
+			return null;
+		}
+
+		var match = Regex.Match(
+			headerLine,
+			@"^\d+\.\s*(?<severity>critical|high|medium|low)(?:\s*[:\-]\s*|\s+)(?<detail>.+)$",
+			RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+		var severity = match.Success ? NormalizeSeverity(match.Groups["severity"].Value) : NormalizeSeverity(headerLine);
+		var detail = match.Success
+			? match.Groups["detail"].Value.Trim()
+			: Regex.Replace(headerLine, @"^\d+\.\s*", string.Empty, RegexOptions.CultureInvariant).Trim();
+		if (string.IsNullOrWhiteSpace(detail))
+		{
+			return null;
+		}
+
+		var attachments = ExtractFileReferences(blockLines, cwd)
+			.Where(x => !string.IsNullOrWhiteSpace(x.Path) && x.LineNo > 0)
+			.Distinct()
+			.ToArray();
+		if (attachments.Length == 1)
+		{
+			return (attachments[0].Path, attachments[0].LineNo, severity, detail);
+		}
+
+		return (string.Empty, 0, severity, detail);
+	}
+
+	private static IReadOnlyList<(string Path, int LineNo)> ExtractFileReferences(IReadOnlyList<string> blockLines, string cwd)
+	{
+		var results = new List<(string Path, int LineNo)>();
+		if (blockLines is null || blockLines.Count == 0)
+		{
+			return results;
+		}
+
+		foreach (var line in blockLines)
+		{
+			foreach (Match linkMatch in Regex.Matches(line ?? string.Empty, @"\[([^\]]+)\]\(([^)]+)\)", RegexOptions.CultureInvariant))
 			{
 				var parsed = ParseFileLink(linkMatch.Groups[2].Value);
 				if (parsed is null)
@@ -567,42 +701,44 @@ internal sealed class ReviewStore
 					continue;
 				}
 
-				hadLink = true;
 				var normalizedPath = NormalizeFindingPath(parsed.Value.Path, cwd);
-				var key = $"{normalizedPath}|{parsed.Value.LineNo}|{detail}";
-				if (!seen.Add(key))
-				{
-					continue;
-				}
-
-				findings.Add(new ReviewFindingRecord(
-					key,
-					normalizedPath,
-					parsed.Value.LineNo,
-					severity,
-					detail,
-					dismissed.Contains(key)));
-			}
-
-			if (!hadLink)
-			{
-				var key = $"summary||{detail}";
-				if (!seen.Add(key))
-				{
-					continue;
-				}
-
-				findings.Add(new ReviewFindingRecord(
-					key,
-					string.Empty,
-					0,
-					severity,
-					detail,
-					dismissed.Contains(key)));
+				results.Add((normalizedPath, parsed.Value.LineNo));
 			}
 		}
 
-		return findings;
+		return results;
+	}
+
+	private static bool IsFindingStartLine(string line)
+	{
+		return Regex.IsMatch(
+			line ?? string.Empty,
+			@"^\d+\.\s*(critical|high|medium|low)(?:\s*[:\-]\s*|\s+)",
+			RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+	}
+
+	private static string NormalizeSectionHeading(string line)
+	{
+		var normalized = line?.Trim() ?? string.Empty;
+		normalized = Regex.Replace(normalized, @"^[#*\s`>_-]+", string.Empty, RegexOptions.CultureInvariant);
+		normalized = Regex.Replace(normalized, @"[#*\s`:_-]+$", string.Empty, RegexOptions.CultureInvariant);
+		return normalized.Trim();
+	}
+
+	private static bool IsTerminalReviewSectionHeading(string heading)
+	{
+		if (string.IsNullOrWhiteSpace(heading))
+		{
+			return false;
+		}
+
+		return
+			string.Equals(heading, "missing tests", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(heading, "open questions", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(heading, "residual risks / regressions to watch", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(heading, "residual risks", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(heading, "notes", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(heading, "change summary", StringComparison.OrdinalIgnoreCase);
 	}
 
 	private static (string Path, int LineNo)? ParseFileLink(string? href)
