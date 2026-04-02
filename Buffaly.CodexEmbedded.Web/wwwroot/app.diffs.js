@@ -128,6 +128,7 @@
   let reviewFindingStateByKey = new Map();
   let commitReviewSummaryCollapsed = false;
   let reviewPanelCollapsed = false;
+  let workspaceMode = "tasks";
   try {
     currentContextMode = normalizeContextMode(window.localStorage.getItem(STORAGE_CONTEXT_MODE_KEY) || "3");
   } catch {
@@ -142,6 +143,14 @@
     reviewPanelCollapsed = window.localStorage.getItem(STORAGE_REVIEW_PANEL_COLLAPSED_KEY) === "1";
   } catch {
     reviewPanelCollapsed = false;
+  }
+  try {
+    const workspaceProvider = window.codexWorkspaceGetTabMode;
+    if (typeof workspaceProvider === "function") {
+      workspaceMode = workspaceProvider() === "code_reviews" ? "code_reviews" : "tasks";
+    }
+  } catch {
+    workspaceMode = "tasks";
   }
 
   function createEmptyFullFileViewerState() {
@@ -1857,14 +1866,17 @@
   }
 
   function applyPanelState() {
-    const showPanel = isExpanded;
+    const dedicatedWorkspace = workspaceMode === "code_reviews";
+    const showPanel = dedicatedWorkspace ? true : isExpanded;
     panel.classList.toggle("hidden", !showPanel);
     panel.classList.toggle("worktree-diff-collapsed", false);
-    panel.classList.toggle("worktree-diff-fullscreen", isExpanded);
+    panel.classList.toggle("worktree-diff-fullscreen", dedicatedWorkspace ? false : isExpanded);
+    panel.classList.toggle("worktree-diff-dedicated-workspace", dedicatedWorkspace);
     toggleBtn.textContent = "Close";
     toggleBtn.setAttribute("aria-expanded", showPanel ? "true" : "false");
     toggleBtn.disabled = false;
-    indicatorBtn.classList.toggle("hidden", false);
+    toggleBtn.classList.toggle("hidden", dedicatedWorkspace);
+    indicatorBtn.classList.toggle("hidden", dedicatedWorkspace ? true : false);
     indicatorCountNode.textContent = String(currentFiles.length);
     const fileLabel = `${currentFiles.length} file${currentFiles.length === 1 ? "" : "s"}`;
     if (!lastCwd) {
@@ -3844,6 +3856,22 @@
     queueRefresh(options);
   };
 
+  window.codexDiffSetWorkspaceMode = function codexDiffSetWorkspaceMode(mode) {
+    const nextMode = mode === "code_reviews" ? "code_reviews" : "tasks";
+    if (workspaceMode === nextMode) {
+      applyPanelState();
+      return;
+    }
+
+    workspaceMode = nextMode;
+    if (workspaceMode === "code_reviews" && currentMode !== "commit") {
+      currentMode = "commit";
+      lastRenderKey = "";
+      queueRefresh({ force: true });
+    }
+    applyPanelState();
+  };
+
   function startModalDrag(event) {
     if (!(event.target instanceof Element)) {
       return;
@@ -4367,6 +4395,9 @@
     renderCommitOptions();
   });
 
+  if (workspaceMode === "code_reviews") {
+    currentMode = "commit";
+  }
   renderCommitOptions();
   applyModeUiState();
   applyPanelState();

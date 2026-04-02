@@ -877,6 +877,30 @@ body {
 	align-items: center;
 }
 
+.workspace-tabs {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	padding: 0.08rem 0.7rem 0.02rem;
+	border-bottom: 1px solid #e2e8f0;
+	background: rgba(255, 255, 255, 0.92);
+}
+
+.workspace-tab {
+	border: 0;
+	border-bottom: 2px solid transparent;
+	background: transparent;
+	color: #64748b;
+	font-size: 0.86rem;
+	font-weight: 700;
+	padding: 0.46rem 0.18rem 0.42rem;
+}
+
+.workspace-tab.active {
+	color: #0f172a;
+	border-bottom-color: #2563eb;
+}
+
 .conversation-title-main {
 	display: inline-flex;
 	align-items: center;
@@ -3462,6 +3486,12 @@ body {
 	box-shadow: 0 18px 56px rgba(15, 23, 42, 0.28);
 }
 
+.worktree-diff-panel.worktree-diff-dedicated-workspace {
+	max-height: none;
+	min-height: 320px;
+	flex: 0 0 auto;
+}
+
 .worktree-diff-header {
 	display: flex;
 	align-items: center;
@@ -5387,6 +5417,20 @@ html[data-theme="dark"] .watcher-diff-header {
 	background: rgba(59, 130, 246, 0.22);
 }
 
+html[data-theme="dark"] .workspace-tabs {
+	background: rgba(15, 23, 42, 0.92);
+	border-bottom-color: #334155;
+}
+
+html[data-theme="dark"] .workspace-tab {
+	color: #94a3b8;
+}
+
+html[data-theme="dark"] .workspace-tab.active {
+	color: #f8fafc;
+	border-bottom-color: #60a5fa;
+}
+
 html[data-theme="dark"] .worktree-diff-panel {
 	background: #111827;
 	border-color: #334155;
@@ -6885,5 +6929,22 @@ html[data-theme="dark"] .server-row-action-btn:hover {
 	.plan-panel-body {
 		font-size: 0.72rem;
 		max-height: 180px;
+	}
+
+	.workspace-tabs {
+		padding-left: 0.45rem;
+		padding-right: 0.45rem;
+	}
+
+	.workspace-tab {
+		font-size: 0.8rem;
+		padding-top: 0.42rem;
+		padding-bottom: 0.38rem;
+	}
+
+	.worktree-diff-panel.worktree-diff-dedicated-workspace {
+		margin-left: 0.45rem;
+		margin-right: 0.45rem;
+		min-height: 240px;
 	}
 }

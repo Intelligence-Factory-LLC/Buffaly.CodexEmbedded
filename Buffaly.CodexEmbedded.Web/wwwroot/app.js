@@ -113,6 +113,10 @@ let lastRateLimitSnapshotFetchAtMs = 0;
 let reviewRecordsById = new Map(); // reviewId -> review record
 let reviewRecordIdsByCwd = new Map(); // cwd -> [reviewId]
 let reviewCatalogFetchPromiseByCwd = new Map(); // cwd -> Promise
+let taskThreadIdByProjectKey = new Map();
+let currentWorkspaceTab = "tasks";
+let ensuringCodeReviewsThread = false;
+let pendingCodeReviewsEnsureReason = "";
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -129,6 +133,11 @@ const STORAGE_ARCHIVED_THREADS_KEY = "codex-web-archived-threads";
 const STORAGE_SIDEBAR_COLLAPSED_KEY = "codex-web-sidebar-collapsed";
 const STORAGE_SIDEBAR_EXTRAS_EXPANDED_KEY = "codex-web-sidebar-extras-expanded";
 const STORAGE_CUSTOM_PROJECTS_KEY = "codex-web-custom-projects";
+const STORAGE_WORKSPACE_TAB_KEY = "codex-web-workspace-tab";
+const STORAGE_TASK_THREAD_BY_PROJECT_KEY = "codex-web-task-thread-by-project";
+const WORKSPACE_TAB_TASKS = "tasks";
+const WORKSPACE_TAB_CODE_REVIEWS = "code_reviews";
+const CODE_REVIEWS_THREAD_NAME = "Code reviews";
 const MAX_QUEUE_TEXT_CHARS = 90;
 const MAX_QUEUE_PREVIEW_SOURCE_CHARS = 1200;
 const MAX_QUEUE_PREVIEW_KEY_CHARS = 160;
@@ -256,6 +265,8 @@ const sessionMeta = document.getElementById("sessionMeta");
 const conversationModelSummary = document.getElementById("conversationModelSummary");
 const conversationMetaMenuBtn = document.getElementById("conversationMetaMenuBtn");
 const conversationMetaMenu = document.getElementById("conversationMetaMenu");
+const workspaceTabTasksBtn = document.getElementById("workspaceTabTasksBtn");
+const workspaceTabCodeReviewsBtn = document.getElementById("workspaceTabCodeReviewsBtn");
 const sessionMetaThreadItem = document.getElementById("sessionMetaThreadItem");
 const sessionMetaThreadValue = document.getElementById("sessionMetaThreadValue");
 const sessionMetaThreadCopyBtn = document.getElementById("sessionMetaThreadCopyBtn");
@@ -278,6 +289,7 @@ const sidebarSearchRow = document.getElementById("sidebarSearchRow");
 const gettingStartedPanel = document.getElementById("gettingStartedPanel");
 const queryParams = new URLSearchParams(window.location.search || "");
 const showGettingStartedOverride = parseBooleanQueryParam(queryParams.get("showGettingStarted"));
+const requestedWorkspaceTab = queryParams.get("tab");
 const timelineDiagQueryValue = queryParams.get("timelineDiag");
 const timelineDiagEnabledFromQuery =
   parseBooleanQueryParam(timelineDiagQueryValue) === true ||
@@ -292,6 +304,59 @@ try {
   }
 } catch {
   // no-op
+}
+
+function normalizeWorkspaceTab(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === WORKSPACE_TAB_CODE_REVIEWS ? WORKSPACE_TAB_CODE_REVIEWS : WORKSPACE_TAB_TASKS;
+}
+
+function isCodeReviewsThreadName(threadName) {
+  return String(threadName || "").trim().toLowerCase() === CODE_REVIEWS_THREAD_NAME.toLowerCase();
+}
+
+function isCodeReviewsStateLike(entry) {
+  if (!entry) {
+    return false;
+  }
+
+  return isCodeReviewsThreadName(entry.threadName || "");
+}
+
+function loadTaskThreadByProjectMap() {
+  taskThreadIdByProjectKey = new Map();
+  const raw = safeJsonParse(localStorage.getItem(STORAGE_TASK_THREAD_BY_PROJECT_KEY), {});
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return;
+  }
+
+  for (const [key, value] of Object.entries(raw)) {
+    const normalizedKey = String(key || "").trim().toLowerCase();
+    const threadId = normalizeThreadId(value || "");
+    if (!normalizedKey || !threadId) {
+      continue;
+    }
+    taskThreadIdByProjectKey.set(normalizedKey, threadId);
+  }
+}
+
+function persistTaskThreadByProjectMap() {
+  const payload = {};
+  for (const [key, value] of taskThreadIdByProjectKey.entries()) {
+    if (!key || !value) {
+      continue;
+    }
+    payload[key] = value;
+  }
+  localStorage.setItem(STORAGE_TASK_THREAD_BY_PROJECT_KEY, JSON.stringify(payload));
+}
+
+try {
+  currentWorkspaceTab = normalizeWorkspaceTab(requestedWorkspaceTab || localStorage.getItem(STORAGE_WORKSPACE_TAB_KEY) || WORKSPACE_TAB_TASKS);
+  loadTaskThreadByProjectMap();
+} catch {
+  currentWorkspaceTab = WORKSPACE_TAB_TASKS;
+  taskThreadIdByProjectKey = new Map();
 }
 
 const logVerbositySelect = document.getElementById("logVerbositySelect");
@@ -2631,6 +2696,9 @@ function selectProject(projectKey, projectCwd = "") {
   if (isMobileViewport()) {
     setMobileProjectsOpen(false);
   }
+  if (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS) {
+    ensureCodeReviewsSessionForCurrentProject("project_select_code_reviews").catch(() => {});
+  }
 }
 
 function syncSelectedProjectFromActiveSession() {
@@ -2645,6 +2713,181 @@ function syncSelectedProjectFromActiveSession() {
   }
 
   selectedProjectKey = info.key;
+}
+
+function getSelectedProjectGroup() {
+  const groups = buildSidebarProjectGroups();
+  if (!selectedProjectKey) {
+    return groups.length > 0 ? groups[0] || null : null;
+  }
+
+  return groups.find((x) => x.key === selectedProjectKey) || groups[0] || null;
+}
+
+function getWorkspaceProjectCwd() {
+  const selectedGroup = getSelectedProjectGroup();
+  const selectedCwd = normalizeProjectCwd(selectedGroup?.cwd || "");
+  if (selectedCwd) {
+    return selectedCwd;
+  }
+
+  const active = getActiveSessionState();
+  const activeCwd = normalizeProjectCwd(active?.cwd || "");
+  if (activeCwd) {
+    return activeCwd;
+  }
+
+  return normalizeProjectCwd(cwdInput?.value || "");
+}
+
+function rememberTaskThreadForSessionState(sessionId, state) {
+  if (!sessionId || !state || isCodeReviewsStateLike(state)) {
+    return;
+  }
+
+  const threadId = normalizeThreadId(state.threadId || "");
+  const projectKey = getProjectKeyFromCwd(state.cwd || "");
+  if (!threadId || !projectKey || projectKey === "(unknown)") {
+    return;
+  }
+
+  taskThreadIdByProjectKey.set(projectKey, threadId);
+  try {
+    persistTaskThreadByProjectMap();
+  } catch {
+  }
+}
+
+function findCodeReviewsCatalogEntryByCwd(cwd) {
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  if (!normalizedCwd) {
+    return null;
+  }
+
+  const matches = sessionCatalog.filter((entry) =>
+    entry
+    && normalizeProjectCwd(entry.cwd || "") === normalizedCwd
+    && isCodeReviewsThreadName(entry.threadName || ""));
+  if (matches.length === 0) {
+    return null;
+  }
+
+  matches.sort((a, b) => (b.updatedAtUtc || "").localeCompare(a.updatedAtUtc || ""));
+  return matches[0] || null;
+}
+
+function findAttachedSessionIdByThreadId(threadId) {
+  const normalizedThreadId = normalizeThreadId(threadId || "");
+  if (!normalizedThreadId) {
+    return null;
+  }
+
+  for (const [sessionId, state] of sessions.entries()) {
+    if (normalizeThreadId(state?.threadId || "") === normalizedThreadId) {
+      return sessionId;
+    }
+  }
+
+  return null;
+}
+
+async function restoreTaskSessionForCurrentProject(reason = "workspace_tab_tasks") {
+  const cwd = getWorkspaceProjectCwd();
+  if (!cwd) {
+    return false;
+  }
+
+  const projectKey = getProjectKeyFromCwd(cwd);
+  const preferredThreadId = taskThreadIdByProjectKey.get(projectKey) || "";
+  let targetThreadId = preferredThreadId;
+  if (!targetThreadId) {
+    const candidate = sessionCatalog.find((entry) =>
+      entry
+      && normalizeProjectCwd(entry.cwd || "") === cwd
+      && !isCodeReviewsThreadName(entry.threadName || ""));
+    targetThreadId = normalizeThreadId(candidate?.threadId || "");
+  }
+
+  if (!targetThreadId) {
+    return false;
+  }
+
+  const attachedSessionId = findAttachedSessionIdByThreadId(targetThreadId);
+  if (attachedSessionId && sessions.has(attachedSessionId)) {
+    setActiveSession(attachedSessionId, { persistSelection: true, reason });
+    return true;
+  }
+
+  beginPendingSessionLoad(targetThreadId, targetThreadId);
+  const attached = await attachSessionByThreadId(targetThreadId, cwd, { persistSelection: true });
+  if (!attached) {
+    handlePendingSessionLoadFailure();
+    return false;
+  }
+
+  return true;
+}
+
+async function ensureCodeReviewsSessionForCurrentProject(reason = "workspace_tab_code_reviews") {
+  if (ensuringCodeReviewsThread) {
+    pendingCodeReviewsEnsureReason = reason;
+    return false;
+  }
+
+  const cwd = getWorkspaceProjectCwd();
+  if (!cwd) {
+    return false;
+  }
+
+  const active = getActiveSessionState();
+  if (active && normalizeProjectCwd(active.cwd || "") === cwd && isCodeReviewsStateLike(active)) {
+    return true;
+  }
+
+  ensuringCodeReviewsThread = true;
+  try {
+    for (const pending of pendingCreateRequests.values()) {
+      if (!pending || !isCodeReviewsThreadName(pending.threadName || "")) {
+        continue;
+      }
+      if (normalizeProjectCwd(pending.cwd || "") === cwd) {
+        return true;
+      }
+    }
+
+    const existing = findCodeReviewsCatalogEntryByCwd(cwd);
+    if (existing) {
+      const attachedSessionId = existing.attachedSessionId && sessions.has(existing.attachedSessionId)
+        ? existing.attachedSessionId
+        : findAttachedSessionIdByThreadId(existing.threadId);
+      if (attachedSessionId && sessions.has(attachedSessionId)) {
+        setActiveSession(attachedSessionId, { persistSelection: true, reason });
+        return true;
+      }
+
+      beginPendingSessionLoad(existing.threadId, existing.threadName || existing.threadId);
+      const attached = await attachSessionByThreadId(existing.threadId, cwd, { persistSelection: true });
+      if (!attached) {
+        handlePendingSessionLoadFailure();
+        return false;
+      }
+      return true;
+    }
+
+    await createSessionForCwd(cwd, { askName: false, threadName: CODE_REVIEWS_THREAD_NAME });
+    return true;
+  } finally {
+    ensuringCodeReviewsThread = false;
+    if (pendingCodeReviewsEnsureReason) {
+      const nextReason = pendingCodeReviewsEnsureReason;
+      pendingCodeReviewsEnsureReason = "";
+      if (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS) {
+        window.setTimeout(() => {
+          ensureCodeReviewsSessionForCurrentProject(nextReason).catch(() => {});
+        }, 0);
+      }
+    }
+  }
 }
 
 function formatSessionSubtitle(entry) {
@@ -3627,6 +3870,63 @@ function renderProjectSidebar() {
   }
 
   setTimeout(run, 0);
+}
+
+function updateWorkspaceTabUrl(tab) {
+  const next = new URL(window.location.href);
+  if (tab === WORKSPACE_TAB_CODE_REVIEWS) {
+    next.searchParams.set("tab", WORKSPACE_TAB_CODE_REVIEWS);
+  } else {
+    next.searchParams.delete("tab");
+  }
+  window.history.replaceState(null, "", next.toString());
+}
+
+function renderWorkspaceTabUi() {
+  const isReviews = currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS;
+  if (workspaceTabTasksBtn) {
+    workspaceTabTasksBtn.classList.toggle("active", !isReviews);
+    workspaceTabTasksBtn.setAttribute("aria-selected", !isReviews ? "true" : "false");
+  }
+  if (workspaceTabCodeReviewsBtn) {
+    workspaceTabCodeReviewsBtn.classList.toggle("active", isReviews);
+    workspaceTabCodeReviewsBtn.setAttribute("aria-selected", isReviews ? "true" : "false");
+  }
+  if (layoutRoot) {
+    layoutRoot.classList.toggle("workspace-code-reviews", isReviews);
+    layoutRoot.classList.toggle("workspace-tasks", !isReviews);
+  }
+  if (conversationTitle) {
+    conversationTitle.textContent = isReviews ? "Code reviews" : "Conversation";
+  }
+  const setMode = window.codexDiffSetWorkspaceMode;
+  if (typeof setMode === "function") {
+    setMode(isReviews ? WORKSPACE_TAB_CODE_REVIEWS : WORKSPACE_TAB_TASKS);
+  }
+}
+
+async function setWorkspaceTab(tab, options = {}) {
+  const nextTab = normalizeWorkspaceTab(tab);
+  const changed = currentWorkspaceTab !== nextTab;
+  if (changed) {
+    const active = getActiveSessionState();
+    rememberTaskThreadForSessionState(activeSessionId || "", active);
+  }
+
+  currentWorkspaceTab = nextTab;
+  try {
+    localStorage.setItem(STORAGE_WORKSPACE_TAB_KEY, currentWorkspaceTab);
+  } catch {
+  }
+  updateWorkspaceTabUrl(currentWorkspaceTab);
+  renderWorkspaceTabUi();
+  refreshSessionMeta();
+
+  if (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS) {
+    await ensureCodeReviewsSessionForCurrentProject(options.reason || "workspace_tab_code_reviews");
+  } else if (changed || options.forceRestore === true) {
+    await restoreTaskSessionForCurrentProject(options.reason || "workspace_tab_tasks");
+  }
 }
 
 function wsUrl() {
@@ -7457,8 +7757,9 @@ function refreshSessionMeta() {
   const state = getActiveSessionState();
   if (!state) {
     if (conversationTitle) {
-      conversationTitle.textContent = "Conversation";
-      conversationTitle.title = "";
+      const emptyTitle = currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS ? "Code reviews" : "Conversation";
+      conversationTitle.textContent = emptyTitle;
+      conversationTitle.title = emptyTitle;
     }
     if (timeline && typeof timeline.setSessionModel === "function") {
       timeline.setSessionModel("");
@@ -7508,8 +7809,11 @@ function refreshSessionMeta() {
     : normalizeSandboxMode(state.sandboxPolicy || "");
   const titleValue = threadName || threadId || "Conversation";
   if (conversationTitle) {
-    conversationTitle.textContent = titleValue;
-    conversationTitle.title = titleValue;
+    const effectiveTitle = currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS
+      ? `Code reviews - ${titleValue}`
+      : titleValue;
+    conversationTitle.textContent = effectiveTitle;
+    conversationTitle.title = effectiveTitle;
   }
   sessionMeta.classList.remove("hidden");
   if (sessionMetaThreadItem) {
@@ -7820,6 +8124,9 @@ function setActiveSession(sessionId, options = {}) {
   const previousSessionId = activeSessionId || null;
   const previousState = getActiveSessionState();
   if (changed) {
+    rememberTaskThreadForSessionState(previousSessionId || "", previousState);
+  }
+  if (changed) {
     rememberPromptDraftForState(previousState);
     setJumpCollapseMode(true);
   }
@@ -7856,6 +8163,7 @@ function setActiveSession(sessionId, options = {}) {
   if (state?.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
     clearPendingSessionLoad();
   }
+  rememberTaskThreadForSessionState(sessionId, state);
   if (changed) {
     uiAuditLog("ui.active_session_changed", {
       from: previousSessionId,
@@ -7902,6 +8210,9 @@ function setActiveSession(sessionId, options = {}) {
   requestModelsListForSession(sessionId);
   renderTimelineSelectionIndicator();
   updateScrollToBottomButton();
+  if (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS && state && !isCodeReviewsStateLike(state)) {
+    ensureCodeReviewsSessionForCurrentProject("active_session_changed_in_code_reviews").catch(() => {});
+  }
 }
 
 function clearActiveSession() {
@@ -8331,6 +8642,7 @@ function applySavedUiSettings() {
   applySidebarCollapsed(sidebarCollapsed);
   setSidebarExtrasExpanded(sidebarExtrasExpanded, { persist: false });
   setMobileProjectsOpen(false);
+  renderWorkspaceTabUi();
   restorePromptDraftForActiveSession();
 }
 
@@ -9152,6 +9464,9 @@ function handleServerEvent(frame) {
       updateExistingSessionSelect();
       refreshSessionMeta();
       appendLog(`[catalog] loaded ${sessionCatalog.length} existing sessions from ${payload.codexHomePath || "default CODEX_HOME"}`);
+      if (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS) {
+        ensureCodeReviewsSessionForCurrentProject("session_catalog_code_reviews").catch(() => {});
+      }
       return;
     }
 
@@ -9729,6 +10044,18 @@ if (newSessionBtn) {
     const selectedGroup = buildSidebarProjectGroups().find((x) => x.key === selectedProjectKey) || null;
     const preferredCwd = selectedGroup?.cwd || cwdInput.value.trim();
     openNewSessionModal(preferredCwd);
+  });
+}
+
+if (workspaceTabTasksBtn) {
+  workspaceTabTasksBtn.addEventListener("click", () => {
+    setWorkspaceTab(WORKSPACE_TAB_TASKS, { reason: "workspace_tab_tasks_click" }).catch((error) => appendLog(`[workspace] failed to switch to tasks: ${error}`));
+  });
+}
+
+if (workspaceTabCodeReviewsBtn) {
+  workspaceTabCodeReviewsBtn.addEventListener("click", () => {
+    setWorkspaceTab(WORKSPACE_TAB_CODE_REVIEWS, { reason: "workspace_tab_code_reviews_click" }).catch((error) => appendLog(`[workspace] failed to switch to code reviews: ${error}`));
   });
 }
 
@@ -10997,6 +11324,10 @@ window.codexAppendTextToPrompt = function codexAppendTextToPrompt(text, options 
     promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
   }
   return true;
+};
+
+window.codexWorkspaceGetTabMode = function codexWorkspaceGetTabMode() {
+  return currentWorkspaceTab;
 };
 
 loadRuntimeSecurityConfig()
