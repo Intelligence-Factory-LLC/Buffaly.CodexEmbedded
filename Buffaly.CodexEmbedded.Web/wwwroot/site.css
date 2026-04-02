@@ -3490,6 +3490,10 @@ body {
 	max-height: none;
 	min-height: 320px;
 	flex: 0 0 auto;
+	margin: 0;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
 }
 
 .worktree-diff-header {
@@ -3500,6 +3504,35 @@ body {
 	gap: 0.5rem;
 	padding: 0.38rem 0.48rem;
 	border-bottom: 1px solid #e2e8f0;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-header {
+	padding: 0.75rem 0 0.5rem;
+	border-bottom: 0;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-title {
+	font-size: 1.05rem;
+	font-weight: 700;
+	letter-spacing: -0.01em;
+	color: #111827;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-summary {
+	font-size: 0.95rem;
+	color: #6b7280;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-toolbar {
+	gap: 0.5rem;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-mode-group,
+.worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-context-select,
+.worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-refresh-btn {
+	border-color: #e5e7eb;
+	background: #ffffff;
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .worktree-diff-toolbar {
@@ -4176,6 +4209,29 @@ body {
 	background: #fff7f7;
 }
 
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-review-findings,
+.worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-list {
+	border: 1px solid #e5e7eb;
+	border-radius: 20px;
+	background: #ffffff;
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-review-findings {
+	padding: 0.9rem 1rem;
+	margin-bottom: 1rem;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-list {
+	padding: 0.25rem 0;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-empty {
+	padding: 1.2rem 1rem;
+	font-size: 0.98rem;
+	color: #6b7280;
+}
+
 .diff-commit-review-summary {
 	display: block;
 	margin: 0 0 0.42rem;
@@ -4183,6 +4239,14 @@ body {
 	border: 1px solid #fed7aa;
 	border-radius: 8px;
 	background: #fffbeb;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-summary {
+	margin: 0 0 0.9rem;
+	padding: 0;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
 }
 
 .diff-commit-review-header {
@@ -4193,6 +4257,11 @@ body {
 	margin: 0 0 0.28rem;
 }
 
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-header {
+	margin: 0 0 0.75rem;
+	padding: 0;
+}
+
 .diff-commit-review-summary .label {
 	font-size: 0.68rem;
 	font-weight: 700;
@@ -4200,9 +4269,21 @@ body {
 	margin-right: 0.2rem;
 }
 
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-summary .label {
+	font-size: 0.98rem;
+	font-weight: 700;
+	color: #111827;
+	margin-right: 0.4rem;
+}
+
 .diff-commit-review-meta {
 	font-size: 0.66rem;
 	color: #9a3412;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-meta {
+	font-size: 0.88rem;
+	color: #6b7280;
 }
 
 .diff-review-collapse-btn {
@@ -4215,6 +4296,13 @@ body {
 	font-weight: 700;
 	padding: 0.12rem 0.48rem;
 	cursor: pointer;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-review-collapse-btn {
+	border-color: #e5e7eb;
+	background: #ffffff;
+	color: #374151;
+	padding: 0.28rem 0.72rem;
 }
 
 .diff-commit-review-collapsed-note,
@@ -4230,6 +4318,12 @@ body {
 	gap: 0.2rem;
 	max-height: min(24vh, 260px);
 	overflow: auto;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-list {
+	gap: 0.7rem;
+	max-height: none;
+	overflow: visible;
 }
 
 .diff-commit-review-empty {
@@ -4249,9 +4343,25 @@ body {
 	cursor: pointer;
 }
 
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-row {
+	grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+	gap: 0.75rem;
+	padding: 0.9rem 1rem;
+	border: 1px solid #e5e7eb;
+	border-radius: 18px;
+	background: #ffffff;
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
 .diff-commit-review-row.active {
 	border-color: #f97316;
 	background: #fff7ed;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-row.active {
+	border-color: #c7d2fe;
+	background: #f8fbff;
+	box-shadow: 0 8px 24px rgba(59, 130, 246, 0.08);
 }
 
 .diff-commit-review-row:focus-visible {
@@ -4275,10 +4385,23 @@ body {
 	cursor: default;
 }
 
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-action-btn {
+	border-color: #d1d5db;
+	background: #ffffff;
+	color: #111827;
+	padding: 0.34rem 0.9rem;
+	font-size: 0.8rem;
+}
+
 .diff-commit-review-sha {
 	font-family: Consolas, "Courier New", monospace;
 	font-size: 0.65rem;
 	color: #7c2d12;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-sha {
+	font-size: 0.78rem;
+	color: #6b7280;
 }
 
 .diff-commit-review-subject {
@@ -4287,6 +4410,12 @@ body {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-subject {
+	font-size: 1rem;
+	font-weight: 600;
+	color: #111827;
 }
 
 .diff-commit-review-status {
@@ -4320,6 +4449,18 @@ body {
 	font-size: 0.62rem;
 	font-weight: 700;
 	color: #991b1b;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-status,
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-open-count {
+	font-size: 0.78rem;
+	padding: 0.22rem 0.6rem;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-open-count {
+	color: #b45309;
+	background: #fff7ed;
+	border-radius: 999px;
 }
 
 .diff-review-header {
@@ -5451,6 +5592,11 @@ html[data-theme="dark"] .worktree-diff-panel.worktree-diff-fullscreen {
 	box-shadow: 0 20px 60px rgba(2, 6, 23, 0.7);
 }
 
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace {
+	background: transparent;
+	border-color: transparent;
+}
+
 html[data-theme="dark"] .worktree-diff-header {
 	border-bottom-color: #334155;
 }
@@ -5796,6 +5942,47 @@ html[data-theme="dark"] .diff-commit-review-status.reviewed {
 
 html[data-theme="dark"] .diff-commit-review-open-count {
 	color: #fecaca;
+}
+
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-title {
+	color: #f8fafc;
+}
+
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-summary,
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-meta {
+	color: #94a3b8;
+}
+
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-mode-group,
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-context-select,
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-refresh-btn,
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-review-collapse-btn,
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-review-findings,
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-list,
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-row {
+	background: #0f172a;
+	border-color: rgba(148, 163, 184, 0.24);
+	box-shadow: none;
+}
+
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-row.active {
+	background: rgba(30, 41, 59, 0.95);
+	border-color: rgba(96, 165, 250, 0.5);
+}
+
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-summary .label,
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-subject,
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-action-btn {
+	color: #f8fafc;
+}
+
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-open-count {
+	color: #fdba74;
+	background: rgba(154, 52, 18, 0.24);
+}
+
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-empty {
+	color: #94a3b8;
 }
 
 html[data-theme="dark"] .diff-review-title {

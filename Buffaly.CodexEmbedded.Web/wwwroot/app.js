@@ -2894,6 +2894,41 @@ function findCodeReviewsCatalogEntryByCwd(cwd) {
   return matches[0] || null;
 }
 
+function findCodeReviewsSessionStateByCwd(cwd) {
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  if (!normalizedCwd) {
+    return null;
+  }
+
+  const matches = [];
+  for (const [sessionId, state] of sessions.entries()) {
+    if (!state) {
+      continue;
+    }
+
+    if (normalizeProjectCwd(state.cwd || "") !== normalizedCwd) {
+      continue;
+    }
+
+    if (!isCodeReviewsStateLike(state)) {
+      continue;
+    }
+
+    matches.push({
+      sessionId,
+      state,
+      createdAtTick: Number(state.createdAtTick || 0)
+    });
+  }
+
+  if (matches.length === 0) {
+    return null;
+  }
+
+  matches.sort((a, b) => b.createdAtTick - a.createdAtTick);
+  return matches[0] || null;
+}
+
 function findAttachedSessionIdByThreadId(threadId) {
   const normalizedThreadId = normalizeThreadId(threadId || "");
   if (!normalizedThreadId) {
@@ -2971,6 +3006,13 @@ async function ensureCodeReviewsSessionForCurrentProject(reason = "workspace_tab
       return true;
     }
 
+    const attachedCodeReviews = findCodeReviewsSessionStateByCwd(cwd);
+    if (attachedCodeReviews && attachedCodeReviews.sessionId && sessions.has(attachedCodeReviews.sessionId)) {
+      clearPendingCodeReviewsThreadForCwd(cwd);
+      setActiveSession(attachedCodeReviews.sessionId, { persistSelection: true, reason });
+      return true;
+    }
+
     for (const pending of pendingCreateRequests.values()) {
       if (!pending || !isCodeReviewsThreadName(pending.threadName || "")) {
         continue;
@@ -2979,6 +3021,11 @@ async function ensureCodeReviewsSessionForCurrentProject(reason = "workspace_tab
         setPendingCodeReviewsThreadForCwd(cwd, { reason });
         return true;
       }
+    }
+
+    if (!sessionCatalogLoadedOnce) {
+      send("session_catalog_list");
+      return true;
     }
 
     const existing = findCodeReviewsCatalogEntryByCwd(cwd);
@@ -7941,7 +7988,7 @@ function refreshSessionMeta() {
   const titleValue = threadName || threadId || "Conversation";
   if (conversationTitle) {
     const effectiveTitle = currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS
-      ? `Code reviews - ${titleValue}`
+      ? "Code reviews"
       : titleValue;
     conversationTitle.textContent = effectiveTitle;
     conversationTitle.title = effectiveTitle;
