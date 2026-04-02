@@ -172,6 +172,10 @@
     };
   }
 
+  function isCodeReviewsWorkspace() {
+    return workspaceMode === "code_reviews";
+  }
+
   function getActiveContext() {
     const provider = window.codexDiffGetActiveContext;
     if (typeof provider !== "function") {
@@ -1030,7 +1034,9 @@
   function renderCommitReviewSummary() {
     renderCommitModeBadge();
     if (!Array.isArray(availableCommits) || availableCommits.length === 0) {
-      const prefix = currentMode === "commit" ? "Pending Reviews" : "Pending Commit Reviews";
+      const prefix = isCodeReviewsWorkspace()
+        ? "Code Reviews"
+        : (currentMode === "commit" ? "Pending Reviews" : "Pending Commit Reviews");
       commitReviewSummaryNode.innerHTML = `<div class="diff-commit-review-header">
       <span class="label">${escapeHtml(prefix)}</span>
       <button type="button" class="diff-review-collapse-btn" data-commit-review-collapse="1" aria-expanded="${commitReviewSummaryCollapsed ? "false" : "true"}">${commitReviewSummaryCollapsed ? "Expand" : "Collapse"}</button>
@@ -1076,18 +1082,27 @@
         : (status === "completed"
           ? "completed"
           : (status === "started" ? "started" : "not-started"));
+      const reviewActionLabel = status === "reviewed" ? "Reviewed" : "Review";
+      const reviewActionDisabled = status === "reviewed" ? " disabled" : "";
+      const outcomeLabel = openCount > 0
+        ? `${openCount} open`
+        : (status === "reviewed"
+          ? "dismissed"
+          : (status === "completed" ? "clear" : (status === "started" ? "running" : "not run")));
       rows.push(
-        `<div class="diff-commit-review-row${normalized.sha === selectedCommitSha ? " active" : ""}">
-          <button type="button" class="diff-commit-review-open-btn" data-commit-review-jump="${escapeAttribute(normalized.sha)}" title="${escapeAttribute(subject || normalized.sha)}">Open Diff</button>
+        `<div class="diff-commit-review-row${normalized.sha === selectedCommitSha ? " active" : ""}" data-commit-review-jump="${escapeAttribute(normalized.sha)}" tabindex="0" role="button" aria-label="Open review details for ${escapeAttribute(subject || normalized.sha)}">
           <span class="diff-commit-review-sha">${escapeHtml(shortSha)}</span>
           <span class="diff-commit-review-subject">${escapeHtml(shortSubject || "(no subject)")}</span>
+          <button type="button" class="diff-commit-review-action-btn" data-commit-review-request="${escapeAttribute(normalized.sha)}"${reviewActionDisabled}>${escapeHtml(reviewActionLabel)}</button>
           <span class="diff-commit-review-status ${statusClass}">${escapeHtml(statusLabel)}</span>
-          <span class="diff-commit-review-open-count">${openCount} open</span>
+          <span class="diff-commit-review-open-count">${escapeHtml(outcomeLabel)}</span>
         </div>`
       );
     }
 
-    const prefix = currentMode === "commit" ? "Pending Reviews" : "Pending Commit Reviews";
+    const prefix = isCodeReviewsWorkspace()
+      ? "Code Reviews"
+      : (currentMode === "commit" ? "Pending Reviews" : "Pending Commit Reviews");
     const headerMeta = `${startedCount} started | ${completedCount} completed | ${openCountTotal} open findings`;
     commitReviewSummaryNode.innerHTML = `<div class="diff-commit-review-header">
       <span class="label">${escapeHtml(prefix)}</span>
@@ -1222,6 +1237,12 @@
   }
 
   function renderReviewFindingsPanel() {
+    if (isCodeReviewsWorkspace() && currentMode === "commit" && !selectedCommitSha) {
+      reviewFindingsNode.classList.add("hidden");
+      reviewFindingsNode.innerHTML = "";
+      return;
+    }
+
     const scopeKey = getCurrentScopeKey();
     const summary = getScopeReviewSummary(scopeKey);
     const record = getPrimaryCompletedReviewRecord(summary);
@@ -1850,6 +1871,7 @@
     modeWorktreeBtn.setAttribute("aria-pressed", !isCommitMode ? "true" : "false");
     modeCommitBtn.setAttribute("aria-pressed", isCommitMode ? "true" : "false");
     commitSelect.classList.add("hidden");
+    modeWorktreeBtn.classList.toggle("hidden", isCodeReviewsWorkspace());
     contextSelect.value = normalizeContextMode(currentContextMode);
     renderCommitModeBadge();
     renderCommitReviewSummary();
@@ -1923,6 +1945,44 @@
     if (!enabled) {
       setReviewQueuedBadgeActive(false);
     }
+  }
+
+  function selectCommitForDetails(sha) {
+    const normalizedSha = typeof sha === "string" ? sha.trim() : "";
+    if (!normalizedSha) {
+      return;
+    }
+
+    if (!availableCommits.some((x) => x && typeof x.sha === "string" && x.sha === normalizedSha)) {
+      return;
+    }
+
+    if (normalizedSha === selectedCommitSha && currentFiles.length > 0) {
+      return;
+    }
+
+    selectedCommitSha = normalizedSha;
+    selectedCommitInfo = findSelectedCommitInfo();
+    lastRenderKey = "";
+    refreshBtn.disabled = true;
+    commitSelect.disabled = true;
+    closeFullFileWindow();
+    showLoadingState(`Loading ${getActiveCommitLabel()}...`);
+    queueRefresh({ force: true });
+  }
+
+  function clearCommitSelection(options = {}) {
+    selectedCommitSha = "";
+    selectedCommitInfo = null;
+    currentFiles = [];
+    currentTotalChangeCount = 0;
+    hiddenBinaryFileCount = 0;
+    hasVisibleChanges = false;
+    if (options.keepListMarkup !== true) {
+      listNode.innerHTML = "<div class=\"worktree-diff-empty\">Select a commit to view diffs, findings, and add notes.</div>";
+    }
+    renderReviewFindingsPanel();
+    applyPanelState();
   }
 
   function setReviewQueuedBadgeActive(isActive) {
@@ -2203,6 +2263,13 @@
     }
 
     commitSelect.innerHTML = options.join("");
+    if (isCodeReviewsWorkspace() && !selectedCommitSha) {
+      commitSelect.value = "";
+      commitSelect.disabled = pollInFlight !== false;
+      renderCommitReviewSummary();
+      return;
+    }
+
     if (!selectedCommitSha || !availableCommits.some((x) => (x && typeof x.sha === "string" && x.sha === selectedCommitSha))) {
       selectedCommitSha = availableCommits[0].sha;
     }
@@ -2214,6 +2281,9 @@
 
   function setDiffMode(mode) {
     const nextMode = mode === "commit" ? "commit" : "worktree";
+    if (isCodeReviewsWorkspace() && nextMode !== "commit") {
+      return;
+    }
     if (currentMode === nextMode) {
       return;
     }
@@ -2313,6 +2383,11 @@
       ? ` | ${pendingCommitReviews} commit review${pendingCommitReviews === 1 ? "" : "s"} open`
       : "";
     if (currentMode === "commit") {
+      if (isCodeReviewsWorkspace() && !selectedCommitSha) {
+        const commitCount = Array.isArray(availableCommits) ? availableCommits.length : 0;
+        summaryNode.textContent = `${commitCount} recent commit${commitCount === 1 ? "" : "s"} on ${branch} | context ${contextLabel}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}${pendingReviewText}`;
+        return;
+      }
       const commitLabel = getActiveCommitLabel();
       summaryNode.textContent = `${changeCount} file change(s) in ${commitLabel} | context ${contextLabel}${hiddenBinaryText}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}${pendingReviewText}`;
       return;
@@ -3681,7 +3756,13 @@
           return;
         }
 
-        if (!selectedCommitSha || !availableCommits.some((x) => x.sha === selectedCommitSha)) {
+        const hasSelectedCommit = !!(selectedCommitSha && availableCommits.some((x) => x.sha === selectedCommitSha));
+        if (isCodeReviewsWorkspace()) {
+          if (!hasSelectedCommit) {
+            selectedCommitSha = "";
+            selectedCommitInfo = null;
+          }
+        } else if (!hasSelectedCommit) {
           selectedCommitSha = availableCommits.length > 0 ? availableCommits[0].sha : "";
         }
         selectedCommitInfo = findSelectedCommitInfo();
@@ -3699,7 +3780,9 @@
           currentTotalChangeCount = 0;
           hiddenBinaryFileCount = 0;
           updateSummary(0);
-          listNode.innerHTML = "<div class=\"worktree-diff-empty\">No recent commits found.</div>";
+          listNode.innerHTML = isCodeReviewsWorkspace()
+            ? "<div class=\"worktree-diff-empty\">Select a commit to view diffs, findings, and add notes.</div>"
+            : "<div class=\"worktree-diff-empty\">No recent commits found.</div>";
           applyPanelState();
           return;
         }
@@ -3866,6 +3949,9 @@
     workspaceMode = nextMode;
     if (workspaceMode === "code_reviews" && currentMode !== "commit") {
       currentMode = "commit";
+    }
+    if (workspaceMode === "code_reviews") {
+      clearCommitSelection();
       lastRenderKey = "";
       queueRefresh({ force: true });
     }
@@ -3934,14 +4020,7 @@
       return;
     }
 
-    selectedCommitSha = nextSha;
-    selectedCommitInfo = findSelectedCommitInfo();
-    lastRenderKey = "";
-    refreshBtn.disabled = true;
-    commitSelect.disabled = true;
-    closeFullFileWindow();
-    showLoadingState(`Loading ${getActiveCommitLabel()}...`);
-    queueRefresh({ force: true });
+    selectCommitForDetails(nextSha);
   });
 
   commitReviewSummaryNode.addEventListener("click", (event) => {
@@ -3951,33 +4030,56 @@
       return;
     }
 
+    const requestBtn = event.target instanceof Element ? event.target.closest("[data-commit-review-request]") : null;
+    if (requestBtn) {
+      const sha = (requestBtn.getAttribute("data-commit-review-request") || "").trim();
+      if (!sha) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (sha !== selectedCommitSha || currentFiles.length === 0) {
+        selectCommitForDetails(sha);
+      }
+      window.setTimeout(() => {
+        openReviewModal("run");
+      }, 0);
+      return;
+    }
+
     const jumpBtn = event.target instanceof Element ? event.target.closest("[data-commit-review-jump]") : null;
     if (!jumpBtn) {
       return;
     }
 
     const sha = (jumpBtn.getAttribute("data-commit-review-jump") || "").trim();
-    if (!sha || sha === selectedCommitSha) {
+    if (!sha) {
       return;
     }
 
-    if (!availableCommits.some((x) => x && typeof x.sha === "string" && x.sha === sha)) {
+    selectCommitForDetails(sha);
+  });
+
+  commitReviewSummaryNode.addEventListener("keydown", (event) => {
+    if (event.isComposing) {
       return;
     }
 
-    selectedCommitSha = sha;
-    selectedCommitInfo = findSelectedCommitInfo();
-    if (currentMode !== "commit") {
-      setDiffMode("commit");
+    const row = event.target instanceof Element ? event.target.closest("[data-commit-review-jump]") : null;
+    if (!row) {
       return;
     }
 
-    lastRenderKey = "";
-    refreshBtn.disabled = true;
-    commitSelect.disabled = true;
-    closeFullFileWindow();
-    showLoadingState(`Loading ${getActiveCommitLabel()}...`);
-    queueRefresh({ force: true });
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+
+    event.preventDefault();
+    const sha = (row.getAttribute("data-commit-review-jump") || "").trim();
+    if (!sha) {
+      return;
+    }
+    selectCommitForDetails(sha);
   });
 
   contextSelect.addEventListener("change", () => {

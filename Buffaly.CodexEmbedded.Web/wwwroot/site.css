@@ -4239,13 +4239,14 @@ body {
 
 .diff-commit-review-row {
 	display: grid;
-	grid-template-columns: auto auto 1fr auto auto;
+	grid-template-columns: auto 1fr auto auto auto;
 	align-items: center;
 	gap: 0.36rem;
 	border: 1px solid #fdba74;
 	border-radius: 8px;
 	background: #ffffff;
 	padding: 0.16rem 0.24rem;
+	cursor: pointer;
 }
 
 .diff-commit-review-row.active {
@@ -4253,7 +4254,12 @@ body {
 	background: #fff7ed;
 }
 
-.diff-commit-review-open-btn {
+.diff-commit-review-row:focus-visible {
+	outline: 2px solid #f97316;
+	outline-offset: 1px;
+}
+
+.diff-commit-review-action-btn {
 	border: 1px solid #fdba74;
 	border-radius: 6px;
 	background: #fff7ed;
@@ -4262,6 +4268,11 @@ body {
 	font-weight: 700;
 	padding: 0.06rem 0.34rem;
 	cursor: pointer;
+}
+
+.diff-commit-review-action-btn:disabled {
+	opacity: 0.72;
+	cursor: default;
 }
 
 .diff-commit-review-sha {
@@ -5749,7 +5760,7 @@ html[data-theme="dark"] .diff-commit-review-row.active {
 	border-color: #fb923c;
 }
 
-html[data-theme="dark"] .diff-commit-review-open-btn {
+html[data-theme="dark"] .diff-commit-review-action-btn {
 	background: rgba(154, 52, 18, 0.3);
 	border-color: rgba(251, 146, 60, 0.55);
 	color: #fed7aa;
