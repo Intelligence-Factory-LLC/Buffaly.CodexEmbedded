@@ -78,6 +78,8 @@
   const STORAGE_REVIEW_FINDINGS_PREFIX = "codex-worktree-diff-review-findings-v1::";
   const STORAGE_REVIEW_LIFECYCLE_PREFIX = "codex-worktree-diff-review-lifecycle-v1::";
   const STORAGE_CONTEXT_MODE_KEY = "codex-worktree-diff-context-mode-v1";
+  const STORAGE_COMMIT_REVIEW_COLLAPSED_KEY = "codex-worktree-diff-commit-review-collapsed-v1";
+  const STORAGE_REVIEW_PANEL_COLLAPSED_KEY = "codex-worktree-diff-review-panel-collapsed-v1";
   const CONTEXT_MODE_VALUES = new Set(["3", "10", "30", "full"]);
 
   let pollInFlight = false;
@@ -123,10 +125,22 @@
   let reviewLifecycleByScope = new Map(); // scopeKey -> { requestedCount, completedCount, lastRequestedUtc, lastCompletedUtc }
   let currentReviewStateScopeKey = "";
   let reviewFindingStateByKey = new Map();
+  let commitReviewSummaryCollapsed = false;
+  let reviewPanelCollapsed = false;
   try {
     currentContextMode = normalizeContextMode(window.localStorage.getItem(STORAGE_CONTEXT_MODE_KEY) || "3");
   } catch {
     currentContextMode = "3";
+  }
+  try {
+    commitReviewSummaryCollapsed = window.localStorage.getItem(STORAGE_COMMIT_REVIEW_COLLAPSED_KEY) === "1";
+  } catch {
+    commitReviewSummaryCollapsed = false;
+  }
+  try {
+    reviewPanelCollapsed = window.localStorage.getItem(STORAGE_REVIEW_PANEL_COLLAPSED_KEY) === "1";
+  } catch {
+    reviewPanelCollapsed = false;
   }
 
   function createEmptyFullFileViewerState() {
@@ -985,11 +999,32 @@
     }
   }
 
+  function setCommitReviewSummaryCollapsed(nextCollapsed) {
+    commitReviewSummaryCollapsed = nextCollapsed === true;
+    try {
+      window.localStorage.setItem(STORAGE_COMMIT_REVIEW_COLLAPSED_KEY, commitReviewSummaryCollapsed ? "1" : "0");
+    } catch {
+    }
+    renderCommitReviewSummary();
+  }
+
+  function setReviewPanelCollapsed(nextCollapsed) {
+    reviewPanelCollapsed = nextCollapsed === true;
+    try {
+      window.localStorage.setItem(STORAGE_REVIEW_PANEL_COLLAPSED_KEY, reviewPanelCollapsed ? "1" : "0");
+    } catch {
+    }
+    renderReviewFindingsPanel();
+  }
+
   function renderCommitReviewSummary() {
     renderCommitModeBadge();
     if (!Array.isArray(availableCommits) || availableCommits.length === 0) {
       const prefix = currentMode === "commit" ? "Pending Reviews" : "Pending Commit Reviews";
-      commitReviewSummaryNode.innerHTML = `<span class="label">${escapeHtml(prefix)}</span><span class="diff-commit-review-empty">No commits loaded.</span>`;
+      commitReviewSummaryNode.innerHTML = `<div class="diff-commit-review-header">
+      <span class="label">${escapeHtml(prefix)}</span>
+      <button type="button" class="diff-review-collapse-btn" data-commit-review-collapse="1" aria-expanded="${commitReviewSummaryCollapsed ? "false" : "true"}">${commitReviewSummaryCollapsed ? "Expand" : "Collapse"}</button>
+      </div><span class="diff-commit-review-empty">No commits loaded.</span>`;
       commitReviewSummaryNode.classList.remove("hidden");
       return;
     }
@@ -1047,8 +1082,11 @@
     commitReviewSummaryNode.innerHTML = `<div class="diff-commit-review-header">
       <span class="label">${escapeHtml(prefix)}</span>
       <span class="diff-commit-review-meta">${escapeHtml(headerMeta)}</span>
+      <button type="button" class="diff-review-collapse-btn" data-commit-review-collapse="1" aria-expanded="${commitReviewSummaryCollapsed ? "false" : "true"}">${commitReviewSummaryCollapsed ? "Expand" : "Collapse"}</button>
     </div>
-    <div class="diff-commit-review-list">${rows.join("") || "<span class=\"diff-commit-review-empty\">No commits loaded.</span>"}</div>`;
+    ${commitReviewSummaryCollapsed
+      ? "<div class=\"diff-commit-review-collapsed-note\">Commit review list hidden.</div>"
+      : `<div class="diff-commit-review-list">${rows.join("") || "<span class=\"diff-commit-review-empty\">No commits loaded.</span>"}</div>`}`;
     commitReviewSummaryNode.classList.remove("hidden");
   }
 
@@ -1195,13 +1233,16 @@
     reviewFindingsNode.innerHTML = `<div class="diff-review-header">
       <span class="diff-review-title">Review</span>
       <span class="diff-review-count">${escapeHtml(statusLabel)} | ${openCount} open | ${notesCount} notes</span>
+      <button type="button" class="diff-review-collapse-btn" data-review-panel-collapse="1" aria-expanded="${reviewPanelCollapsed ? "false" : "true"}">${reviewPanelCollapsed ? "Expand" : "Collapse"}</button>
       <button type="button" class="diff-review-send-notes" data-review-send-notes="1">Send Notes To Prompt</button>
       <button type="button" class="diff-review-done-review" data-review-scope-done="1"${record.status === "reviewed" ? " disabled" : ""}>Done Review</button>
     </div>
-    <div class="diff-review-output-item">
+    ${reviewPanelCollapsed
+      ? "<div class=\"diff-review-collapsed-note\">Review details hidden.</div>"
+      : `<div class="diff-review-output-item">
       <div class="diff-review-output-meta">${escapeHtml(targetLabel)}${when ? ` | ${escapeHtml(when)}` : ""}</div>
       <div class="diff-review-md-body">${bodyHtml}</div>
-    </div>`;
+    </div>`}`;
     reviewFindingsNode.classList.remove("hidden");
   }
 
@@ -3847,6 +3888,12 @@
   });
 
   commitReviewSummaryNode.addEventListener("click", (event) => {
+    const collapseBtn = event.target instanceof Element ? event.target.closest("[data-commit-review-collapse='1']") : null;
+    if (collapseBtn) {
+      setCommitReviewSummaryCollapsed(!commitReviewSummaryCollapsed);
+      return;
+    }
+
     const jumpBtn = event.target instanceof Element ? event.target.closest("[data-commit-review-jump]") : null;
     if (!jumpBtn) {
       return;
@@ -4150,6 +4197,12 @@
   });
 
   reviewFindingsNode.addEventListener("click", (event) => {
+    const collapseBtn = event.target instanceof Element ? event.target.closest("[data-review-panel-collapse='1']") : null;
+    if (collapseBtn) {
+      setReviewPanelCollapsed(!reviewPanelCollapsed);
+      return;
+    }
+
     const doneReviewBtn = event.target instanceof Element ? event.target.closest("[data-review-scope-done='1']") : null;
     if (doneReviewBtn) {
       const scopeKey = getCurrentScopeKey();

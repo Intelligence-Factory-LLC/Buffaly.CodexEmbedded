@@ -4158,6 +4158,7 @@ body {
 .diff-commit-review-header {
 	display: flex;
 	align-items: center;
+	flex-wrap: wrap;
 	gap: 0.5rem;
 	margin: 0 0 0.28rem;
 }
@@ -4172,6 +4173,25 @@ body {
 .diff-commit-review-meta {
 	font-size: 0.66rem;
 	color: #9a3412;
+}
+
+.diff-review-collapse-btn {
+	margin-left: auto;
+	border: 1px solid #fdba74;
+	background: #ffffff;
+	color: #9a3412;
+	border-radius: 999px;
+	font-size: 0.66rem;
+	font-weight: 700;
+	padding: 0.12rem 0.48rem;
+	cursor: pointer;
+}
+
+.diff-commit-review-collapsed-note,
+.diff-review-collapsed-note {
+	font-size: 0.68rem;
+	color: #9a3412;
+	padding: 0.1rem 0.08rem 0.04rem;
 }
 
 .diff-commit-review-list {
@@ -4264,6 +4284,7 @@ body {
 .diff-review-header {
 	display: flex;
 	align-items: center;
+	flex-wrap: wrap;
 	gap: 0.5rem;
 	margin: 0 0 0.35rem;
 }
@@ -4293,7 +4314,6 @@ body {
 
 .diff-review-send-notes,
 .diff-review-done-review {
-	margin-left: auto;
 	border: 1px solid #fecaca;
 	background: #ffffff;
 	color: #991b1b;
@@ -5549,6 +5569,17 @@ html[data-theme="dark"] .diff-full-window-note-textarea {
 html[data-theme="dark"] .diff-full-window-note-actions button {
 	background: #111827;
 	border-color: #9a3412;
+	color: #fdba74;
+}
+
+html[data-theme="dark"] .diff-review-collapse-btn {
+	background: #111827;
+	border-color: #9a3412;
+	color: #fdba74;
+}
+
+html[data-theme="dark"] .diff-commit-review-collapsed-note,
+html[data-theme="dark"] .diff-review-collapsed-note {
 	color: #fdba74;
 }
 
