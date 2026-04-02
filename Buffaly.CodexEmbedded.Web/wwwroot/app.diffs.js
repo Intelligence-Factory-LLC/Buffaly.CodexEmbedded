@@ -21,6 +21,15 @@
   const fullFileCloseBtn = document.getElementById("diffFullFileCloseBtn");
   const fullFileStatus = document.getElementById("diffFullFileStatus");
   const fullFileBody = document.getElementById("diffFullFileBody");
+  const fullFileReviewPanel = document.getElementById("diffFullFileReviewPanel");
+  const fullFileReviewTitle = document.getElementById("diffFullFileReviewTitle");
+  const fullFileReviewMeta = document.getElementById("diffFullFileReviewMeta");
+  const fullFileReviewContext = document.getElementById("diffFullFileReviewContext");
+  const fullFileNoteTarget = document.getElementById("diffFullFileNoteTarget");
+  const fullFileNoteTextarea = document.getElementById("diffFullFileNoteTextarea");
+  const fullFileNoteSaveBtn = document.getElementById("diffFullFileNoteSaveBtn");
+  const fullFileNoteRemoveBtn = document.getElementById("diffFullFileNoteRemoveBtn");
+  const fullFileNoteSendBtn = document.getElementById("diffFullFileNoteSendBtn");
   const composerNotesNode = document.getElementById("diffNotesComposer");
   const noteModal = document.getElementById("diffNoteModal");
   const noteModalPath = document.getElementById("diffNoteModalPath");
@@ -44,7 +53,22 @@
 
   const noteModalReady = !!(noteModal && noteModalPath && noteModalTextarea && noteModalSaveBtn && noteModalRemoveBtn && noteModalCancelBtn && noteModalCard && noteModalTitle);
   const reviewModalReady = !!(reviewModal && reviewModalTarget && reviewModalTextarea && reviewModalQueueBtn && reviewModalRunBtn && reviewModalCancelBtn);
-  const fullFileWindowReady = !!(fullFileWindow && fullFileTitle && fullFileClassSelect && fullFileMethodSelect && fullFileCloseBtn && fullFileStatus && fullFileBody);
+  const fullFileWindowReady = !!(fullFileWindow
+    && fullFileTitle
+    && fullFileClassSelect
+    && fullFileMethodSelect
+    && fullFileCloseBtn
+    && fullFileStatus
+    && fullFileBody
+    && fullFileReviewPanel
+    && fullFileReviewTitle
+    && fullFileReviewMeta
+    && fullFileReviewContext
+    && fullFileNoteTarget
+    && fullFileNoteTextarea
+    && fullFileNoteSaveBtn
+    && fullFileNoteRemoveBtn
+    && fullFileNoteSendBtn);
 
   const REFRESH_DEBOUNCE_MS = 120;
   const MAX_LINES_PER_FILE = 280;
@@ -81,17 +105,7 @@
   let notesByKey = new Map();
   let fullFileLoadingByPath = new Set();
   let fullFileViewerLoadToken = 0;
-  let fullFileViewerState = {
-    path: "",
-    content: "",
-    changedLines: new Set(),
-    firstChangedLine: 1,
-    requestedLineNo: null,
-    classes: [],
-    methods: [],
-    selectedClass: "",
-    selectedMethodKey: ""
-  };
+  let fullFileViewerState = createEmptyFullFileViewerState();
   let currentNoteEdit = null;
   let ignoreNextLineClick = false;
   let ignoreNextFullFileLineClick = false;
@@ -113,6 +127,25 @@
     currentContextMode = normalizeContextMode(window.localStorage.getItem(STORAGE_CONTEXT_MODE_KEY) || "3");
   } catch {
     currentContextMode = "3";
+  }
+
+  function createEmptyFullFileViewerState() {
+    return {
+      path: "",
+      content: "",
+      changedLines: new Set(),
+      firstChangedLine: 1,
+      requestedLineNo: null,
+      classes: [],
+      methods: [],
+      selectedClass: "",
+      selectedMethodKey: "",
+      selectedNoteTarget: null,
+      reviewContext: null,
+      noteDraftKey: "",
+      noteDraftText: "",
+      noteDraftDirty: false
+    };
   }
 
   function getActiveContext() {
@@ -1062,35 +1095,66 @@
     }
 
     const blocks = [];
+    let findingBlocks = [];
+    let findingTitle = "";
+    let findingIndex = 0;
+
+    function flushFinding() {
+      if (findingBlocks.length === 0) {
+        return;
+      }
+
+      blocks.push(`<section class="diff-review-md-finding" data-review-finding="1" data-review-finding-index="${findingIndex}" data-review-finding-title="${escapeAttribute(findingTitle)}">${findingBlocks.join("")}</section>`);
+      findingBlocks = [];
+      findingTitle = "";
+      findingIndex += 1;
+    }
+
     for (const raw of lines) {
       const line = typeof raw === "string" ? raw : "";
       const trimmed = line.trim();
       if (!trimmed) {
-        blocks.push("<div class=\"diff-review-md-spacer\"></div>");
+        if (findingBlocks.length > 0) {
+          findingBlocks.push("<div class=\"diff-review-md-spacer\"></div>");
+        } else {
+          blocks.push("<div class=\"diff-review-md-spacer\"></div>");
+        }
         continue;
       }
 
       if (/^#{1,6}\s+/.test(trimmed)) {
+        flushFinding();
         const text = trimmed.replace(/^#{1,6}\s+/, "");
         blocks.push(`<div class="diff-review-md-heading">${renderInlineReviewMarkdown(text)}</div>`);
         continue;
       }
 
       if (/^\d+\.\s+/.test(trimmed)) {
+        flushFinding();
         const text = trimmed.replace(/^\d+\.\s+/, "");
-        blocks.push(`<div class="diff-review-md-item ordered">${renderInlineReviewMarkdown(text)}</div>`);
+        findingTitle = text;
+        findingBlocks.push(`<div class="diff-review-md-item ordered">${renderInlineReviewMarkdown(text)}</div>`);
         continue;
       }
 
       if (/^-\s+/.test(trimmed)) {
         const text = trimmed.replace(/^-\s+/, "");
-        blocks.push(`<div class="diff-review-md-item bullet">${renderInlineReviewMarkdown(text)}</div>`);
+        if (findingBlocks.length > 0) {
+          findingBlocks.push(`<div class="diff-review-md-item bullet">${renderInlineReviewMarkdown(text)}</div>`);
+        } else {
+          blocks.push(`<div class="diff-review-md-item bullet">${renderInlineReviewMarkdown(text)}</div>`);
+        }
         continue;
       }
 
-      blocks.push(`<div class="diff-review-md-paragraph">${renderInlineReviewMarkdown(trimmed)}</div>`);
+      if (findingBlocks.length > 0) {
+        findingBlocks.push(`<div class="diff-review-md-paragraph">${renderInlineReviewMarkdown(trimmed)}</div>`);
+      } else {
+        blocks.push(`<div class="diff-review-md-paragraph">${renderInlineReviewMarkdown(trimmed)}</div>`);
+      }
     }
 
+    flushFinding();
     return blocks.join("");
   }
 
@@ -1139,6 +1203,285 @@
       <div class="diff-review-md-body">${bodyHtml}</div>
     </div>`;
     reviewFindingsNode.classList.remove("hidden");
+  }
+
+  function deriveFullFileSnippet(target, contentOverride = null) {
+    if (!target || !Number.isFinite(target.startLine) || target.startLine <= 0) {
+      return "";
+    }
+
+    const content = typeof contentOverride === "string" ? contentOverride : fullFileViewerState.content;
+    if (typeof content !== "string" || !content) {
+      return "";
+    }
+
+    const lines = content.split(/\r?\n/);
+    const snippetLines = [];
+    const endLine = Number.isFinite(target.endLine) && target.endLine >= target.startLine
+      ? target.endLine
+      : target.startLine;
+    for (let lineNo = target.startLine; lineNo <= endLine; lineNo += 1) {
+      const index = lineNo - 1;
+      if (index < 0 || index >= lines.length) {
+        continue;
+      }
+      snippetLines.push(lines[index]);
+    }
+    return snippetLines.join("\n").trim();
+  }
+
+  function setFullFileNoteTarget(target, options = {}) {
+    if (!fullFileWindowReady) {
+      return;
+    }
+
+    if (!target || !target.path || !Number.isFinite(target.startLine) || target.startLine <= 0) {
+      fullFileViewerState.selectedNoteTarget = null;
+      fullFileViewerState.noteDraftKey = "";
+      fullFileViewerState.noteDraftText = "";
+      fullFileViewerState.noteDraftDirty = false;
+      renderFullFileReviewPanel();
+      rerenderFullFileWindowIfOpen();
+      return;
+    }
+
+    const normalizedTarget = {
+      path: target.path,
+      startLine: Math.floor(target.startLine),
+      endLine: Number.isFinite(target.endLine) && target.endLine >= target.startLine
+        ? Math.floor(target.endLine)
+        : Math.floor(target.startLine),
+      snippet: typeof target.snippet === "string" ? target.snippet : "",
+      origin: "file"
+    };
+    if (!normalizedTarget.snippet) {
+      normalizedTarget.snippet = deriveFullFileSnippet(normalizedTarget);
+    }
+
+    fullFileViewerState.selectedNoteTarget = normalizedTarget;
+    fullFileViewerState.requestedLineNo = normalizedTarget.startLine;
+
+    const noteKey = buildNoteKey(normalizedTarget.path, normalizedTarget.startLine, normalizedTarget.endLine, "file");
+    if (fullFileViewerState.noteDraftKey !== noteKey || options.resetDraft === true) {
+      const existing = notesByKey.get(noteKey);
+      fullFileViewerState.noteDraftKey = noteKey;
+      fullFileViewerState.noteDraftText = existing && typeof existing.note === "string" ? existing.note : "";
+      fullFileViewerState.noteDraftDirty = false;
+    }
+
+    renderFullFileReviewPanel();
+    rerenderFullFileWindowIfOpen();
+
+    if (options.focus === true) {
+      window.setTimeout(() => {
+        if (fullFileNoteTextarea) {
+          fullFileNoteTextarea.focus();
+          fullFileNoteTextarea.setSelectionRange(fullFileNoteTextarea.value.length, fullFileNoteTextarea.value.length);
+        }
+      }, 10);
+    }
+  }
+
+  function setFullFileReviewContext(context) {
+    if (!fullFileWindowReady) {
+      return;
+    }
+
+    if (!context) {
+      fullFileViewerState.reviewContext = null;
+      renderFullFileReviewPanel();
+      return;
+    }
+
+    fullFileViewerState.reviewContext = {
+      title: typeof context.title === "string" ? context.title.trim() : "",
+      html: typeof context.html === "string" ? context.html : "",
+      text: typeof context.text === "string" ? context.text.trim() : "",
+      path: typeof context.path === "string" ? context.path : "",
+      lineNo: Number.isFinite(context.lineNo) ? Math.floor(context.lineNo) : null
+    };
+    renderFullFileReviewPanel();
+  }
+
+  function renderFullFileReviewPanel() {
+    if (!fullFileWindowReady) {
+      return;
+    }
+
+    const target = fullFileViewerState.selectedNoteTarget;
+    const reviewContext = fullFileViewerState.reviewContext;
+    const noteKey = target
+      ? buildNoteKey(target.path, target.startLine, target.endLine, "file")
+      : "";
+    const existing = noteKey ? notesByKey.get(noteKey) : null;
+    const noteText = noteKey && fullFileViewerState.noteDraftKey === noteKey
+      ? fullFileViewerState.noteDraftText
+      : (existing && typeof existing.note === "string" ? existing.note : "");
+
+    fullFileReviewTitle.textContent = reviewContext && reviewContext.title
+      ? reviewContext.title
+      : "Review Context";
+    fullFileReviewMeta.textContent = target
+      ? `${target.path} (${noteLineLabel(target.startLine, target.endLine, "file")})`
+      : "Select a review link or code line to annotate.";
+
+    if (reviewContext && reviewContext.html) {
+      fullFileReviewContext.innerHTML = `<div class="diff-full-window-review-card">${reviewContext.html}</div>`;
+    } else if (reviewContext && reviewContext.text) {
+      fullFileReviewContext.innerHTML = `<div class="diff-full-window-review-card"><div class="diff-review-md-paragraph">${escapeHtml(reviewContext.text)}</div></div>`;
+    } else {
+      fullFileReviewContext.innerHTML = "<div class=\"diff-full-window-review-empty\">Click a finding link to keep the review note visible while you inspect and annotate the code.</div>";
+    }
+
+    fullFileNoteTarget.textContent = target
+      ? `${target.path} (${noteLineLabel(target.startLine, target.endLine, "file")})`
+      : "No line selected.";
+    fullFileNoteTextarea.value = noteText;
+    fullFileNoteTextarea.disabled = !target;
+    fullFileNoteSaveBtn.disabled = !target;
+    fullFileNoteRemoveBtn.disabled = !target || !existing;
+    fullFileNoteSendBtn.disabled = notesByKey.size === 0 && !noteText.trim();
+  }
+
+  function saveFullFilePanelNote() {
+    if (!fullFileWindowReady) {
+      return;
+    }
+
+    const target = fullFileViewerState.selectedNoteTarget;
+    if (!target) {
+      return;
+    }
+
+    const noteText = fullFileNoteTextarea.value || "";
+    applyNoteToState(target.path, target.startLine, target.endLine, noteText, target.snippet || deriveFullFileSnippet(target), "file");
+    saveNotesForScope(currentNotesScopeKey);
+    fullFileViewerState.noteDraftKey = buildNoteKey(target.path, target.startLine, target.endLine, "file");
+    fullFileViewerState.noteDraftText = (noteText || "").trim();
+    fullFileViewerState.noteDraftDirty = false;
+    updateSummary(currentTotalChangeCount);
+    rerenderFilesPreserveView();
+    rerenderFullFileWindowIfOpen();
+    renderComposerNotes();
+    renderFullFileReviewPanel();
+  }
+
+  function removeFullFilePanelNote() {
+    if (!fullFileWindowReady) {
+      return;
+    }
+
+    const target = fullFileViewerState.selectedNoteTarget;
+    if (!target) {
+      return;
+    }
+
+    const noteKey = buildNoteKey(target.path, target.startLine, target.endLine, "file");
+    notesByKey.delete(noteKey);
+    saveNotesForScope(currentNotesScopeKey);
+    fullFileViewerState.noteDraftKey = noteKey;
+    fullFileViewerState.noteDraftText = "";
+    fullFileViewerState.noteDraftDirty = false;
+    updateSummary(currentTotalChangeCount);
+    rerenderFilesPreserveView();
+    rerenderFullFileWindowIfOpen();
+    renderComposerNotes();
+    renderFullFileReviewPanel();
+  }
+
+  function sendCurrentNotesToPrompt() {
+    const consumeMetadata = window.codexDiffNotesConsumePromptMetadata;
+    const appendPrompt = window.codexAppendTextToPrompt;
+    if (typeof consumeMetadata !== "function" || typeof appendPrompt !== "function") {
+      return;
+    }
+
+    if (fullFileWindowReady && fullFileViewerState.noteDraftDirty && fullFileViewerState.selectedNoteTarget) {
+      saveFullFilePanelNote();
+    }
+
+    const payload = consumeMetadata();
+    const metadataText = typeof payload?.metadataText === "string" ? payload.metadataText.trim() : "";
+    if (!metadataText) {
+      renderFullFileReviewPanel();
+      renderReviewFindingsPanel();
+      renderCommitOptions();
+      return;
+    }
+
+    appendPrompt(`Please implement the requested fixes from these review notes.\n\n${metadataText}`, { focus: true });
+    renderFullFileReviewPanel();
+    renderReviewFindingsPanel();
+    renderCommitOptions();
+  }
+
+  function extractReviewContextFromElement(element, path, lineNo) {
+    if (!(element instanceof Element)) {
+      return null;
+    }
+
+    const findingNode = element.closest("[data-review-finding='1']");
+    if (findingNode) {
+      return {
+        title: findingNode.getAttribute("data-review-finding-title") || "",
+        html: findingNode.innerHTML,
+        text: findingNode.textContent || "",
+        path,
+        lineNo
+      };
+    }
+
+    const blockNode = element.closest(".diff-review-md-item, .diff-review-md-paragraph, .diff-review-md-heading");
+    if (blockNode) {
+      return {
+        title: blockNode.textContent || "",
+        html: blockNode.outerHTML,
+        text: blockNode.textContent || "",
+        path,
+        lineNo
+      };
+    }
+
+    return {
+      title: path && Number.isFinite(lineNo) ? `${path}:${lineNo}` : (path || "Review note"),
+      html: "",
+      text: element.textContent || "",
+      path,
+      lineNo
+    };
+  }
+
+  function openReviewLinkInFullFile(path, lineNo, reviewContext) {
+    if (!path) {
+      return Promise.resolve();
+    }
+
+    if (fullFileWindowReady && fullFileViewerState.noteDraftDirty && fullFileViewerState.selectedNoteTarget) {
+      saveFullFilePanelNote();
+    }
+
+    if (fullFileWindowReady
+      && !fullFileWindow.classList.contains("hidden")
+      && fullFileViewerState.path === path
+      && typeof fullFileViewerState.content === "string"
+      && fullFileViewerState.content) {
+      setFullFileReviewContext(reviewContext);
+      if (Number.isFinite(lineNo) && lineNo > 0) {
+        setFullFileNoteTarget({
+          path,
+          startLine: lineNo,
+          endLine: lineNo,
+          snippet: "",
+          origin: "file"
+        }, { focus: true, resetDraft: true });
+        window.setTimeout(() => {
+          jumpFullFileWindowToLine(lineNo);
+        }, 10);
+      }
+      return Promise.resolve();
+    }
+
+    return openFullFileWindow(path, { lineNo, reviewContext });
   }
 
   function upsertReviewFindingsForEntry(entry) {
@@ -2166,6 +2509,7 @@
       const lineNo = index + 1;
       const classes = ["diff-full-window-line", "diff-full-window-line-clickable"];
       const reviewTitle = getLineReviewTitle(fullFileViewerState.path, lineNo);
+      const selectedTarget = fullFileViewerState.selectedNoteTarget;
       if (changedLines && changedLines.has(lineNo)) {
         classes.push("diff-full-window-line-changed");
       }
@@ -2177,6 +2521,9 @@
       }
       if (reviewTitle) {
         classes.push("diff-full-window-line-reviewed");
+      }
+      if (selectedTarget && lineNo >= selectedTarget.startLine && lineNo <= selectedTarget.endLine) {
+        classes.push("diff-full-window-line-selected");
       }
       const title = reviewTitle
         ? `Click to add note. Shift-select lines to annotate a range. Review: ${reviewTitle}`
@@ -2309,17 +2656,7 @@
     }
 
     fullFileWindow.classList.add("hidden");
-    fullFileViewerState = {
-      path: "",
-      content: "",
-      changedLines: new Set(),
-      firstChangedLine: 1,
-      requestedLineNo: null,
-      classes: [],
-      methods: [],
-      selectedClass: "",
-      selectedMethodKey: ""
-    };
+    fullFileViewerState = createEmptyFullFileViewerState();
     fullFileTitle.textContent = "Full File";
     fullFileStatus.textContent = "";
     fullFileBody.innerHTML = "";
@@ -2327,6 +2664,7 @@
     fullFileClassSelect.disabled = true;
     fullFileMethodSelect.innerHTML = "<option value=\"\">Methods</option>";
     fullFileMethodSelect.disabled = true;
+    renderFullFileReviewPanel();
     ignoreNextFullFileLineClick = false;
   }
 
@@ -2926,22 +3264,44 @@
     const requestedLineNo = Number.isFinite(options?.lineNo) && options.lineNo > 0
       ? Math.floor(options.lineNo)
       : null;
+    const selectedTarget = requestedLineNo
+      ? {
+        path: normalizedPath,
+        startLine: requestedLineNo,
+        endLine: requestedLineNo,
+        snippet: "",
+        origin: "file"
+      }
+      : null;
     const loadToken = ++fullFileViewerLoadToken;
 
     fullFileLoadingByPath.add(normalizedPath);
     rerenderFilesPreserveView();
 
     fullFileViewerState = {
+      ...createEmptyFullFileViewerState(),
       path: normalizedPath,
-      content: "",
       changedLines: changed.changed,
       firstChangedLine: requestedLineNo || changed.first,
       requestedLineNo,
-      classes: [],
-      methods: [],
-      selectedClass: "",
-      selectedMethodKey: ""
+      selectedNoteTarget: selectedTarget
     };
+    if (options?.reviewContext) {
+      fullFileViewerState.reviewContext = {
+        title: typeof options.reviewContext.title === "string" ? options.reviewContext.title.trim() : "",
+        html: typeof options.reviewContext.html === "string" ? options.reviewContext.html : "",
+        text: typeof options.reviewContext.text === "string" ? options.reviewContext.text.trim() : "",
+        path: normalizedPath,
+        lineNo: requestedLineNo
+      };
+    }
+    if (selectedTarget) {
+      const noteKey = buildNoteKey(selectedTarget.path, selectedTarget.startLine, selectedTarget.endLine, "file");
+      const existing = notesByKey.get(noteKey);
+      fullFileViewerState.noteDraftKey = noteKey;
+      fullFileViewerState.noteDraftText = existing && typeof existing.note === "string" ? existing.note : "";
+      fullFileViewerState.noteDraftDirty = false;
+    }
     fullFileTitle.textContent = normalizedPath;
     fullFileStatus.textContent = "Loading full file content...";
     fullFileBody.innerHTML = "";
@@ -2950,6 +3310,7 @@
     fullFileMethodSelect.innerHTML = "<option value=\"\">Methods</option>";
     fullFileMethodSelect.disabled = true;
     fullFileWindow.classList.remove("hidden");
+    renderFullFileReviewPanel();
 
     try {
       const url = new URL("api/worktree/diff/file", document.baseURI);
@@ -2990,10 +3351,14 @@
       const symbols = extractSymbolsFromContent(content);
       fullFileViewerState.classes = symbols.classes;
       fullFileViewerState.methods = symbols.methods;
+      if (fullFileViewerState.selectedNoteTarget && !fullFileViewerState.selectedNoteTarget.snippet) {
+        fullFileViewerState.selectedNoteTarget.snippet = deriveFullFileSnippet(fullFileViewerState.selectedNoteTarget, content);
+      }
       fullFileStatus.textContent = data.isTruncated === true
         ? "Showing truncated file content."
         : "Use Classes and Methods dropdowns to jump.";
       renderFullFileWindowBody(content, fullFileViewerState.changedLines);
+      renderFullFileReviewPanel();
       renderFullFileWindowClassOptions();
       window.setTimeout(() => {
         jumpFullFileWindowToLine(requestedLineNo || fullFileViewerState.firstChangedLine || 1);
@@ -3621,7 +3986,13 @@
         return;
       }
 
-      openNoteModal(fullFileViewerState.path, lineNo, lineNo, (lineText || "").trim(), "file");
+      setFullFileNoteTarget({
+        path: fullFileViewerState.path,
+        startLine: lineNo,
+        endLine: lineNo,
+        snippet: (lineText || "").trim(),
+        origin: "file"
+      }, { focus: true });
     });
 
     fullFileBody.addEventListener("mouseup", () => {
@@ -3631,11 +4002,56 @@
       }
 
       ignoreNextFullFileLineClick = true;
-      openNoteModalForTargets(targets);
+      setFullFileNoteTarget(targets[0], { focus: true, resetDraft: true });
       const selection = window.getSelection ? window.getSelection() : null;
       if (selection && typeof selection.removeAllRanges === "function") {
         selection.removeAllRanges();
       }
+    });
+
+    fullFileNoteTextarea.addEventListener("input", () => {
+      const target = fullFileViewerState.selectedNoteTarget;
+      if (!target) {
+        fullFileViewerState.noteDraftKey = "";
+        fullFileViewerState.noteDraftText = "";
+        fullFileViewerState.noteDraftDirty = false;
+        return;
+      }
+
+      fullFileViewerState.noteDraftKey = buildNoteKey(target.path, target.startLine, target.endLine, "file");
+      fullFileViewerState.noteDraftText = fullFileNoteTextarea.value || "";
+      fullFileViewerState.noteDraftDirty = true;
+      fullFileNoteSaveBtn.disabled = false;
+      fullFileNoteSendBtn.disabled = !fullFileViewerState.noteDraftText.trim() && notesByKey.size === 0;
+    });
+
+    fullFileNoteSaveBtn.addEventListener("click", () => {
+      saveFullFilePanelNote();
+    });
+
+    fullFileNoteRemoveBtn.addEventListener("click", () => {
+      removeFullFilePanelNote();
+    });
+
+    fullFileNoteSendBtn.addEventListener("click", () => {
+      sendCurrentNotesToPrompt();
+    });
+
+    fullFileReviewPanel.addEventListener("click", (event) => {
+      const jumpBtn = event.target instanceof Element ? event.target.closest("[data-review-md-link='1']") : null;
+      if (!jumpBtn) {
+        return;
+      }
+
+      event.preventDefault();
+      const path = jumpBtn.getAttribute("data-review-jump-path") || "";
+      const lineNo = Number.parseInt(jumpBtn.getAttribute("data-review-jump-line") || "", 10);
+      if (!path) {
+        return;
+      }
+
+      const reviewContext = extractReviewContextFromElement(jumpBtn, path, lineNo);
+      openReviewLinkInFullFile(path, lineNo, reviewContext).catch(() => { });
     });
 
     fullFileWindow.addEventListener("click", (event) => {
@@ -3761,21 +4177,7 @@
 
     const sendNotesBtn = event.target instanceof Element ? event.target.closest("[data-review-send-notes='1']") : null;
     if (sendNotesBtn) {
-      const consumeMetadata = window.codexDiffNotesConsumePromptMetadata;
-      const appendPrompt = window.codexAppendTextToPrompt;
-      if (typeof consumeMetadata !== "function" || typeof appendPrompt !== "function") {
-        return;
-      }
-
-      const payload = consumeMetadata();
-      const metadataText = typeof payload?.metadataText === "string" ? payload.metadataText.trim() : "";
-      if (!metadataText) {
-        return;
-      }
-
-      appendPrompt(`Please implement the requested fixes from these review notes.\n\n${metadataText}`, { focus: true });
-      renderReviewFindingsPanel();
-      renderCommitOptions();
+      sendCurrentNotesToPrompt();
       return;
     }
 
@@ -3790,21 +4192,14 @@
       return;
     }
 
+    event.preventDefault();
+    const reviewContext = extractReviewContextFromElement(jumpBtn, path, lineNo);
     if (Number.isFinite(lineNo) && lineNo > 0) {
-      jumpToReviewFinding(path, lineNo);
-      if (noteModalReady) {
-        openNoteModalForTargets([{
-          path,
-          startLine: lineNo,
-          endLine: lineNo,
-          snippet: "",
-          origin: "file"
-        }]);
-      }
+      openReviewLinkInFullFile(path, lineNo, reviewContext).catch(() => { });
       return;
     }
 
-    openFullFileWindow(path, {}).catch(() => { });
+    openReviewLinkInFullFile(path, lineNo, reviewContext).catch(() => { });
   });
 
   composerNotesNode.addEventListener("click", (event) => {

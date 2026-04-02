@@ -467,7 +467,28 @@
 					</div>
 				</div>
 				<div id="diffFullFileStatus" class="diff-full-window-status"></div>
-				<div id="diffFullFileBody" class="diff-full-window-body"></div>
+				<div class="diff-full-window-workspace">
+					<div class="diff-full-window-code-pane">
+						<div id="diffFullFileBody" class="diff-full-window-body"></div>
+					</div>
+					<aside id="diffFullFileReviewPanel" class="diff-full-window-side" aria-label="Review context and notes">
+						<div class="diff-full-window-side-header">
+							<div id="diffFullFileReviewTitle" class="diff-full-window-side-title">Review Context</div>
+							<div id="diffFullFileReviewMeta" class="diff-full-window-side-meta">Select a review link or code line to annotate.</div>
+						</div>
+						<div id="diffFullFileReviewContext" class="diff-full-window-review-context"></div>
+						<div class="diff-full-window-note-section">
+							<label class="diff-full-window-note-label" for="diffFullFileNoteTextarea">Your Note</label>
+							<div id="diffFullFileNoteTarget" class="diff-full-window-note-target">No line selected.</div>
+							<textarea id="diffFullFileNoteTextarea" class="diff-full-window-note-textarea" rows="8" placeholder="Add your note for this line or range."></textarea>
+							<div class="diff-full-window-note-actions">
+								<button id="diffFullFileNoteSaveBtn" type="button">Save Note</button>
+								<button id="diffFullFileNoteRemoveBtn" type="button">Remove Note</button>
+								<button id="diffFullFileNoteSendBtn" type="button">Send Notes To Prompt</button>
+							</div>
+						</div>
+					</aside>
+				</div>
 			</div>
 		</div>
 
@@ -495,7 +516,7 @@
 	<script src="sessionTimeline.js?v=20260402-review-turnid-scope1"></script>
 	<script src="scribe.js?v=20260313-transcribe-flow-fix1"></script>
 	<script src="app.shared.js?v=20260228-cleanup1"></script>
-	<script src="app.js?v=20260402-review-server2"></script>
-	<script src="app.diffs.js?v=20260402-review-server2"></script>
+	<script src="app.js?v=20260402-review-workspace1"></script>
+	<script src="app.diffs.js?v=20260402-review-workspace1"></script>
 </body>
 </html>
