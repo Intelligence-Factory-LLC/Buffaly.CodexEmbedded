@@ -194,11 +194,15 @@
 								<option value="full">Full Context</option>
 							</select>
 							<div class="worktree-diff-actions">
+								<button id="worktreeDiffQueueReviewBtn" class="worktree-diff-refresh-btn" type="button">Queue Review</button>
+								<button id="worktreeDiffRunReviewBtn" class="worktree-diff-refresh-btn" type="button">Review Now</button>
 								<button id="worktreeDiffToggleBtn" class="worktree-diff-refresh-btn" type="button">Close</button>
 								<button id="worktreeDiffRefreshBtn" class="worktree-diff-refresh-btn" type="button">Refresh</button>
 							</div>
 						</div>
 					</div>
+					<div id="worktreeDiffCommitReviewSummary" class="diff-commit-review-summary hidden" role="status" aria-live="polite"></div>
+					<div id="diffReviewFindings" class="diff-review-findings hidden" role="status" aria-live="polite"></div>
 					<div id="worktreeDiffList" class="worktree-diff-list"></div>
 				</section>
 				<div id="chatMessages" class="watcher-timeline"></div>
@@ -436,6 +440,22 @@
 			</div>
 		</div>
 
+		<div id="diffReviewModal" class="command-modal hidden" role="dialog" aria-modal="true" aria-labelledby="diffReviewModalTitle">
+			<div class="command-modal-card diff-review-modal-card">
+				<div id="diffReviewModalTitle" class="command-modal-title">Start Review</div>
+				<div class="command-modal-body">
+					<div id="diffReviewModalTarget" class="diff-note-modal-path"></div>
+					<label for="diffReviewModalTextarea">Review note (optional)</label>
+					<textarea id="diffReviewModalTextarea" rows="5" maxlength="1000" placeholder="Focus areas, risks, priorities, expected checks"></textarea>
+				</div>
+				<div class="command-modal-actions">
+					<button id="diffReviewModalQueueBtn" type="button">Queue Review</button>
+					<button id="diffReviewModalRunBtn" type="button">Review Now</button>
+					<button id="diffReviewModalCancelBtn" type="button">Cancel</button>
+				</div>
+			</div>
+		</div>
+
 		<div id="diffFullFileWindow" class="diff-full-window hidden" role="dialog" aria-modal="true" aria-labelledby="diffFullFileTitle">
 			<div class="diff-full-window-card">
 				<div class="diff-full-window-header">
@@ -472,10 +492,10 @@
 		</div>
 	</div>
 	<script src="theme.js?v=20260225-settings1"></script>
-	<script src="sessionTimeline.js?v=20260327-file-link-viewer1"></script>
+	<script src="sessionTimeline.js?v=20260402-review-turnid-scope1"></script>
 	<script src="scribe.js?v=20260313-transcribe-flow-fix1"></script>
 	<script src="app.shared.js?v=20260228-cleanup1"></script>
-	<script src="app.js?v=20260327-model-dropdown-fallback1"></script>
-	<script src="app.diffs.js?v=20260327-line-highlight1"></script>
+	<script src="app.js?v=20260402-review-server1"></script>
+	<script src="app.diffs.js?v=20260402-review-server1"></script>
 </body>
 </html>

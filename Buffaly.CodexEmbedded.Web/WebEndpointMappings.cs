@@ -830,10 +830,198 @@ internal static class WebEndpointMappings
 		});
 	}
 
+	public static void MapReviewEndpoints(this WebApplication app)
+	{
+		app.MapGet("/api/reviews", (HttpRequest request, WebRuntimeDefaults defaults, ReviewStore reviewStore, SessionOrchestrator orchestrator) =>
+		{
+			if (!IsAuthorizedHttpRequest(request, defaults))
+			{
+				return Results.Unauthorized();
+			}
+
+			var cwd = request.Query["cwd"].ToString();
+			if (string.IsNullOrWhiteSpace(cwd))
+			{
+				return Results.BadRequest(new { message = "cwd query parameter is required." });
+			}
+
+			try
+			{
+				var snapshot = reviewStore.GetCatalog(cwd, orchestrator);
+				return Results.Ok(new
+				{
+					cwd = snapshot.Cwd,
+					reviews = snapshot.Reviews
+				});
+			}
+			catch (InvalidOperationException ex)
+			{
+				return Results.BadRequest(new { message = ex.Message });
+			}
+			catch (Exception ex)
+			{
+				return Results.Problem(
+					statusCode: StatusCodes.Status500InternalServerError,
+					title: "Failed to load review catalog.",
+					detail: ex.Message);
+			}
+		});
+
+		app.MapPost("/api/reviews/create", async (HttpRequest request, WebRuntimeDefaults defaults, ReviewStore reviewStore, CancellationToken cancellationToken) =>
+		{
+			if (!IsAuthorizedHttpRequest(request, defaults))
+			{
+				return Results.Unauthorized();
+			}
+
+			ReviewStore.ReviewCreateRequest? createRequest;
+			try
+			{
+				createRequest = await JsonSerializer.DeserializeAsync<ReviewStore.ReviewCreateRequest>(
+					request.Body,
+					RecapJsonOptions,
+					cancellationToken);
+			}
+			catch (Exception ex)
+			{
+				return Results.BadRequest(new { message = $"Invalid request JSON: {ex.Message}" });
+			}
+
+			if (createRequest is null)
+			{
+				return Results.BadRequest(new { message = "Request body is required." });
+			}
+
+			try
+			{
+				var created = reviewStore.CreateReview(createRequest);
+				return Results.Ok(new
+				{
+					review = created.Record,
+					promptText = created.PromptText
+				});
+			}
+			catch (InvalidOperationException ex)
+			{
+				return Results.BadRequest(new { message = ex.Message });
+			}
+			catch (Exception ex)
+			{
+				return Results.Problem(
+					statusCode: StatusCodes.Status500InternalServerError,
+					title: "Failed to create review request.",
+					detail: ex.Message);
+			}
+		});
+
+		app.MapPost("/api/reviews/status", async (HttpRequest request, WebRuntimeDefaults defaults, ReviewStore reviewStore, CancellationToken cancellationToken) =>
+		{
+			if (!IsAuthorizedHttpRequest(request, defaults))
+			{
+				return Results.Unauthorized();
+			}
+
+			ReviewStatusUpdateRequest? updateRequest;
+			try
+			{
+				updateRequest = await JsonSerializer.DeserializeAsync<ReviewStatusUpdateRequest>(
+					request.Body,
+					RecapJsonOptions,
+					cancellationToken);
+			}
+			catch (Exception ex)
+			{
+				return Results.BadRequest(new { message = $"Invalid request JSON: {ex.Message}" });
+			}
+
+			if (updateRequest is null || string.IsNullOrWhiteSpace(updateRequest.ReviewId))
+			{
+				return Results.BadRequest(new { message = "reviewId is required." });
+			}
+
+			var updated = reviewStore.TryUpdateStatus(updateRequest.ReviewId, updateRequest.Status);
+			return Results.Ok(new { updated });
+		});
+
+		app.MapPost("/api/reviews/finding-state", async (HttpRequest request, WebRuntimeDefaults defaults, ReviewStore reviewStore, CancellationToken cancellationToken) =>
+		{
+			if (!IsAuthorizedHttpRequest(request, defaults))
+			{
+				return Results.Unauthorized();
+			}
+
+			ReviewFindingStateRequest? findingRequest;
+			try
+			{
+				findingRequest = await JsonSerializer.DeserializeAsync<ReviewFindingStateRequest>(
+					request.Body,
+					RecapJsonOptions,
+					cancellationToken);
+			}
+			catch (Exception ex)
+			{
+				return Results.BadRequest(new { message = $"Invalid request JSON: {ex.Message}" });
+			}
+
+			if (findingRequest is null || string.IsNullOrWhiteSpace(findingRequest.ReviewId) || string.IsNullOrWhiteSpace(findingRequest.FindingKey))
+			{
+				return Results.BadRequest(new { message = "reviewId and findingKey are required." });
+			}
+
+			var updated = reviewStore.TrySetFindingState(findingRequest.ReviewId, findingRequest.FindingKey, findingRequest.Done);
+			return Results.Ok(new { updated });
+		});
+
+		app.MapPost("/api/reviews/finding-clear", async (HttpRequest request, WebRuntimeDefaults defaults, ReviewStore reviewStore, CancellationToken cancellationToken) =>
+		{
+			if (!IsAuthorizedHttpRequest(request, defaults))
+			{
+				return Results.Unauthorized();
+			}
+
+			ReviewFindingClearRequest? clearRequest;
+			try
+			{
+				clearRequest = await JsonSerializer.DeserializeAsync<ReviewFindingClearRequest>(
+					request.Body,
+					RecapJsonOptions,
+					cancellationToken);
+			}
+			catch (Exception ex)
+			{
+				return Results.BadRequest(new { message = $"Invalid request JSON: {ex.Message}" });
+			}
+
+			if (clearRequest is null || string.IsNullOrWhiteSpace(clearRequest.ReviewId))
+			{
+				return Results.BadRequest(new { message = "reviewId is required." });
+			}
+
+			var cleared = reviewStore.ClearDismissedFindings(clearRequest.ReviewId);
+			return Results.Ok(new { cleared });
+		});
+	}
+
 	private static readonly JsonSerializerOptions RecapJsonOptions = new()
 	{
 		PropertyNameCaseInsensitive = true
 	};
+
+	private static bool IsAuthorizedHttpRequest(HttpRequest request, WebRuntimeDefaults defaults)
+	{
+		if (!defaults.WebSocketAuthRequired || string.IsNullOrWhiteSpace(defaults.WebSocketAuthToken))
+		{
+			return true;
+		}
+
+		return WebSocketAuthGuard.IsAuthorized(request, defaults.WebSocketAuthToken);
+	}
+
+	private sealed record ReviewStatusUpdateRequest(string ReviewId, string Status);
+
+	private sealed record ReviewFindingStateRequest(string ReviewId, string FindingKey, bool Done);
+
+	private sealed record ReviewFindingClearRequest(string ReviewId);
 
 	private static long? ParseNonNegativeLongQuery(HttpRequest request, string key)
 	{

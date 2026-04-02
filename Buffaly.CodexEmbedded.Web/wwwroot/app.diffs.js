@@ -10,6 +10,10 @@
   const modeCommitBtn = document.getElementById("worktreeDiffModeCommitBtn");
   const commitSelect = document.getElementById("worktreeDiffCommitSelect");
   const contextSelect = document.getElementById("worktreeDiffContextSelect");
+  const queueReviewBtn = document.getElementById("worktreeDiffQueueReviewBtn");
+  const runReviewBtn = document.getElementById("worktreeDiffRunReviewBtn");
+  const commitReviewSummaryNode = document.getElementById("worktreeDiffCommitReviewSummary");
+  const reviewFindingsNode = document.getElementById("diffReviewFindings");
   const fullFileWindow = document.getElementById("diffFullFileWindow");
   const fullFileTitle = document.getElementById("diffFullFileTitle");
   const fullFileClassSelect = document.getElementById("diffFullFileClassSelect");
@@ -26,23 +30,37 @@
   const noteModalCancelBtn = document.getElementById("diffNoteModalCancelBtn");
   const noteModalCard = noteModal ? noteModal.querySelector(".diff-note-modal-card") : null;
   const noteModalTitle = document.getElementById("diffNoteModalTitle");
+  const reviewModal = document.getElementById("diffReviewModal");
+  const reviewModalTarget = document.getElementById("diffReviewModalTarget");
+  const reviewModalTextarea = document.getElementById("diffReviewModalTextarea");
+  const reviewModalQueueBtn = document.getElementById("diffReviewModalQueueBtn");
+  const reviewModalRunBtn = document.getElementById("diffReviewModalRunBtn");
+  const reviewModalCancelBtn = document.getElementById("diffReviewModalCancelBtn");
+  const chatMessagesNode = document.getElementById("chatMessages");
 
-  if (!panel || !summaryNode || !listNode || !refreshBtn || !toggleBtn || !indicatorBtn || !indicatorCountNode || !modeWorktreeBtn || !modeCommitBtn || !commitSelect || !contextSelect || !composerNotesNode) {
+  if (!panel || !summaryNode || !listNode || !refreshBtn || !toggleBtn || !indicatorBtn || !indicatorCountNode || !modeWorktreeBtn || !modeCommitBtn || !commitSelect || !contextSelect || !queueReviewBtn || !runReviewBtn || !commitReviewSummaryNode || !reviewFindingsNode || !composerNotesNode) {
     return;
   }
 
   const noteModalReady = !!(noteModal && noteModalPath && noteModalTextarea && noteModalSaveBtn && noteModalRemoveBtn && noteModalCancelBtn && noteModalCard && noteModalTitle);
+  const reviewModalReady = !!(reviewModal && reviewModalTarget && reviewModalTextarea && reviewModalQueueBtn && reviewModalRunBtn && reviewModalCancelBtn);
   const fullFileWindowReady = !!(fullFileWindow && fullFileTitle && fullFileClassSelect && fullFileMethodSelect && fullFileCloseBtn && fullFileStatus && fullFileBody);
 
   const REFRESH_DEBOUNCE_MS = 120;
   const MAX_LINES_PER_FILE = 280;
+  const MAX_REVIEW_NOTE_CHARS = 1000;
   const STORAGE_NOTES_PREFIX = "codex-worktree-diff-notes-v2::";
+  const STORAGE_REVIEW_FINDING_STATE_PREFIX = "codex-worktree-diff-review-state-v1::";
+  const STORAGE_REVIEW_FINDINGS_PREFIX = "codex-worktree-diff-review-findings-v1::";
+  const STORAGE_REVIEW_LIFECYCLE_PREFIX = "codex-worktree-diff-review-lifecycle-v1::";
   const STORAGE_CONTEXT_MODE_KEY = "codex-worktree-diff-context-mode-v1";
   const CONTEXT_MODE_VALUES = new Set(["3", "10", "30", "full"]);
 
   let pollInFlight = false;
   let refreshTimer = null;
   let refreshPendingForce = false;
+  let reviewQueuedBadgeTimer = null;
+  let reviewDraftText = "";
   let lastRenderKey = "";
   let lastCwd = "";
   let currentRepoRoot = "";
@@ -82,6 +100,15 @@
   let modalDragState = null;
   let missingContextLogged = false;
   let lastContextState = "unknown";
+  let reviewFindingsByScope = new Map();
+  let reviewFindingsIndexByScope = new Map();
+  let reviewScopeByTurnId = new Map();
+  let pendingReviewScopeQueue = [];
+  let reviewRequestedTurns = new Set();
+  let reviewCompletedTurns = new Set();
+  let reviewLifecycleByScope = new Map(); // scopeKey -> { requestedCount, completedCount, lastRequestedUtc, lastCompletedUtc }
+  let currentReviewStateScopeKey = "";
+  let reviewFindingStateByKey = new Map();
   try {
     currentContextMode = normalizeContextMode(window.localStorage.getItem(STORAGE_CONTEXT_MODE_KEY) || "3");
   } catch {
@@ -123,6 +150,1025 @@
     }
 
     return `${normalizedCwd}::${normalizedMode}`;
+  }
+
+  function normalizeReviewSeverity(text) {
+    const source = typeof text === "string" ? text.toLowerCase() : "";
+    if (source.includes("critical")) {
+      return "critical";
+    }
+    if (source.includes("high")) {
+      return "high";
+    }
+    if (source.includes("medium")) {
+      return "medium";
+    }
+    if (source.includes("low")) {
+      return "low";
+    }
+
+    return "";
+  }
+
+  function parseReviewRequestContextFromPromptText(bodyText) {
+    const source = typeof bodyText === "string" ? bodyText : "";
+    if (!source.trim()) {
+      return null;
+    }
+
+    if (!/^Run a code review for the current repository state\./im.test(source)) {
+      return null;
+    }
+
+    const context = getActiveContext();
+    const contextCwd = context && typeof context.cwd === "string" && context.cwd.trim()
+      ? context.cwd.trim()
+      : (typeof lastCwd === "string" ? lastCwd.trim() : "");
+    if (!contextCwd) {
+      return null;
+    }
+
+    const commitMatch = source.match(/Review target:\s*commit\s+([0-9a-f]{7,40})\b/i);
+    if (commitMatch) {
+      const commitSha = (commitMatch[1] || "").trim();
+      if (!commitSha) {
+        return null;
+      }
+      return {
+        mode: "commit",
+        commitSha,
+        scopeKey: buildDiffScopeKey(contextCwd, "commit", commitSha)
+      };
+    }
+
+    if (/Review target:\s*uncommitted working tree changes/i.test(source)) {
+      return {
+        mode: "worktree",
+        commitSha: "",
+        scopeKey: buildDiffScopeKey(contextCwd, "worktree", "")
+      };
+    }
+
+    return null;
+  }
+
+  function extractReviewFindingsFromBodyText(bodyText, cwd) {
+    const source = typeof bodyText === "string" ? bodyText : "";
+    const normalizedCwd = typeof cwd === "string" ? cwd.trim() : "";
+    if (!source.trim() || !normalizedCwd) {
+      return [];
+    }
+
+    const looksLikeReview = /\bfindings?\b/i.test(source) || /\b(critical|high|medium|low)\b/i.test(source);
+    if (!looksLikeReview) {
+      return [];
+    }
+
+    const findings = [];
+    const dedupe = new Set();
+    const lines = source.split(/\r?\n/);
+    for (const rawLine of lines) {
+      if (typeof rawLine !== "string" || !rawLine.includes("[") || !rawLine.includes("(")) {
+        continue;
+      }
+
+      const line = rawLine.trim();
+      if (!line) {
+        continue;
+      }
+
+      const severity = normalizeReviewSeverity(line);
+      const compactLine = line.replace(/\s+/g, " ").trim();
+      const markdownLinkMatches = line.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g);
+      for (const match of markdownLinkMatches) {
+        const label = typeof match[1] === "string" ? match[1].trim() : "";
+        const href = typeof match[2] === "string" ? match[2].trim() : "";
+        const parsed = parseFileLinkTarget(href);
+        if (!parsed || !parsed.path || !Number.isFinite(parsed.lineNo) || parsed.lineNo <= 0) {
+          continue;
+        }
+
+        const normalizedPath = normalizePathForDiffViewer(parsed.path, normalizedCwd);
+        if (!normalizedPath) {
+          continue;
+        }
+
+        const detailText = compactLine.length > 320 ? `${compactLine.slice(0, 319)}...` : compactLine;
+        const key = `${normalizedPath}|${parsed.lineNo}|${detailText}`;
+        if (dedupe.has(key)) {
+          continue;
+        }
+
+        dedupe.add(key);
+        findings.push({
+          path: normalizedPath,
+          lineNo: parsed.lineNo,
+          severity,
+          label,
+          detail: detailText
+        });
+      }
+    }
+
+    return findings;
+  }
+
+  function looksLikeReviewResponseBody(bodyText) {
+    const source = typeof bodyText === "string" ? bodyText : "";
+    if (!source.trim()) {
+      return false;
+    }
+    if (/\bFindings\b/i.test(source) || /\b(critical|high|medium|low)\b/i.test(source)) {
+      return true;
+    }
+    if (/\bcode review\b/i.test(source) && /\b(issue|risk|regression|test)\b/i.test(source)) {
+      return true;
+    }
+    return false;
+  }
+
+  function rebuildReviewFindingsIndex(scopeKey) {
+    if (!scopeKey) {
+      return;
+    }
+
+    const entries = reviewFindingsByScope.get(scopeKey);
+    if (!(entries instanceof Map) || entries.size === 0) {
+      reviewFindingsIndexByScope.delete(scopeKey);
+      return;
+    }
+
+    const index = new Map();
+    for (const findingList of entries.values()) {
+      if (!Array.isArray(findingList) || findingList.length === 0) {
+        continue;
+      }
+
+      for (const finding of findingList) {
+        if (!finding || typeof finding.path !== "string" || !finding.path) {
+          continue;
+        }
+        if (!Number.isFinite(finding.lineNo) || finding.lineNo <= 0) {
+          continue;
+        }
+
+        let byLine = index.get(finding.path);
+        if (!(byLine instanceof Map)) {
+          byLine = new Map();
+          index.set(finding.path, byLine);
+        }
+
+        let list = byLine.get(finding.lineNo);
+        if (!Array.isArray(list)) {
+          list = [];
+          byLine.set(finding.lineNo, list);
+        }
+        list.push(finding);
+      }
+    }
+
+    if (index.size === 0) {
+      reviewFindingsIndexByScope.delete(scopeKey);
+      return;
+    }
+    reviewFindingsIndexByScope.set(scopeKey, index);
+  }
+
+  function reviewFindingsStorageKey(scopeKey) {
+    return `${STORAGE_REVIEW_FINDINGS_PREFIX}${scopeKey || ""}`;
+  }
+
+  function loadReviewFindingsForScope(scopeKey) {
+    const next = new Map();
+    if (!scopeKey) {
+      return next;
+    }
+
+    try {
+      const raw = window.localStorage.getItem(reviewFindingsStorageKey(scopeKey));
+      if (!raw) {
+        return next;
+      }
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return next;
+      }
+
+      for (const item of parsed) {
+        if (!item || typeof item.entryId !== "string" || !item.entryId.trim()) {
+          continue;
+        }
+        if (!Array.isArray(item.findings)) {
+          continue;
+        }
+
+        const normalizedFindings = [];
+        for (const f of item.findings) {
+          if (!f || typeof f.path !== "string" || !f.path.trim()) {
+            continue;
+          }
+          const lineNo = Number.isFinite(f.lineNo) ? Math.floor(f.lineNo) : Number.parseInt(String(f.lineNo || ""), 10);
+          if (!Number.isFinite(lineNo) || lineNo <= 0) {
+            continue;
+          }
+          normalizedFindings.push({
+            path: f.path.trim(),
+            lineNo,
+            severity: typeof f.severity === "string" ? f.severity : "",
+            label: typeof f.label === "string" ? f.label : "",
+            detail: typeof f.detail === "string" ? f.detail : ""
+          });
+        }
+
+        if (normalizedFindings.length > 0) {
+          next.set(item.entryId.trim(), normalizedFindings);
+        }
+      }
+    } catch {
+    }
+
+    return next;
+  }
+
+  function saveReviewFindingsForScope(scopeKey) {
+    if (!scopeKey) {
+      return;
+    }
+
+    try {
+      const scoped = reviewFindingsByScope.get(scopeKey);
+      if (!(scoped instanceof Map) || scoped.size === 0) {
+        window.localStorage.removeItem(reviewFindingsStorageKey(scopeKey));
+        return;
+      }
+
+      const payload = Array.from(scoped.entries()).map(([entryId, findings]) => ({
+        entryId,
+        findings: Array.isArray(findings) ? findings : []
+      }));
+      window.localStorage.setItem(reviewFindingsStorageKey(scopeKey), JSON.stringify(payload));
+    } catch {
+    }
+  }
+
+  function ensureReviewFindingsScopeLoaded(scopeKey) {
+    if (!scopeKey) {
+      return;
+    }
+    if (reviewFindingsByScope.has(scopeKey)) {
+      return;
+    }
+
+    const loaded = loadReviewFindingsForScope(scopeKey);
+    if (loaded.size > 0) {
+      reviewFindingsByScope.set(scopeKey, loaded);
+    }
+    rebuildReviewFindingsIndex(scopeKey);
+  }
+
+  function reviewLifecycleStorageKey(scopeKey) {
+    return `${STORAGE_REVIEW_LIFECYCLE_PREFIX}${scopeKey || ""}`;
+  }
+
+  function readReviewLifecycle(scopeKey) {
+    if (!scopeKey) {
+      return {
+        requestedCount: 0,
+        completedCount: 0,
+        lastRequestedUtc: "",
+        lastCompletedUtc: ""
+      };
+    }
+
+    const existing = reviewLifecycleByScope.get(scopeKey);
+    if (existing) {
+      return existing;
+    }
+
+    const fallback = {
+      requestedCount: 0,
+      completedCount: 0,
+      lastRequestedUtc: "",
+      lastCompletedUtc: ""
+    };
+    try {
+      const raw = window.localStorage.getItem(reviewLifecycleStorageKey(scopeKey));
+      if (!raw) {
+        reviewLifecycleByScope.set(scopeKey, fallback);
+        return fallback;
+      }
+      const parsed = JSON.parse(raw);
+      const requestedCount = Number.isFinite(parsed?.requestedCount) ? Math.max(0, Math.floor(parsed.requestedCount)) : 0;
+      const completedCount = Number.isFinite(parsed?.completedCount) ? Math.max(0, Math.floor(parsed.completedCount)) : 0;
+      const loaded = {
+        requestedCount,
+        completedCount,
+        lastRequestedUtc: typeof parsed?.lastRequestedUtc === "string" ? parsed.lastRequestedUtc : "",
+        lastCompletedUtc: typeof parsed?.lastCompletedUtc === "string" ? parsed.lastCompletedUtc : ""
+      };
+      reviewLifecycleByScope.set(scopeKey, loaded);
+      return loaded;
+    } catch {
+      reviewLifecycleByScope.set(scopeKey, fallback);
+      return fallback;
+    }
+  }
+
+  function saveReviewLifecycle(scopeKey) {
+    if (!scopeKey) {
+      return;
+    }
+
+    const state = readReviewLifecycle(scopeKey);
+    try {
+      window.localStorage.setItem(reviewLifecycleStorageKey(scopeKey), JSON.stringify(state));
+    } catch {
+    }
+  }
+
+  function markReviewRequested(scopeKey, turnId = "") {
+    if (!scopeKey) {
+      return;
+    }
+    if (turnId && reviewRequestedTurns.has(turnId)) {
+      return;
+    }
+    if (turnId) {
+      reviewRequestedTurns.add(turnId);
+    }
+    const state = readReviewLifecycle(scopeKey);
+    state.requestedCount += 1;
+    state.lastRequestedUtc = new Date().toISOString();
+    reviewLifecycleByScope.set(scopeKey, state);
+    saveReviewLifecycle(scopeKey);
+  }
+
+  function markReviewCompleted(scopeKey, turnId = "") {
+    if (!scopeKey) {
+      return;
+    }
+    if (turnId && reviewCompletedTurns.has(turnId)) {
+      return;
+    }
+    if (turnId) {
+      reviewCompletedTurns.add(turnId);
+    }
+    const state = readReviewLifecycle(scopeKey);
+    state.completedCount += 1;
+    state.lastCompletedUtc = new Date().toISOString();
+    reviewLifecycleByScope.set(scopeKey, state);
+    saveReviewLifecycle(scopeKey);
+  }
+
+  function getReviewStatusForScope(scopeKey) {
+    return getScopeReviewSummary(scopeKey).status || "not_started";
+  }
+
+  function getCurrentReviewFindingsIndex() {
+    const key = currentFileViewScopeKey || currentNotesScopeKey;
+    if (!key) {
+      return null;
+    }
+
+    const findings = flattenReviewFindingsForScope(
+      key,
+      key === currentReviewStateScopeKey ? reviewFindingStateByKey : loadReviewFindingState(key)
+    );
+    if (!Array.isArray(findings) || findings.length === 0) {
+      return null;
+    }
+
+    const index = new Map();
+    for (const finding of findings) {
+      if (!finding || typeof finding.path !== "string" || !finding.path || !Number.isFinite(finding.lineNo) || finding.lineNo <= 0) {
+        continue;
+      }
+      let byLine = index.get(finding.path);
+      if (!(byLine instanceof Map)) {
+        byLine = new Map();
+        index.set(finding.path, byLine);
+      }
+      let list = byLine.get(finding.lineNo);
+      if (!Array.isArray(list)) {
+        list = [];
+        byLine.set(finding.lineNo, list);
+      }
+      list.push(finding);
+    }
+    return index;
+  }
+
+  function getLineReviewFindings(path, lineNo) {
+    if (!path || !Number.isFinite(lineNo) || lineNo <= 0) {
+      return [];
+    }
+
+    const index = getCurrentReviewFindingsIndex();
+    if (!(index instanceof Map)) {
+      return [];
+    }
+    const byLine = index.get(path);
+    if (!(byLine instanceof Map)) {
+      return [];
+    }
+    const list = byLine.get(lineNo);
+    return Array.isArray(list) ? list : [];
+  }
+
+  function hasLineReviewFinding(path, lineNo) {
+    return getLineReviewFindings(path, lineNo).length > 0;
+  }
+
+  function getLineReviewTitle(path, lineNo) {
+    const findings = getLineReviewFindings(path, lineNo);
+    if (findings.length === 0) {
+      return "";
+    }
+
+    const preview = findings.slice(0, 2).map((x) => {
+      const prefix = x.severity ? `${x.severity.toUpperCase()}: ` : "";
+      return `${prefix}${x.detail || x.label || "Review finding"}`;
+    });
+    if (findings.length > 2) {
+      preview.push(`+${findings.length - 2} more`);
+    }
+    return preview.join(" | ");
+  }
+
+  function countReviewFindingsForPath(path) {
+    if (!path) {
+      return 0;
+    }
+
+    const index = getCurrentReviewFindingsIndex();
+    if (!(index instanceof Map)) {
+      return 0;
+    }
+    const byLine = index.get(path);
+    if (!(byLine instanceof Map)) {
+      return 0;
+    }
+
+    let count = 0;
+    for (const list of byLine.values()) {
+      if (Array.isArray(list) && list.length > 0) {
+        count += list.length;
+      }
+    }
+    return count;
+  }
+
+  function loadReviewFindingState(scopeKey) {
+    const next = new Map();
+    if (!scopeKey) {
+      return next;
+    }
+
+    const findings = getScopeReviewFindings(scopeKey);
+    for (const item of findings) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+
+      const key = typeof item.key === "string" && item.key.trim()
+        ? item.key.trim()
+        : makeFindingKey(item);
+      if (!key) {
+        continue;
+      }
+
+      const done = item.done === true;
+      if (!next.has(key)) {
+        next.set(key, done);
+      } else if (next.get(key) === true && done !== true) {
+        next.set(key, false);
+      }
+    }
+
+    return next;
+  }
+
+  function saveReviewFindingState(scopeKey) {
+    void scopeKey;
+  }
+
+  function ensureReviewFindingStateScope(scopeKey) {
+    if (!scopeKey) {
+      currentReviewStateScopeKey = "";
+      reviewFindingStateByKey = new Map();
+      return;
+    }
+    if (scopeKey === currentReviewStateScopeKey) {
+      return;
+    }
+    currentReviewStateScopeKey = scopeKey;
+    reviewFindingStateByKey = loadReviewFindingState(scopeKey);
+  }
+
+  function makeFindingKey(finding) {
+    if (!finding) {
+      return "";
+    }
+
+    const path = typeof finding.path === "string" ? finding.path.trim() : "";
+    const lineNo = Number.isFinite(finding.lineNo) && finding.lineNo > 0 ? Math.floor(finding.lineNo) : 0;
+    const detail = typeof finding.detail === "string"
+      ? finding.detail.replace(/\s+/g, " ").trim().toLowerCase()
+      : "";
+    if (!path || lineNo <= 0 || !detail) {
+      return "";
+    }
+
+    return `${path}|${lineNo}|${detail}`;
+  }
+
+  function severityRank(severity) {
+    const normalized = typeof severity === "string" ? severity.toLowerCase() : "";
+    if (normalized === "critical") {
+      return 0;
+    }
+    if (normalized === "high") {
+      return 1;
+    }
+    if (normalized === "medium") {
+      return 2;
+    }
+    if (normalized === "low") {
+      return 3;
+    }
+    return 4;
+  }
+
+  function getScopeReviewSummary(scopeKey) {
+    const provider = window.codexDiffGetReviewScopeSummary;
+    if (typeof provider !== "function") {
+      return {
+        scopeKey,
+        status: "not_started",
+        reviewCount: 0,
+        queuedCount: 0,
+        runningCount: 0,
+        requestedCount: 0,
+        completedCount: 0,
+        openFindingCount: 0,
+        records: []
+      };
+    }
+
+    try {
+      const result = provider(scopeKey);
+      if (result && typeof result === "object") {
+        return {
+          scopeKey,
+          status: typeof result.status === "string" ? result.status : "not_started",
+          reviewCount: Number.isFinite(result.reviewCount) ? result.reviewCount : 0,
+          queuedCount: Number.isFinite(result.queuedCount) ? result.queuedCount : 0,
+          runningCount: Number.isFinite(result.runningCount) ? result.runningCount : 0,
+          requestedCount: Number.isFinite(result.requestedCount) ? result.requestedCount : 0,
+          completedCount: Number.isFinite(result.completedCount) ? result.completedCount : 0,
+          openFindingCount: Number.isFinite(result.openFindingCount) ? result.openFindingCount : 0,
+          records: Array.isArray(result.records) ? result.records : []
+        };
+      }
+    } catch {
+    }
+
+    return {
+      scopeKey,
+      status: "not_started",
+      reviewCount: 0,
+      queuedCount: 0,
+      runningCount: 0,
+      requestedCount: 0,
+      completedCount: 0,
+      openFindingCount: 0,
+      records: []
+    };
+  }
+
+  function getScopeReviewFindings(scopeKey) {
+    const provider = window.codexDiffGetReviewFindingsForScope;
+    if (typeof provider !== "function") {
+      return [];
+    }
+
+    try {
+      const result = provider(scopeKey);
+      return Array.isArray(result) ? result : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function flattenReviewFindingsForScope(scopeKey, stateByKey = null) {
+    if (!scopeKey) {
+      return [];
+    }
+
+    const rawFindings = getScopeReviewFindings(scopeKey);
+    if (!Array.isArray(rawFindings) || rawFindings.length === 0) {
+      return [];
+    }
+
+    const effectiveStateByKey = stateByKey instanceof Map ? stateByKey : loadReviewFindingState(scopeKey);
+    const dedupe = new Map();
+    for (const finding of rawFindings) {
+      if (!finding || typeof finding !== "object") {
+        continue;
+      }
+      const key = typeof finding.key === "string" && finding.key.trim()
+        ? finding.key.trim()
+        : makeFindingKey(finding);
+      if (!key || dedupe.has(key)) {
+        continue;
+      }
+
+      const reviewId = typeof finding.reviewId === "string" ? finding.reviewId : "";
+      const done = effectiveStateByKey.get(key) === true;
+      if (dedupe.has(key)) {
+        const existing = dedupe.get(key);
+        if (existing) {
+          if (reviewId && !existing.reviewIds.includes(reviewId)) {
+            existing.reviewIds.push(reviewId);
+          }
+          existing.done = existing.done === true && done === true;
+        }
+        continue;
+      }
+
+      dedupe.set(key, {
+        key,
+        reviewIds: reviewId ? [reviewId] : [],
+        reviewId,
+        reviewLabel: typeof finding.reviewLabel === "string" ? finding.reviewLabel : "",
+        path: typeof finding.path === "string" ? finding.path : "",
+        lineNo: Number.isFinite(finding.lineNo) ? finding.lineNo : 0,
+        severity: finding.severity || "",
+        detail: finding.detail || finding.label || "Review finding",
+        done
+      });
+    }
+
+    const result = Array.from(dedupe.values());
+    result.sort((a, b) => {
+      if (a.done !== b.done) {
+        return a.done ? 1 : -1;
+      }
+      const sev = severityRank(a.severity) - severityRank(b.severity);
+      if (sev !== 0) {
+        return sev;
+      }
+      const pathCompare = a.path.localeCompare(b.path);
+      if (pathCompare !== 0) {
+        return pathCompare;
+      }
+      if (a.lineNo !== b.lineNo) {
+        return a.lineNo - b.lineNo;
+      }
+      return a.detail.localeCompare(b.detail);
+    });
+
+    return result;
+  }
+
+  function getCurrentScopeKey() {
+    return currentFileViewScopeKey || currentNotesScopeKey || "";
+  }
+
+  function getEntryReviewScopeKey(entry) {
+    if (!entry || typeof entry !== "object") {
+      return "";
+    }
+
+    const turnId = typeof entry.turnId === "string" ? entry.turnId.trim() : "";
+    if (turnId && reviewScopeByTurnId.has(turnId)) {
+      const stored = reviewScopeByTurnId.get(turnId);
+      return typeof stored === "string" ? stored : "";
+    }
+
+    if (pendingReviewScopeQueue.length > 0) {
+      const queuedScope = pendingReviewScopeQueue[0];
+      if (typeof queuedScope === "string" && queuedScope) {
+        return queuedScope;
+      }
+    }
+
+    const context = getActiveContext();
+    if (!context || !context.cwd) {
+      return "";
+    }
+    return buildDiffScopeKey(context.cwd, currentMode, currentMode === "commit" ? selectedCommitSha : "");
+  }
+
+  function getCurrentFlattenedReviewFindings() {
+    const scopeKey = getCurrentScopeKey();
+    if (!scopeKey) {
+      return [];
+    }
+
+    ensureReviewFindingStateScope(scopeKey);
+    return flattenReviewFindingsForScope(scopeKey, reviewFindingStateByKey);
+  }
+
+  function getOpenReviewCountForScope(scopeKey) {
+    if (!scopeKey) {
+      return 0;
+    }
+
+    const findings = scopeKey === currentReviewStateScopeKey
+      ? flattenReviewFindingsForScope(scopeKey, reviewFindingStateByKey)
+      : flattenReviewFindingsForScope(scopeKey, loadReviewFindingState(scopeKey));
+    if (!Array.isArray(findings) || findings.length === 0) {
+      return 0;
+    }
+    return findings.filter((x) => x.done !== true).length;
+  }
+
+  function getCommitScopeKey(commitSha) {
+    const context = getActiveContext();
+    if (!context || !context.cwd) {
+      return "";
+    }
+
+    const sha = typeof commitSha === "string" ? commitSha.trim() : "";
+    if (!sha) {
+      return "";
+    }
+
+    return buildDiffScopeKey(context.cwd, "commit", sha);
+  }
+
+  function renderCommitModeBadge() {
+    if (!Array.isArray(availableCommits) || availableCommits.length === 0) {
+      modeCommitBtn.textContent = "Recent Commit";
+      return;
+    }
+
+    let totalOpen = 0;
+    let commitWithOpen = 0;
+    for (const commit of availableCommits) {
+      const normalized = normalizeCommitInfo(commit);
+      if (!normalized) {
+        continue;
+      }
+      const scopeKey = getCommitScopeKey(normalized.sha);
+      if (!scopeKey) {
+        continue;
+      }
+      const openCount = getOpenReviewCountForScope(scopeKey);
+      if (openCount > 0) {
+        totalOpen += openCount;
+        commitWithOpen += 1;
+      }
+    }
+
+    if (totalOpen > 0) {
+      modeCommitBtn.textContent = `Recent Commit (${commitWithOpen}/${totalOpen} open)`;
+    } else {
+      let started = 0;
+      let completed = 0;
+      for (const commit of availableCommits) {
+        const normalized = normalizeCommitInfo(commit);
+        if (!normalized) {
+          continue;
+        }
+        const scopeKey = getCommitScopeKey(normalized.sha);
+        if (!scopeKey) {
+          continue;
+        }
+        const status = getReviewStatusForScope(scopeKey);
+        if (status === "started") {
+          started += 1;
+        } else if (status === "completed") {
+          completed += 1;
+        }
+      }
+
+      if (started > 0 || completed > 0) {
+        modeCommitBtn.textContent = `Recent Commit (${started} started, ${completed} completed)`;
+      } else {
+        modeCommitBtn.textContent = "Recent Commit";
+      }
+    }
+  }
+
+  function renderCommitReviewSummary() {
+    renderCommitModeBadge();
+    if (!Array.isArray(availableCommits) || availableCommits.length === 0) {
+      const prefix = currentMode === "commit" ? "Pending Reviews" : "Pending Commit Reviews";
+      commitReviewSummaryNode.innerHTML = `<span class="label">${escapeHtml(prefix)}</span><span class="diff-commit-review-empty">No commits loaded.</span>`;
+      commitReviewSummaryNode.classList.remove("hidden");
+      return;
+    }
+
+    const rows = [];
+    let startedCount = 0;
+    let completedCount = 0;
+    let openCountTotal = 0;
+    for (const commit of availableCommits) {
+      const normalized = normalizeCommitInfo(commit);
+      if (!normalized) {
+        continue;
+      }
+
+      const scopeKey = getCommitScopeKey(normalized.sha);
+      if (!scopeKey) {
+        continue;
+      }
+
+      const openCount = getOpenReviewCountForScope(scopeKey);
+      openCountTotal += openCount;
+      const status = getReviewStatusForScope(scopeKey);
+      if (status === "started") {
+        startedCount += 1;
+      } else if (status === "completed") {
+        completedCount += 1;
+      }
+
+      const shortSha = normalized.shortSha || normalized.sha.slice(0, 7);
+      const subject = normalized.subject ? normalized.subject.trim() : "";
+      const shortSubject = subject.length > 62 ? `${subject.slice(0, 61)}...` : subject;
+      const statusLabel = status === "completed"
+        ? "Review Completed"
+        : (status === "started" ? "Review Started" : "Not Started");
+      const statusClass = status === "completed"
+        ? "completed"
+        : (status === "started" ? "started" : "not-started");
+      rows.push(
+        `<div class="diff-commit-review-row${normalized.sha === selectedCommitSha ? " active" : ""}">
+          <button type="button" class="diff-commit-review-open-btn" data-commit-review-jump="${escapeAttribute(normalized.sha)}" title="${escapeAttribute(subject || normalized.sha)}">Open Diff</button>
+          <span class="diff-commit-review-sha">${escapeHtml(shortSha)}</span>
+          <span class="diff-commit-review-subject">${escapeHtml(shortSubject || "(no subject)")}</span>
+          <span class="diff-commit-review-status ${statusClass}">${escapeHtml(statusLabel)}</span>
+          <span class="diff-commit-review-open-count">${openCount} open</span>
+        </div>`
+      );
+    }
+
+    const prefix = currentMode === "commit" ? "Pending Reviews" : "Pending Commit Reviews";
+    const headerMeta = `${startedCount} started | ${completedCount} completed | ${openCountTotal} open findings`;
+    commitReviewSummaryNode.innerHTML = `<div class="diff-commit-review-header">
+      <span class="label">${escapeHtml(prefix)}</span>
+      <span class="diff-commit-review-meta">${escapeHtml(headerMeta)}</span>
+    </div>
+    <div class="diff-commit-review-list">${rows.join("") || "<span class=\"diff-commit-review-empty\">No commits loaded.</span>"}</div>`;
+    commitReviewSummaryNode.classList.remove("hidden");
+  }
+
+  function renderReviewFindingsPanel() {
+    const findings = getCurrentFlattenedReviewFindings();
+    if (!Array.isArray(findings) || findings.length === 0) {
+      reviewFindingsNode.classList.add("hidden");
+      reviewFindingsNode.innerHTML = "";
+      return;
+    }
+
+    const openCount = findings.filter((x) => x.done !== true).length;
+    const doneCount = findings.length - openCount;
+    const items = findings.map((item) => {
+      const sev = item.severity ? item.severity.toUpperCase() : "INFO";
+      const classes = ["diff-review-item"];
+      if (item.done) {
+        classes.push("is-done");
+      }
+      const canJump = !!item.path && Number.isFinite(item.lineNo) && item.lineNo > 0;
+      const lineLabel = canJump ? `L${item.lineNo}` : "";
+      const jumpMarkup = canJump
+        ? `<button type="button" class="diff-review-item-jump" data-review-jump-path="${escapeAttribute(item.path)}" data-review-jump-line="${item.lineNo}" title="Open ${escapeAttribute(item.path)}:${item.lineNo}">
+          <span class="diff-review-item-severity sev-${escapeAttribute((item.severity || "info").toLowerCase())}">${sev}</span>
+          <span class="diff-review-item-path">${escapeHtml(item.path)}</span>
+          <span class="diff-review-item-line">${lineLabel}</span>
+          <span class="diff-review-item-text">${escapeHtml(item.detail)}</span>
+        </button>`
+        : `<div class="diff-review-item-jump diff-review-item-static">
+          <span class="diff-review-item-severity sev-${escapeAttribute((item.severity || "info").toLowerCase())}">${sev}</span>
+          ${item.reviewLabel ? `<span class="diff-review-item-path">${escapeHtml(item.reviewLabel)}</span>` : ""}
+          <span class="diff-review-item-text">${escapeHtml(item.detail)}</span>
+        </div>`;
+      return `<div class="${classes.join(" ")}">
+        <button type="button" class="diff-review-item-toggle" data-review-toggle="${escapeAttribute(item.key)}" aria-label="${item.done ? "Mark review finding open" : "Mark review finding done"}">${item.done ? "Reopen" : "Done"}</button>
+        ${jumpMarkup}
+      </div>`;
+    }).join("");
+
+    reviewFindingsNode.innerHTML = `<div class="diff-review-header">
+      <span class="diff-review-title">Review Findings</span>
+      <span class="diff-review-count">${openCount} open / ${doneCount} done</span>
+      <button type="button" class="diff-review-clear-done" data-review-clear-done="1">Clear Done</button>
+    </div>
+    <div class="diff-review-list">${items}</div>`;
+    reviewFindingsNode.classList.remove("hidden");
+  }
+
+  function upsertReviewFindingsForEntry(entry) {
+    if (!entry || (entry.role !== "assistant" && entry.role !== "user")) {
+      return;
+    }
+
+    const turnId = typeof entry.turnId === "string" ? entry.turnId.trim() : "";
+    if (entry.role === "user") {
+      const parsed = parseReviewRequestContextFromPromptText(entry.bodyText || "");
+      if (parsed && parsed.scopeKey) {
+        if (turnId) {
+          reviewScopeByTurnId.set(turnId, parsed.scopeKey);
+        }
+        pendingReviewScopeQueue.push(parsed.scopeKey);
+        markReviewRequested(parsed.scopeKey, turnId);
+        renderCommitReviewSummary();
+        renderCommitOptions();
+      }
+    }
+
+    if (entry.role !== "assistant") {
+      return;
+    }
+
+    const entryId = Number.isFinite(entry.id) ? Math.floor(entry.id) : null;
+    if (!Number.isFinite(entryId) || entryId <= 0) {
+      return;
+    }
+
+    const context = getActiveContext();
+    if (!context || !context.cwd) {
+      return;
+    }
+
+    const responseLooksLikeReview = looksLikeReviewResponseBody(entry.bodyText || "");
+    const scopeKey = getEntryReviewScopeKey(entry);
+    if (!scopeKey) {
+      return;
+    }
+
+    const findings = extractReviewFindingsFromBodyText(entry.bodyText || "", context.cwd);
+    if (responseLooksLikeReview) {
+      if (!turnId && pendingReviewScopeQueue.length > 0) {
+        pendingReviewScopeQueue.shift();
+      }
+      markReviewCompleted(scopeKey, turnId);
+    }
+    let scopedEntries = reviewFindingsByScope.get(scopeKey);
+    if (!(scopedEntries instanceof Map)) {
+      scopedEntries = new Map();
+      reviewFindingsByScope.set(scopeKey, scopedEntries);
+    }
+    const entryKey = String(entryId);
+    const hadExisting = scopedEntries.has(entryKey);
+    if (findings.length === 0 && !hadExisting) {
+      return;
+    }
+    if (findings.length === 0) {
+      scopedEntries.delete(entryKey);
+    } else {
+      scopedEntries.set(entryKey, findings);
+    }
+    if (scopedEntries.size === 0) {
+      reviewFindingsByScope.delete(scopeKey);
+    }
+    rebuildReviewFindingsIndex(scopeKey);
+    saveReviewFindingsForScope(scopeKey);
+
+    if (scopeKey === currentFileViewScopeKey || scopeKey === currentNotesScopeKey) {
+      rerenderFilesPreserveView();
+      rerenderFullFileWindowIfOpen();
+    }
+    renderCommitReviewSummary();
+    renderCommitOptions();
+  }
+
+  function removeReviewFindingsForEntry(entry) {
+    if (!entry) {
+      return;
+    }
+
+    const entryId = Number.isFinite(entry.id) ? Math.floor(entry.id) : null;
+    if (!Number.isFinite(entryId) || entryId <= 0) {
+      return;
+    }
+
+    const turnId = typeof entry.turnId === "string" ? entry.turnId.trim() : "";
+    if (turnId && reviewScopeByTurnId.has(turnId)) {
+      reviewScopeByTurnId.delete(turnId);
+    }
+
+    for (const [scopeKey, scopedEntries] of reviewFindingsByScope.entries()) {
+      if (!(scopedEntries instanceof Map)) {
+        continue;
+      }
+      if (!scopedEntries.has(String(entryId))) {
+        continue;
+      }
+      scopedEntries.delete(String(entryId));
+      if (scopedEntries.size === 0) {
+        reviewFindingsByScope.delete(scopeKey);
+      }
+      rebuildReviewFindingsIndex(scopeKey);
+      saveReviewFindingsForScope(scopeKey);
+    }
+
+    rerenderFilesPreserveView();
+    rerenderFullFileWindowIfOpen();
+    renderCommitReviewSummary();
+    renderCommitOptions();
   }
 
   function normalizeContextMode(value) {
@@ -315,8 +1361,10 @@
     modeCommitBtn.classList.toggle("active", isCommitMode);
     modeWorktreeBtn.setAttribute("aria-pressed", !isCommitMode ? "true" : "false");
     modeCommitBtn.setAttribute("aria-pressed", isCommitMode ? "true" : "false");
-    commitSelect.classList.toggle("hidden", !isCommitMode);
+    commitSelect.classList.add("hidden");
     contextSelect.value = normalizeContextMode(currentContextMode);
+    renderCommitModeBadge();
+    renderCommitReviewSummary();
   }
 
   function getActiveCommitLabel() {
@@ -349,6 +1397,222 @@
     }
     indicatorBtn.title = indicatorBtn.getAttribute("aria-label") || "Open repository diff";
     applyModeUiState();
+    updateReviewActionAvailability();
+  }
+
+  function canSubmitReviewRequest() {
+    const context = getActiveContext();
+    if (!context || !context.cwd) {
+      return false;
+    }
+
+    if (panelAvailable !== true) {
+      return false;
+    }
+
+    if (currentMode === "commit" && !selectedCommitSha) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function updateReviewActionAvailability() {
+    const enabled = canSubmitReviewRequest();
+    queueReviewBtn.disabled = !enabled;
+    runReviewBtn.disabled = !enabled;
+    if (!enabled) {
+      setReviewQueuedBadgeActive(false);
+    }
+  }
+
+  function setReviewQueuedBadgeActive(isActive) {
+    queueReviewBtn.classList.toggle("review-queued", isActive === true);
+    if (isActive !== true && reviewQueuedBadgeTimer) {
+      window.clearTimeout(reviewQueuedBadgeTimer);
+      reviewQueuedBadgeTimer = null;
+    }
+  }
+
+  function normalizeReviewNoteText(rawValue) {
+    const raw = typeof rawValue === "string" ? rawValue.trim() : "";
+    if (!raw) {
+      return "";
+    }
+
+    return raw.length > MAX_REVIEW_NOTE_CHARS ? raw.slice(0, MAX_REVIEW_NOTE_CHARS) : raw;
+  }
+
+  function buildReviewTargetLabel() {
+    if (currentMode === "commit") {
+      const commitSha = typeof selectedCommitSha === "string" ? selectedCommitSha.trim() : "";
+      const commitSubject = typeof selectedCommitInfo?.subject === "string" ? selectedCommitInfo.subject.trim() : "";
+      return commitSha ? `Commit ${commitSha}${commitSubject ? ` - ${commitSubject}` : ""}` : "Commit";
+    }
+
+    return "Uncommitted Working Tree";
+  }
+
+  function getCurrentReviewTargetScopeKey() {
+    const context = getActiveContext();
+    if (!context || !context.cwd) {
+      return "";
+    }
+    if (currentMode === "commit") {
+      const commitSha = typeof selectedCommitSha === "string" ? selectedCommitSha.trim() : "";
+      if (!commitSha) {
+        return "";
+      }
+      return buildDiffScopeKey(context.cwd, "commit", commitSha);
+    }
+    return buildDiffScopeKey(context.cwd, "worktree", "");
+  }
+
+  async function buildReviewRequestPayload(noteTextRaw) {
+    const noteText = normalizeReviewNoteText(noteTextRaw);
+    const contextLabel = contextModeLabel(currentContextMode);
+    const visibleCount = Number.isFinite(currentFiles.length) ? currentFiles.length : 0;
+    const totalCount = Number.isFinite(currentTotalChangeCount) ? currentTotalChangeCount : visibleCount;
+    const hiddenBinaryCount = Number.isFinite(hiddenBinaryFileCount) ? hiddenBinaryFileCount : 0;
+    const context = getActiveContext();
+    const builder = window.codexDiffCreateReviewRequest;
+    if (!context || !context.cwd || typeof builder !== "function") {
+      return null;
+    }
+
+    const request = await builder({
+      sessionId: context.sessionId || "",
+      threadId: context.threadId || "",
+      cwd: context.cwd,
+      targetType: currentMode === "commit" ? "commit" : "worktree",
+      commitSha: currentMode === "commit" ? (selectedCommitSha || "") : "",
+      commitSubject: currentMode === "commit" ? (selectedCommitInfo?.subject || "") : "",
+      contextLabel,
+      visibleFiles: visibleCount,
+      totalFiles: totalCount,
+      hiddenBinaryFiles: hiddenBinaryCount,
+      noteText,
+      initialStatus: "queued"
+    });
+    return request && typeof request === "object" ? request : null;
+  }
+
+  async function queueReviewFromDiffPanel(noteTextRaw) {
+    if (!canSubmitReviewRequest()) {
+      return;
+    }
+
+    const reviewRequest = await buildReviewRequestPayload(noteTextRaw);
+    if (!reviewRequest || !reviewRequest.promptText) {
+      return;
+    }
+
+    const queueReview = window.codexDiffQueueReviewPrompt;
+    if (typeof queueReview !== "function") {
+      if (typeof console !== "undefined" && typeof console.warn === "function") {
+        console.warn(`${new Date().toISOString()} review.queue_bridge_unavailable`);
+      }
+      return;
+    }
+
+    try {
+      const ok = await queueReview(reviewRequest.promptText, { logSuccess: true, reviewRequest });
+      if (ok === true) {
+        renderCommitReviewSummary();
+        renderCommitOptions();
+        setReviewQueuedBadgeActive(true);
+        if (reviewQueuedBadgeTimer) {
+          window.clearTimeout(reviewQueuedBadgeTimer);
+        }
+        reviewQueuedBadgeTimer = window.setTimeout(() => {
+          reviewQueuedBadgeTimer = null;
+          setReviewQueuedBadgeActive(false);
+        }, 900);
+      }
+    } catch {
+    }
+  }
+
+  async function runReviewFromDiffPanel(noteTextRaw) {
+    if (!canSubmitReviewRequest()) {
+      return;
+    }
+
+    const reviewRequest = await buildReviewRequestPayload(noteTextRaw);
+    if (!reviewRequest || !reviewRequest.promptText) {
+      return;
+    }
+
+    const runReview = window.codexDiffRunReviewPrompt;
+    if (typeof runReview !== "function") {
+      if (typeof console !== "undefined" && typeof console.warn === "function") {
+        console.warn(`${new Date().toISOString()} review.run_bridge_unavailable`);
+      }
+      return;
+    }
+
+    const ok = await runReview(reviewRequest.promptText, { logSuccess: true, reviewRequest });
+    if (ok === true) {
+      renderCommitReviewSummary();
+      renderCommitOptions();
+    }
+  }
+
+  function openReviewModal(preferredAction) {
+    if (!canSubmitReviewRequest()) {
+      return;
+    }
+
+    if (!reviewModalReady) {
+      if (preferredAction === "run") {
+        runReviewFromDiffPanel(reviewDraftText).catch(() => { });
+      } else {
+        queueReviewFromDiffPanel(reviewDraftText).catch(() => { });
+      }
+      return;
+    }
+
+    const contextLabel = contextModeLabel(currentContextMode);
+    const visibleCount = Number.isFinite(currentFiles.length) ? currentFiles.length : 0;
+    const totalCount = Number.isFinite(currentTotalChangeCount) ? currentTotalChangeCount : visibleCount;
+    const hiddenBinaryCount = Number.isFinite(hiddenBinaryFileCount) ? hiddenBinaryFileCount : 0;
+    const targetLabel = buildReviewTargetLabel();
+    reviewModalTarget.textContent = `${targetLabel} | ${totalCount} files (${visibleCount} visible, ${hiddenBinaryCount} binary hidden) | context ${contextLabel}`;
+    reviewModalTextarea.value = reviewDraftText;
+    reviewModal.dataset.preferredAction = preferredAction === "run" ? "run" : "queue";
+    reviewModal.classList.remove("hidden");
+    reviewModalTextarea.focus();
+    reviewModalTextarea.setSelectionRange(reviewModalTextarea.value.length, reviewModalTextarea.value.length);
+  }
+
+  function closeReviewModal(options = {}) {
+    if (!reviewModalReady) {
+      return;
+    }
+
+    if (options.keepDraft === true) {
+      reviewDraftText = normalizeReviewNoteText(reviewModalTextarea.value || "");
+    } else {
+      reviewDraftText = "";
+    }
+
+    reviewModal.classList.add("hidden");
+  }
+
+  async function submitReviewFromModal(actionKind) {
+    if (!reviewModalReady) {
+      return;
+    }
+
+    reviewDraftText = normalizeReviewNoteText(reviewModalTextarea.value || "");
+    if (actionKind === "run") {
+      await runReviewFromDiffPanel(reviewDraftText);
+      closeReviewModal({ keepDraft: false });
+      return;
+    }
+
+    await queueReviewFromDiffPanel(reviewDraftText);
+    closeReviewModal({ keepDraft: false });
   }
 
   function escapeAttribute(value) {
@@ -401,12 +1665,14 @@
     if (currentMode !== "commit") {
       commitSelect.innerHTML = "";
       commitSelect.disabled = true;
+      renderCommitReviewSummary();
       return;
     }
 
     if (!Array.isArray(availableCommits) || availableCommits.length === 0) {
       commitSelect.innerHTML = "<option value=\"\">No recent commits</option>";
       commitSelect.disabled = true;
+      renderCommitReviewSummary();
       return;
     }
 
@@ -420,7 +1686,10 @@
       const when = formatCommitTime(normalized.committedAtUtc);
       const subject = normalized.subject || "(no subject)";
       const author = normalized.authorName || "unknown";
-      const label = `${normalized.shortSha} ${subject}`;
+      const scopeKey = getCommitScopeKey(normalized.sha);
+      const openCount = scopeKey ? getOpenReviewCountForScope(scopeKey) : 0;
+      const pendingSuffix = openCount > 0 ? ` [${openCount} open]` : "";
+      const label = `${normalized.shortSha} ${subject}${pendingSuffix}`;
       const title = when
         ? `${normalized.sha} | ${author} | ${when}`
         : `${normalized.sha} | ${author}`;
@@ -430,6 +1699,7 @@
     if (options.length === 0) {
       commitSelect.innerHTML = "<option value=\"\">No recent commits</option>";
       commitSelect.disabled = true;
+      renderCommitReviewSummary();
       return;
     }
 
@@ -440,6 +1710,7 @@
 
     commitSelect.value = selectedCommitSha;
     commitSelect.disabled = pollInFlight !== false;
+    renderCommitReviewSummary();
   }
 
   function setDiffMode(mode) {
@@ -499,6 +1770,7 @@
     hiddenBinaryFileCount = 0;
     summaryNode.textContent = message;
     listNode.innerHTML = `<div class="worktree-diff-empty">${escapeHtml(message)}</div>`;
+    renderReviewFindingsPanel();
     applyPanelState();
     renderComposerNotes();
   }
@@ -510,6 +1782,7 @@
     hiddenBinaryFileCount = 0;
     summaryNode.textContent = message;
     listNode.innerHTML = `<div class="worktree-diff-loading" role="status" aria-live="polite"><span class="worktree-diff-loading-spinner" aria-hidden="true"></span><span class="worktree-diff-loading-text">${escapeHtml(message)}</span></div>`;
+    renderReviewFindingsPanel();
     applyPanelState();
   }
 
@@ -518,13 +1791,32 @@
     const branch = currentBranch || "detached";
     const contextLabel = contextModeLabel(currentContextMode);
     const hiddenBinaryText = hiddenBinaryFileCount > 0 ? ` | ${hiddenBinaryFileCount} binary hidden` : "";
+    let pendingCommitReviews = 0;
+    if (Array.isArray(availableCommits) && availableCommits.length > 0) {
+      for (const commit of availableCommits) {
+        const normalized = normalizeCommitInfo(commit);
+        if (!normalized) {
+          continue;
+        }
+        const scopeKey = getCommitScopeKey(normalized.sha);
+        if (!scopeKey) {
+          continue;
+        }
+        if (getOpenReviewCountForScope(scopeKey) > 0) {
+          pendingCommitReviews += 1;
+        }
+      }
+    }
+    const pendingReviewText = pendingCommitReviews > 0
+      ? ` | ${pendingCommitReviews} commit review${pendingCommitReviews === 1 ? "" : "s"} open`
+      : "";
     if (currentMode === "commit") {
       const commitLabel = getActiveCommitLabel();
-      summaryNode.textContent = `${changeCount} file change(s) in ${commitLabel} | context ${contextLabel}${hiddenBinaryText}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}`;
+      summaryNode.textContent = `${changeCount} file change(s) in ${commitLabel} | context ${contextLabel}${hiddenBinaryText}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}${pendingReviewText}`;
       return;
     }
 
-    summaryNode.textContent = `${changeCount} file change(s) in working tree on ${branch} | context ${contextLabel}${hiddenBinaryText}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}`;
+    summaryNode.textContent = `${changeCount} file change(s) in working tree on ${branch} | context ${contextLabel}${hiddenBinaryText}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}${pendingReviewText}`;
   }
 
   function filterVisibleFiles(files) {
@@ -792,6 +2084,7 @@
     const html = lines.map((line, index) => {
       const lineNo = index + 1;
       const classes = ["diff-full-window-line", "diff-full-window-line-clickable"];
+      const reviewTitle = getLineReviewTitle(fullFileViewerState.path, lineNo);
       if (changedLines && changedLines.has(lineNo)) {
         classes.push("diff-full-window-line-changed");
       }
@@ -801,7 +2094,13 @@
       if (hasLineNote(fullFileViewerState.path, lineNo, "file")) {
         classes.push("diff-full-window-line-noted");
       }
-      return `<div class="${classes.join(" ")}" data-full-window-line="${lineNo}" data-full-window-line-text="${escapeHtml(line)}" title="Click to add note. Shift-select lines to annotate a range.">
+      if (reviewTitle) {
+        classes.push("diff-full-window-line-reviewed");
+      }
+      const title = reviewTitle
+        ? `Click to add note. Shift-select lines to annotate a range. Review: ${reviewTitle}`
+        : "Click to add note. Shift-select lines to annotate a range.";
+      return `<div class="${classes.join(" ")}" data-full-window-line="${lineNo}" data-full-window-line-text="${escapeHtml(line)}" title="${escapeAttribute(title)}">
         <span class="diff-full-window-line-no">${lineNo}</span>
         <span class="diff-full-window-line-text">${escapeHtml(line)}</span>
       </div>`;
@@ -991,6 +2290,7 @@
     currentFiles = Array.isArray(files) ? files : [];
     if (currentFiles.length === 0) {
       listNode.innerHTML = "";
+      renderReviewFindingsPanel();
       return;
     }
 
@@ -1014,6 +2314,7 @@
       const truncated = patchLines.length > shownLines.length;
       const noteMarkup = buildFileNotesMarkup(file.path);
       const actionMarkup = buildFullFileActionMarkup(file);
+      const reviewFindingCount = countReviewFindingsForPath(file.path);
       const lineMarkup = isBinary
         ? `<span class="watcher-diff-line">Binary file changed. Diff body is hidden.</span>`
         : shownLines.length > 0
@@ -1021,6 +2322,7 @@
             const lineNo = index + 1;
             const lineClass = classForDiffLine(line);
             const lineHasNote = hasLineNote(file.path, lineNo, "diff");
+            const reviewTitle = getLineReviewTitle(file.path, lineNo);
             const classes = ["watcher-diff-line", "worktree-diff-line-clickable"];
             if (lineClass) {
               classes.push(lineClass);
@@ -1028,7 +2330,13 @@
             if (lineHasNote) {
               classes.push("worktree-diff-line-noted");
             }
-            return `<span class="${classes.join(" ")}" data-diff-line-no="${lineNo}" data-diff-line-text="${escapeHtml(line)}" title="Click to add note. Shift-click to select a range.">${escapeHtml(line)}</span>`;
+            if (reviewTitle) {
+              classes.push("worktree-diff-line-reviewed");
+            }
+            const title = reviewTitle
+              ? `Click to add note. Shift-click to select a range. Review: ${reviewTitle}`
+              : "Click to add note. Shift-click to select a range.";
+            return `<span class="${classes.join(" ")}" data-diff-line-no="${lineNo}" data-diff-line-text="${escapeHtml(line)}" title="${escapeAttribute(title)}">${escapeHtml(line)}</span>`;
           }).join("")
           : `<span class="watcher-diff-line">No patch available for this file yet.</span>`;
 
@@ -1038,6 +2346,7 @@
           <summary>
             <span class="worktree-diff-code" title="${statusLabel}">${statusCode}</span>
             <span class="worktree-diff-path" title="${pathLabel}">${pathLabel}</span>
+            ${reviewFindingCount > 0 ? `<span class="worktree-diff-review-pill" title="${reviewFindingCount} review finding${reviewFindingCount === 1 ? "" : "s"} extracted from timeline">R ${reviewFindingCount}</span>` : ""}
             <span class="worktree-diff-stat" aria-label="Diff stat">
               <span class="worktree-diff-stat-add">+${diffStat.added}</span>
               <span class="worktree-diff-stat-remove">-${diffStat.removed}</span>
@@ -1055,6 +2364,26 @@
     }
 
     listNode.innerHTML = html.join("");
+    renderReviewFindingsPanel();
+  }
+
+  function jumpToReviewFinding(path, lineNo) {
+    if (!path || !Number.isFinite(lineNo) || lineNo <= 0) {
+      return;
+    }
+
+    const details = listNode.querySelector(`details[data-diff-path="${CSS.escape(path)}"]`);
+    if (details) {
+      details.open = true;
+      fileOpenStateByPath.set(path, true);
+      const lineNode = details.querySelector(`[data-diff-line-no="${lineNo}"]`);
+      if (lineNode) {
+        lineNode.scrollIntoView({ block: "center", behavior: "smooth" });
+        return;
+      }
+    }
+
+    openFullFileWindow(path, { lineNo }).catch(() => { });
   }
 
   function collectRangeSnippet(fileNode, startLine, endLine) {
@@ -1673,6 +3002,18 @@
     return await response.json();
   }
 
+  async function refreshReviewCatalogForContext(context, force) {
+    const refreshCatalog = window.codexDiffRefreshReviewCatalog;
+    if (!context || !context.cwd || typeof refreshCatalog !== "function") {
+      return;
+    }
+
+    try {
+      await refreshCatalog(context.cwd, { force: force === true });
+    } catch {
+    }
+  }
+
   function buildFilesFingerprint(files) {
     return files.map((x) => `${x.statusCode || ""}:${x.path || ""}:${(x.patch || "").length}:${x.isBinary === true ? "1" : "0"}`).join("|");
   }
@@ -1729,12 +3070,20 @@
       currentNotesScopeKey = "";
       currentFileViewScopeKey = "";
       notesByKey = new Map();
+      ensureReviewFindingStateScope("");
+      reviewScopeByTurnId = new Map();
+      pendingReviewScopeQueue = [];
+      reviewRequestedTurns = new Set();
+      reviewCompletedTurns = new Set();
+      renderCommitModeBadge();
       fullFileLoadingByPath = new Set();
+      closeReviewModal({ keepDraft: true });
       closeFullFileWindow();
       contextSelect.disabled = false;
       renderCommitOptions();
       applyPanelState();
       renderComposerNotes();
+      renderReviewFindingsPanel();
       return;
     }
     if (lastContextState !== "active") {
@@ -1752,8 +3101,15 @@
       currentNotesScopeKey = "";
       currentFileViewScopeKey = "";
       notesByKey = new Map();
+      ensureReviewFindingStateScope("");
+      reviewScopeByTurnId = new Map();
+      pendingReviewScopeQueue = [];
+      reviewRequestedTurns = new Set();
+      reviewCompletedTurns = new Set();
+      renderCommitModeBadge();
       fileOpenStateByPath = new Map();
       fullFileLoadingByPath = new Set();
+      closeReviewModal({ keepDraft: true });
       closeFullFileWindow();
       currentTotalChangeCount = 0;
       hiddenBinaryFileCount = 0;
@@ -1772,6 +3128,7 @@
     commitSelect.disabled = true;
     contextSelect.disabled = true;
     try {
+      await refreshReviewCatalogForContext(context, force);
       let data;
       let files = [];
       if (currentMode === "commit") {
@@ -1797,6 +3154,7 @@
         if (!selectedCommitSha) {
           const scopeKey = buildDiffScopeKey(context.cwd, currentMode, "");
           const notesChanged = switchNotesScope(scopeKey);
+          ensureReviewFindingStateScope(scopeKey);
           if (notesChanged) {
             renderComposerNotes();
           }
@@ -1836,6 +3194,18 @@
         currentRepoRoot = typeof data.repoRoot === "string" ? data.repoRoot : "";
         currentBranch = typeof data.branch === "string" && data.branch.trim() ? data.branch.trim() : "detached";
         selectedCommitInfo = null;
+        try {
+          const commitCatalog = await fetchRecentCommitCatalog(context, false);
+          if (commitCatalog && commitCatalog.isGitRepo === true && Array.isArray(commitCatalog.commits)) {
+            availableCommits = commitCatalog.commits.map((x) => normalizeCommitInfo(x)).filter((x) => !!x);
+            if (!selectedCommitSha || !availableCommits.some((x) => x.sha === selectedCommitSha)) {
+              selectedCommitSha = availableCommits.length > 0 ? availableCommits[0].sha : "";
+            }
+          }
+        } catch {
+          // Non-fatal in worktree mode.
+        }
+        renderCommitOptions();
       }
 
       if (!panelAvailable) {
@@ -1845,6 +3215,7 @@
 
       const scopeKey = buildDiffScopeKey(context.cwd, currentMode, currentMode === "commit" ? selectedCommitSha : "");
       const notesChanged = switchNotesScope(scopeKey);
+      ensureReviewFindingStateScope(scopeKey);
       if (notesChanged) {
         renderComposerNotes();
       }
@@ -2020,6 +3391,36 @@
     queueRefresh({ force: true });
   });
 
+  commitReviewSummaryNode.addEventListener("click", (event) => {
+    const jumpBtn = event.target instanceof Element ? event.target.closest("[data-commit-review-jump]") : null;
+    if (!jumpBtn) {
+      return;
+    }
+
+    const sha = (jumpBtn.getAttribute("data-commit-review-jump") || "").trim();
+    if (!sha || sha === selectedCommitSha) {
+      return;
+    }
+
+    if (!availableCommits.some((x) => x && typeof x.sha === "string" && x.sha === sha)) {
+      return;
+    }
+
+    selectedCommitSha = sha;
+    selectedCommitInfo = findSelectedCommitInfo();
+    if (currentMode !== "commit") {
+      setDiffMode("commit");
+      return;
+    }
+
+    lastRenderKey = "";
+    refreshBtn.disabled = true;
+    commitSelect.disabled = true;
+    closeFullFileWindow();
+    showLoadingState(`Loading ${getActiveCommitLabel()}...`);
+    queueRefresh({ force: true });
+  });
+
   contextSelect.addEventListener("change", () => {
     const nextMode = normalizeContextMode(contextSelect.value);
     if (nextMode === currentContextMode) {
@@ -2034,6 +3435,59 @@
     lastRenderKey = "";
     queueRefresh({ force: true });
   });
+
+  queueReviewBtn.addEventListener("click", () => {
+    openReviewModal("queue");
+  });
+
+  runReviewBtn.addEventListener("click", () => {
+    openReviewModal("run");
+  });
+
+  if (reviewModalReady) {
+    reviewModalQueueBtn.addEventListener("click", () => {
+      submitReviewFromModal("queue").catch(() => { });
+    });
+
+    reviewModalRunBtn.addEventListener("click", () => {
+      submitReviewFromModal("run").catch(() => { });
+    });
+
+    reviewModalCancelBtn.addEventListener("click", () => {
+      closeReviewModal({ keepDraft: true });
+    });
+
+    reviewModal.addEventListener("click", (event) => {
+      if (event.target === reviewModal) {
+        closeReviewModal({ keepDraft: true });
+      }
+    });
+
+    reviewModalTextarea.addEventListener("keydown", (event) => {
+      if (event.isComposing) {
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeReviewModal({ keepDraft: true });
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        const preferredAction = reviewModal.dataset.preferredAction === "run" ? "run" : "queue";
+        submitReviewFromModal(preferredAction).catch(() => { });
+      }
+    });
+
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !reviewModal.classList.contains("hidden")) {
+        event.preventDefault();
+        closeReviewModal({ keepDraft: true });
+      }
+    });
+  }
 
   if (fullFileWindowReady) {
     fullFileCloseBtn.addEventListener("click", () => {
@@ -2189,6 +3643,87 @@
     }
   });
 
+  reviewFindingsNode.addEventListener("click", (event) => {
+    const toggleBtnNode = event.target instanceof Element ? event.target.closest("[data-review-toggle]") : null;
+    if (toggleBtnNode) {
+      const key = toggleBtnNode.getAttribute("data-review-toggle") || "";
+      if (!key || !currentReviewStateScopeKey) {
+        return;
+      }
+
+      const findings = getCurrentFlattenedReviewFindings();
+      const finding = findings.find((item) => item && item.key === key) || null;
+      const reviewIds = Array.isArray(finding?.reviewIds)
+        ? finding.reviewIds.filter((value) => typeof value === "string" && value)
+        : [];
+      const setter = window.codexDiffSetReviewFindingDone;
+      const refreshCatalog = window.codexDiffRefreshReviewCatalog;
+      if (!finding || reviewIds.length === 0 || typeof setter !== "function") {
+        return;
+      }
+
+      const next = !(finding.done === true);
+      Promise.all(reviewIds.map((reviewId) => setter(reviewId, key, next)))
+        .catch(() => { })
+        .then(async () => {
+          const context = getActiveContext();
+          if (context && context.cwd && typeof refreshCatalog === "function") {
+            await refreshCatalog(context.cwd, { force: true }).catch(() => { });
+          }
+          ensureReviewFindingStateScope(currentReviewStateScopeKey);
+          rerenderFilesPreserveView();
+          rerenderFullFileWindowIfOpen();
+          renderCommitOptions();
+        });
+      return;
+    }
+
+    const clearDoneBtn = event.target instanceof Element ? event.target.closest("[data-review-clear-done='1']") : null;
+    if (clearDoneBtn) {
+      if (!currentReviewStateScopeKey) {
+        return;
+      }
+      const findings = getCurrentFlattenedReviewFindings();
+      const reviewIds = Array.from(new Set(
+        findings
+          .filter((item) => item && item.done === true && Array.isArray(item.reviewIds))
+          .flatMap((item) => item.reviewIds)
+          .filter((value) => typeof value === "string" && value)
+      ));
+      const clearer = window.codexDiffClearReviewFindingDone;
+      const refreshCatalog = window.codexDiffRefreshReviewCatalog;
+      if (reviewIds.length === 0 || typeof clearer !== "function") {
+        return;
+      }
+
+      Promise.all(reviewIds.map((reviewId) => clearer(reviewId)))
+        .catch(() => { })
+        .then(async () => {
+          const context = getActiveContext();
+          if (context && context.cwd && typeof refreshCatalog === "function") {
+            await refreshCatalog(context.cwd, { force: true }).catch(() => { });
+          }
+          ensureReviewFindingStateScope(currentReviewStateScopeKey);
+          rerenderFilesPreserveView();
+          rerenderFullFileWindowIfOpen();
+          renderCommitOptions();
+        });
+      return;
+    }
+
+    const jumpBtn = event.target instanceof Element ? event.target.closest("[data-review-jump-path]") : null;
+    if (!jumpBtn) {
+      return;
+    }
+
+    const path = jumpBtn.getAttribute("data-review-jump-path") || "";
+    const lineNo = Number.parseInt(jumpBtn.getAttribute("data-review-jump-line") || "", 10);
+    if (!path || !Number.isFinite(lineNo) || lineNo <= 0) {
+      return;
+    }
+    jumpToReviewFinding(path, lineNo);
+  });
+
   composerNotesNode.addEventListener("click", (event) => {
     const removeBtn = event.target instanceof Element ? event.target.closest("[data-diff-note-remove]") : null;
     if (removeBtn) {
@@ -2261,6 +3796,12 @@
     window.addEventListener("mousemove", continueModalDrag);
     window.addEventListener("mouseup", endModalDrag);
   }
+
+  window.addEventListener("codex:reviews-updated", () => {
+    rerenderFilesPreserveView();
+    rerenderFullFileWindowIfOpen();
+    renderCommitOptions();
+  });
 
   renderCommitOptions();
   applyModeUiState();

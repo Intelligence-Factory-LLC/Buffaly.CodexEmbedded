@@ -110,6 +110,9 @@ let startupRestoreAttemptThreadId = "";
 let latestRateLimitSnapshot = null; // latest account-level usage snapshot from backend endpoint
 let rateLimitSnapshotFetchInFlight = null;
 let lastRateLimitSnapshotFetchAtMs = 0;
+let reviewRecordsById = new Map(); // reviewId -> review record
+let reviewRecordIdsByCwd = new Map(); // cwd -> [reviewId]
+let reviewCatalogFetchPromiseByCwd = new Map(); // cwd -> Promise
 
 const STORAGE_CWD_KEY = "codex-web-cwd";
 const STORAGE_LOG_VERBOSITY_KEY = "codex-web-log-verbosity";
@@ -1050,6 +1053,7 @@ function rememberTimelineCache(threadId, payload) {
     reasoningSummary: payload.reasoningSummary || existing?.reasoningSummary || "",
     maxEntries
   });
+  ingestReviewRecordsFromTurns(normalizedThreadId, turns);
 }
 
 function restoreTimelineFromCache(threadId) {
@@ -1063,6 +1067,8 @@ function restoreTimelineFromCache(threadId) {
   if (!cached || !Array.isArray(cached.turns) || cached.turns.length === 0) {
     return false;
   }
+
+  ingestReviewRecordsFromTurns(normalizedThreadId, cached.turns);
 
   if (typeof timeline.setServerTurns === "function") {
     timeline.setServerTurns(cached.turns);
@@ -4601,6 +4607,806 @@ window.codexDiffGetActiveContext = function codexDiffGetActiveContext() {
     threadId: state.threadId || "",
     cwd
   };
+};
+
+const REVIEW_METADATA_HEADER = "[Review metadata]";
+const REVIEW_METADATA_FOOTER = "[/Review metadata]";
+
+function normalizeReviewTargetType(value) {
+  return value === "commit" ? "commit" : "worktree";
+}
+
+function normalizeReviewCommitSha(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function buildReviewScopeKey(cwd, targetType, commitSha = "") {
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  if (!normalizedCwd) {
+    return "";
+  }
+
+  const normalizedTargetType = normalizeReviewTargetType(targetType);
+  if (normalizedTargetType === "commit") {
+    return `${normalizedCwd}::commit::${normalizeReviewCommitSha(commitSha)}`;
+  }
+
+  return `${normalizedCwd}::worktree`;
+}
+
+function createReviewId() {
+  const randomPart = Math.random().toString(36).slice(2, 10);
+  return `review_${Date.now().toString(36)}_${randomPart}`;
+}
+
+function serializeReviewMetadataBlock(metadata) {
+  const lines = [];
+  const pushValue = (key, value) => {
+    if (value === null || value === undefined) {
+      return;
+    }
+    const text = typeof value === "string" ? value.trim() : String(value);
+    if (!text) {
+      return;
+    }
+    lines.push(`${key}=${text.replace(/\r?\n/g, " ")}`);
+  };
+
+  pushValue("review_id", metadata.reviewId);
+  pushValue("thread_id", metadata.threadId);
+  pushValue("session_id", metadata.sessionId);
+  pushValue("cwd", normalizeProjectCwd(metadata.cwd || ""));
+  pushValue("target_type", normalizeReviewTargetType(metadata.targetType));
+  pushValue("commit_sha", normalizeReviewCommitSha(metadata.commitSha));
+  pushValue("context_label", metadata.contextLabel);
+  pushValue("visible_files", Number.isFinite(metadata.visibleFiles) ? Math.max(0, Math.floor(metadata.visibleFiles)) : 0);
+  pushValue("total_files", Number.isFinite(metadata.totalFiles) ? Math.max(0, Math.floor(metadata.totalFiles)) : 0);
+  pushValue("hidden_binary_files", Number.isFinite(metadata.hiddenBinaryFiles) ? Math.max(0, Math.floor(metadata.hiddenBinaryFiles)) : 0);
+
+  return `${REVIEW_METADATA_HEADER}\n${lines.join("\n")}\n${REVIEW_METADATA_FOOTER}`;
+}
+
+function parseReviewMetadataBlock(promptText) {
+  const source = typeof promptText === "string" ? promptText : "";
+  if (!source.includes(REVIEW_METADATA_HEADER) || !source.includes(REVIEW_METADATA_FOOTER)) {
+    return null;
+  }
+
+  const match = source.match(/\[Review metadata\]([\s\S]*?)\[\/Review metadata\]/i);
+  if (!match || typeof match[1] !== "string") {
+    return null;
+  }
+
+  const metadata = {};
+  const lines = match[1].split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = typeof rawLine === "string" ? rawLine.trim() : "";
+    if (!line) {
+      continue;
+    }
+    const separatorIndex = line.indexOf("=");
+    if (separatorIndex <= 0) {
+      continue;
+    }
+    const key = line.slice(0, separatorIndex).trim().toLowerCase();
+    const value = line.slice(separatorIndex + 1).trim();
+    if (!key || !value) {
+      continue;
+    }
+    metadata[key] = value;
+  }
+
+  const reviewId = typeof metadata.review_id === "string" ? metadata.review_id.trim() : "";
+  const cwd = normalizeProjectCwd(typeof metadata.cwd === "string" ? metadata.cwd : "");
+  const targetType = normalizeReviewTargetType(typeof metadata.target_type === "string" ? metadata.target_type : "");
+  const commitSha = normalizeReviewCommitSha(typeof metadata.commit_sha === "string" ? metadata.commit_sha : "");
+  if (!reviewId || !cwd) {
+    return null;
+  }
+
+  return {
+    reviewId,
+    threadId: typeof metadata.thread_id === "string" ? metadata.thread_id.trim() : "",
+    sessionId: typeof metadata.session_id === "string" ? metadata.session_id.trim() : "",
+    cwd,
+    targetType,
+    commitSha,
+    scopeKey: buildReviewScopeKey(cwd, targetType, commitSha),
+    contextLabel: typeof metadata.context_label === "string" ? metadata.context_label.trim() : "",
+    visibleFiles: Number.parseInt(metadata.visible_files || "0", 10) || 0,
+    totalFiles: Number.parseInt(metadata.total_files || "0", 10) || 0,
+    hiddenBinaryFiles: Number.parseInt(metadata.hidden_binary_files || "0", 10) || 0
+  };
+}
+
+function stripReviewMetadataBlock(promptText) {
+  const source = typeof promptText === "string" ? promptText : "";
+  if (!source.includes(REVIEW_METADATA_HEADER)) {
+    return source.trim();
+  }
+
+  return source
+    .replace(/\n?\[Review metadata\][\s\S]*?\[\/Review metadata\]\s*/gi, "\n")
+    .trim();
+}
+
+function normalizeReviewFindingPath(path, cwd) {
+  const normalizedPath = typeof path === "string" ? path.trim().replace(/\\/g, "/") : "";
+  const normalizedCwd = normalizeProjectCwd(cwd || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalizedPath) {
+    return "";
+  }
+  if (!normalizedCwd) {
+    return normalizedPath;
+  }
+  if (normalizedPath.length > normalizedCwd.length + 1 &&
+    normalizedPath.toLowerCase().startsWith(`${normalizedCwd.toLowerCase()}/`)) {
+    return normalizedPath.slice(normalizedCwd.length + 1);
+  }
+  return normalizedPath;
+}
+
+function parseReviewFindingLink(rawHref) {
+  const source = typeof rawHref === "string" ? rawHref.trim() : "";
+  if (!source) {
+    return null;
+  }
+
+  let value = source;
+  if (/^file:\/\//i.test(value)) {
+    try {
+      value = decodeURI(value);
+    } catch {
+    }
+    value = value.replace(/^file:\/\/\/?/i, "");
+  } else {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+      return null;
+    }
+    try {
+      value = decodeURI(value);
+    } catch {
+    }
+  }
+
+  value = value.replace(/[?#].*$/, "");
+  if (!value) {
+    return null;
+  }
+
+  let lineNo = 0;
+  const lineMatch = value.match(/:(\d+)(?::\d+)?$/);
+  if (lineMatch) {
+    const parsedLine = Number.parseInt(lineMatch[1] || "0", 10);
+    if (Number.isFinite(parsedLine) && parsedLine > 0) {
+      lineNo = parsedLine;
+      value = value.slice(0, lineMatch.index);
+    }
+  }
+
+  return {
+    path: value.replace(/\\/g, "/"),
+    lineNo
+  };
+}
+
+function normalizeReviewSeverity(value) {
+  const source = typeof value === "string" ? value.toLowerCase() : "";
+  if (source.includes("critical")) {
+    return "critical";
+  }
+  if (source.includes("high")) {
+    return "high";
+  }
+  if (source.includes("medium")) {
+    return "medium";
+  }
+  if (source.includes("low")) {
+    return "low";
+  }
+  return "info";
+}
+
+function extractReviewFindingsFromAssistantText(bodyText, cwd) {
+  const source = typeof bodyText === "string" ? bodyText : "";
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  if (!source.trim()) {
+    return [];
+  }
+
+  const findings = [];
+  const dedupe = new Set();
+  const lines = source.split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = typeof rawLine === "string" ? rawLine.trim() : "";
+    if (!line) {
+      continue;
+    }
+
+    const hasFindingShape =
+      /^\d+\.\s+/i.test(line) ||
+      /^[*-]\s+/i.test(line) ||
+      /\b(critical|high|medium|low)\b/i.test(line);
+    if (!hasFindingShape) {
+      continue;
+    }
+
+    const detail = line.replace(/\s+/g, " ").trim();
+    const severity = normalizeReviewSeverity(detail);
+    let matchedLink = false;
+    const markdownLinks = line.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g);
+    for (const linkMatch of markdownLinks) {
+      const parsedLink = parseReviewFindingLink(linkMatch[2]);
+      if (!parsedLink || !parsedLink.path) {
+        continue;
+      }
+
+      matchedLink = true;
+      const normalizedPath = normalizeReviewFindingPath(parsedLink.path, normalizedCwd);
+      const findingKey = `${normalizedPath}|${parsedLink.lineNo}|${detail}`;
+      if (dedupe.has(findingKey)) {
+        continue;
+      }
+      dedupe.add(findingKey);
+      findings.push({
+        key: findingKey,
+        severity,
+        detail,
+        label: typeof linkMatch[1] === "string" ? linkMatch[1].trim() : "",
+        path: normalizedPath,
+        lineNo: parsedLink.lineNo
+      });
+    }
+
+    if (!matchedLink) {
+      const fallbackKey = `summary||${detail}`;
+      if (dedupe.has(fallbackKey)) {
+        continue;
+      }
+      dedupe.add(fallbackKey);
+      findings.push({
+        key: fallbackKey,
+        severity,
+        detail,
+        label: "",
+        path: "",
+        lineNo: 0
+      });
+    }
+  }
+
+  return findings;
+}
+
+function normalizeStoredReviewFinding(finding) {
+  if (!finding || typeof finding !== "object") {
+    return null;
+  }
+
+  const detail = typeof finding.detail === "string" ? finding.detail.trim() : "";
+  const path = typeof finding.path === "string" ? finding.path.trim() : "";
+  const lineNo = Number.isFinite(finding.lineNo) ? Math.max(0, Math.floor(finding.lineNo)) : 0;
+  const key = typeof finding.key === "string" && finding.key.trim()
+    ? finding.key.trim()
+    : `${path}|${lineNo}|${detail}`;
+  if (!key || !detail) {
+    return null;
+  }
+
+  return {
+    key,
+    severity: normalizeReviewSeverity(finding.severity || "info"),
+    detail,
+    label: typeof finding.label === "string" ? finding.label : "",
+    path,
+    lineNo,
+    done: finding.done === true
+  };
+}
+
+function normalizeStoredReviewRecord(record) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+
+  const reviewId = typeof record.reviewId === "string" ? record.reviewId.trim() : "";
+  const cwd = normalizeProjectCwd(record.cwd || "");
+  const targetType = normalizeReviewTargetType(record.targetType);
+  const commitSha = normalizeReviewCommitSha(record.commitSha);
+  if (!reviewId || !cwd) {
+    return null;
+  }
+
+  const findings = Array.isArray(record.findings)
+    ? record.findings.map(normalizeStoredReviewFinding).filter((x) => !!x)
+    : [];
+  const normalized = {
+    reviewId,
+    sessionId: typeof record.sessionId === "string" ? record.sessionId.trim() : "",
+    threadId: typeof record.threadId === "string" ? record.threadId.trim() : "",
+    cwd,
+    targetType,
+    commitSha,
+    scopeKey: buildReviewScopeKey(cwd, targetType, commitSha),
+    commitSubject: typeof record.commitSubject === "string" ? record.commitSubject.trim() : "",
+    contextLabel: typeof record.contextLabel === "string" ? record.contextLabel.trim() : "",
+    totalFiles: Number.isFinite(record.totalFiles) ? Math.max(0, Math.floor(record.totalFiles)) : 0,
+    visibleFiles: Number.isFinite(record.visibleFiles) ? Math.max(0, Math.floor(record.visibleFiles)) : 0,
+    hiddenBinaryFiles: Number.isFinite(record.hiddenBinaryFiles) ? Math.max(0, Math.floor(record.hiddenBinaryFiles)) : 0,
+    noteText: typeof record.noteText === "string" ? record.noteText.trim() : "",
+    promptText: typeof record.promptText === "string" ? record.promptText : "",
+    status: typeof record.status === "string" ? record.status.trim() : "queued",
+    queuedAtUtc: typeof record.queuedAtUtc === "string" ? record.queuedAtUtc : "",
+    startedAtUtc: typeof record.startedAtUtc === "string" ? record.startedAtUtc : "",
+    completedAtUtc: typeof record.completedAtUtc === "string" ? record.completedAtUtc : "",
+    turnId: typeof record.turnId === "string" ? record.turnId.trim() : "",
+    assistantText: typeof record.assistantText === "string" ? record.assistantText : "",
+    findings
+  };
+  return normalized;
+}
+
+function dispatchReviewRegistryUpdated(reason, scopeKey = "") {
+  try {
+    window.dispatchEvent(new CustomEvent("codex:reviews-updated", {
+      detail: {
+        reason: reason || "unknown",
+        scopeKey
+      }
+    }));
+  } catch {
+  }
+}
+
+function upsertReviewRecord(record, reason) {
+  const normalized = normalizeStoredReviewRecord(record);
+  if (!normalized) {
+    return false;
+  }
+
+  const existing = reviewRecordsById.get(normalized.reviewId) || null;
+  const previousSerialized = existing ? JSON.stringify(existing) : "";
+  const nextSerialized = JSON.stringify(normalized);
+  if (existing && previousSerialized === nextSerialized) {
+    return false;
+  }
+
+  reviewRecordsById.set(normalized.reviewId, normalized);
+  const normalizedCwd = normalized.cwd;
+  const existingIds = reviewRecordIdsByCwd.get(normalizedCwd) || [];
+  if (!existingIds.includes(normalized.reviewId)) {
+    reviewRecordIdsByCwd.set(normalizedCwd, [...existingIds, normalized.reviewId]);
+  }
+  dispatchReviewRegistryUpdated(reason, normalized.scopeKey);
+  return true;
+}
+
+function replaceReviewCatalogForCwd(cwd, records, reason) {
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  if (!normalizedCwd) {
+    return false;
+  }
+
+  const previousIds = reviewRecordIdsByCwd.get(normalizedCwd) || [];
+  const nextRecords = Array.isArray(records)
+    ? records.map(normalizeStoredReviewRecord).filter((x) => !!x && x.cwd === normalizedCwd)
+    : [];
+  const nextIds = [];
+  let changed = previousIds.length !== nextRecords.length;
+
+  for (const reviewId of previousIds) {
+    if (!nextRecords.some((record) => record.reviewId === reviewId)) {
+      reviewRecordsById.delete(reviewId);
+      changed = true;
+    }
+  }
+
+  for (const record of nextRecords) {
+    nextIds.push(record.reviewId);
+    const existing = reviewRecordsById.get(record.reviewId) || null;
+    const previousSerialized = existing ? JSON.stringify(existing) : "";
+    const nextSerialized = JSON.stringify(record);
+    if (!existing || previousSerialized !== nextSerialized) {
+      reviewRecordsById.set(record.reviewId, record);
+      changed = true;
+    }
+  }
+
+  reviewRecordIdsByCwd.set(normalizedCwd, nextIds);
+  if (changed) {
+    dispatchReviewRegistryUpdated(reason, "");
+  }
+  return changed;
+}
+
+async function postReviewJson(urlPath, payload) {
+  const response = await fetch(new URL(urlPath, document.baseURI), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload || {})
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`review request failed (${response.status}): ${detail}`);
+  }
+  return await response.json();
+}
+
+async function refreshReviewCatalogForCwd(cwd, options = {}) {
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  if (!normalizedCwd) {
+    return [];
+  }
+
+  const force = options.force === true;
+  const existingPromise = reviewCatalogFetchPromiseByCwd.get(normalizedCwd);
+  if (!force && existingPromise) {
+    return await existingPromise;
+  }
+
+  const loadPromise = (async () => {
+    const url = new URL("api/reviews", document.baseURI);
+    url.searchParams.set("cwd", normalizedCwd);
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store"
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`review catalog failed (${response.status}): ${detail}`);
+    }
+
+    const payload = await response.json();
+    const reviews = Array.isArray(payload?.reviews) ? payload.reviews : [];
+    replaceReviewCatalogForCwd(normalizedCwd, reviews, force ? "review_catalog_refresh_forced" : "review_catalog_refresh");
+    return reviews;
+  })();
+
+  reviewCatalogFetchPromiseByCwd.set(normalizedCwd, loadPromise);
+  try {
+    return await loadPromise;
+  } finally {
+    const current = reviewCatalogFetchPromiseByCwd.get(normalizedCwd);
+    if (current === loadPromise) {
+      reviewCatalogFetchPromiseByCwd.delete(normalizedCwd);
+    }
+  }
+}
+
+async function updateReviewStatus(reviewId, status) {
+  const normalizedReviewId = typeof reviewId === "string" ? reviewId.trim() : "";
+  if (!normalizedReviewId) {
+    return false;
+  }
+
+  const payload = await postReviewJson("api/reviews/status", {
+    reviewId: normalizedReviewId,
+    status: typeof status === "string" ? status.trim() : ""
+  });
+  const existing = reviewRecordsById.get(normalizedReviewId);
+  if (existing) {
+    const next = {
+      ...existing,
+      status: typeof status === "string" && status.trim() ? status.trim() : existing.status,
+      startedAtUtc: status === "running" && !existing.startedAtUtc ? new Date().toISOString() : existing.startedAtUtc,
+      completedAtUtc: status === "completed" ? (existing.completedAtUtc || new Date().toISOString()) : existing.completedAtUtc
+    };
+    upsertReviewRecord(next, "review_status_updated");
+  }
+  return payload?.updated === true;
+}
+
+async function setReviewFindingDone(reviewId, findingKey, done) {
+  const normalizedReviewId = typeof reviewId === "string" ? reviewId.trim() : "";
+  const normalizedFindingKey = typeof findingKey === "string" ? findingKey.trim() : "";
+  if (!normalizedReviewId || !normalizedFindingKey) {
+    return false;
+  }
+
+  const payload = await postReviewJson("api/reviews/finding-state", {
+    reviewId: normalizedReviewId,
+    findingKey: normalizedFindingKey,
+    done: done === true
+  });
+  return payload?.updated === true;
+}
+
+async function clearReviewFindingDone(reviewId) {
+  const normalizedReviewId = typeof reviewId === "string" ? reviewId.trim() : "";
+  if (!normalizedReviewId) {
+    return 0;
+  }
+
+  const payload = await postReviewJson("api/reviews/finding-clear", {
+    reviewId: normalizedReviewId
+  });
+  return Number.isFinite(payload?.cleared) ? payload.cleared : 0;
+}
+
+function getReviewRecordsForScope(scopeKey) {
+  const records = [];
+  if (!scopeKey) {
+    return records;
+  }
+  for (const record of reviewRecordsById.values()) {
+    if (record.scopeKey === scopeKey) {
+      records.push(record);
+    }
+  }
+  records.sort((a, b) => {
+    const aTime = a.completedAtUtc || a.startedAtUtc || a.queuedAtUtc || "";
+    const bTime = b.completedAtUtc || b.startedAtUtc || b.queuedAtUtc || "";
+    return bTime.localeCompare(aTime);
+  });
+  return records;
+}
+
+function buildReviewScopeSummary(scopeKey) {
+  const records = getReviewRecordsForScope(scopeKey);
+  let queuedCount = 0;
+  let runningCount = 0;
+  let completedCount = 0;
+  let openFindingCount = 0;
+  for (const record of records) {
+    if (record.status === "completed") {
+      completedCount += 1;
+    } else if (record.status === "running") {
+      runningCount += 1;
+    } else {
+      queuedCount += 1;
+    }
+    openFindingCount += Array.isArray(record.findings) ? record.findings.length : 0;
+  }
+
+  let status = "not_started";
+  if (queuedCount > 0 || runningCount > 0) {
+    status = "started";
+  } else if (completedCount > 0) {
+    status = "completed";
+  }
+
+  return {
+    scopeKey,
+    status,
+    reviewCount: records.length,
+    queuedCount,
+    runningCount,
+    requestedCount: queuedCount + runningCount,
+    completedCount,
+    openFindingCount,
+    records
+  };
+}
+
+function getReviewFindingsForScope(scopeKey) {
+  const records = getReviewRecordsForScope(scopeKey);
+  const findings = [];
+  for (const record of records) {
+    const reviewLabel = record.commitSha
+      ? `${record.commitSha.slice(0, 7)} review`
+      : "worktree review";
+    for (const finding of record.findings || []) {
+      findings.push({
+        ...finding,
+        reviewId: record.reviewId,
+        reviewLabel
+      });
+    }
+  }
+  return findings;
+}
+
+function ingestReviewRecordsFromTurns(threadId, turns) {
+  void threadId;
+  void turns;
+  return false;
+}
+
+window.codexDiffRefreshReviewCatalog = async function codexDiffRefreshReviewCatalog(cwd, options = {}) {
+  return await refreshReviewCatalogForCwd(cwd, options);
+};
+
+window.codexDiffSetReviewFindingDone = async function codexDiffSetReviewFindingDone(reviewId, findingKey, done) {
+  return await setReviewFindingDone(reviewId, findingKey, done);
+};
+
+window.codexDiffClearReviewFindingDone = async function codexDiffClearReviewFindingDone(reviewId) {
+  return await clearReviewFindingDone(reviewId);
+};
+
+window.codexDiffCreateReviewRequest = async function codexDiffCreateReviewRequest(options = {}) {
+  const cwd = normalizeProjectCwd(options.cwd || "");
+  const targetType = normalizeReviewTargetType(options.targetType);
+  const commitSha = normalizeReviewCommitSha(options.commitSha);
+  if (!cwd) {
+    return null;
+  }
+  if (targetType === "commit" && !commitSha) {
+    return null;
+  }
+
+  const threadId = normalizeThreadId(options.threadId || "");
+  const sessionId = typeof options.sessionId === "string" ? options.sessionId.trim() : "";
+  const contextLabel = typeof options.contextLabel === "string" && options.contextLabel.trim()
+    ? options.contextLabel.trim()
+    : "+3";
+  const totalFiles = Number.isFinite(options.totalFiles) ? Math.max(0, Math.floor(options.totalFiles)) : 0;
+  const visibleFiles = Number.isFinite(options.visibleFiles) ? Math.max(0, Math.floor(options.visibleFiles)) : 0;
+  const hiddenBinaryFiles = Number.isFinite(options.hiddenBinaryFiles) ? Math.max(0, Math.floor(options.hiddenBinaryFiles)) : 0;
+  const commitSubject = typeof options.commitSubject === "string" ? options.commitSubject.trim() : "";
+  const noteText = typeof options.noteText === "string" ? options.noteText.trim() : "";
+  const initialStatus = typeof options.initialStatus === "string" && options.initialStatus.trim()
+    ? options.initialStatus.trim()
+    : "queued";
+
+  const payload = await postReviewJson("api/reviews/create", {
+    threadId,
+    sessionId,
+    cwd,
+    targetType,
+    commitSha,
+    commitSubject,
+    contextLabel,
+    visibleFiles,
+    totalFiles,
+    hiddenBinaryFiles,
+    noteText,
+    initialStatus
+  });
+
+  const record = normalizeStoredReviewRecord(payload?.review || null);
+  const promptText = typeof payload?.promptText === "string" ? payload.promptText : "";
+  if (!record || !promptText) {
+    return null;
+  }
+
+  upsertReviewRecord(record, "review_created");
+  return {
+    reviewId: record.reviewId,
+    scopeKey: record.scopeKey,
+    cwd: record.cwd,
+    targetType: record.targetType,
+    commitSha: record.commitSha,
+    commitSubject: record.commitSubject,
+    noteText: record.noteText,
+    promptText
+  };
+};
+
+window.codexDiffGetReviewScopeSummary = function codexDiffGetReviewScopeSummary(scopeKey) {
+  return buildReviewScopeSummary(typeof scopeKey === "string" ? scopeKey.trim() : "");
+};
+
+window.codexDiffGetReviewFindingsForScope = function codexDiffGetReviewFindingsForScope(scopeKey) {
+  return getReviewFindingsForScope(typeof scopeKey === "string" ? scopeKey.trim() : "");
+};
+
+window.codexDiffGetCommitReviewSummaries = function codexDiffGetCommitReviewSummaries(cwd, commits = []) {
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  if (!normalizedCwd || !Array.isArray(commits)) {
+    return [];
+  }
+
+  return commits.map((commit) => {
+    const sha = typeof commit?.sha === "string" ? commit.sha.trim().toLowerCase() : "";
+    const scopeKey = buildReviewScopeKey(normalizedCwd, "commit", sha);
+    return {
+      sha,
+      scopeKey,
+      summary: buildReviewScopeSummary(scopeKey)
+    };
+  });
+};
+
+window.codexDiffQueueReviewPrompt = async function codexDiffQueueReviewPrompt(rawPromptText, options = {}) {
+  const promptText = typeof rawPromptText === "string" ? rawPromptText : "";
+  const normalizedPrompt = appendDiffNotesToPrompt(promptText).trim();
+  if (!normalizedPrompt) {
+    appendLog("[review] prompt is empty");
+    return false;
+  }
+
+  if (!activeSessionId) {
+    appendLog("[review] no active session; create or attach one first");
+    return false;
+  }
+  if (isSessionAppServerRecovering(activeSessionId)) {
+    appendLog(`[review] session=${activeSessionId} is recovering; queue is temporarily disabled`);
+    return false;
+  }
+
+  try {
+    await ensureSocket();
+  } catch (error) {
+    appendLog(`[ws] connect failed: ${error}`);
+    return false;
+  }
+
+  const queued = await queuePrompt(activeSessionId, normalizedPrompt, [], { planMode: false });
+  if (!queued) {
+    if (options.reviewRequest?.reviewId) {
+      await updateReviewStatus(options.reviewRequest.reviewId, "failed").catch(() => { });
+    }
+    appendLog(`[review] failed to queue review prompt for session=${activeSessionId}`);
+    return false;
+  }
+
+  if (options.logSuccess !== false) {
+    appendLog(`[review] queued review request for session=${activeSessionId}`);
+  }
+  if (options.reviewRequest?.cwd) {
+    refreshReviewCatalogForCwd(options.reviewRequest.cwd, { force: true }).catch(() => { });
+  }
+  return true;
+};
+
+window.codexDiffRunReviewPrompt = async function codexDiffRunReviewPrompt(rawPromptText, options = {}) {
+  const promptText = typeof rawPromptText === "string" ? rawPromptText : "";
+  const normalizedPrompt = appendDiffNotesToPrompt(promptText).trim();
+  if (!normalizedPrompt) {
+    appendLog("[review] prompt is empty");
+    return false;
+  }
+
+  if (!activeSessionId) {
+    appendLog("[review] no active session; create or attach one first");
+    return false;
+  }
+  if (isSessionAppServerRecovering(activeSessionId)) {
+    appendLog(`[review] session=${activeSessionId} is recovering; wait and retry`);
+    return false;
+  }
+
+  try {
+    await ensureSocket();
+  } catch (error) {
+    appendLog(`[ws] connect failed: ${error}`);
+    return false;
+  }
+
+  if (isTurnInFlight(activeSessionId)) {
+    const queued = await queuePrompt(activeSessionId, normalizedPrompt, [], { planMode: false });
+    if (!queued) {
+      if (options.reviewRequest?.reviewId) {
+        await updateReviewStatus(options.reviewRequest.reviewId, "failed").catch(() => { });
+      }
+      appendLog(`[review] failed to queue review prompt for session=${activeSessionId}`);
+      return false;
+    }
+
+    if (options.logSuccess !== false) {
+      appendLog(`[review] turn is active; review request queued for session=${activeSessionId}`);
+    }
+    if (options.reviewRequest?.cwd) {
+      refreshReviewCatalogForCwd(options.reviewRequest.cwd, { force: true }).catch(() => { });
+    }
+    return true;
+  }
+
+  const started = startTurn(activeSessionId, normalizedPrompt, [], { planMode: false });
+  if (!started) {
+    if (options.reviewRequest?.reviewId) {
+      await updateReviewStatus(options.reviewRequest.reviewId, "failed").catch(() => { });
+    }
+    appendLog(`[review] failed to start review prompt for session=${activeSessionId}`);
+    return false;
+  }
+
+  if (options.reviewRequest?.reviewId) {
+    await updateReviewStatus(options.reviewRequest.reviewId, "running").catch(() => { });
+  }
+
+  if (options.logSuccess !== false) {
+    appendLog(`[review] started review request for session=${activeSessionId}`);
+  }
+  if (options.reviewRequest?.cwd) {
+    refreshReviewCatalogForCwd(options.reviewRequest.cwd, { force: true }).catch(() => { });
+  }
+  return true;
 };
 
 function normalizeThreadId(threadId) {

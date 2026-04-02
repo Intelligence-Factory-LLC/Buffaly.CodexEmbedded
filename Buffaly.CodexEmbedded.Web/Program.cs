@@ -26,6 +26,7 @@ builder.Services.AddSingleton<UserIdentityResolver>();
 builder.Services.AddSingleton<UserOpenAiKeyStore>();
 builder.Services.AddSingleton<OpenAiTranscriptionClient>();
 builder.Services.AddSingleton<GitWorktreeDiffService>();
+builder.Services.AddSingleton<ReviewStore>();
 var dataProtectionKeyPath = ResolveDataProtectionKeyPath();
 Directory.CreateDirectory(dataProtectionKeyPath);
 builder.Services.AddDataProtection()
@@ -103,6 +104,7 @@ app.Use(async (context, next) =>
 app.MapStaticHtmlPageEndpoints();
 app.MapSessionCatalogAndRecapEndpoints();
 app.MapTimelineAndRuntimeLogEndpoints();
+app.MapReviewEndpoints();
 
 app.MapGet("/api/security/config", (WebRuntimeDefaults defaults) =>
 {
