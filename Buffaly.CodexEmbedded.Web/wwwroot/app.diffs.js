@@ -10,6 +10,7 @@
   const modeCommitBtn = document.getElementById("worktreeDiffModeCommitBtn");
   const commitSelect = document.getElementById("worktreeDiffCommitSelect");
   const contextSelect = document.getElementById("worktreeDiffContextSelect");
+  const sendNotesBtn = document.getElementById("worktreeDiffSendNotesBtn");
   const queueReviewBtn = document.getElementById("worktreeDiffQueueReviewBtn");
   const runReviewBtn = document.getElementById("worktreeDiffRunReviewBtn");
   const commitReviewSummaryNode = document.getElementById("worktreeDiffCommitReviewSummary");
@@ -47,7 +48,7 @@
   const reviewModalCancelBtn = document.getElementById("diffReviewModalCancelBtn");
   const chatMessagesNode = document.getElementById("chatMessages");
 
-  if (!panel || !summaryNode || !listNode || !refreshBtn || !toggleBtn || !indicatorBtn || !indicatorCountNode || !modeWorktreeBtn || !modeCommitBtn || !commitSelect || !contextSelect || !queueReviewBtn || !runReviewBtn || !commitReviewSummaryNode || !reviewFindingsNode || !composerNotesNode) {
+  if (!panel || !summaryNode || !listNode || !refreshBtn || !toggleBtn || !indicatorBtn || !indicatorCountNode || !modeWorktreeBtn || !modeCommitBtn || !commitSelect || !contextSelect || !sendNotesBtn || !queueReviewBtn || !runReviewBtn || !commitReviewSummaryNode || !reviewFindingsNode || !composerNotesNode) {
     return;
   }
 
@@ -1454,6 +1455,19 @@
     renderFullFileReviewPanel();
     renderReviewFindingsPanel();
     renderCommitOptions();
+    updateReviewActionAvailability();
+  }
+
+  function persistPendingNoteDraft() {
+    if (!fullFileWindowReady) {
+      return;
+    }
+
+    if (!fullFileViewerState.noteDraftDirty || !fullFileViewerState.selectedNoteTarget) {
+      return;
+    }
+
+    saveFullFilePanelNote();
   }
 
   function extractReviewContextFromElement(element, path, lineNo) {
@@ -1884,6 +1898,14 @@
 
   function updateReviewActionAvailability() {
     const enabled = canSubmitReviewRequest();
+    const hasPendingNotes = notesByKey.size > 0 || (fullFileWindowReady && fullFileViewerState.noteDraftDirty === true);
+    sendNotesBtn.disabled = !hasPendingNotes;
+    if (hasPendingNotes) {
+      const noteCount = notesByKey.size + (fullFileWindowReady && fullFileViewerState.noteDraftDirty ? 1 : 0);
+      sendNotesBtn.textContent = `Send Notes${noteCount > 0 ? ` (${noteCount})` : ""}`;
+    } else {
+      sendNotesBtn.textContent = "Send Notes";
+    }
     queueReviewBtn.disabled = !enabled;
     runReviewBtn.disabled = !enabled;
     if (!enabled) {
@@ -2184,6 +2206,7 @@
       return;
     }
 
+    persistPendingNoteDraft();
     currentMode = nextMode;
     lastRenderKey = "";
     if (currentMode === "worktree") {
@@ -2209,6 +2232,7 @@
     if (notes.length === 0) {
       composerNotesNode.classList.add("hidden");
       composerNotesNode.innerHTML = "";
+      updateReviewActionAvailability();
       return;
     }
 
@@ -2226,6 +2250,7 @@
 
     composerNotesNode.innerHTML = `<span class="diff-notes-composer-label">Code notes (${notes.length})</span>${pills}<button type="button" class="diff-notes-composer-clear" data-diff-note-clear="1">Clear</button>`;
     composerNotesNode.classList.remove("hidden");
+    updateReviewActionAvailability();
   }
 
   function setEmptyState(message) {
@@ -2696,6 +2721,7 @@
       return;
     }
 
+    persistPendingNoteDraft();
     fullFileWindow.classList.add("hidden");
     fullFileViewerState = createEmptyFullFileViewerState();
     fullFileTitle.textContent = "Full File";
@@ -3539,6 +3565,7 @@
 
     const context = getActiveContext();
     if (!context) {
+      persistPendingNoteDraft();
       if (lastContextState !== "none") {
         lastContextState = "none";
         if (typeof window.uiAuditLog === "function") {
@@ -3592,6 +3619,7 @@
     }
 
     if (context.cwd !== lastCwd) {
+      persistPendingNoteDraft();
       currentRepoRoot = "";
       currentBranch = "";
       currentNotesScopeKey = "";
@@ -3853,6 +3881,7 @@
   }
 
   toggleBtn.addEventListener("click", () => {
+    persistPendingNoteDraft();
     isExpanded = false;
     applyPanelState();
   });
@@ -3944,6 +3973,10 @@
 
   runReviewBtn.addEventListener("click", () => {
     openReviewModal("run");
+  });
+
+  sendNotesBtn.addEventListener("click", () => {
+    sendCurrentNotesToPrompt();
   });
 
   if (reviewModalReady) {
