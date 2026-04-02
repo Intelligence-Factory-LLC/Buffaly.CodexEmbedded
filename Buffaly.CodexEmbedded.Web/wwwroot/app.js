@@ -114,6 +114,7 @@ let reviewRecordsById = new Map(); // reviewId -> review record
 let reviewRecordIdsByCwd = new Map(); // cwd -> [reviewId]
 let reviewCatalogFetchPromiseByCwd = new Map(); // cwd -> Promise
 let taskThreadIdByProjectKey = new Map();
+let pendingCodeReviewsThreadByProjectKey = new Map(); // projectKey -> { cwd, requestId, sessionId, threadId, startedAtMs, reason }
 let currentWorkspaceTab = "tasks";
 let ensuringCodeReviewsThread = false;
 let pendingCodeReviewsEnsureReason = "";
@@ -138,6 +139,7 @@ const STORAGE_TASK_THREAD_BY_PROJECT_KEY = "codex-web-task-thread-by-project";
 const WORKSPACE_TAB_TASKS = "tasks";
 const WORKSPACE_TAB_CODE_REVIEWS = "code_reviews";
 const CODE_REVIEWS_THREAD_NAME = "Code reviews";
+const CODE_REVIEWS_PENDING_TIMEOUT_MS = 120000;
 const MAX_QUEUE_TEXT_CHARS = 90;
 const MAX_QUEUE_PREVIEW_SOURCE_CHARS = 1200;
 const MAX_QUEUE_PREVIEW_KEY_CHARS = 160;
@@ -321,6 +323,122 @@ function isCodeReviewsStateLike(entry) {
   }
 
   return isCodeReviewsThreadName(entry.threadName || "");
+}
+
+function getPendingCodeReviewsProjectKey(cwd) {
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  if (!normalizedCwd) {
+    return "";
+  }
+
+  return getProjectKeyFromCwd(normalizedCwd);
+}
+
+function prunePendingCodeReviewsThreads() {
+  const now = Date.now();
+  for (const [projectKey, pending] of pendingCodeReviewsThreadByProjectKey.entries()) {
+    const startedAtMs = Number(pending?.startedAtMs || 0);
+    if (startedAtMs > 0 && now - startedAtMs <= CODE_REVIEWS_PENDING_TIMEOUT_MS) {
+      continue;
+    }
+
+    pendingCodeReviewsThreadByProjectKey.delete(projectKey);
+  }
+}
+
+function getPendingCodeReviewsThreadForCwd(cwd) {
+  prunePendingCodeReviewsThreads();
+  const projectKey = getPendingCodeReviewsProjectKey(cwd);
+  if (!projectKey) {
+    return null;
+  }
+
+  return pendingCodeReviewsThreadByProjectKey.get(projectKey) || null;
+}
+
+function setPendingCodeReviewsThreadForCwd(cwd, updates = {}) {
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  const projectKey = getPendingCodeReviewsProjectKey(normalizedCwd);
+  if (!projectKey) {
+    return null;
+  }
+
+  const current = pendingCodeReviewsThreadByProjectKey.get(projectKey) || {};
+  const next = {
+    cwd: normalizedCwd,
+    requestId: updates.requestId ?? current.requestId ?? "",
+    sessionId: updates.sessionId ?? current.sessionId ?? "",
+    threadId: updates.threadId ?? current.threadId ?? "",
+    startedAtMs: Number(current.startedAtMs || 0) || Date.now(),
+    reason: updates.reason ?? current.reason ?? ""
+  };
+  pendingCodeReviewsThreadByProjectKey.set(projectKey, next);
+  return next;
+}
+
+function clearPendingCodeReviewsThreadForCwd(cwd) {
+  const projectKey = getPendingCodeReviewsProjectKey(cwd);
+  if (!projectKey) {
+    return;
+  }
+
+  pendingCodeReviewsThreadByProjectKey.delete(projectKey);
+}
+
+function clearPendingCodeReviewsThreadByThreadId(threadId) {
+  const normalizedThreadId = normalizeThreadId(threadId || "");
+  if (!normalizedThreadId) {
+    return;
+  }
+
+  for (const [projectKey, pending] of pendingCodeReviewsThreadByProjectKey.entries()) {
+    if (normalizeThreadId(pending?.threadId || "") !== normalizedThreadId) {
+      continue;
+    }
+
+    pendingCodeReviewsThreadByProjectKey.delete(projectKey);
+  }
+}
+
+function hasResolvedCodeReviewsSessionForCwd(cwd) {
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  if (!normalizedCwd) {
+    return false;
+  }
+
+  if (findCodeReviewsCatalogEntryByCwd(normalizedCwd)) {
+    return true;
+  }
+
+  for (const state of sessions.values()) {
+    if (!state) {
+      continue;
+    }
+
+    if (normalizeProjectCwd(state.cwd || "") !== normalizedCwd) {
+      continue;
+    }
+
+    if (isCodeReviewsStateLike(state)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function reconcilePendingCodeReviewsThreads() {
+  prunePendingCodeReviewsThreads();
+  for (const [projectKey, pending] of pendingCodeReviewsThreadByProjectKey.entries()) {
+    if (!pending?.cwd) {
+      pendingCodeReviewsThreadByProjectKey.delete(projectKey);
+      continue;
+    }
+
+    if (hasResolvedCodeReviewsSessionForCwd(pending.cwd)) {
+      pendingCodeReviewsThreadByProjectKey.delete(projectKey);
+    }
+  }
 }
 
 function loadTaskThreadByProjectMap() {
@@ -2841,22 +2959,31 @@ async function ensureCodeReviewsSessionForCurrentProject(reason = "workspace_tab
 
   const active = getActiveSessionState();
   if (active && normalizeProjectCwd(active.cwd || "") === cwd && isCodeReviewsStateLike(active)) {
+    clearPendingCodeReviewsThreadForCwd(cwd);
     return true;
   }
 
   ensuringCodeReviewsThread = true;
   try {
+    reconcilePendingCodeReviewsThreads();
+    const pendingCodeReviews = getPendingCodeReviewsThreadForCwd(cwd);
+    if (pendingCodeReviews) {
+      return true;
+    }
+
     for (const pending of pendingCreateRequests.values()) {
       if (!pending || !isCodeReviewsThreadName(pending.threadName || "")) {
         continue;
       }
       if (normalizeProjectCwd(pending.cwd || "") === cwd) {
+        setPendingCodeReviewsThreadForCwd(cwd, { reason });
         return true;
       }
     }
 
     const existing = findCodeReviewsCatalogEntryByCwd(cwd);
     if (existing) {
+      clearPendingCodeReviewsThreadForCwd(cwd);
       const attachedSessionId = existing.attachedSessionId && sessions.has(existing.attachedSessionId)
         ? existing.attachedSessionId
         : findAttachedSessionIdByThreadId(existing.threadId);
@@ -2874,7 +3001,10 @@ async function ensureCodeReviewsSessionForCurrentProject(reason = "workspace_tab
       return true;
     }
 
-    await createSessionForCwd(cwd, { askName: false, threadName: CODE_REVIEWS_THREAD_NAME });
+    const requestId = await createSessionForCwd(cwd, { askName: false, threadName: CODE_REVIEWS_THREAD_NAME });
+    if (requestId) {
+      setPendingCodeReviewsThreadForCwd(cwd, { requestId, reason });
+    }
     return true;
   } finally {
     ensuringCodeReviewsThread = false;
@@ -2972,6 +3102,7 @@ async function createSessionForCwd(cwd, options = {}) {
 
   send("session_create", payload);
   send("session_catalog_list");
+  return requestId;
 }
 
 async function attachSessionByThreadId(threadId, cwd, options = {}) {
@@ -8210,7 +8341,10 @@ function setActiveSession(sessionId, options = {}) {
   requestModelsListForSession(sessionId);
   renderTimelineSelectionIndicator();
   updateScrollToBottomButton();
-  if (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS && state && !isCodeReviewsStateLike(state)) {
+  if (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS
+    && state
+    && !isCodeReviewsStateLike(state)
+    && !getPendingCodeReviewsThreadForCwd(state.cwd || getWorkspaceProjectCwd() || "")) {
     ensureCodeReviewsSessionForCurrentProject("active_session_changed_in_code_reviews").catch(() => {});
   }
 }
@@ -9124,6 +9258,15 @@ function handleServerEvent(frame) {
       });
       appendLog(`[session] ${mode} id=${sessionId} thread=${state.threadId || "unknown"} log=${payload.logPath || "n/a"}`);
 
+      if (pendingCreate && isCodeReviewsThreadName(pendingCreate.threadName || "") && normalizeProjectCwd(state.cwd || pendingCreate.cwd || "")) {
+        setPendingCodeReviewsThreadForCwd(state.cwd || pendingCreate.cwd || "", {
+          requestId,
+          sessionId,
+          threadId: state.threadId || "",
+          reason: `session_${mode}`
+        });
+      }
+
       if (pendingCreate && pendingCreate.threadName) {
         send("session_rename", { sessionId, threadName: pendingCreate.threadName });
         send("session_catalog_list");
@@ -9461,6 +9604,7 @@ function handleServerEvent(frame) {
         persistThreadModelState();
         persistThreadReasoningState();
       }
+      reconcilePendingCodeReviewsThreads();
       updateExistingSessionSelect();
       refreshSessionMeta();
       appendLog(`[catalog] loaded ${sessionCatalog.length} existing sessions from ${payload.codexHomePath || "default CODEX_HOME"}`);
@@ -9895,6 +10039,9 @@ function handleServerEvent(frame) {
       }
 
       setLocalThreadName(threadId, threadName);
+      if (isCodeReviewsThreadName(threadName)) {
+        clearPendingCodeReviewsThreadByThreadId(threadId);
+      }
       const activeThreadId = normalizeThreadId(getActiveSessionState()?.threadId || "");
       if (activeThreadId === threadId) {
         refreshSessionMeta();
