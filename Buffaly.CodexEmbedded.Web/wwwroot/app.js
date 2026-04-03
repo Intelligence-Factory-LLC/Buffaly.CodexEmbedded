@@ -8395,7 +8395,9 @@ function setActiveSession(sessionId, options = {}) {
   }
 
   syncSessionRecoveryModal();
-  requestModelsListForSession(sessionId);
+  if (changed) {
+    requestModelsListForSession(sessionId);
+  }
   renderTimelineSelectionIndicator();
   updateScrollToBottomButton();
   // Do not auto-create/auto-attach review sessions on active-session changes.
