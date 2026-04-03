@@ -112,6 +112,8 @@ let rateLimitSnapshotFetchInFlight = null;
 let lastRateLimitSnapshotFetchAtMs = 0;
 let reviewRecordsById = new Map(); // reviewId -> review record
 let reviewRecordIdsByCwd = new Map(); // cwd -> [reviewId]
+let reviewApprovalsByScopeKey = new Map(); // scopeKey -> approval record
+let reviewApprovalScopeKeysByCwd = new Map(); // cwd -> [scopeKey]
 let reviewCatalogFetchPromiseByCwd = new Map(); // cwd -> Promise
 let taskThreadIdByProjectKey = new Map();
 let currentWorkspaceTab = "tasks";
@@ -5263,6 +5265,37 @@ function normalizeStoredReviewRecord(record) {
   return normalized;
 }
 
+function normalizeStoredReviewApproval(approval) {
+  if (!approval || typeof approval !== "object") {
+    return null;
+  }
+
+  const cwd = normalizeProjectCwd(approval.cwd || "");
+  const targetType = normalizeReviewTargetType(approval.targetType);
+  const commitSha = normalizeReviewCommitSha(approval.commitSha);
+  if (!cwd) {
+    return null;
+  }
+  if (targetType === "commit" && !commitSha) {
+    return null;
+  }
+
+  const fallbackScopeKey = buildReviewScopeKey(cwd, targetType, commitSha);
+  const scopeKeyRaw = typeof approval.scopeKey === "string" ? approval.scopeKey.trim() : "";
+  const scopeKey = scopeKeyRaw || fallbackScopeKey;
+  if (!scopeKey) {
+    return null;
+  }
+
+  return {
+    scopeKey,
+    cwd,
+    targetType,
+    commitSha,
+    approvedAtUtc: typeof approval.approvedAtUtc === "string" ? approval.approvedAtUtc : ""
+  };
+}
+
 function dispatchReviewRegistryUpdated(reason, scopeKey = "") {
   try {
     window.dispatchEvent(new CustomEvent("codex:reviews-updated", {
@@ -5336,6 +5369,93 @@ function replaceReviewCatalogForCwd(cwd, records, reason) {
   return changed;
 }
 
+function upsertReviewApprovalRecord(approval, reason) {
+  const normalized = normalizeStoredReviewApproval(approval);
+  if (!normalized) {
+    return false;
+  }
+
+  const existing = reviewApprovalsByScopeKey.get(normalized.scopeKey) || null;
+  const previousSerialized = existing ? JSON.stringify(existing) : "";
+  const nextSerialized = JSON.stringify(normalized);
+  if (existing && previousSerialized === nextSerialized) {
+    return false;
+  }
+
+  reviewApprovalsByScopeKey.set(normalized.scopeKey, normalized);
+  const existingScopeKeys = reviewApprovalScopeKeysByCwd.get(normalized.cwd) || [];
+  if (!existingScopeKeys.includes(normalized.scopeKey)) {
+    reviewApprovalScopeKeysByCwd.set(normalized.cwd, [...existingScopeKeys, normalized.scopeKey]);
+  }
+  dispatchReviewRegistryUpdated(reason, normalized.scopeKey);
+  return true;
+}
+
+function removeReviewApprovalRecord(scopeKey, cwd, reason) {
+  const normalizedScopeKey = typeof scopeKey === "string" ? scopeKey.trim() : "";
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  if (!normalizedScopeKey) {
+    return false;
+  }
+
+  let changed = false;
+  if (reviewApprovalsByScopeKey.delete(normalizedScopeKey)) {
+    changed = true;
+  }
+
+  if (normalizedCwd) {
+    const existingScopeKeys = reviewApprovalScopeKeysByCwd.get(normalizedCwd) || [];
+    const filtered = existingScopeKeys.filter((value) => value !== normalizedScopeKey);
+    if (filtered.length !== existingScopeKeys.length) {
+      reviewApprovalScopeKeysByCwd.set(normalizedCwd, filtered);
+      changed = true;
+    }
+  }
+
+  if (changed) {
+    dispatchReviewRegistryUpdated(reason, normalizedScopeKey);
+  }
+  return changed;
+}
+
+function replaceReviewApprovalsForCwd(cwd, approvals, reason) {
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  if (!normalizedCwd) {
+    return false;
+  }
+
+  const previousScopeKeys = reviewApprovalScopeKeysByCwd.get(normalizedCwd) || [];
+  const nextApprovals = Array.isArray(approvals)
+    ? approvals.map(normalizeStoredReviewApproval).filter((item) => !!item && item.cwd === normalizedCwd)
+    : [];
+  const nextScopeKeys = [];
+  let changed = previousScopeKeys.length !== nextApprovals.length;
+
+  for (const scopeKey of previousScopeKeys) {
+    if (!nextApprovals.some((approval) => approval.scopeKey === scopeKey)) {
+      reviewApprovalsByScopeKey.delete(scopeKey);
+      changed = true;
+    }
+  }
+
+  for (const approval of nextApprovals) {
+    nextScopeKeys.push(approval.scopeKey);
+    const existing = reviewApprovalsByScopeKey.get(approval.scopeKey) || null;
+    const previousSerialized = existing ? JSON.stringify(existing) : "";
+    const nextSerialized = JSON.stringify(approval);
+    if (!existing || previousSerialized !== nextSerialized) {
+      reviewApprovalsByScopeKey.set(approval.scopeKey, approval);
+      changed = true;
+    }
+  }
+
+  reviewApprovalScopeKeysByCwd.set(normalizedCwd, nextScopeKeys);
+  if (changed) {
+    dispatchReviewRegistryUpdated(reason, "");
+  }
+  return changed;
+}
+
 async function postReviewJson(urlPath, payload) {
   const response = await fetch(new URL(urlPath, document.baseURI), {
     method: "POST",
@@ -5379,7 +5499,9 @@ async function refreshReviewCatalogForCwd(cwd, options = {}) {
 
     const payload = await response.json();
     const reviews = Array.isArray(payload?.reviews) ? payload.reviews : [];
+    const approvals = Array.isArray(payload?.approvals) ? payload.approvals : [];
     replaceReviewCatalogForCwd(normalizedCwd, reviews, force ? "review_catalog_refresh_forced" : "review_catalog_refresh");
+    replaceReviewApprovalsForCwd(normalizedCwd, approvals, force ? "review_approvals_refresh_forced" : "review_approvals_refresh");
     return reviews;
   })();
 
@@ -5498,6 +5620,42 @@ async function clearReviewFindingDone(reviewId) {
   return Number.isFinite(payload?.cleared) ? payload.cleared : 0;
 }
 
+async function setReviewScopeApproval(options = {}) {
+  const cwd = normalizeProjectCwd(options.cwd || "");
+  const targetType = normalizeReviewTargetType(options.targetType);
+  const commitSha = normalizeReviewCommitSha(options.commitSha);
+  if (!cwd) {
+    return { updated: false, approval: null };
+  }
+  if (targetType === "commit" && !commitSha) {
+    return { updated: false, approval: null };
+  }
+
+  const approved = options.approved === true;
+  const scopeKey = buildReviewScopeKey(cwd, targetType, commitSha);
+  const payload = await postReviewJson("api/reviews/approval", {
+    cwd,
+    targetType,
+    commitSha,
+    approved
+  });
+
+  const normalizedApproval = normalizeStoredReviewApproval(payload?.approval || null);
+  let changed = false;
+  if (approved) {
+    if (normalizedApproval) {
+      changed = upsertReviewApprovalRecord(normalizedApproval, "review_scope_approval_updated");
+    }
+  } else {
+    changed = removeReviewApprovalRecord(scopeKey, cwd, "review_scope_approval_removed");
+  }
+
+  return {
+    updated: payload?.updated === true || changed,
+    approval: normalizedApproval
+  };
+}
+
 function getReviewRecordsForScope(scopeKey) {
   const records = [];
   if (!scopeKey) {
@@ -5518,6 +5676,7 @@ function getReviewRecordsForScope(scopeKey) {
 
 function buildReviewScopeSummary(scopeKey) {
   const records = getReviewRecordsForScope(scopeKey);
+  const approval = scopeKey ? (reviewApprovalsByScopeKey.get(scopeKey) || null) : null;
   let queuedCount = 0;
   let runningCount = 0;
   let completedCount = 0;
@@ -5555,6 +5714,9 @@ function buildReviewScopeSummary(scopeKey) {
   return {
     scopeKey,
     status,
+    isApproved: !!approval,
+    approval: approval ? { ...approval } : null,
+    approvedAtUtc: approval && typeof approval.approvedAtUtc === "string" ? approval.approvedAtUtc : "",
     reviewCount: records.length,
     queuedCount,
     runningCount,
@@ -5632,6 +5794,10 @@ window.codexDiffClearReviewFindingDone = async function codexDiffClearReviewFind
 
 window.codexDiffMarkReviewScopeDone = async function codexDiffMarkReviewScopeDone(scopeKey) {
   return await markReviewScopeDone(scopeKey);
+};
+
+window.codexDiffSetReviewScopeApproval = async function codexDiffSetReviewScopeApproval(options = {}) {
+  return await setReviewScopeApproval(options);
 };
 
 window.codexDiffCreateReviewRequest = async function codexDiffCreateReviewRequest(options = {}) {

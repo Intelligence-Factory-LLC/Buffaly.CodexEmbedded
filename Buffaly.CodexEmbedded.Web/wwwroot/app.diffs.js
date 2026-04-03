@@ -12,6 +12,7 @@
   const contextSelect = document.getElementById("worktreeDiffContextSelect");
   const sendNotesBtn = document.getElementById("worktreeDiffSendNotesBtn");
   const queueReviewBtn = document.getElementById("worktreeDiffQueueReviewBtn");
+  const approveBtn = document.getElementById("worktreeDiffApproveBtn");
   const runReviewBtn = document.getElementById("worktreeDiffRunReviewBtn");
   const commitReviewSummaryNode = document.getElementById("worktreeDiffCommitReviewSummary");
   const reviewFindingsNode = document.getElementById("diffReviewFindings");
@@ -21,6 +22,7 @@
   const fullFileClassSelect = document.getElementById("diffFullFileClassSelect");
   const fullFileMethodSelect = document.getElementById("diffFullFileMethodSelect");
   const fullFileStartReviewBtn = document.getElementById("diffFullFileStartReviewBtn");
+  const fullFileApproveBtn = document.getElementById("diffFullFileApproveBtn");
   const fullFileRefreshBtn = document.getElementById("diffFullFileRefreshBtn");
   const fullFileBackBtn = document.getElementById("diffFullFileBackBtn");
   const fullFileCloseBtn = document.getElementById("diffFullFileCloseBtn");
@@ -51,7 +53,7 @@
   const chatMessagesNode = document.getElementById("chatMessages");
   const bodyNode = document.body;
 
-  if (!panel || !summaryNode || !listNode || !refreshBtn || !toggleBtn || !indicatorBtn || !indicatorCountNode || !modeWorktreeBtn || !modeCommitBtn || !commitSelect || !contextSelect || !sendNotesBtn || !queueReviewBtn || !runReviewBtn || !commitReviewSummaryNode || !reviewFindingsNode || !composerNotesNode) {
+  if (!panel || !summaryNode || !listNode || !refreshBtn || !toggleBtn || !indicatorBtn || !indicatorCountNode || !modeWorktreeBtn || !modeCommitBtn || !commitSelect || !contextSelect || !sendNotesBtn || !queueReviewBtn || !approveBtn || !runReviewBtn || !commitReviewSummaryNode || !reviewFindingsNode || !composerNotesNode) {
     return;
   }
 
@@ -63,6 +65,7 @@
     && fullFileClassSelect
     && fullFileMethodSelect
     && fullFileStartReviewBtn
+    && fullFileApproveBtn
     && fullFileRefreshBtn
     && fullFileBackBtn
     && fullFileCloseBtn
@@ -626,6 +629,32 @@
     };
   }
 
+  function getApprovalDisplayState(scopeKey) {
+    const summary = getScopeReviewSummary(scopeKey);
+    if (summary && summary.isApproved === true) {
+      return {
+        key: "approved",
+        label: "Approved",
+        statusClass: "approved"
+      };
+    }
+
+    const status = typeof summary?.status === "string" ? summary.status : "not_started";
+    if (status === "completed" || status === "dismissed") {
+      return {
+        key: "pending",
+        label: "Pending Approval",
+        statusClass: "pending"
+      };
+    }
+
+    return {
+      key: "not-approved",
+      label: "Not Approved",
+      statusClass: "not-approved"
+    };
+  }
+
   function getCurrentReviewFindingsIndex() {
     const key = currentFileViewScopeKey || currentNotesScopeKey;
     if (!key) {
@@ -842,13 +871,16 @@
         reviewCount: 0,
         queuedCount: 0,
         runningCount: 0,
-      requestedCount: 0,
-      completedCount: 0,
-      openFindingCount: 0,
-      records: [],
-      primaryRecord: null
-    };
-  }
+        requestedCount: 0,
+        completedCount: 0,
+        isApproved: false,
+        approval: null,
+        approvedAtUtc: "",
+        openFindingCount: 0,
+        records: [],
+        primaryRecord: null
+      };
+    }
 
     try {
       const result = provider(scopeKey);
@@ -861,6 +893,9 @@
           runningCount: Number.isFinite(result.runningCount) ? result.runningCount : 0,
           requestedCount: Number.isFinite(result.requestedCount) ? result.requestedCount : 0,
           completedCount: Number.isFinite(result.completedCount) ? result.completedCount : 0,
+          isApproved: result.isApproved === true,
+          approval: result.approval && typeof result.approval === "object" ? result.approval : null,
+          approvedAtUtc: typeof result.approvedAtUtc === "string" ? result.approvedAtUtc : "",
           openFindingCount: Number.isFinite(result.openFindingCount) ? result.openFindingCount : 0,
           records: Array.isArray(result.records) ? result.records : [],
           primaryRecord: result.primaryRecord && typeof result.primaryRecord === "object" ? result.primaryRecord : null
@@ -877,6 +912,9 @@
       runningCount: 0,
       requestedCount: 0,
       completedCount: 0,
+      isApproved: false,
+      approval: null,
+      approvedAtUtc: "",
       openFindingCount: 0,
       records: [],
       primaryRecord: null
@@ -1084,7 +1122,8 @@
       modeCommitBtn.textContent = `Recent Commit (${commitWithOpen}/${totalOpen} open)`;
     } else {
       let started = 0;
-      let completed = 0;
+      let reviewed = 0;
+      let approved = 0;
       for (const commit of availableCommits) {
         const normalized = normalizeCommitInfo(commit);
         if (!normalized) {
@@ -1096,15 +1135,19 @@
         }
         const openCount = getOpenReviewCountForScope(scopeKey);
         const display = getReviewDisplayState(scopeKey, openCount);
+        const approvalDisplay = getApprovalDisplayState(scopeKey);
         if (display.key === "started") {
           started += 1;
-        } else if (display.key === "completed" || display.key === "dismissed") {
-          completed += 1;
+        } else if (display.key === "completed" || display.key === "dismissed" || display.key === "stale") {
+          reviewed += 1;
+        }
+        if (approvalDisplay.key === "approved") {
+          approved += 1;
         }
       }
 
-      if (started > 0 || completed > 0) {
-        modeCommitBtn.textContent = `Recent Commit (${started} started, ${completed} completed)`;
+      if (started > 0 || reviewed > 0 || approved > 0) {
+        modeCommitBtn.textContent = `Recent Commit (${started} started, ${reviewed} reviewed, ${approved} approved)`;
       } else {
         modeCommitBtn.textContent = "Recent Commit";
       }
@@ -1154,7 +1197,9 @@
 
     const rows = [];
     let startedCount = 0;
-    let completedCount = 0;
+    let reviewedCount = 0;
+    let approvedCount = 0;
+    let pendingApprovalCount = 0;
     let openCountTotal = 0;
     for (const commit of availableCommits) {
       const normalized = normalizeCommitInfo(commit);
@@ -1170,10 +1215,17 @@
       const openCount = getOpenReviewCountForScope(scopeKey);
       openCountTotal += openCount;
       const display = getReviewDisplayState(scopeKey, openCount);
+      const approvalDisplay = getApprovalDisplayState(scopeKey);
       if (display.key === "started") {
         startedCount += 1;
-      } else if (display.key === "completed" || display.key === "dismissed") {
-        completedCount += 1;
+      } else if (display.key === "completed" || display.key === "dismissed" || display.key === "stale") {
+        reviewedCount += 1;
+      }
+
+      if (approvalDisplay.key === "approved") {
+        approvedCount += 1;
+      } else if (approvalDisplay.key === "pending") {
+        pendingApprovalCount += 1;
       }
 
       const shortSha = normalized.shortSha || normalized.sha.slice(0, 7);
@@ -1196,6 +1248,7 @@
           <button type="button" class="diff-commit-review-open-btn" data-commit-review-open="${escapeAttribute(normalized.sha)}">Open</button>
           <button type="button" class="diff-commit-review-action-btn" data-commit-review-request="${escapeAttribute(normalized.sha)}"${reviewActionDisabled}>${escapeHtml(display.reviewActionLabel)}</button>
           <span class="diff-commit-review-status ${display.statusClass}"${runningBadgeAttr}>${escapeHtml(display.label)}</span>
+          <span class="diff-commit-review-approval ${approvalDisplay.statusClass}">${escapeHtml(approvalDisplay.label)}</span>
           <span class="diff-commit-review-open-count${display.showSpinner ? " heal" : ""}"${runningBadgeAttr}>${runningIcon}${escapeHtml(display.outcomeLabel)}</span>
         </div>`
       );
@@ -1204,7 +1257,7 @@
     const prefix = isCodeReviewsWorkspace()
       ? "Code Reviews"
       : (currentMode === "commit" ? "Pending Reviews" : "Pending Commit Reviews");
-    const headerMeta = `${startedCount} started | ${completedCount} completed | ${openCountTotal} open findings`;
+    const headerMeta = `${startedCount} started | ${reviewedCount} reviewed | ${approvedCount} approved | ${pendingApprovalCount} pending approval | ${openCountTotal} open findings`;
     commitReviewSummaryNode.innerHTML = `<div class="diff-commit-review-header">
       <span class="label">${escapeHtml(prefix)}</span>
       <span class="diff-commit-review-meta">${escapeHtml(headerMeta)}</span>
@@ -2349,8 +2402,53 @@
     return true;
   }
 
+  function canApproveCurrentCommit() {
+    const context = getActiveContext();
+    if (!context || !context.cwd) {
+      return false;
+    }
+    if (currentMode !== "commit") {
+      return false;
+    }
+    return typeof selectedCommitSha === "string" && selectedCommitSha.trim().length > 0;
+  }
+
+  async function approveCurrentCommit() {
+    if (!canApproveCurrentCommit()) {
+      return;
+    }
+
+    const context = getActiveContext();
+    const setApproval = window.codexDiffSetReviewScopeApproval;
+    const refreshCatalog = window.codexDiffRefreshReviewCatalog;
+    if (!context || typeof setApproval !== "function") {
+      return;
+    }
+
+    await setApproval({
+      cwd: context.cwd,
+      targetType: "commit",
+      commitSha: selectedCommitSha,
+      approved: true
+    }).catch(() => { });
+    if (typeof refreshCatalog === "function") {
+      await refreshCatalog(context.cwd, { force: true }).catch(() => { });
+    }
+    renderCommitReviewSummary();
+    renderCommitOptions();
+    renderReviewFindingsPanel();
+    rerenderFilesPreserveView();
+    rerenderFullFileWindowIfOpen();
+    updateSummary(currentTotalChangeCount);
+    updateReviewActionAvailability();
+  }
+
   function updateReviewActionAvailability() {
     const enabled = canSubmitReviewRequest();
+    const canApprove = canApproveCurrentCommit();
+    const approveScopeKey = canApprove ? getCommitScopeKey(selectedCommitSha) : "";
+    const approveSummary = approveScopeKey ? getScopeReviewSummary(approveScopeKey) : null;
+    const alreadyApproved = approveSummary?.isApproved === true;
     const hasPendingNotes = notesByKey.size > 0 || (fullFileWindowReady && fullFileViewerState.noteDraftDirty === true);
     sendNotesBtn.disabled = !hasPendingNotes;
     if (hasPendingNotes) {
@@ -2361,8 +2459,12 @@
     }
     queueReviewBtn.disabled = !enabled;
     runReviewBtn.disabled = !enabled;
+    approveBtn.disabled = !canApprove || alreadyApproved;
+    approveBtn.textContent = alreadyApproved ? "Approved" : "Approve";
     if (fullFileWindowReady) {
       fullFileStartReviewBtn.disabled = !enabled;
+      fullFileApproveBtn.disabled = !canApprove || alreadyApproved;
+      fullFileApproveBtn.textContent = alreadyApproved ? "Approved" : "Approve";
     }
     if (!enabled) {
       setReviewQueuedBadgeActive(false);
@@ -2880,7 +2982,10 @@
         return;
       }
       const commitLabel = getActiveCommitLabel();
-      summaryNode.textContent = `${changeCount} file change(s) in ${commitLabel} | context ${contextLabel}${hiddenBinaryText}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}${pendingReviewText}`;
+      const scopeKey = selectedCommitSha ? getCommitScopeKey(selectedCommitSha) : "";
+      const approvalDisplay = scopeKey ? getApprovalDisplayState(scopeKey) : null;
+      const approvalText = approvalDisplay ? ` | ${approvalDisplay.label.toLowerCase()}` : "";
+      summaryNode.textContent = `${changeCount} file change(s) in ${commitLabel} | context ${contextLabel}${hiddenBinaryText}${approvalText}${notesCount > 0 ? ` | ${notesCount} note(s) queued` : ""}${pendingReviewText}`;
       return;
     }
 
@@ -3338,6 +3443,7 @@
     fullFileCloseBtn.classList.toggle("hidden", inReviewDetail);
     fullFileRefreshBtn.disabled = pollInFlight === true;
     fullFileStartReviewBtn.disabled = !canSubmitReviewRequest();
+    fullFileApproveBtn.disabled = !canApproveCurrentCommit();
   }
 
   function ensureDetailModeFullScreen(options = {}) {
@@ -4852,6 +4958,10 @@
     openReviewModal();
   });
 
+  approveBtn.addEventListener("click", () => {
+    approveCurrentCommit().catch(() => { });
+  });
+
   runReviewBtn.addEventListener("click", () => {
     openReviewModal();
   });
@@ -4925,6 +5035,10 @@
 
     fullFileStartReviewBtn.addEventListener("click", () => {
       openReviewModal();
+    });
+
+    fullFileApproveBtn.addEventListener("click", () => {
+      approveCurrentCommit().catch(() => { });
     });
 
     fullFileRefreshBtn.addEventListener("click", () => {

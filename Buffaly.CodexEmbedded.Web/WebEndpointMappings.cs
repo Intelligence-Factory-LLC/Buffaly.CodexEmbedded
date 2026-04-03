@@ -851,7 +851,8 @@ internal static class WebEndpointMappings
 				return Results.Ok(new
 				{
 					cwd = snapshot.Cwd,
-					reviews = snapshot.Reviews
+					reviews = snapshot.Reviews,
+					approvals = snapshot.Approvals
 				});
 			}
 			catch (InvalidOperationException ex)
@@ -1000,6 +1001,57 @@ internal static class WebEndpointMappings
 			var cleared = reviewStore.ClearDismissedFindings(clearRequest.ReviewId);
 			return Results.Ok(new { cleared });
 		});
+
+		app.MapPost("/api/reviews/approval", async (HttpRequest request, WebRuntimeDefaults defaults, ReviewStore reviewStore, CancellationToken cancellationToken) =>
+		{
+			if (!IsAuthorizedHttpRequest(request, defaults))
+			{
+				return Results.Unauthorized();
+			}
+
+			ReviewScopeApprovalRequest? approvalRequest;
+			try
+			{
+				approvalRequest = await JsonSerializer.DeserializeAsync<ReviewScopeApprovalRequest>(
+					request.Body,
+					RecapJsonOptions,
+					cancellationToken);
+			}
+			catch (Exception ex)
+			{
+				return Results.BadRequest(new { message = $"Invalid request JSON: {ex.Message}" });
+			}
+
+			if (approvalRequest is null || string.IsNullOrWhiteSpace(approvalRequest.Cwd))
+			{
+				return Results.BadRequest(new { message = "cwd is required." });
+			}
+
+			try
+			{
+				var updated = reviewStore.SetScopeApproval(
+					approvalRequest.Cwd,
+					approvalRequest.TargetType,
+					approvalRequest.CommitSha,
+					approvalRequest.Approved);
+				return Results.Ok(new
+				{
+					updated = updated.Updated,
+					approval = updated.Approval
+				});
+			}
+			catch (InvalidOperationException ex)
+			{
+				return Results.BadRequest(new { message = ex.Message });
+			}
+			catch (Exception ex)
+			{
+				return Results.Problem(
+					statusCode: StatusCodes.Status500InternalServerError,
+					title: "Failed to update review approval.",
+					detail: ex.Message);
+			}
+		});
 	}
 
 	private static readonly JsonSerializerOptions RecapJsonOptions = new()
@@ -1022,6 +1074,8 @@ internal static class WebEndpointMappings
 	private sealed record ReviewFindingStateRequest(string ReviewId, string FindingKey, bool Done);
 
 	private sealed record ReviewFindingClearRequest(string ReviewId);
+
+	private sealed record ReviewScopeApprovalRequest(string Cwd, string TargetType, string CommitSha, bool Approved);
 
 	private static long? ParseNonNegativeLongQuery(HttpRequest request, string key)
 	{

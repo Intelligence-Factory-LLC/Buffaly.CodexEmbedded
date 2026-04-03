@@ -14,6 +14,7 @@ internal sealed class ReviewStore
 		WriteIndented = true
 	};
 	private List<ReviewRecord> _records = new();
+	private Dictionary<string, ReviewScopeApprovalRecord> _scopeApprovals = new(StringComparer.Ordinal);
 
 	public ReviewStore(WebRuntimeDefaults defaults)
 	{
@@ -22,7 +23,9 @@ internal sealed class ReviewStore
 			"reviews");
 		Directory.CreateDirectory(root);
 		_storagePath = Path.Combine(root, "registry.json");
-		_records = Load();
+		var state = LoadState();
+		_records = state.Records;
+		_scopeApprovals = state.Approvals;
 	}
 
 	public ReviewCreateResult CreateReview(ReviewCreateRequest request)
@@ -316,6 +319,59 @@ internal sealed class ReviewStore
 		}
 	}
 
+	public ReviewScopeApprovalUpdateResult SetScopeApproval(
+		string cwd,
+		string targetType,
+		string? commitSha,
+		bool approved)
+	{
+		var normalizedCwd = NormalizeCwd(cwd);
+		if (string.IsNullOrWhiteSpace(normalizedCwd))
+		{
+			throw new InvalidOperationException("cwd is required.");
+		}
+
+		var normalizedTargetType = NormalizeTargetType(targetType);
+		var normalizedCommitSha = NormalizeCommitSha(commitSha);
+		if (string.Equals(normalizedTargetType, "commit", StringComparison.Ordinal) &&
+			string.IsNullOrWhiteSpace(normalizedCommitSha))
+		{
+			throw new InvalidOperationException("commitSha is required for commit approvals.");
+		}
+
+		var scopeKey = BuildScopeKey(normalizedCwd, normalizedTargetType, normalizedCommitSha);
+		lock (_sync)
+		{
+			if (approved)
+			{
+				if (_scopeApprovals.TryGetValue(scopeKey, out var existing))
+				{
+					return new ReviewScopeApprovalUpdateResult(false, ToApprovalSnapshot(existing));
+				}
+
+				var created = new ReviewScopeApprovalRecord
+				{
+					ScopeKey = scopeKey,
+					Cwd = normalizedCwd,
+					TargetType = normalizedTargetType,
+					CommitSha = normalizedCommitSha,
+					ApprovedAtUtc = DateTimeOffset.UtcNow
+				};
+				_scopeApprovals[scopeKey] = created;
+				SaveNoLock();
+				return new ReviewScopeApprovalUpdateResult(true, ToApprovalSnapshot(created));
+			}
+
+			if (_scopeApprovals.Remove(scopeKey))
+			{
+				SaveNoLock();
+				return new ReviewScopeApprovalUpdateResult(true, null);
+			}
+
+			return new ReviewScopeApprovalUpdateResult(false, null);
+		}
+	}
+
 	public ReviewCatalogSnapshot GetCatalog(string cwd, SessionOrchestrator orchestrator)
 	{
 		var normalizedCwd = NormalizeCwd(cwd);
@@ -325,9 +381,14 @@ internal sealed class ReviewStore
 		}
 
 		List<ReviewRecord> scoped;
+		List<ReviewScopeApprovalRecord> scopedApprovals;
 		lock (_sync)
 		{
 			scoped = _records
+				.Where(x => string.Equals(x.Cwd, normalizedCwd, StringComparison.OrdinalIgnoreCase))
+				.Select(x => x.Clone())
+				.ToList();
+			scopedApprovals = _scopeApprovals.Values
 				.Where(x => string.Equals(x.Cwd, normalizedCwd, StringComparison.OrdinalIgnoreCase))
 				.Select(x => x.Clone())
 				.ToList();
@@ -385,7 +446,12 @@ internal sealed class ReviewStore
 			.ThenByDescending(x => x.ReviewId, StringComparer.Ordinal)
 			.Select(ToSnapshot)
 			.ToArray();
-		return new ReviewCatalogSnapshot(normalizedCwd, snapshots);
+		var approvalSnapshots = scopedApprovals
+			.OrderByDescending(x => x.ApprovedAtUtc)
+			.ThenBy(x => x.ScopeKey, StringComparer.Ordinal)
+			.Select(ToApprovalSnapshot)
+			.ToArray();
+		return new ReviewCatalogSnapshot(normalizedCwd, snapshots, approvalSnapshots);
 	}
 
 	private bool ReconcileRecordFromTurns(ReviewRecord record, IReadOnlyList<SessionOrchestrator.ConsolidatedTurnSnapshot> turns)
@@ -766,6 +832,16 @@ internal sealed class ReviewStore
 			record.Findings.Select(x => x with { }).ToArray());
 	}
 
+	private static ReviewScopeApprovalSnapshot ToApprovalSnapshot(ReviewScopeApprovalRecord record)
+	{
+		return new ReviewScopeApprovalSnapshot(
+			record.ScopeKey,
+			record.Cwd,
+			record.TargetType,
+			record.CommitSha,
+			record.ApprovedAtUtc);
+	}
+
 	private static DateTimeOffset? ParseUtc(string? value)
 	{
 		if (string.IsNullOrWhiteSpace(value))
@@ -873,6 +949,16 @@ internal sealed class ReviewStore
 	private static string NormalizeCommitSha(string? value)
 	{
 		return string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().ToLowerInvariant();
+	}
+
+	private static string BuildScopeKey(string cwd, string targetType, string commitSha)
+	{
+		if (string.Equals(targetType, "commit", StringComparison.Ordinal))
+		{
+			return $"{cwd}::commit::{commitSha}";
+		}
+
+		return $"{cwd}::worktree";
 	}
 
 	private static ReviewCreateRequest NormalizeCreateRequest(ReviewCreateRequest request)
@@ -1383,27 +1469,94 @@ internal sealed class ReviewStore
 		return "info";
 	}
 
-	private List<ReviewRecord> Load()
+	private (List<ReviewRecord> Records, Dictionary<string, ReviewScopeApprovalRecord> Approvals) LoadState()
 	{
 		try
 		{
 			if (!File.Exists(_storagePath))
 			{
-				return new List<ReviewRecord>();
+				return (new List<ReviewRecord>(), new Dictionary<string, ReviewScopeApprovalRecord>(StringComparer.Ordinal));
 			}
 
 			var json = File.ReadAllText(_storagePath);
-			return JsonSerializer.Deserialize<List<ReviewRecord>>(json, _jsonOptions) ?? new List<ReviewRecord>();
+			if (string.IsNullOrWhiteSpace(json))
+			{
+				return (new List<ReviewRecord>(), new Dictionary<string, ReviewScopeApprovalRecord>(StringComparer.Ordinal));
+			}
+
+			using var document = JsonDocument.Parse(json);
+			if (document.RootElement.ValueKind == JsonValueKind.Array)
+			{
+				var records = JsonSerializer.Deserialize<List<ReviewRecord>>(json, _jsonOptions) ?? new List<ReviewRecord>();
+				return (records, new Dictionary<string, ReviewScopeApprovalRecord>(StringComparer.Ordinal));
+			}
+
+			var state = JsonSerializer.Deserialize<ReviewRegistryState>(json, _jsonOptions) ?? new ReviewRegistryState();
+			var recordsFromState = state.Reviews ?? state.Records ?? new List<ReviewRecord>();
+			var approvals = new Dictionary<string, ReviewScopeApprovalRecord>(StringComparer.Ordinal);
+			if (state.Approvals is not null)
+			{
+				foreach (var approval in state.Approvals)
+				{
+					var normalized = NormalizeApprovalRecord(approval);
+					if (normalized is null)
+					{
+						continue;
+					}
+					approvals[normalized.ScopeKey] = normalized;
+				}
+			}
+
+			return (recordsFromState, approvals);
 		}
 		catch
 		{
-			return new List<ReviewRecord>();
+			return (new List<ReviewRecord>(), new Dictionary<string, ReviewScopeApprovalRecord>(StringComparer.Ordinal));
 		}
+	}
+
+	private static ReviewScopeApprovalRecord? NormalizeApprovalRecord(ReviewScopeApprovalRecord? approval)
+	{
+		if (approval is null)
+		{
+			return null;
+		}
+
+		var normalizedCwd = NormalizeCwd(approval.Cwd);
+		if (string.IsNullOrWhiteSpace(normalizedCwd))
+		{
+			return null;
+		}
+
+		var normalizedTargetType = NormalizeTargetType(approval.TargetType);
+		var normalizedCommitSha = NormalizeCommitSha(approval.CommitSha);
+		if (string.Equals(normalizedTargetType, "commit", StringComparison.Ordinal) && string.IsNullOrWhiteSpace(normalizedCommitSha))
+		{
+			return null;
+		}
+
+		return new ReviewScopeApprovalRecord
+		{
+			ScopeKey = BuildScopeKey(normalizedCwd, normalizedTargetType, normalizedCommitSha),
+			Cwd = normalizedCwd,
+			TargetType = normalizedTargetType,
+			CommitSha = normalizedCommitSha,
+			ApprovedAtUtc = approval.ApprovedAtUtc == default ? DateTimeOffset.UtcNow : approval.ApprovedAtUtc
+		};
 	}
 
 	private void SaveNoLock()
 	{
-		var json = JsonSerializer.Serialize(_records, _jsonOptions);
+		var state = new ReviewRegistryState
+		{
+			Reviews = _records.Select(x => x.Clone()).ToList(),
+			Approvals = _scopeApprovals.Values
+				.OrderByDescending(x => x.ApprovedAtUtc)
+				.ThenBy(x => x.ScopeKey, StringComparer.Ordinal)
+				.Select(x => x.Clone())
+				.ToList()
+		};
+		var json = JsonSerializer.Serialize(state, _jsonOptions);
 		var tempPath = _storagePath + ".tmp";
 		File.WriteAllText(tempPath, json);
 		File.Move(tempPath, _storagePath, overwrite: true);
@@ -1425,7 +1578,10 @@ internal sealed class ReviewStore
 
 	internal sealed record ReviewCreateResult(ReviewRecord Record, string PromptText);
 
-	internal sealed record ReviewCatalogSnapshot(string Cwd, IReadOnlyList<ReviewCatalogItemSnapshot> Reviews);
+	internal sealed record ReviewCatalogSnapshot(
+		string Cwd,
+		IReadOnlyList<ReviewCatalogItemSnapshot> Reviews,
+		IReadOnlyList<ReviewScopeApprovalSnapshot> Approvals);
 
 	internal sealed record ReviewCatalogItemSnapshot(
 		string ReviewId,
@@ -1463,6 +1619,17 @@ internal sealed class ReviewStore
 		int LineStart,
 		int LineEnd,
 		string Label);
+
+	internal sealed record ReviewScopeApprovalSnapshot(
+		string ScopeKey,
+		string Cwd,
+		string TargetType,
+		string CommitSha,
+		DateTimeOffset ApprovedAtUtc);
+
+	internal sealed record ReviewScopeApprovalUpdateResult(
+		bool Updated,
+		ReviewScopeApprovalSnapshot? Approval);
 
 	private sealed record ReviewMetadata(
 		string ReviewId,
@@ -1521,6 +1688,34 @@ internal sealed class ReviewStore
 				AssistantText = AssistantText,
 				Findings = Findings.Select(x => x with { }).ToList(),
 				DismissedFindingKeys = DismissedFindingKeys.ToList()
+			};
+		}
+	}
+
+	private sealed class ReviewRegistryState
+	{
+		public List<ReviewRecord>? Reviews { get; set; }
+		public List<ReviewRecord>? Records { get; set; }
+		public List<ReviewScopeApprovalRecord>? Approvals { get; set; }
+	}
+
+	private sealed class ReviewScopeApprovalRecord
+	{
+		public string ScopeKey { get; set; } = string.Empty;
+		public string Cwd { get; set; } = string.Empty;
+		public string TargetType { get; set; } = "worktree";
+		public string CommitSha { get; set; } = string.Empty;
+		public DateTimeOffset ApprovedAtUtc { get; set; }
+
+		public ReviewScopeApprovalRecord Clone()
+		{
+			return new ReviewScopeApprovalRecord
+			{
+				ScopeKey = ScopeKey,
+				Cwd = Cwd,
+				TargetType = TargetType,
+				CommitSha = CommitSha,
+				ApprovedAtUtc = ApprovedAtUtc
 			};
 		}
 	}

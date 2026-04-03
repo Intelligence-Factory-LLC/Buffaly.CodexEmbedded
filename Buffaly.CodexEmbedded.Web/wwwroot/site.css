@@ -4456,7 +4456,7 @@ body {
 
 .diff-commit-review-row {
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+	grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
 	align-items: center;
 	gap: 0.5rem;
 	border: 1px solid #fdba74;
@@ -4467,7 +4467,7 @@ body {
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-row {
-	grid-template-columns: minmax(0, 1fr) auto auto auto auto;
+	grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
 	gap: 0.9rem;
 	padding: 1rem 1.1rem;
 	border: 1px solid #e5e7eb;
@@ -4611,6 +4611,28 @@ body {
 	color: #0c4a6e;
 }
 
+.diff-commit-review-approval {
+	font-size: 0.62rem;
+	font-weight: 700;
+	border-radius: 999px;
+	padding: 0.04rem 0.34rem;
+}
+
+.diff-commit-review-approval.not-approved {
+	background: #e5e7eb;
+	color: #4b5563;
+}
+
+.diff-commit-review-approval.pending {
+	background: #ffedd5;
+	color: #9a3412;
+}
+
+.diff-commit-review-approval.approved {
+	background: #dcfce7;
+	color: #166534;
+}
+
 .diff-commit-review-open-count {
 	display: inline-flex;
 	align-items: center;
@@ -4663,6 +4685,7 @@ body {
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-status,
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-approval,
 .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-open-count {
 	font-size: 0.8rem;
 	padding: 0.34rem 0.72rem;
@@ -6296,6 +6319,21 @@ html[data-theme="dark"] .diff-commit-review-status.completed {
 html[data-theme="dark"] .diff-commit-review-status.reviewed {
 	background: rgba(2, 132, 199, 0.32);
 	color: #bae6fd;
+}
+
+html[data-theme="dark"] .diff-commit-review-approval.not-approved {
+	background: #334155;
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .diff-commit-review-approval.pending {
+	background: rgba(154, 52, 18, 0.35);
+	color: #fdba74;
+}
+
+html[data-theme="dark"] .diff-commit-review-approval.approved {
+	background: rgba(22, 101, 52, 0.38);
+	color: #bbf7d0;
 }
 
 html[data-theme="dark"] .diff-commit-review-open-count {
