@@ -1094,6 +1094,7 @@
             <div class="diff-commit-review-sha">${escapeHtml(shortSha)}</div>
             <div class="diff-commit-review-subject">${escapeHtml(subject || "(no subject)")}</div>
           </div>
+          <button type="button" class="diff-commit-review-open-btn" data-commit-review-open="${escapeAttribute(normalized.sha)}">Open</button>
           <button type="button" class="diff-commit-review-action-btn" data-commit-review-request="${escapeAttribute(normalized.sha)}"${reviewActionDisabled}>${escapeHtml(reviewActionLabel)}</button>
           <span class="diff-commit-review-status ${statusClass}">${escapeHtml(statusLabel)}</span>
           <span class="diff-commit-review-open-count">${escapeHtml(outcomeLabel)}</span>
@@ -4028,6 +4029,18 @@
     const collapseBtn = event.target instanceof Element ? event.target.closest("[data-commit-review-collapse='1']") : null;
     if (collapseBtn) {
       setCommitReviewSummaryCollapsed(!commitReviewSummaryCollapsed);
+      return;
+    }
+
+    const openBtn = event.target instanceof Element ? event.target.closest("[data-commit-review-open]") : null;
+    if (openBtn) {
+      const sha = (openBtn.getAttribute("data-commit-review-open") || "").trim();
+      if (!sha) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      selectCommitForDetails(sha);
       return;
     }
 

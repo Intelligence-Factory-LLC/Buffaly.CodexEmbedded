@@ -901,6 +901,15 @@ body {
 	border-bottom-color: #2563eb;
 }
 
+.workspace-code-reviews #timelineTruncationNotice,
+.workspace-code-reviews #pendingPromptStrip,
+.workspace-code-reviews #chatMessages,
+.workspace-code-reviews #turnActivityStrip,
+.workspace-code-reviews #planPanel,
+.workspace-code-reviews #scrollToBottomBtn {
+	display: none !important;
+}
+
 .conversation-title-main {
 	display: inline-flex;
 	align-items: center;
@@ -4333,7 +4342,7 @@ body {
 
 .diff-commit-review-row {
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto auto auto;
+	grid-template-columns: minmax(0, 1fr) auto auto auto auto;
 	align-items: center;
 	gap: 0.5rem;
 	border: 1px solid #fdba74;
@@ -4344,7 +4353,7 @@ body {
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-row {
-	grid-template-columns: minmax(0, 1fr) auto auto auto;
+	grid-template-columns: minmax(0, 1fr) auto auto auto auto;
 	gap: 0.9rem;
 	padding: 1rem 1.1rem;
 	border: 1px solid #e5e7eb;
@@ -4385,6 +4394,17 @@ body {
 	cursor: default;
 }
 
+.diff-commit-review-open-btn {
+	border: 1px solid #cbd5e1;
+	border-radius: 6px;
+	background: #ffffff;
+	color: #334155;
+	font-size: 0.62rem;
+	font-weight: 700;
+	padding: 0.06rem 0.34rem;
+	cursor: pointer;
+}
+
 .diff-commit-review-main {
 	display: flex;
 	flex-direction: column;
@@ -4393,6 +4413,15 @@ body {
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-action-btn {
+	border-color: #d1d5db;
+	background: #ffffff;
+	color: #111827;
+	padding: 0.42rem 0.95rem;
+	font-size: 0.82rem;
+	align-self: center;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-open-btn {
 	border-color: #d1d5db;
 	background: #ffffff;
 	color: #111827;
@@ -5922,6 +5951,12 @@ html[data-theme="dark"] .diff-commit-review-action-btn {
 	color: #fed7aa;
 }
 
+html[data-theme="dark"] .diff-commit-review-open-btn {
+	background: #0f172a;
+	border-color: #334155;
+	color: #cbd5e1;
+}
+
 html[data-theme="dark"] .diff-commit-review-sha {
 	color: #fed7aa;
 }
@@ -5983,6 +6018,10 @@ html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .
 html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-summary .label,
 html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-subject,
 html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-action-btn {
+	color: #f8fafc;
+}
+
+html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-open-btn {
 	color: #f8fafc;
 }
 
