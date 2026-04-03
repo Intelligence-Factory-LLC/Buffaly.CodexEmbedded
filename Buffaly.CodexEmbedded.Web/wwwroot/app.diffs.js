@@ -129,7 +129,6 @@
   let reviewPanelTab = "rendered"; // rendered | raw
   let workspaceMode = "tasks";
   let reviewPageMode = "list"; // list | detail
-  let detailReviewAction = ""; // run | queue | ""
   try {
     currentContextMode = normalizeContextMode(window.localStorage.getItem(STORAGE_CONTEXT_MODE_KEY) || "3");
   } catch {
@@ -160,7 +159,6 @@
     workspaceMode = "tasks";
   }
   reviewPageMode = "list";
-  detailReviewAction = "";
 
   function createEmptyFullFileViewerState() {
     return {
@@ -195,22 +193,14 @@
     applyPanelState();
   }
 
-  function openCodeReviewCommitDetail(sha, action = "") {
+  function openCodeReviewCommitDetail(sha) {
     const normalizedSha = typeof sha === "string" ? sha.trim() : "";
     if (!normalizedSha) {
       return;
     }
 
-    detailReviewAction = action === "run" || action === "queue" ? action : "";
     setReviewPageMode("detail");
     selectCommitForDetails(normalizedSha);
-    if (selectedCommitSha === normalizedSha && currentFiles.length > 0 && detailReviewAction) {
-      const pendingAction = detailReviewAction;
-      detailReviewAction = "";
-      if (pendingAction === "run" || pendingAction === "queue") {
-        runReviewFromDiffPanel("").catch(() => { });
-      }
-    }
   }
 
   function getActiveContext() {
@@ -1325,19 +1315,31 @@
     return blocks.join("");
   }
 
-  function getPrimaryCompletedReviewRecord(summary) {
+  function getActiveDetailReviewRecord(summary) {
     const records = Array.isArray(summary?.records) ? summary.records : [];
-    const completed = records.filter((record) => record && (record.status === "completed" || record.status === "dismissed" || record.status === "reviewed"));
-    if (completed.length === 0) {
+    if (records.length === 0) {
       return null;
     }
 
-    completed.sort((a, b) => {
-      const aTime = typeof a.completedAtUtc === "string" ? a.completedAtUtc : "";
-      const bTime = typeof b.completedAtUtc === "string" ? b.completedAtUtc : "";
-      return bTime.localeCompare(aTime);
-    });
-    return completed[0] || null;
+    const completed = records.filter((record) =>
+      record
+      && typeof record.assistantText === "string"
+      && record.assistantText.trim()
+      && (record.status === "completed" || record.status === "dismissed" || record.status === "reviewed"));
+    if (completed.length > 0) {
+      completed.sort((a, b) => {
+        const aTime = typeof a.completedAtUtc === "string" ? a.completedAtUtc : "";
+        const bTime = typeof b.completedAtUtc === "string" ? b.completedAtUtc : "";
+        return bTime.localeCompare(aTime);
+      });
+      return completed[0] || null;
+    }
+
+    const latestRenderable = records.find((record) =>
+      record
+      && typeof record.assistantText === "string"
+      && record.assistantText.trim());
+    return latestRenderable || null;
   }
 
   function getFindingReferences(finding) {
@@ -1377,45 +1379,6 @@
     }
 
     return [];
-  }
-
-  function renderStructuredReviewFindings(record) {
-    if (!record || !Array.isArray(record.findings) || record.findings.length === 0) {
-      return "";
-    }
-
-    const rows = record.findings.map((finding) => {
-      if (!finding || typeof finding !== "object") {
-        return "";
-      }
-      const severity = normalizeReviewSeverity(finding.severity || "");
-      const severityLabel = severity ? severity.toUpperCase() : "INFO";
-      const detail = typeof finding.detail === "string" && finding.detail.trim()
-        ? finding.detail.trim()
-        : "Review finding";
-      const references = getFindingReferences(finding);
-      const referenceButtons = references.length > 0
-        ? `<div class="diff-review-refs">${references.map((reference) => {
-          const lineLabel = reference.lineStart > 0
-            ? (reference.lineEnd > reference.lineStart ? `${reference.lineStart}-${reference.lineEnd}` : `${reference.lineStart}`)
-            : "";
-          const label = reference.label && reference.label.trim()
-            ? reference.label.trim()
-            : `${reference.path}${lineLabel ? `:${lineLabel}` : ""}`;
-          return `<button type="button" class="diff-review-ref-link" data-review-jump-path="${escapeAttribute(reference.path)}"${reference.lineStart > 0 ? ` data-review-jump-line="${reference.lineStart}"` : ""}${reference.lineEnd > reference.lineStart ? ` data-review-jump-end="${reference.lineEnd}"` : ""} title="Open ${escapeAttribute(reference.path)}${lineLabel ? `:${lineLabel}` : ""}">${escapeHtml(label)}</button>`;
-        }).join("")}</div>`
-        : "<div class=\"diff-review-refs-empty\">No file reference extracted.</div>";
-
-      return `<div class="diff-review-finding-row">
-        <div class="diff-review-finding-header"><span class="diff-review-finding-severity">${escapeHtml(severityLabel)}</span><span class="diff-review-finding-detail">${escapeHtml(detail)}</span></div>
-        ${referenceButtons}
-      </div>`;
-    }).filter((row) => !!row);
-
-    if (rows.length === 0) {
-      return "";
-    }
-    return `<div class="diff-review-structured">${rows.join("")}</div>`;
   }
 
   function buildReviewRawJsonText(scopeKey, record, summary) {
@@ -1553,7 +1516,7 @@
 
     const scopeKey = getCurrentScopeKey();
     const summary = getScopeReviewSummary(scopeKey);
-    const record = getPrimaryCompletedReviewRecord(summary);
+    const record = getActiveDetailReviewRecord(summary);
     if (!record || !record.assistantText || !record.assistantText.trim()) {
       reviewFindingsNode.classList.add("hidden");
       reviewFindingsNode.innerHTML = "";
@@ -4420,13 +4383,6 @@
       updateSummary(currentTotalChangeCount);
       applyPanelState();
       renderComposerNotes();
-      if (isCodeReviewsWorkspace() && reviewPageMode === "detail" && detailReviewAction && selectedCommitSha) {
-        const action = detailReviewAction;
-        detailReviewAction = "";
-        if (action === "run" || action === "queue") {
-          runReviewFromDiffPanel("").catch(() => { });
-        }
-      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (typeof window.uiAuditLog === "function") {
@@ -4956,7 +4912,7 @@
     if (copyJsonBtn) {
       const scopeKey = getCurrentScopeKey();
       const summary = getScopeReviewSummary(scopeKey);
-      const record = getPrimaryCompletedReviewRecord(summary);
+      const record = getActiveDetailReviewRecord(summary);
       const rawText = buildReviewRawJsonText(scopeKey, record, summary);
       copyTextToClipboard(rawText).then((copied) => {
         if (!(copyJsonBtn instanceof HTMLElement)) {
@@ -5001,7 +4957,7 @@
       const findingIndex = Number.parseInt(findingFixBtn.getAttribute("data-review-fix-finding-index") || "", 10);
       const scopeKey = getCurrentScopeKey();
       const summary = getScopeReviewSummary(scopeKey);
-      const record = getPrimaryCompletedReviewRecord(summary);
+      const record = getActiveDetailReviewRecord(summary);
       const finding = Number.isFinite(findingIndex) && findingIndex >= 0
         ? renderedReviewMarkdownFindings.find((x) => x && x.index === findingIndex)
         : null;

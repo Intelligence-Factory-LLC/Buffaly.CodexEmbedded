@@ -1103,7 +1103,6 @@ function rememberTimelineCache(threadId, payload) {
     reasoningSummary: payload.reasoningSummary || existing?.reasoningSummary || "",
     maxEntries
   });
-  ingestReviewRecordsFromTurns(normalizedThreadId, turns);
 }
 
 function restoreTimelineFromCache(threadId) {
@@ -1117,9 +1116,6 @@ function restoreTimelineFromCache(threadId) {
   if (!cached || !Array.isArray(cached.turns) || cached.turns.length === 0) {
     return false;
   }
-
-  ingestReviewRecordsFromTurns(normalizedThreadId, cached.turns);
-
   if (typeof timeline.setServerTurns === "function") {
     timeline.setServerTurns(cached.turns);
   } else {
@@ -5491,12 +5487,6 @@ async function markReviewScopeDone(scopeKey) {
     await refreshReviewCatalogForCwd(cwd, { force: true });
   }
   return true;
-}
-
-function ingestReviewRecordsFromTurns(threadId, turns) {
-  void threadId;
-  void turns;
-  return false;
 }
 
 window.codexDiffRefreshReviewCatalog = async function codexDiffRefreshReviewCatalog(cwd, options = {}) {
