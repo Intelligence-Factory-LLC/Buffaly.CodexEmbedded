@@ -1176,6 +1176,12 @@
   }
 
   function renderCommitReviewSummary() {
+    if (!isCodeReviewsWorkspace()) {
+      commitReviewSummaryNode.innerHTML = "";
+      commitReviewSummaryNode.classList.add("hidden");
+      return;
+    }
+
     renderCommitModeBadge();
     if (!Array.isArray(availableCommits) || availableCommits.length === 0) {
       const prefix = isCodeReviewsWorkspace()
@@ -1223,6 +1229,7 @@
       }
 
       const shortSha = normalized.shortSha || normalized.sha.slice(0, 7);
+      const when = formatCommitTime(normalized.committedAtUtc);
       const subject = normalized.subject ? normalized.subject.trim() : "";
       const reviewActionDisabled = display.reviewActionDisabled ? " disabled" : "";
       const runningIcon = display.showSpinner
@@ -1237,6 +1244,7 @@
         `<div class="diff-commit-review-row${normalized.sha === selectedCommitSha ? " active" : ""}" data-commit-review-jump="${escapeAttribute(normalized.sha)}" tabindex="0" role="button" aria-label="Open review details for ${escapeAttribute(subject || normalized.sha)}">
           <div class="diff-commit-review-main">
             <div class="diff-commit-review-sha">${escapeHtml(shortSha)}</div>
+            ${when ? `<div class="diff-commit-review-when">${escapeHtml(when)}</div>` : ""}
             <div class="diff-commit-review-subject">${escapeHtml(subject || "(no subject)")}</div>
           </div>
           <button type="button" class="diff-commit-review-open-btn" data-commit-review-open="${escapeAttribute(normalized.sha)}">Open</button>
@@ -2325,7 +2333,8 @@
     modeCommitBtn.classList.toggle("active", isCommitMode);
     modeWorktreeBtn.setAttribute("aria-pressed", !isCommitMode ? "true" : "false");
     modeCommitBtn.setAttribute("aria-pressed", isCommitMode ? "true" : "false");
-    commitSelect.classList.add("hidden");
+    const showCommitSelect = !isCodeReviewsWorkspace() && isCommitMode;
+    commitSelect.classList.toggle("hidden", !showCommitSelect);
     modeWorktreeBtn.classList.toggle("hidden", isCodeReviewsWorkspace());
     contextSelect.value = normalizeContextMode(currentContextMode);
     renderCommitModeBadge();
@@ -2338,8 +2347,10 @@
     }
 
     const shortSha = selectedCommitInfo.shortSha || (selectedCommitInfo.sha || "").slice(0, 12);
+    const when = formatCommitTime(selectedCommitInfo.committedAtUtc);
     const subject = typeof selectedCommitInfo.subject === "string" ? selectedCommitInfo.subject.trim() : "";
-    return subject ? `${shortSha} ${subject}` : shortSha || "commit";
+    const base = when ? `${shortSha} ${when}` : shortSha;
+    return subject ? `${base} ${subject}` : (base || "commit");
   }
 
   function applyPanelState() {
@@ -2829,7 +2840,8 @@
       const scopeKey = getCommitScopeKey(normalized.sha);
       const openCount = scopeKey ? getOpenReviewCountForScope(scopeKey) : 0;
       const pendingSuffix = openCount > 0 ? ` [${openCount} open]` : "";
-      const label = `${normalized.shortSha} ${subject}${pendingSuffix}`;
+      const datePrefix = when ? `${when} ` : "";
+      const label = `${normalized.shortSha} ${datePrefix}${subject}${pendingSuffix}`;
       const title = when
         ? `${normalized.sha} | ${author} | ${when}`
         : `${normalized.sha} | ${author}`;

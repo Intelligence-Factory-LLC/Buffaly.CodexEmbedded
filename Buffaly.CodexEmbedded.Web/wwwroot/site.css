@@ -4563,6 +4563,18 @@ body {
 	color: #475569;
 }
 
+.diff-commit-review-when {
+	font-size: 0.66rem;
+	color: #9a3412;
+	line-height: 1.2;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-when {
+	font-size: 0.78rem;
+	font-weight: 600;
+	color: #64748b;
+}
+
 .diff-commit-review-subject {
 	font-size: 0.72rem;
 	color: #7c2d12;
@@ -6290,6 +6302,10 @@ html[data-theme="dark"] .diff-commit-review-open-btn {
 
 html[data-theme="dark"] .diff-commit-review-sha {
 	color: #fed7aa;
+}
+
+html[data-theme="dark"] .diff-commit-review-when {
+	color: #fdba74;
 }
 
 html[data-theme="dark"] .diff-commit-review-subject {
