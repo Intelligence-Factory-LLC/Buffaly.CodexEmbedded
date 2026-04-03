@@ -539,24 +539,15 @@
   function getReviewDisplayState(scopeKey, openCount) {
     const summary = getScopeReviewSummary(scopeKey);
     const records = Array.isArray(summary.records) ? summary.records : [];
-    const statusRaw = typeof summary.status === "string" ? summary.status : "not_started";
-    const activeRunning = Number.isFinite(summary.runningCount) ? summary.runningCount : 0;
-    const activeQueued = Number.isFinite(summary.queuedCount) ? summary.queuedCount : 0;
+    const primaryRecord = summary && typeof summary.primaryRecord === "object" ? summary.primaryRecord : (records[0] || null);
+    const statusRaw = primaryRecord && typeof primaryRecord.status === "string"
+      ? primaryRecord.status
+      : (typeof summary.status === "string" ? summary.status : "not_started");
+    const activeRunning = statusRaw === "running" ? 1 : 0;
+    const activeQueued = statusRaw === "queued" ? 1 : 0;
     const hasActive = activeRunning > 0 || activeQueued > 0;
     const hasCompleted = (Number.isFinite(summary.completedCount) && summary.completedCount > 0)
       || records.some((x) => x && (x.status === "completed" || x.status === "dismissed" || x.status === "reviewed"));
-    const nowMs = Date.now();
-    let latestStartedMs = parseUtcTimestamp(summary.lastRequestedUtc || "");
-    for (const item of records) {
-      if (!item || typeof item !== "object") {
-        continue;
-      }
-      latestStartedMs = Math.max(latestStartedMs, parseUtcTimestamp(item.startedAtUtc || ""));
-    }
-    const staleStarted = statusRaw === "started"
-      && !hasActive
-      && latestStartedMs > 0
-      && (nowMs - latestStartedMs) > (5 * 60 * 1000);
 
     if (statusRaw === "dismissed" || statusRaw === "reviewed") {
       return {
@@ -570,7 +561,7 @@
       };
     }
 
-    if (hasActive || (statusRaw === "started" && !staleStarted)) {
+    if (hasActive) {
       return {
         key: "started",
         label: activeRunning > 0 ? "Review Running" : "Review Queued",
@@ -582,7 +573,7 @@
       };
     }
 
-    if (staleStarted) {
+    if (statusRaw === "stale") {
       return {
         key: "stale",
         label: "Pending Sync",
@@ -833,12 +824,13 @@
         reviewCount: 0,
         queuedCount: 0,
         runningCount: 0,
-        requestedCount: 0,
-        completedCount: 0,
-        openFindingCount: 0,
-        records: []
-      };
-    }
+      requestedCount: 0,
+      completedCount: 0,
+      openFindingCount: 0,
+      records: [],
+      primaryRecord: null
+    };
+  }
 
     try {
       const result = provider(scopeKey);
@@ -852,7 +844,8 @@
           requestedCount: Number.isFinite(result.requestedCount) ? result.requestedCount : 0,
           completedCount: Number.isFinite(result.completedCount) ? result.completedCount : 0,
           openFindingCount: Number.isFinite(result.openFindingCount) ? result.openFindingCount : 0,
-          records: Array.isArray(result.records) ? result.records : []
+          records: Array.isArray(result.records) ? result.records : [],
+          primaryRecord: result.primaryRecord && typeof result.primaryRecord === "object" ? result.primaryRecord : null
         };
       }
     } catch {
@@ -867,7 +860,8 @@
       requestedCount: 0,
       completedCount: 0,
       openFindingCount: 0,
-      records: []
+      records: [],
+      primaryRecord: null
     };
   }
 

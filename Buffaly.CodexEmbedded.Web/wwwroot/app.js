@@ -5399,7 +5399,7 @@ function buildReviewScopeSummary(scopeKey) {
   let dismissedCount = 0;
   let failedCount = 0;
   let staleCount = 0;
-  let openFindingCount = 0;
+  const primaryRecord = records.length > 0 ? records[0] : null;
   for (const record of records) {
     if (record.status === "dismissed") {
       dismissedCount += 1;
@@ -5414,23 +5414,18 @@ function buildReviewScopeSummary(scopeKey) {
     } else {
       queuedCount += 1;
     }
-    if (record.status !== "dismissed") {
-      openFindingCount += Array.isArray(record.findings) ? record.findings.length : 0;
-    }
   }
 
   let status = "not_started";
-  if (queuedCount > 0 || runningCount > 0) {
-    status = "started";
+  if (primaryRecord && typeof primaryRecord.status === "string" && primaryRecord.status) {
+    status = primaryRecord.status;
   } else if (dismissedCount > 0 && completedCount === 0 && failedCount === 0 && staleCount === 0) {
     status = "dismissed";
-  } else if (completedCount > 0) {
-    status = "completed";
-  } else if (failedCount > 0) {
-    status = "failed";
-  } else if (staleCount > 0) {
-    status = "stale";
   }
+
+  const openFindingCount = primaryRecord && primaryRecord.status !== "dismissed" && Array.isArray(primaryRecord.findings)
+    ? primaryRecord.findings.length
+    : 0;
 
   return {
     scopeKey,
@@ -5444,7 +5439,8 @@ function buildReviewScopeSummary(scopeKey) {
     failedCount,
     staleCount,
     openFindingCount,
-    records
+    records,
+    primaryRecord
   };
 }
 
@@ -5731,10 +5727,6 @@ window.codexDiffRunReviewPrompt = async function codexDiffRunReviewPrompt(rawPro
     }
     appendLog(`[review] failed to start review prompt for session=${activeSessionId}`);
     return false;
-  }
-
-  if (options.reviewRequest?.reviewId) {
-    await updateReviewStatus(options.reviewRequest.reviewId, "running").catch(() => { });
   }
 
   if (options.logSuccess !== false) {
@@ -9547,6 +9539,14 @@ function handleServerEvent(frame) {
     }
 
     case "assistant_done": {
+      const sessionId = payload.sessionId || null;
+      if (sessionId) {
+        const state = sessions.get(sessionId) || null;
+        const cwd = normalizeProjectCwd(state?.cwd || "");
+        if (cwd) {
+          refreshReviewCatalogForCwd(cwd, { force: true }).catch(() => { });
+        }
+      }
       return;
     }
 
