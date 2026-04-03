@@ -1162,27 +1162,37 @@
         return "";
       }
 
-      const fileRefPattern = /((?:[A-Za-z]:[\\/]|\/)?(?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})(?:[:#]L?(\d+)(?:[-:](\d+))?)?/g;
+      const knownFileExtensions = "(?:cs|csx|js|jsx|ts|tsx|json|md|markdown|pts|ps1|psm1|cmd|bat|css|html|htm|sql|xml|yml|yaml|csproj|props|targets|sln|config)";
+      const fileRefPattern = new RegExp(
+        `(^|[^A-Za-z0-9_./\\\\-])((?:(?:[A-Za-z]:[\\\\/]|/)(?:[A-Za-z0-9_.-]+[\\\\/])*[A-Za-z0-9_.-]+\\.${knownFileExtensions}(?:[:#]L?\\d+(?:[-:]\\d+)?)?)|(?:(?:[A-Za-z0-9_.-]+[\\\\/])+[A-Za-z0-9_.-]+\\.${knownFileExtensions}(?:[:#]L?\\d+(?:[-:]\\d+)?)?)|(?:[A-Za-z0-9_.-]+\\.${knownFileExtensions}(?:[:#]L?\\d+(?:[-:]\\d+)?)))`,
+        "g"
+      );
       let htmlSegment = "";
       let cursorSegment = 0;
       let matchSegment = fileRefPattern.exec(sourceText);
       while (matchSegment) {
+        const prefix = String(matchSegment[1] || "");
+        const candidate = String(matchSegment[2] || "");
+        const matchStart = matchSegment.index + prefix.length;
         if (matchSegment.index > cursorSegment) {
           htmlSegment += escapeHtml(sourceText.slice(cursorSegment, matchSegment.index));
         }
-
-        const rawPath = String(matchSegment[1] || "").replace(/\\/g, "/").trim();
-        const lineText = String(matchSegment[2] || "").trim();
-        const lineNo = Number.parseInt(lineText, 10);
-        const hasLineNo = Number.isFinite(lineNo) && lineNo > 0;
-        const fullMatchText = String(matchSegment[0] || "").trim();
-        if (rawPath) {
-          htmlSegment += `<a href="#" class="diff-review-md-link" data-review-md-link="1" data-review-jump-path="${escapeAttribute(rawPath)}"${hasLineNo ? ` data-review-jump-line="${lineNo}"` : ""} title="Open ${escapeAttribute(fullMatchText)}">${escapeHtml(fullMatchText)}</a>`;
-        } else {
-          htmlSegment += escapeHtml(fullMatchText);
+        if (prefix) {
+          htmlSegment += escapeHtml(prefix);
         }
 
-        cursorSegment = matchSegment.index + matchSegment[0].length;
+        const parsedCandidate = parseFileLinkTarget(candidate);
+        const rawPath = parsedCandidate && parsedCandidate.path ? String(parsedCandidate.path).replace(/\\/g, "/").trim() : "";
+        const lineNo = parsedCandidate && Number.isFinite(parsedCandidate.lineNo) && parsedCandidate.lineNo > 0
+          ? parsedCandidate.lineNo
+          : null;
+        if (rawPath) {
+          htmlSegment += `<a href="#" class="diff-review-md-link" data-review-md-link="1" data-review-jump-path="${escapeAttribute(rawPath)}"${lineNo ? ` data-review-jump-line="${lineNo}"` : ""} title="Open ${escapeAttribute(candidate)}">${escapeHtml(candidate)}</a>`;
+        } else {
+          htmlSegment += escapeHtml(candidate);
+        }
+
+        cursorSegment = matchStart + candidate.length;
         matchSegment = fileRefPattern.exec(sourceText);
       }
 
