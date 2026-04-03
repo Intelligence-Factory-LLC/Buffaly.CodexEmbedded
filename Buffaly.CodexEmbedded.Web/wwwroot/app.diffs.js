@@ -1607,6 +1607,51 @@
     };
   }
 
+  function getEventTargetElement(event) {
+    const target = event && event.target;
+    if (target instanceof Element) {
+      return target;
+    }
+    if (target && typeof target === "object" && "parentElement" in target) {
+      const parent = target.parentElement;
+      if (parent instanceof Element) {
+        return parent;
+      }
+    }
+    return null;
+  }
+
+  function findReviewJumpElementFromEvent(event) {
+    const targetElement = getEventTargetElement(event);
+    if (!targetElement) {
+      return null;
+    }
+    return targetElement.closest("[data-review-jump-path], [data-review-md-link='1']");
+  }
+
+  function handleReviewJumpFromEvent(event) {
+    const jumpBtn = findReviewJumpElementFromEvent(event);
+    if (!jumpBtn) {
+      return false;
+    }
+
+    const path = jumpBtn.getAttribute("data-review-jump-path") || "";
+    const lineNo = Number.parseInt(jumpBtn.getAttribute("data-review-jump-line") || "", 10);
+    if (!path) {
+      return true;
+    }
+
+    if (event && typeof event.preventDefault === "function") {
+      event.preventDefault();
+    }
+    if (event && typeof event.stopPropagation === "function") {
+      event.stopPropagation();
+    }
+    const reviewContext = extractReviewContextFromElement(jumpBtn, path, lineNo);
+    openReviewLinkInFullFile(path, lineNo, reviewContext).catch(() => { });
+    return true;
+  }
+
   function openReviewLinkInFullFile(path, lineNo, reviewContext) {
     if (!path) {
       return Promise.resolve();
@@ -4441,20 +4486,7 @@
     });
 
     fullFileReviewPanel.addEventListener("click", (event) => {
-      const jumpBtn = event.target instanceof Element ? event.target.closest("[data-review-md-link='1']") : null;
-      if (!jumpBtn) {
-        return;
-      }
-
-      event.preventDefault();
-      const path = jumpBtn.getAttribute("data-review-jump-path") || "";
-      const lineNo = Number.parseInt(jumpBtn.getAttribute("data-review-jump-line") || "", 10);
-      if (!path) {
-        return;
-      }
-
-      const reviewContext = extractReviewContextFromElement(jumpBtn, path, lineNo);
-      openReviewLinkInFullFile(path, lineNo, reviewContext).catch(() => { });
+      handleReviewJumpFromEvent(event);
     });
 
     fullFileWindow.addEventListener("click", (event) => {
@@ -4590,25 +4622,23 @@
       return;
     }
 
-    const jumpBtn = event.target instanceof Element ? event.target.closest("[data-review-jump-path], [data-review-md-link='1']") : null;
-    if (!jumpBtn) {
+    if (!handleReviewJumpFromEvent(event)) {
       return;
     }
+  });
 
-    const path = jumpBtn.getAttribute("data-review-jump-path") || "";
-    const lineNo = Number.parseInt(jumpBtn.getAttribute("data-review-jump-line") || "", 10);
-    if (!path) {
+  document.addEventListener("click", (event) => {
+    if (event.defaultPrevented) {
       return;
     }
-
-    event.preventDefault();
-    const reviewContext = extractReviewContextFromElement(jumpBtn, path, lineNo);
-    if (Number.isFinite(lineNo) && lineNo > 0) {
-      openReviewLinkInFullFile(path, lineNo, reviewContext).catch(() => { });
+    const targetElement = getEventTargetElement(event);
+    if (!targetElement) {
       return;
     }
-
-    openReviewLinkInFullFile(path, lineNo, reviewContext).catch(() => { });
+    if (!targetElement.closest("#diffReviewFindings, #diffFullFileReviewPanel")) {
+      return;
+    }
+    handleReviewJumpFromEvent(event);
   });
 
   composerNotesNode.addEventListener("click", (event) => {
