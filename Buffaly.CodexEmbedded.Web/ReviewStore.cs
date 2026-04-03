@@ -278,7 +278,12 @@ internal sealed class ReviewStore
 			}
 
 			var assistantText = turn.AssistantFinal?.Text ?? string.Empty;
-			var nextStatus = turn.AssistantFinal is not null
+			var hasAssistantFinal = turn.AssistantFinal is not null;
+			var hasCompletedReviewOutput =
+				hasAssistantFinal &&
+				!turn.IsInFlight &&
+				LooksLikeCompletedReviewAssistantText(assistantText);
+			var nextStatus = hasCompletedReviewOutput
 				? "completed"
 				: "running";
 			if (string.Equals(record.Status, "reviewed", StringComparison.Ordinal))
@@ -286,10 +291,10 @@ internal sealed class ReviewStore
 				nextStatus = "reviewed";
 			}
 			var nextStartedAt = ParseUtc(turn.User.Timestamp) ?? record.StartedAtUtc ?? record.QueuedAtUtc;
-			DateTimeOffset? nextCompletedAt = turn.AssistantFinal is not null
-				? (ParseUtc(turn.AssistantFinal.Timestamp) ?? record.CompletedAtUtc ?? DateTimeOffset.UtcNow)
+			DateTimeOffset? nextCompletedAt = hasCompletedReviewOutput
+				? (ParseUtc(turn.AssistantFinal?.Timestamp) ?? record.CompletedAtUtc ?? DateTimeOffset.UtcNow)
 				: null;
-			var nextFindings = turn.AssistantFinal is not null
+			var nextFindings = hasCompletedReviewOutput
 				? ExtractFindings(assistantText, record.Cwd, record.DismissedFindingKeys)
 				: record.Findings;
 
@@ -306,6 +311,38 @@ internal sealed class ReviewStore
 			record.AssistantText = assistantText;
 			record.Findings = nextFindings.ToList();
 			return changed;
+		}
+
+		return false;
+	}
+
+	private static bool LooksLikeCompletedReviewAssistantText(string? text)
+	{
+		var source = text?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(source))
+		{
+			return false;
+		}
+
+		if (source.IndexOf("findings", StringComparison.OrdinalIgnoreCase) >= 0)
+		{
+			return true;
+		}
+
+		if (Regex.IsMatch(source, @"^\s*\d+\.\s*(critical|high|medium|low)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Multiline))
+		{
+			return true;
+		}
+
+		if (Regex.IsMatch(source, @"\bno\s+(critical|high|medium|low)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+		{
+			return true;
+		}
+
+		if (source.IndexOf("missing tests", StringComparison.OrdinalIgnoreCase) >= 0 ||
+			source.IndexOf("residual risks", StringComparison.OrdinalIgnoreCase) >= 0)
+		{
+			return true;
 		}
 
 		return false;
