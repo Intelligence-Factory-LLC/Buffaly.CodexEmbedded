@@ -3556,6 +3556,10 @@ body {
 .worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-header {
 	padding: 0.75rem 0 0.5rem;
 	border-bottom: 0;
+	flex-direction: column;
+	align-items: stretch;
+	justify-content: flex-start;
+	gap: 0.55rem;
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-title {
@@ -3571,6 +3575,11 @@ body {
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-toolbar {
+	display: flex;
+	width: 100%;
+	align-items: center;
+	justify-content: flex-start;
+	flex-wrap: wrap;
 	gap: 0.5rem;
 }
 
@@ -3608,6 +3617,10 @@ body {
 	font-size: 0.69rem;
 	font-weight: 700;
 	padding: 0.18rem 0.44rem;
+	max-width: 320px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .worktree-diff-mode-btn.active {
@@ -3643,6 +3656,9 @@ body {
 	display: flex;
 	align-items: center;
 	gap: 0.35rem;
+	flex-wrap: wrap;
+	margin-left: auto;
+	justify-content: flex-end;
 }
 
 .worktree-diff-title-wrap {
@@ -3650,6 +3666,7 @@ body {
 	align-items: baseline;
 	gap: 0.45rem;
 	min-width: 0;
+	width: 100%;
 }
 
 .worktree-diff-title {
@@ -3658,6 +3675,8 @@ body {
 	letter-spacing: 0.02em;
 	text-transform: uppercase;
 	color: #0f172a;
+	flex: 0 0 auto;
+	white-space: nowrap;
 }
 
 .worktree-diff-summary {
