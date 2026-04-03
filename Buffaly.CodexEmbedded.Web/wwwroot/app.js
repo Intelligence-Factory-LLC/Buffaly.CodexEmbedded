@@ -258,7 +258,7 @@ const existingSessionSelect = document.getElementById("existingSessionSelect");
 const stopSessionBtn = document.getElementById("stopSessionBtn");
 const sessionSelect = document.getElementById("sessionSelect");
 const conversationTitle = document.getElementById("conversationTitle");
-const conversationCodeReviewsBtn = document.getElementById("conversationCodeReviewsBtn");
+let conversationCodeReviewsBtn = document.getElementById("conversationCodeReviewsBtn");
 const sessionMeta = document.getElementById("sessionMeta");
 const conversationModelSummary = document.getElementById("conversationModelSummary");
 const conversationMetaMenuBtn = document.getElementById("conversationMetaMenuBtn");
@@ -2555,6 +2555,7 @@ function updateConversationMetaVisibility() {
     return;
   }
 
+  ensureConversationCodeReviewsButton();
   const hasState = !!getActiveSessionState();
 
   if (sessionMetaDetailsBtn) {
@@ -3784,7 +3785,51 @@ function updateWorkspaceTabUrl(tab) {
   window.history.replaceState(null, "", next.toString());
 }
 
+function bindConversationCodeReviewsButton() {
+  if (!conversationCodeReviewsBtn || conversationCodeReviewsBtn.dataset.bound === "1") {
+    return;
+  }
+
+  conversationCodeReviewsBtn.dataset.bound = "1";
+  conversationCodeReviewsBtn.addEventListener("click", () => {
+    setWorkspaceTab(WORKSPACE_TAB_CODE_REVIEWS, { reason: "conversation_header_code_reviews_click" }).catch((error) => appendLog(`[workspace] failed to switch to code reviews from header: ${error}`));
+  });
+}
+
+function ensureConversationCodeReviewsButton() {
+  if (conversationCodeReviewsBtn) {
+    bindConversationCodeReviewsButton();
+    return;
+  }
+
+  if (!(conversationTitle instanceof HTMLElement)) {
+    return;
+  }
+
+  const preferredContainer = conversationTitle.closest(".conversation-title-main");
+  const fallbackContainer = conversationTitle.parentElement;
+  const titleContainer = preferredContainer instanceof HTMLElement
+    ? preferredContainer
+    : (fallbackContainer instanceof HTMLElement ? fallbackContainer : null);
+  if (!(titleContainer instanceof HTMLElement)) {
+    return;
+  }
+
+  const button = document.createElement("button");
+  button.id = "conversationCodeReviewsBtn";
+  button.className = "conversation-jump-btn conversation-code-reviews-btn";
+  button.type = "button";
+  button.title = "Open code reviews for this project";
+  button.setAttribute("aria-label", "Open code reviews for this project");
+  button.setAttribute("aria-pressed", "false");
+  button.innerHTML = '<i class="bi bi-journal-code" aria-hidden="true"></i><span>Code reviews</span>';
+  conversationTitle.insertAdjacentElement("afterend", button);
+  conversationCodeReviewsBtn = button;
+  bindConversationCodeReviewsButton();
+}
+
 function renderWorkspaceTabUi() {
+  ensureConversationCodeReviewsButton();
   const isReviews = currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS;
   if (workspaceTabTasksBtn) {
     workspaceTabTasksBtn.classList.toggle("active", !isReviews);
@@ -10143,12 +10188,6 @@ if (workspaceTabTasksBtn) {
 if (workspaceTabCodeReviewsBtn) {
   workspaceTabCodeReviewsBtn.addEventListener("click", () => {
     setWorkspaceTab(WORKSPACE_TAB_CODE_REVIEWS, { reason: "workspace_tab_code_reviews_click" }).catch((error) => appendLog(`[workspace] failed to switch to code reviews: ${error}`));
-  });
-}
-
-if (conversationCodeReviewsBtn) {
-  conversationCodeReviewsBtn.addEventListener("click", () => {
-    setWorkspaceTab(WORKSPACE_TAB_CODE_REVIEWS, { reason: "conversation_header_code_reviews_click" }).catch((error) => appendLog(`[workspace] failed to switch to code reviews from header: ${error}`));
   });
 }
 
