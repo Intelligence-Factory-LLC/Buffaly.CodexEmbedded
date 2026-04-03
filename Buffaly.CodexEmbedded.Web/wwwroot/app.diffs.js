@@ -626,6 +626,95 @@
     return getScopeReviewSummary(scopeKey).status || "not_started";
   }
 
+  function parseUtcTimestamp(value) {
+    if (typeof value !== "string" || !value.trim()) {
+      return 0;
+    }
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function getReviewDisplayState(scopeKey, openCount) {
+    const summary = getScopeReviewSummary(scopeKey);
+    const records = Array.isArray(summary.records) ? summary.records : [];
+    const statusRaw = typeof summary.status === "string" ? summary.status : "not_started";
+    const activeRunning = Number.isFinite(summary.runningCount) ? summary.runningCount : 0;
+    const activeQueued = Number.isFinite(summary.queuedCount) ? summary.queuedCount : 0;
+    const hasActive = activeRunning > 0 || activeQueued > 0;
+    const hasCompleted = (Number.isFinite(summary.completedCount) && summary.completedCount > 0)
+      || records.some((x) => x && (x.status === "completed" || x.status === "reviewed"));
+    const nowMs = Date.now();
+    let latestStartedMs = parseUtcTimestamp(summary.lastRequestedUtc || "");
+    for (const item of records) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      latestStartedMs = Math.max(latestStartedMs, parseUtcTimestamp(item.startedAtUtc || ""));
+    }
+    const staleStarted = statusRaw === "started"
+      && !hasActive
+      && latestStartedMs > 0
+      && (nowMs - latestStartedMs) > (5 * 60 * 1000);
+
+    if (statusRaw === "reviewed") {
+      return {
+        key: "reviewed",
+        label: "Reviewed",
+        statusClass: "reviewed",
+        outcomeLabel: openCount > 0 ? `${openCount} open` : "dismissed",
+        showSpinner: false,
+        reviewActionLabel: "Reviewed",
+        reviewActionDisabled: true
+      };
+    }
+
+    if (hasActive || (statusRaw === "started" && !staleStarted)) {
+      return {
+        key: "started",
+        label: activeRunning > 0 ? "Review Running" : "Review Queued",
+        statusClass: "started",
+        outcomeLabel: activeRunning > 0 ? "running" : "queued",
+        showSpinner: true,
+        reviewActionLabel: "Review",
+        reviewActionDisabled: false
+      };
+    }
+
+    if (staleStarted) {
+      return {
+        key: "stale",
+        label: "Pending Sync",
+        statusClass: "stale",
+        outcomeLabel: openCount > 0 ? `${openCount} open` : "stale",
+        showSpinner: false,
+        reviewActionLabel: "Review",
+        reviewActionDisabled: false
+      };
+    }
+
+    if (statusRaw === "completed" || hasCompleted) {
+      return {
+        key: "completed",
+        label: "Review Completed",
+        statusClass: "completed",
+        outcomeLabel: openCount > 0 ? `${openCount} open` : "clear",
+        showSpinner: false,
+        reviewActionLabel: "Review",
+        reviewActionDisabled: false
+      };
+    }
+
+    return {
+      key: "not_started",
+      label: "Not Started",
+      statusClass: "not-started",
+      outcomeLabel: "not run",
+      showSpinner: false,
+      reviewActionLabel: "Review",
+      reviewActionDisabled: false
+    };
+  }
+
   function getCurrentReviewFindingsIndex() {
     const key = currentFileViewScopeKey || currentNotesScopeKey;
     if (!key) {
@@ -1098,10 +1187,11 @@
         if (!scopeKey) {
           continue;
         }
-        const status = getReviewStatusForScope(scopeKey);
-        if (status === "started") {
+        const openCount = getOpenReviewCountForScope(scopeKey);
+        const display = getReviewDisplayState(scopeKey, openCount);
+        if (display.key === "started") {
           started += 1;
-        } else if (status === "completed") {
+        } else if (display.key === "completed" || display.key === "reviewed") {
           completed += 1;
         }
       }
@@ -1172,32 +1262,23 @@
 
       const openCount = getOpenReviewCountForScope(scopeKey);
       openCountTotal += openCount;
-      const status = getReviewStatusForScope(scopeKey);
-      if (status === "started") {
+      const display = getReviewDisplayState(scopeKey, openCount);
+      if (display.key === "started") {
         startedCount += 1;
-      } else if (status === "completed") {
+      } else if (display.key === "completed" || display.key === "reviewed") {
         completedCount += 1;
       }
 
       const shortSha = normalized.shortSha || normalized.sha.slice(0, 7);
       const subject = normalized.subject ? normalized.subject.trim() : "";
-      const statusLabel = status === "reviewed"
-        ? "Reviewed"
-        : (status === "completed"
-          ? "Review Completed"
-          : (status === "started" ? "Review Started" : "Not Started"));
-      const statusClass = status === "reviewed"
-        ? "reviewed"
-        : (status === "completed"
-          ? "completed"
-          : (status === "started" ? "started" : "not-started"));
-      const reviewActionLabel = status === "reviewed" ? "Reviewed" : "Review";
-      const reviewActionDisabled = status === "reviewed" ? " disabled" : "";
-      const outcomeLabel = openCount > 0
-        ? `${openCount} open`
-        : (status === "reviewed"
-          ? "dismissed"
-          : (status === "completed" ? "clear" : (status === "started" ? "running" : "not run")));
+      const reviewActionDisabled = display.reviewActionDisabled ? " disabled" : "";
+      const runningIcon = display.showSpinner
+        ? "<span class=\"diff-commit-review-activity running\" aria-hidden=\"true\"></span>"
+        : (display.key === "completed" || display.key === "reviewed"
+          ? "<span class=\"diff-commit-review-activity done\" aria-hidden=\"true\">✓</span>"
+          : (display.key === "stale"
+            ? "<span class=\"diff-commit-review-activity stale\" aria-hidden=\"true\">!</span>"
+            : ""));
       rows.push(
         `<div class="diff-commit-review-row${normalized.sha === selectedCommitSha ? " active" : ""}" data-commit-review-jump="${escapeAttribute(normalized.sha)}" tabindex="0" role="button" aria-label="Open review details for ${escapeAttribute(subject || normalized.sha)}">
           <div class="diff-commit-review-main">
@@ -1205,9 +1286,9 @@
             <div class="diff-commit-review-subject">${escapeHtml(subject || "(no subject)")}</div>
           </div>
           <button type="button" class="diff-commit-review-open-btn" data-commit-review-open="${escapeAttribute(normalized.sha)}">Open</button>
-          <button type="button" class="diff-commit-review-action-btn" data-commit-review-request="${escapeAttribute(normalized.sha)}"${reviewActionDisabled}>${escapeHtml(reviewActionLabel)}</button>
-          <span class="diff-commit-review-status ${statusClass}">${escapeHtml(statusLabel)}</span>
-          <span class="diff-commit-review-open-count">${escapeHtml(outcomeLabel)}</span>
+          <button type="button" class="diff-commit-review-action-btn" data-commit-review-request="${escapeAttribute(normalized.sha)}"${reviewActionDisabled}>${escapeHtml(display.reviewActionLabel)}</button>
+          <span class="diff-commit-review-status ${display.statusClass}">${escapeHtml(display.label)}</span>
+          <span class="diff-commit-review-open-count">${runningIcon}${escapeHtml(display.outcomeLabel)}</span>
         </div>`
       );
     }

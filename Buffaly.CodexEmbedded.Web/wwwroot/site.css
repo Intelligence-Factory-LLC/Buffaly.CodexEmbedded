@@ -4546,6 +4546,11 @@ body {
 	color: #92400e;
 }
 
+.diff-commit-review-status.stale {
+	background: #ffedd5;
+	color: #9a3412;
+}
+
 .diff-commit-review-status.completed {
 	background: #dcfce7;
 	color: #166534;
@@ -4557,9 +4562,50 @@ body {
 }
 
 .diff-commit-review-open-count {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.36rem;
 	font-size: 0.62rem;
 	font-weight: 700;
 	color: #991b1b;
+}
+
+.diff-commit-review-activity {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 0.86rem;
+	height: 0.86rem;
+	border-radius: 999px;
+	font-size: 0.66rem;
+	line-height: 1;
+	font-weight: 700;
+}
+
+.diff-commit-review-activity.running {
+	border: 2px solid #fdba74;
+	border-top-color: #ea580c;
+	background: #fff7ed;
+	animation: diff-review-spin 0.9s linear infinite;
+}
+
+.diff-commit-review-activity.done {
+	background: #dcfce7;
+	color: #166534;
+}
+
+.diff-commit-review-activity.stale {
+	background: #ffedd5;
+	color: #9a3412;
+}
+
+@keyframes diff-review-spin {
+	from {
+		transform: rotate(0deg);
+	}
+	to {
+		transform: rotate(360deg);
+	}
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-status,
@@ -6157,6 +6203,11 @@ html[data-theme="dark"] .diff-commit-review-status.started {
 	color: #fcd34d;
 }
 
+html[data-theme="dark"] .diff-commit-review-status.stale {
+	background: rgba(154, 52, 18, 0.35);
+	color: #fdba74;
+}
+
 html[data-theme="dark"] .diff-commit-review-status.completed {
 	background: rgba(22, 101, 52, 0.38);
 	color: #bbf7d0;
@@ -6169,6 +6220,22 @@ html[data-theme="dark"] .diff-commit-review-status.reviewed {
 
 html[data-theme="dark"] .diff-commit-review-open-count {
 	color: #fecaca;
+}
+
+html[data-theme="dark"] .diff-commit-review-activity.running {
+	border-color: rgba(180, 83, 9, 0.45);
+	border-top-color: #fb923c;
+	background: #1f2937;
+}
+
+html[data-theme="dark"] .diff-commit-review-activity.done {
+	background: rgba(22, 101, 52, 0.38);
+	color: #bbf7d0;
+}
+
+html[data-theme="dark"] .diff-commit-review-activity.stale {
+	background: rgba(154, 52, 18, 0.35);
+	color: #fdba74;
 }
 
 html[data-theme="dark"] .worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-title {
