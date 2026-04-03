@@ -23,6 +23,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private readonly Dictionary<string, string> _lastThreadNameByThread = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, RateLimitDispatchState> _rateLimitDispatchBySession = new(StringComparer.Ordinal);
 	private static readonly TimeSpan RateLimitCoalesceDelay = TimeSpan.FromMilliseconds(350);
+	private static readonly TimeSpan ModelsListCacheTtl = TimeSpan.FromMinutes(10);
 	private const int MaxCoreStdoutJsonlParseChars = 250_000;
 
 	public event Action? SessionsChanged;
@@ -1170,55 +1171,63 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 		if (existingClient is not null)
 		{
-			var inFlightAtStart = existingSession?.IsTurnInFlight == true;
+			var sessionWithClient = existingSession!;
+			var inFlightAtStart = sessionWithClient.IsTurnInFlight;
 			var stopwatch = Stopwatch.StartNew();
 			try
 			{
-				if (existingSession is not null && existingSession.IsAppServerRecovering)
+				if (sessionWithClient.TryGetCachedModels(out var freshCachedModels, ModelsListCacheTtl))
 				{
-					if (existingSession.TryGetCachedModels(out var recoveringCachedModels))
+					WriteOrchestratorAudit(
+						$"event=models_list_from_cache sessionId={sessionId} reason=ttl_fresh maxAgeSec={Math.Round(ModelsListCacheTtl.TotalSeconds)} modelCount={freshCachedModels.Count} threadId={sessionWithClient.Session.ThreadId}");
+					return freshCachedModels;
+				}
+
+				if (sessionWithClient.IsAppServerRecovering)
+				{
+					if (sessionWithClient.TryGetCachedModels(out var recoveringCachedModels))
 					{
 						WriteOrchestratorAudit(
-							$"event=models_list_from_cache sessionId={sessionId} reason=session_recovering modelCount={recoveringCachedModels.Count} threadId={existingSession.Session.ThreadId}");
+							$"event=models_list_from_cache sessionId={sessionId} reason=session_recovering modelCount={recoveringCachedModels.Count} threadId={sessionWithClient.Session.ThreadId}");
 						return recoveringCachedModels;
 					}
 
 					WriteOrchestratorAudit(
-						$"event=models_list_deferred sessionId={sessionId} reason=session_recovering_no_cache threadId={existingSession.Session.ThreadId}");
+						$"event=models_list_deferred sessionId={sessionId} reason=session_recovering_no_cache threadId={sessionWithClient.Session.ThreadId}");
 					throw new InvalidOperationException("Session is recovering; model list is temporarily unavailable.");
 				}
 
-				if (existingSession is not null &&
-					existingSession.IsLocalTurnAwaitingStartStale(TimeSpan.Zero, out var pendingStartAge))
+				if (sessionWithClient.IsLocalTurnAwaitingStartStale(TimeSpan.Zero, out var pendingStartAge))
 				{
-					if (existingSession.TryGetCachedModels(out var pendingStartCachedModels))
+					if (sessionWithClient.TryGetCachedModels(out var pendingStartCachedModels))
 					{
 						WriteOrchestratorAudit(
-							$"event=models_list_from_cache sessionId={sessionId} reason=turn_start_pending pendingMs={Math.Round(pendingStartAge.TotalMilliseconds)} modelCount={pendingStartCachedModels.Count} threadId={existingSession.Session.ThreadId} {existingSession.BuildRpcDebugSummary()}");
+							$"event=models_list_from_cache sessionId={sessionId} reason=turn_start_pending pendingMs={Math.Round(pendingStartAge.TotalMilliseconds)} modelCount={pendingStartCachedModels.Count} threadId={sessionWithClient.Session.ThreadId} {sessionWithClient.BuildRpcDebugSummary()}");
 						return pendingStartCachedModels;
 					}
 
 					WriteOrchestratorAudit(
-						$"event=models_list_deferred sessionId={sessionId} reason=turn_start_pending_no_cache pendingMs={Math.Round(pendingStartAge.TotalMilliseconds)} threadId={existingSession.Session.ThreadId} {existingSession.BuildRpcDebugSummary()}");
+						$"event=models_list_deferred sessionId={sessionId} reason=turn_start_pending_no_cache pendingMs={Math.Round(pendingStartAge.TotalMilliseconds)} threadId={sessionWithClient.Session.ThreadId} {sessionWithClient.BuildRpcDebugSummary()}");
 					throw new InvalidOperationException("Turn is starting and model list is deferred until start is acknowledged.");
 				}
 
-				if (inFlightAtStart && existingSession is not null)
+				if (inFlightAtStart)
 				{
-					if (existingSession.TryGetCachedModels(out var inFlightCachedModels))
+					if (sessionWithClient.TryGetCachedModels(out var inFlightCachedModels))
 					{
 						WriteOrchestratorAudit(
-							$"event=models_list_from_cache sessionId={sessionId} reason=turn_in_flight modelCount={inFlightCachedModels.Count} threadId={existingSession.Session.ThreadId} {existingSession.BuildTurnDebugSummary()}");
+							$"event=models_list_from_cache sessionId={sessionId} reason=turn_in_flight modelCount={inFlightCachedModels.Count} threadId={sessionWithClient.Session.ThreadId} {sessionWithClient.BuildTurnDebugSummary()}");
 						return inFlightCachedModels;
 					}
 
 					WriteOrchestratorAudit(
-						$"event=models_list_during_turn sessionId={sessionId} threadId={existingSession.Session.ThreadId} {existingSession.BuildTurnDebugSummary()}");
+						$"event=models_list_during_turn sessionId={sessionId} threadId={sessionWithClient.Session.ThreadId} {sessionWithClient.BuildTurnDebugSummary()}");
 				}
 
 				var models = await existingSession!.QueryModelsSerializedAsync(
 					ct => existingClient.ListModelsAsync(cancellationToken: ct),
-					cancellationToken);
+					cancellationToken,
+					ModelsListCacheTtl);
 				stopwatch.Stop();
 				if (inFlightAtStart || stopwatch.ElapsedMilliseconds >= 1000)
 				{
@@ -5502,6 +5511,7 @@ internal sealed record SessionRateLimitWindowSnapshot(
 		private string? _approvalPolicy = WebCodexUtils.NormalizeApprovalPolicy(ApprovalPolicy);
 		private string? _sandboxPolicy = WebCodexUtils.NormalizeSandboxMode(SandboxPolicy);
 		private IReadOnlyList<CodexModelInfo> _cachedModels = Array.Empty<CodexModelInfo>();
+		private DateTimeOffset _cachedModelsFetchedUtc = DateTimeOffset.MinValue;
 		private CancellationTokenSource? _activeTurnCts;
 		private string? _activeTurnId;
 		private string? _activeDispatchId;
@@ -5715,7 +5725,7 @@ internal sealed record SessionRateLimitWindowSnapshot(
 				$"rpcPending={snapshot.PendingCount} rpcPendingDetail={pendingSummary} rpcStdinIdleSec={stdinIdleSec:0} rpcStdoutIdleSec={stdoutIdleSec:0} rpcStderrIdleSec={stderrIdleSec:0} rpcStdoutPump={stdoutPump} rpcStdoutPumpStoppedSec={stdoutPumpStoppedSec:0} rpcStderrPump={stderrPump} rpcStderrPumpStoppedSec={stderrPumpStoppedSec:0}";
 		}
 
-		public bool TryGetCachedModels(out IReadOnlyList<CodexModelInfo> models)
+		public bool TryGetCachedModels(out IReadOnlyList<CodexModelInfo> models, TimeSpan? maxAge = null)
 		{
 			lock (_modelsSync)
 			{
@@ -5725,6 +5735,22 @@ internal sealed record SessionRateLimitWindowSnapshot(
 					return false;
 				}
 
+				if (maxAge is TimeSpan ageLimit)
+				{
+					if (_cachedModelsFetchedUtc == DateTimeOffset.MinValue)
+					{
+						models = Array.Empty<CodexModelInfo>();
+						return false;
+					}
+
+					var cacheAge = DateTimeOffset.UtcNow - _cachedModelsFetchedUtc;
+					if (cacheAge > ageLimit)
+					{
+						models = Array.Empty<CodexModelInfo>();
+						return false;
+					}
+				}
+
 				models = _cachedModels.ToArray();
 				return true;
 			}
@@ -5732,15 +5758,22 @@ internal sealed record SessionRateLimitWindowSnapshot(
 
 		public async Task<IReadOnlyList<CodexModelInfo>> QueryModelsSerializedAsync(
 			Func<CancellationToken, Task<IReadOnlyList<CodexModelInfo>>> fetchAsync,
-			CancellationToken cancellationToken)
+			CancellationToken cancellationToken,
+			TimeSpan? maxAge = null)
 		{
 			await _modelsListGate.WaitAsync(cancellationToken);
 			try
 			{
+				if (TryGetCachedModels(out var cachedModels, maxAge))
+				{
+					return cachedModels;
+				}
+
 				var models = await fetchAsync(cancellationToken);
 				lock (_modelsSync)
 				{
 					_cachedModels = models.ToArray();
+					_cachedModelsFetchedUtc = DateTimeOffset.UtcNow;
 				}
 
 				return models;
