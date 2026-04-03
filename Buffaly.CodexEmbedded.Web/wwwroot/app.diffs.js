@@ -2176,17 +2176,13 @@
     }
   }
 
-  function openReviewModal(preferredAction) {
+  function openReviewModal() {
     if (!canSubmitReviewRequest()) {
       return;
     }
 
     if (!reviewModalReady) {
-      if (preferredAction === "run") {
-        runReviewFromDiffPanel(reviewDraftText).catch(() => { });
-      } else {
-        queueReviewFromDiffPanel(reviewDraftText).catch(() => { });
-      }
+      runReviewFromDiffPanel(reviewDraftText).catch(() => { });
       return;
     }
 
@@ -2197,7 +2193,6 @@
     const targetLabel = buildReviewTargetLabel();
     reviewModalTarget.textContent = `${targetLabel} | ${totalCount} files (${visibleCount} visible, ${hiddenBinaryCount} binary hidden) | context ${contextLabel}`;
     reviewModalTextarea.value = reviewDraftText;
-    reviewModal.dataset.preferredAction = preferredAction === "run" ? "run" : "queue";
     reviewModal.classList.remove("hidden");
     reviewModalTextarea.focus();
     reviewModalTextarea.setSelectionRange(reviewModalTextarea.value.length, reviewModalTextarea.value.length);
@@ -2217,19 +2212,13 @@
     reviewModal.classList.add("hidden");
   }
 
-  async function submitReviewFromModal(actionKind) {
+  async function submitReviewFromModal() {
     if (!reviewModalReady) {
       return;
     }
 
     reviewDraftText = normalizeReviewNoteText(reviewModalTextarea.value || "");
-    if (actionKind === "run") {
-      await runReviewFromDiffPanel(reviewDraftText);
-      closeReviewModal({ keepDraft: false });
-      return;
-    }
-
-    await queueReviewFromDiffPanel(reviewDraftText);
+    await runReviewFromDiffPanel(reviewDraftText);
     closeReviewModal({ keepDraft: false });
   }
 
@@ -3957,10 +3946,8 @@
         const action = detailReviewAction;
         detailReviewAction = "";
         clearDetailReviewActionFromUrl();
-        if (action === "run") {
+        if (action === "run" || action === "queue") {
           runReviewFromDiffPanel("").catch(() => { });
-        } else if (action === "queue") {
-          queueReviewFromDiffPanel("").catch(() => { });
         }
       }
     } catch (error) {
@@ -4201,11 +4188,11 @@
   });
 
   queueReviewBtn.addEventListener("click", () => {
-    openReviewModal("queue");
+    openReviewModal();
   });
 
   runReviewBtn.addEventListener("click", () => {
-    openReviewModal("run");
+    openReviewModal();
   });
 
   sendNotesBtn.addEventListener("click", () => {
@@ -4213,13 +4200,20 @@
   });
 
   if (reviewModalReady) {
+    if (reviewModalRunBtn) {
+      reviewModalRunBtn.classList.add("hidden");
+      reviewModalRunBtn.setAttribute("aria-hidden", "true");
+    }
+
     reviewModalQueueBtn.addEventListener("click", () => {
-      submitReviewFromModal("queue").catch(() => { });
+      submitReviewFromModal().catch(() => { });
     });
 
-    reviewModalRunBtn.addEventListener("click", () => {
-      submitReviewFromModal("run").catch(() => { });
-    });
+    if (reviewModalRunBtn) {
+      reviewModalRunBtn.addEventListener("click", () => {
+        submitReviewFromModal().catch(() => { });
+      });
+    }
 
     reviewModalCancelBtn.addEventListener("click", () => {
       closeReviewModal({ keepDraft: true });
@@ -4244,8 +4238,7 @@
 
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
         event.preventDefault();
-        const preferredAction = reviewModal.dataset.preferredAction === "run" ? "run" : "queue";
-        submitReviewFromModal(preferredAction).catch(() => { });
+        submitReviewFromModal().catch(() => { });
       }
     });
 
