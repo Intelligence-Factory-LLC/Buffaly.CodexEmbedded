@@ -1155,6 +1155,9 @@
     if (!source) {
       return "";
     }
+    // Normalize common model output where line suffix is emitted outside inline code:
+    // `File.cs`:39-48 -> `File.cs:39-48`
+    const normalizedSource = source.replace(/`([^`]+\.[A-Za-z0-9]{1,8})`\s*:\s*(\d+(?:[-:]\d+)?)/g, "`$1:$2`");
 
     function renderInlineReviewTextSegment(segmentText) {
       const sourceText = typeof segmentText === "string" ? segmentText : "";
@@ -1205,10 +1208,10 @@
     let html = "";
     let cursor = 0;
     const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
-    let match = linkPattern.exec(source);
+    let match = linkPattern.exec(normalizedSource);
     while (match) {
       if (match.index > cursor) {
-        html += renderInlineReviewTextSegment(source.slice(cursor, match.index));
+        html += renderInlineReviewTextSegment(normalizedSource.slice(cursor, match.index));
       }
 
       const label = match[1] || "";
@@ -1217,14 +1220,17 @@
       if (parsed && parsed.path && Number.isFinite(parsed.lineNo) && parsed.lineNo > 0) {
         html += `<a href="#" class="diff-review-md-link" data-review-md-link="1" data-review-jump-path="${escapeAttribute(parsed.path)}" data-review-jump-line="${parsed.lineNo}" title="Open ${escapeAttribute(parsed.path)}:${parsed.lineNo}">${escapeHtml(label || `${parsed.path}:${parsed.lineNo}`)}</a>`;
       } else {
-        html += `<span class="diff-review-md-link-static">${escapeHtml(label || href)}</span>`;
+        const fallbackInline = renderInlineReviewTextSegment(label || href);
+        html += fallbackInline
+          ? `<span class="diff-review-md-link-static">${fallbackInline}</span>`
+          : `<span class="diff-review-md-link-static">${escapeHtml(label || href)}</span>`;
       }
 
       cursor = match.index + match[0].length;
-      match = linkPattern.exec(source);
+      match = linkPattern.exec(normalizedSource);
     }
-    if (cursor < source.length) {
-      html += renderInlineReviewTextSegment(source.slice(cursor));
+    if (cursor < normalizedSource.length) {
+      html += renderInlineReviewTextSegment(normalizedSource.slice(cursor));
     }
 
     html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
