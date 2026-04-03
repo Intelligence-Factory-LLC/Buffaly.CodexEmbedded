@@ -7472,7 +7472,7 @@ function readWeeklyRateLimitWindow(rateLimit) {
     return matchWeeklyWindow;
   }
 
-  return candidates[0] || null;
+  return null;
 }
 
 function formatPercentInt(value) {
