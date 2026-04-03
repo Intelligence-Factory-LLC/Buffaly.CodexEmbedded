@@ -1243,15 +1243,19 @@
       rows.push(
         `<div class="diff-commit-review-row${normalized.sha === selectedCommitSha ? " active" : ""}" data-commit-review-jump="${escapeAttribute(normalized.sha)}" tabindex="0" role="button" aria-label="Open review details for ${escapeAttribute(subject || normalized.sha)}">
           <div class="diff-commit-review-main">
-            <div class="diff-commit-review-sha">${escapeHtml(shortSha)}</div>
-            ${when ? `<div class="diff-commit-review-when">${escapeHtml(when)}</div>` : ""}
+            <div class="diff-commit-review-meta-line">
+              <div class="diff-commit-review-sha">${escapeHtml(shortSha)}</div>
+              ${when ? `<div class="diff-commit-review-when">${escapeHtml(when)}</div>` : ""}
+            </div>
             <div class="diff-commit-review-subject">${escapeHtml(subject || "(no subject)")}</div>
           </div>
-          <button type="button" class="diff-commit-review-open-btn" data-commit-review-open="${escapeAttribute(normalized.sha)}">Open</button>
-          <button type="button" class="diff-commit-review-action-btn" data-commit-review-request="${escapeAttribute(normalized.sha)}"${reviewActionDisabled}>${escapeHtml(display.reviewActionLabel)}</button>
-          <span class="diff-commit-review-status ${display.statusClass}"${runningBadgeAttr}>${escapeHtml(display.label)}</span>
-          <span class="diff-commit-review-approval ${approvalDisplay.statusClass}">${escapeHtml(approvalDisplay.label)}</span>
-          <span class="diff-commit-review-open-count${display.showSpinner ? " heal" : ""}"${runningBadgeAttr}>${runningIcon}${escapeHtml(display.outcomeLabel)}</span>
+          <div class="diff-commit-review-actions">
+            <button type="button" class="diff-commit-review-open-btn" data-commit-review-open="${escapeAttribute(normalized.sha)}">Open</button>
+            <button type="button" class="diff-commit-review-action-btn" data-commit-review-request="${escapeAttribute(normalized.sha)}"${reviewActionDisabled}>${escapeHtml(display.reviewActionLabel)}</button>
+            <span class="diff-commit-review-status ${display.statusClass}"${runningBadgeAttr}>${escapeHtml(display.label)}</span>
+            <span class="diff-commit-review-approval ${approvalDisplay.statusClass}">${escapeHtml(approvalDisplay.label)}</span>
+            <span class="diff-commit-review-open-count${display.showSpinner ? " heal" : ""}"${runningBadgeAttr}>${runningIcon}${escapeHtml(display.outcomeLabel)}</span>
+          </div>
         </div>`
       );
     }

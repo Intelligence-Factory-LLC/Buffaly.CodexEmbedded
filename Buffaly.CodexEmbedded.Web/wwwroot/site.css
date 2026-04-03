@@ -4455,9 +4455,9 @@ body {
 }
 
 .diff-commit-review-row {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
-	align-items: center;
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
 	gap: 0.5rem;
 	border: 1px solid #fdba74;
 	border-radius: 8px;
@@ -4467,7 +4467,6 @@ body {
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-row {
-	grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
 	gap: 0.9rem;
 	padding: 1rem 1.1rem;
 	border: 1px solid #e5e7eb;
@@ -4526,10 +4525,28 @@ body {
 	gap: 0.12rem;
 }
 
+.diff-commit-review-meta-line {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+	flex-wrap: wrap;
+}
+
+.diff-commit-review-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.45rem;
+}
+
 .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-main {
 	align-self: stretch;
 	gap: 0.26rem;
 	justify-content: center;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-actions {
+	gap: 0.6rem;
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-action-btn {
@@ -4579,7 +4596,9 @@ body {
 	font-size: 0.72rem;
 	color: #7c2d12;
 	line-height: 1.35;
-	word-break: break-word;
+	white-space: normal;
+	word-break: normal;
+	overflow-wrap: break-word;
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-subject {
