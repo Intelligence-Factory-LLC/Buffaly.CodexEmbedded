@@ -5,6 +5,8 @@ internal sealed class ReviewStore
 {
 	private const string ReviewMetadataHeader = "[Review metadata]";
 	private const string ReviewMetadataFooter = "[/Review metadata]";
+	private static readonly TimeSpan RunningStaleAfter = TimeSpan.FromMinutes(8);
+	private static readonly TimeSpan QueuedStaleAfter = TimeSpan.FromMinutes(20);
 	private readonly object _sync = new();
 	private readonly string _storagePath;
 	private readonly JsonSerializerOptions _jsonOptions = new(JsonSerializerDefaults.Web)
@@ -46,7 +48,8 @@ internal sealed class ReviewStore
 			PromptText = promptText,
 			Status = normalized.InitialStatus,
 			QueuedAtUtc = now,
-			StartedAtUtc = string.Equals(normalized.InitialStatus, "running", StringComparison.Ordinal) ? now : null
+			StartedAtUtc = string.Equals(normalized.InitialStatus, "running", StringComparison.Ordinal) ? now : null,
+			TurnId = string.Empty
 		};
 
 		lock (_sync)
@@ -75,8 +78,14 @@ internal sealed class ReviewStore
 				return false;
 			}
 
+			var currentStatus = NormalizeStatus(record.Status);
+			if (!IsAllowedTransition(currentStatus, normalizedStatus))
+			{
+				return false;
+			}
+
 			var now = DateTimeOffset.UtcNow;
-			var changed = !string.Equals(record.Status, normalizedStatus, StringComparison.Ordinal);
+			var changed = !string.Equals(currentStatus, normalizedStatus, StringComparison.Ordinal);
 			if (string.Equals(normalizedStatus, "running", StringComparison.Ordinal))
 			{
 				if (record.StartedAtUtc is null)
@@ -86,7 +95,7 @@ internal sealed class ReviewStore
 				}
 				record.CompletedAtUtc = null;
 			}
-			else if (string.Equals(normalizedStatus, "completed", StringComparison.Ordinal))
+			else if (IsTerminalStatus(normalizedStatus))
 			{
 				if (record.StartedAtUtc is null)
 				{
@@ -102,19 +111,6 @@ internal sealed class ReviewStore
 			else if (string.Equals(normalizedStatus, "queued", StringComparison.Ordinal))
 			{
 				record.CompletedAtUtc = null;
-			}
-			else if (string.Equals(normalizedStatus, "reviewed", StringComparison.Ordinal))
-			{
-				if (record.StartedAtUtc is null)
-				{
-					record.StartedAtUtc = now;
-					changed = true;
-				}
-				if (record.CompletedAtUtc is null)
-				{
-					record.CompletedAtUtc = now;
-					changed = true;
-				}
 			}
 
 			if (!changed)
@@ -266,9 +262,70 @@ internal sealed class ReviewStore
 	{
 		if (turns is null || turns.Count == 0)
 		{
-			return false;
+			return ReconcileWithoutTurnMatch(record);
 		}
 
+		var matchedTurn = FindLatestMatchingTurn(record, turns);
+		if (matchedTurn is null)
+		{
+			return ReconcileWithoutTurnMatch(record);
+		}
+
+		var turn = matchedTurn;
+		var assistantText = turn.AssistantFinal?.Text ?? string.Empty;
+		var hasAssistantFinal = turn.AssistantFinal is not null && !string.IsNullOrWhiteSpace(assistantText);
+		var hasCompletedReviewOutput = hasAssistantFinal && LooksLikeCompletedReviewAssistantText(assistantText);
+		var currentStatus = NormalizeStatus(record.Status);
+		var nextStatus = currentStatus;
+		if (string.Equals(currentStatus, "dismissed", StringComparison.Ordinal))
+		{
+			nextStatus = "dismissed";
+		}
+		else if (hasCompletedReviewOutput || hasAssistantFinal)
+		{
+			nextStatus = "completed";
+		}
+		else if (turn.IsInFlight)
+		{
+			nextStatus = "running";
+		}
+		else if (string.Equals(currentStatus, "running", StringComparison.Ordinal))
+		{
+			nextStatus = "stale";
+		}
+
+		var nextStartedAt = ParseUtc(turn.User.Timestamp) ?? record.StartedAtUtc ?? record.QueuedAtUtc;
+		DateTimeOffset? nextCompletedAt = IsTerminalStatus(nextStatus)
+			? (ParseUtc(turn.AssistantFinal?.Timestamp) ?? record.CompletedAtUtc ?? DateTimeOffset.UtcNow)
+			: null;
+		var nextFindings = (hasCompletedReviewOutput || hasAssistantFinal)
+			? ExtractFindings(assistantText, record.Cwd, record.DismissedFindingKeys)
+			: record.Findings;
+		var nextTurnId = turn.TurnId?.Trim() ?? string.Empty;
+
+		var changed =
+			!string.Equals(record.Status, nextStatus, StringComparison.Ordinal) ||
+			record.StartedAtUtc != nextStartedAt ||
+			record.CompletedAtUtc != nextCompletedAt ||
+			!string.Equals(record.AssistantText ?? string.Empty, assistantText, StringComparison.Ordinal) ||
+			!AreFindingsEqual(record.Findings, nextFindings) ||
+			!string.Equals(record.TurnId ?? string.Empty, nextTurnId, StringComparison.Ordinal);
+
+		record.Status = nextStatus;
+		record.StartedAtUtc = nextStartedAt;
+		record.CompletedAtUtc = nextCompletedAt;
+		record.AssistantText = assistantText;
+		record.Findings = nextFindings.ToList();
+		record.TurnId = nextTurnId;
+		return changed;
+	}
+
+	private static SessionOrchestrator.ConsolidatedTurnSnapshot? FindLatestMatchingTurn(
+		ReviewRecord record,
+		IReadOnlyList<SessionOrchestrator.ConsolidatedTurnSnapshot> turns)
+	{
+		SessionOrchestrator.ConsolidatedTurnSnapshot? best = null;
+		var bestTime = DateTimeOffset.MinValue;
 		foreach (var turn in turns)
 		{
 			var metadata = ParseReviewMetadata(turn.User.Text);
@@ -277,43 +334,53 @@ internal sealed class ReviewStore
 				continue;
 			}
 
-			var assistantText = turn.AssistantFinal?.Text ?? string.Empty;
-			var hasAssistantFinal = turn.AssistantFinal is not null;
-			var hasCompletedReviewOutput =
-				hasAssistantFinal &&
-				!turn.IsInFlight &&
-				LooksLikeCompletedReviewAssistantText(assistantText);
-			var nextStatus = hasCompletedReviewOutput
-				? "completed"
-				: "running";
-			if (string.Equals(record.Status, "reviewed", StringComparison.Ordinal))
+			var candidateTime = ParseUtc(turn.AssistantFinal?.Timestamp)
+				?? ParseUtc(turn.User.Timestamp)
+				?? DateTimeOffset.MinValue;
+			if (best is null || candidateTime >= bestTime)
 			{
-				nextStatus = "reviewed";
+				best = turn;
+				bestTime = candidateTime;
 			}
-			var nextStartedAt = ParseUtc(turn.User.Timestamp) ?? record.StartedAtUtc ?? record.QueuedAtUtc;
-			DateTimeOffset? nextCompletedAt = hasCompletedReviewOutput
-				? (ParseUtc(turn.AssistantFinal?.Timestamp) ?? record.CompletedAtUtc ?? DateTimeOffset.UtcNow)
-				: null;
-			var nextFindings = hasCompletedReviewOutput
-				? ExtractFindings(assistantText, record.Cwd, record.DismissedFindingKeys)
-				: record.Findings;
-
-			var changed =
-				!string.Equals(record.Status, nextStatus, StringComparison.Ordinal) ||
-				record.StartedAtUtc != nextStartedAt ||
-				record.CompletedAtUtc != nextCompletedAt ||
-				!string.Equals(record.AssistantText ?? string.Empty, assistantText, StringComparison.Ordinal) ||
-				!AreFindingsEqual(record.Findings, nextFindings);
-
-			record.Status = nextStatus;
-			record.StartedAtUtc = nextStartedAt;
-			record.CompletedAtUtc = nextCompletedAt;
-			record.AssistantText = assistantText;
-			record.Findings = nextFindings.ToList();
-			return changed;
 		}
 
-		return false;
+		return best;
+	}
+
+	private static bool ReconcileWithoutTurnMatch(ReviewRecord record)
+	{
+		var currentStatus = NormalizeStatus(record.Status);
+		var now = DateTimeOffset.UtcNow;
+		var nextStatus = currentStatus;
+		if (string.Equals(currentStatus, "running", StringComparison.Ordinal))
+		{
+			var startedAt = record.StartedAtUtc ?? record.QueuedAtUtc;
+			if (now - startedAt >= RunningStaleAfter)
+			{
+				nextStatus = "stale";
+			}
+		}
+		else if (string.Equals(currentStatus, "queued", StringComparison.Ordinal))
+		{
+			var queuedAt = record.QueuedAtUtc;
+			if (now - queuedAt >= QueuedStaleAfter)
+			{
+				nextStatus = "stale";
+			}
+		}
+
+		if (string.Equals(nextStatus, currentStatus, StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		record.Status = nextStatus;
+		if (IsTerminalStatus(nextStatus))
+		{
+			record.CompletedAtUtc ??= now;
+			record.StartedAtUtc ??= now;
+		}
+		return true;
 	}
 
 	private static bool LooksLikeCompletedReviewAssistantText(string? text)
@@ -426,6 +493,7 @@ internal sealed class ReviewStore
 			record.QueuedAtUtc,
 			record.StartedAtUtc,
 			record.CompletedAtUtc,
+			record.TurnId,
 			record.PromptText,
 			record.AssistantText,
 			record.Findings.Select(x => x with { }).ToArray());
@@ -472,15 +540,67 @@ internal sealed class ReviewStore
 		{
 			return "completed";
 		}
+		if (string.Equals(normalized, "dismissed", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(normalized, "reviewed", StringComparison.OrdinalIgnoreCase))
+		{
+			return "dismissed";
+		}
 		if (string.Equals(normalized, "failed", StringComparison.OrdinalIgnoreCase))
 		{
 			return "failed";
 		}
-		if (string.Equals(normalized, "reviewed", StringComparison.OrdinalIgnoreCase))
+		if (string.Equals(normalized, "stale", StringComparison.OrdinalIgnoreCase))
 		{
-			return "reviewed";
+			return "stale";
 		}
 		return "queued";
+	}
+
+	private static bool IsTerminalStatus(string status)
+	{
+		return string.Equals(status, "completed", StringComparison.Ordinal) ||
+			string.Equals(status, "failed", StringComparison.Ordinal) ||
+			string.Equals(status, "dismissed", StringComparison.Ordinal) ||
+			string.Equals(status, "stale", StringComparison.Ordinal);
+	}
+
+	private static bool IsAllowedTransition(string currentStatus, string nextStatus)
+	{
+		if (string.Equals(currentStatus, nextStatus, StringComparison.Ordinal))
+		{
+			return true;
+		}
+
+		if (string.Equals(currentStatus, "queued", StringComparison.Ordinal))
+		{
+			return string.Equals(nextStatus, "running", StringComparison.Ordinal) ||
+				IsTerminalStatus(nextStatus);
+		}
+
+		if (string.Equals(currentStatus, "running", StringComparison.Ordinal))
+		{
+			return IsTerminalStatus(nextStatus);
+		}
+
+		if (string.Equals(currentStatus, "completed", StringComparison.Ordinal))
+		{
+			return string.Equals(nextStatus, "dismissed", StringComparison.Ordinal);
+		}
+
+		if (string.Equals(currentStatus, "failed", StringComparison.Ordinal) ||
+			string.Equals(currentStatus, "stale", StringComparison.Ordinal))
+		{
+			return string.Equals(nextStatus, "queued", StringComparison.Ordinal) ||
+				string.Equals(nextStatus, "running", StringComparison.Ordinal) ||
+				string.Equals(nextStatus, "dismissed", StringComparison.Ordinal);
+		}
+
+		if (string.Equals(currentStatus, "dismissed", StringComparison.Ordinal))
+		{
+			return false;
+		}
+
+		return false;
 	}
 
 	private static string NormalizeCommitSha(string? value)
@@ -1057,6 +1177,7 @@ internal sealed class ReviewStore
 		DateTimeOffset QueuedAtUtc,
 		DateTimeOffset? StartedAtUtc,
 		DateTimeOffset? CompletedAtUtc,
+		string TurnId,
 		string PromptText,
 		string AssistantText,
 		IReadOnlyList<ReviewFindingRecord> Findings);
@@ -1103,6 +1224,7 @@ internal sealed class ReviewStore
 		public DateTimeOffset QueuedAtUtc { get; set; }
 		public DateTimeOffset? StartedAtUtc { get; set; }
 		public DateTimeOffset? CompletedAtUtc { get; set; }
+		public string TurnId { get; set; } = string.Empty;
 		public string AssistantText { get; set; } = string.Empty;
 		public List<ReviewFindingRecord> Findings { get; set; } = new();
 		public List<string> DismissedFindingKeys { get; set; } = new();
@@ -1128,6 +1250,7 @@ internal sealed class ReviewStore
 				QueuedAtUtc = QueuedAtUtc,
 				StartedAtUtc = StartedAtUtc,
 				CompletedAtUtc = CompletedAtUtc,
+				TurnId = TurnId,
 				AssistantText = AssistantText,
 				Findings = Findings.Select(x => x with { }).ToList(),
 				DismissedFindingKeys = DismissedFindingKeys.ToList()

@@ -4818,6 +4818,26 @@ function normalizeReviewTargetType(value) {
   return value === "commit" ? "commit" : "worktree";
 }
 
+function normalizeReviewStatus(value) {
+  const source = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (source === "running") {
+    return "running";
+  }
+  if (source === "completed") {
+    return "completed";
+  }
+  if (source === "dismissed" || source === "reviewed") {
+    return "dismissed";
+  }
+  if (source === "failed") {
+    return "failed";
+  }
+  if (source === "stale") {
+    return "stale";
+  }
+  return "queued";
+}
+
 function normalizeReviewCommitSha(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
@@ -5157,7 +5177,7 @@ function normalizeStoredReviewRecord(record) {
     hiddenBinaryFiles: Number.isFinite(record.hiddenBinaryFiles) ? Math.max(0, Math.floor(record.hiddenBinaryFiles)) : 0,
     noteText: typeof record.noteText === "string" ? record.noteText.trim() : "",
     promptText: typeof record.promptText === "string" ? record.promptText : "",
-    status: typeof record.status === "string" ? record.status.trim() : "queued",
+    status: normalizeReviewStatus(record.status),
     queuedAtUtc: typeof record.queuedAtUtc === "string" ? record.queuedAtUtc : "",
     startedAtUtc: typeof record.startedAtUtc === "string" ? record.startedAtUtc : "",
     completedAtUtc: typeof record.completedAtUtc === "string" ? record.completedAtUtc : "",
@@ -5311,11 +5331,15 @@ async function updateReviewStatus(reviewId, status) {
   });
   const existing = reviewRecordsById.get(normalizedReviewId);
   if (existing) {
+    const nextStatus = normalizeReviewStatus(status);
+    const isTerminal = nextStatus === "completed" || nextStatus === "dismissed" || nextStatus === "failed" || nextStatus === "stale";
     const next = {
       ...existing,
-      status: typeof status === "string" && status.trim() ? status.trim() : existing.status,
-      startedAtUtc: status === "running" && !existing.startedAtUtc ? new Date().toISOString() : existing.startedAtUtc,
-      completedAtUtc: status === "completed" ? (existing.completedAtUtc || new Date().toISOString()) : existing.completedAtUtc
+      status: nextStatus || existing.status,
+      startedAtUtc: nextStatus === "running" && !existing.startedAtUtc ? new Date().toISOString() : existing.startedAtUtc,
+      completedAtUtc: isTerminal
+        ? (existing.completedAtUtc || new Date().toISOString())
+        : (nextStatus === "running" ? "" : existing.completedAtUtc)
     };
     upsertReviewRecord(next, "review_status_updated");
   }
@@ -5372,19 +5396,25 @@ function buildReviewScopeSummary(scopeKey) {
   let queuedCount = 0;
   let runningCount = 0;
   let completedCount = 0;
-  let reviewedCount = 0;
+  let dismissedCount = 0;
+  let failedCount = 0;
+  let staleCount = 0;
   let openFindingCount = 0;
   for (const record of records) {
-    if (record.status === "reviewed") {
-      reviewedCount += 1;
+    if (record.status === "dismissed") {
+      dismissedCount += 1;
     } else if (record.status === "completed") {
       completedCount += 1;
     } else if (record.status === "running") {
       runningCount += 1;
+    } else if (record.status === "failed") {
+      failedCount += 1;
+    } else if (record.status === "stale") {
+      staleCount += 1;
     } else {
       queuedCount += 1;
     }
-    if (record.status !== "reviewed") {
+    if (record.status !== "dismissed") {
       openFindingCount += Array.isArray(record.findings) ? record.findings.length : 0;
     }
   }
@@ -5392,10 +5422,14 @@ function buildReviewScopeSummary(scopeKey) {
   let status = "not_started";
   if (queuedCount > 0 || runningCount > 0) {
     status = "started";
-  } else if (reviewedCount > 0 && completedCount === 0) {
-    status = "reviewed";
+  } else if (dismissedCount > 0 && completedCount === 0 && failedCount === 0 && staleCount === 0) {
+    status = "dismissed";
   } else if (completedCount > 0) {
     status = "completed";
+  } else if (failedCount > 0) {
+    status = "failed";
+  } else if (staleCount > 0) {
+    status = "stale";
   }
 
   return {
@@ -5406,7 +5440,9 @@ function buildReviewScopeSummary(scopeKey) {
     runningCount,
     requestedCount: queuedCount + runningCount,
     completedCount,
-    reviewedCount,
+    dismissedCount,
+    failedCount,
+    staleCount,
     openFindingCount,
     records
   };
@@ -5416,7 +5452,7 @@ function getReviewFindingsForScope(scopeKey) {
   const records = getReviewRecordsForScope(scopeKey);
   const findings = [];
   for (const record of records) {
-    if (record.status === "reviewed") {
+    if (record.status === "dismissed") {
       continue;
     }
     const reviewLabel = record.commitSha
@@ -5448,12 +5484,12 @@ async function markReviewScopeDone(scopeKey) {
     record
     && typeof record.reviewId === "string"
     && record.reviewId.trim()
-    && record.status !== "reviewed");
+    && record.status !== "dismissed");
   if (targets.length === 0) {
     return true;
   }
 
-  await Promise.all(targets.map((record) => updateReviewStatus(record.reviewId, "reviewed")));
+  await Promise.all(targets.map((record) => updateReviewStatus(record.reviewId, "dismissed")));
   const cwd = targets[0] && typeof targets[0].cwd === "string" ? targets[0].cwd : "";
   if (cwd) {
     await refreshReviewCatalogForCwd(cwd, { force: true });
@@ -9545,6 +9581,13 @@ function handleServerEvent(frame) {
       appendLog(`[turn] session=${payload.sessionId || "unknown"} status=${status}${errorMessage ? " error=" + errorMessage : ""}`);
       if (sidebarStateChanged) {
         renderProjectSidebar();
+      }
+      if (sessionId) {
+        const state = sessions.get(sessionId) || null;
+        const cwd = normalizeProjectCwd(state?.cwd || "");
+        if (cwd) {
+          refreshReviewCatalogForCwd(cwd, { force: true }).catch(() => { });
+        }
       }
       renderPromptQueue();
       return;

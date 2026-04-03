@@ -643,7 +643,7 @@
     const activeQueued = Number.isFinite(summary.queuedCount) ? summary.queuedCount : 0;
     const hasActive = activeRunning > 0 || activeQueued > 0;
     const hasCompleted = (Number.isFinite(summary.completedCount) && summary.completedCount > 0)
-      || records.some((x) => x && (x.status === "completed" || x.status === "reviewed"));
+      || records.some((x) => x && (x.status === "completed" || x.status === "dismissed" || x.status === "reviewed"));
     const nowMs = Date.now();
     let latestStartedMs = parseUtcTimestamp(summary.lastRequestedUtc || "");
     for (const item of records) {
@@ -657,9 +657,9 @@
       && latestStartedMs > 0
       && (nowMs - latestStartedMs) > (5 * 60 * 1000);
 
-    if (statusRaw === "reviewed") {
+    if (statusRaw === "dismissed" || statusRaw === "reviewed") {
       return {
-        key: "reviewed",
+        key: "dismissed",
         label: "Dismissed",
         statusClass: "reviewed",
         outcomeLabel: openCount > 0 ? `${openCount} open` : "dismissed",
@@ -1192,7 +1192,7 @@
         const display = getReviewDisplayState(scopeKey, openCount);
         if (display.key === "started") {
           started += 1;
-        } else if (display.key === "completed" || display.key === "reviewed") {
+        } else if (display.key === "completed" || display.key === "dismissed") {
           completed += 1;
         }
       }
@@ -1266,7 +1266,7 @@
       const display = getReviewDisplayState(scopeKey, openCount);
       if (display.key === "started") {
         startedCount += 1;
-      } else if (display.key === "completed" || display.key === "reviewed") {
+      } else if (display.key === "completed" || display.key === "dismissed") {
         completedCount += 1;
       }
 
@@ -1275,7 +1275,7 @@
       const reviewActionDisabled = display.reviewActionDisabled ? " disabled" : "";
       const runningIcon = display.showSpinner
         ? "<span class=\"diff-commit-review-activity running\" aria-hidden=\"true\"></span>"
-        : (display.key === "completed" || display.key === "reviewed"
+        : (display.key === "completed" || display.key === "dismissed"
           ? "<span class=\"diff-commit-review-activity done\" aria-hidden=\"true\">✓</span>"
           : (display.key === "stale"
             ? "<span class=\"diff-commit-review-activity stale\" aria-hidden=\"true\">!</span>"
@@ -1438,7 +1438,7 @@
 
   function getPrimaryCompletedReviewRecord(summary) {
     const records = Array.isArray(summary?.records) ? summary.records : [];
-    const completed = records.filter((record) => record && (record.status === "completed" || record.status === "reviewed"));
+    const completed = records.filter((record) => record && (record.status === "completed" || record.status === "dismissed" || record.status === "reviewed"));
     if (completed.length === 0) {
       return null;
     }
@@ -1675,7 +1675,7 @@
       ? `commit ${record.commitSha.slice(0, 7)}`
       : "worktree";
     const when = typeof record.completedAtUtc === "string" ? record.completedAtUtc : "";
-    const statusLabel = record.status === "reviewed" ? "Dismissed" : "Review Completed";
+    const statusLabel = (record.status === "dismissed" || record.status === "reviewed") ? "Dismissed" : "Review Completed";
     const bodyHtml = renderReviewMarkdownBody(record.assistantText);
     const rawJsonHtml = renderReviewRawJson(scopeKey, record, summary);
     const openCount = Number.isFinite(summary.openFindingCount) ? summary.openFindingCount : 0;
@@ -1690,7 +1690,7 @@
       </div>
       <button type="button" class="diff-review-collapse-btn" data-review-panel-collapse="1" aria-expanded="${reviewPanelCollapsed ? "false" : "true"}">${reviewPanelCollapsed ? "Expand" : "Collapse"}</button>
       ${reviewPanelTab === "raw" ? "<button type=\"button\" class=\"diff-review-copy-json\" data-review-copy-json=\"1\">Copy JSON</button>" : ""}
-      <button type="button" class="diff-review-done-review" data-review-scope-done="1"${record.status === "reviewed" ? " disabled" : ""}>Dismiss Review</button>
+      <button type="button" class="diff-review-done-review" data-review-scope-done="1"${(record.status === "dismissed" || record.status === "reviewed") ? " disabled" : ""}>Dismiss Review</button>
     </div>
     ${reviewPanelCollapsed
       ? "<div class=\"diff-review-collapsed-note\">Review details hidden.</div>"
