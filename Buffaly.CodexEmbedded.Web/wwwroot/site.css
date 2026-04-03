@@ -967,6 +967,12 @@ body {
 	color: #1e3a8a;
 }
 
+.conversation-code-reviews-btn[aria-pressed="true"] {
+	border-color: #93c5fd;
+	background: #eff6ff;
+	color: #1e3a8a;
+}
+
 .conversation-jump-btn:disabled {
 	opacity: 0.5;
 	cursor: default;

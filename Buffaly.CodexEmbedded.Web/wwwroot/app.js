@@ -258,6 +258,7 @@ const existingSessionSelect = document.getElementById("existingSessionSelect");
 const stopSessionBtn = document.getElementById("stopSessionBtn");
 const sessionSelect = document.getElementById("sessionSelect");
 const conversationTitle = document.getElementById("conversationTitle");
+const conversationCodeReviewsBtn = document.getElementById("conversationCodeReviewsBtn");
 const sessionMeta = document.getElementById("sessionMeta");
 const conversationModelSummary = document.getElementById("conversationModelSummary");
 const conversationMetaMenuBtn = document.getElementById("conversationMetaMenuBtn");
@@ -2568,6 +2569,9 @@ function updateConversationMetaVisibility() {
   if (jumpToBtn) {
     jumpToBtn.disabled = !hasState;
   }
+  if (conversationCodeReviewsBtn) {
+    conversationCodeReviewsBtn.disabled = !hasState;
+  }
   if (!hasState) {
     setConversationMetaMenuOpen(false);
     setJumpCollapseMode(false);
@@ -3796,6 +3800,14 @@ function renderWorkspaceTabUi() {
   }
   if (conversationTitle) {
     conversationTitle.textContent = isReviews ? "Code reviews" : "Conversation";
+  }
+  if (conversationCodeReviewsBtn) {
+    conversationCodeReviewsBtn.setAttribute("aria-pressed", isReviews ? "true" : "false");
+    const codeReviewsTitle = isReviews
+      ? "Code reviews is open for this project"
+      : "Open code reviews for this project";
+    conversationCodeReviewsBtn.title = codeReviewsTitle;
+    conversationCodeReviewsBtn.setAttribute("aria-label", codeReviewsTitle);
   }
   const setMode = window.codexDiffSetWorkspaceMode;
   if (typeof setMode === "function") {
@@ -10131,6 +10143,12 @@ if (workspaceTabTasksBtn) {
 if (workspaceTabCodeReviewsBtn) {
   workspaceTabCodeReviewsBtn.addEventListener("click", () => {
     setWorkspaceTab(WORKSPACE_TAB_CODE_REVIEWS, { reason: "workspace_tab_code_reviews_click" }).catch((error) => appendLog(`[workspace] failed to switch to code reviews: ${error}`));
+  });
+}
+
+if (conversationCodeReviewsBtn) {
+  conversationCodeReviewsBtn.addEventListener("click", () => {
+    setWorkspaceTab(WORKSPACE_TAB_CODE_REVIEWS, { reason: "conversation_header_code_reviews_click" }).catch((error) => appendLog(`[workspace] failed to switch to code reviews from header: ${error}`));
   });
 }
 
