@@ -9597,9 +9597,11 @@ function handleServerEvent(frame) {
       const sessionId = payload.sessionId || null;
       const isPlanTurn = payload.isPlanTurn === true || normalizeCollaborationMode(payload.collaborationMode || "") === "plan";
       let sidebarStateChanged = false;
+      let reviewCwd = "";
       if (sessionId) {
         touchSessionActivity(sessionId);
         const state = sessions.get(sessionId) || null;
+        reviewCwd = normalizeCwd(state?.cwd || "");
         const threadId = normalizeThreadId(state?.threadId || "");
         if (threadId) {
           if (processingByThread.get(threadId) !== true) {
@@ -9614,6 +9616,9 @@ function handleServerEvent(frame) {
       }
       if (sidebarStateChanged) {
         renderProjectSidebar();
+      }
+      if (reviewCwd) {
+        refreshReviewCatalogForCwd(reviewCwd, { force: true }).catch(() => { });
       }
       uiAuditLog("in.turn_started", {
         sessionId: sessionId || null,

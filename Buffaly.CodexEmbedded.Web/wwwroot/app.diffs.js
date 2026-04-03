@@ -78,7 +78,6 @@
   const STORAGE_NOTES_PREFIX = "codex-worktree-diff-notes-v2::";
   const STORAGE_REVIEW_FINDING_STATE_PREFIX = "codex-worktree-diff-review-state-v1::";
   const STORAGE_REVIEW_FINDINGS_PREFIX = "codex-worktree-diff-review-findings-v1::";
-  const STORAGE_REVIEW_LIFECYCLE_PREFIX = "codex-worktree-diff-review-lifecycle-v1::";
   const STORAGE_CONTEXT_MODE_KEY = "codex-worktree-diff-context-mode-v1";
   const STORAGE_COMMIT_REVIEW_COLLAPSED_KEY = "codex-worktree-diff-commit-review-collapsed-v1";
   const STORAGE_REVIEW_PANEL_COLLAPSED_KEY = "codex-worktree-diff-review-panel-collapsed-v1";
@@ -122,10 +121,6 @@
   let reviewFindingsByScope = new Map();
   let reviewFindingsIndexByScope = new Map();
   let reviewScopeByTurnId = new Map();
-  let pendingReviewScopeQueue = [];
-  let reviewRequestedTurns = new Set();
-  let reviewCompletedTurns = new Set();
-  let reviewLifecycleByScope = new Map(); // scopeKey -> { requestedCount, completedCount, lastRequestedUtc, lastCompletedUtc }
   let currentReviewStateScopeKey = "";
   let reviewFindingStateByKey = new Map();
   let renderedReviewMarkdownFindings = [];
@@ -527,100 +522,6 @@
       reviewFindingsByScope.set(scopeKey, loaded);
     }
     rebuildReviewFindingsIndex(scopeKey);
-  }
-
-  function reviewLifecycleStorageKey(scopeKey) {
-    return `${STORAGE_REVIEW_LIFECYCLE_PREFIX}${scopeKey || ""}`;
-  }
-
-  function readReviewLifecycle(scopeKey) {
-    if (!scopeKey) {
-      return {
-        requestedCount: 0,
-        completedCount: 0,
-        lastRequestedUtc: "",
-        lastCompletedUtc: ""
-      };
-    }
-
-    const existing = reviewLifecycleByScope.get(scopeKey);
-    if (existing) {
-      return existing;
-    }
-
-    const fallback = {
-      requestedCount: 0,
-      completedCount: 0,
-      lastRequestedUtc: "",
-      lastCompletedUtc: ""
-    };
-    try {
-      const raw = window.localStorage.getItem(reviewLifecycleStorageKey(scopeKey));
-      if (!raw) {
-        reviewLifecycleByScope.set(scopeKey, fallback);
-        return fallback;
-      }
-      const parsed = JSON.parse(raw);
-      const requestedCount = Number.isFinite(parsed?.requestedCount) ? Math.max(0, Math.floor(parsed.requestedCount)) : 0;
-      const completedCount = Number.isFinite(parsed?.completedCount) ? Math.max(0, Math.floor(parsed.completedCount)) : 0;
-      const loaded = {
-        requestedCount,
-        completedCount,
-        lastRequestedUtc: typeof parsed?.lastRequestedUtc === "string" ? parsed.lastRequestedUtc : "",
-        lastCompletedUtc: typeof parsed?.lastCompletedUtc === "string" ? parsed.lastCompletedUtc : ""
-      };
-      reviewLifecycleByScope.set(scopeKey, loaded);
-      return loaded;
-    } catch {
-      reviewLifecycleByScope.set(scopeKey, fallback);
-      return fallback;
-    }
-  }
-
-  function saveReviewLifecycle(scopeKey) {
-    if (!scopeKey) {
-      return;
-    }
-
-    const state = readReviewLifecycle(scopeKey);
-    try {
-      window.localStorage.setItem(reviewLifecycleStorageKey(scopeKey), JSON.stringify(state));
-    } catch {
-    }
-  }
-
-  function markReviewRequested(scopeKey, turnId = "") {
-    if (!scopeKey) {
-      return;
-    }
-    if (turnId && reviewRequestedTurns.has(turnId)) {
-      return;
-    }
-    if (turnId) {
-      reviewRequestedTurns.add(turnId);
-    }
-    const state = readReviewLifecycle(scopeKey);
-    state.requestedCount += 1;
-    state.lastRequestedUtc = new Date().toISOString();
-    reviewLifecycleByScope.set(scopeKey, state);
-    saveReviewLifecycle(scopeKey);
-  }
-
-  function markReviewCompleted(scopeKey, turnId = "") {
-    if (!scopeKey) {
-      return;
-    }
-    if (turnId && reviewCompletedTurns.has(turnId)) {
-      return;
-    }
-    if (turnId) {
-      reviewCompletedTurns.add(turnId);
-    }
-    const state = readReviewLifecycle(scopeKey);
-    state.completedCount += 1;
-    state.lastCompletedUtc = new Date().toISOString();
-    reviewLifecycleByScope.set(scopeKey, state);
-    saveReviewLifecycle(scopeKey);
   }
 
   function getReviewStatusForScope(scopeKey) {
@@ -1096,13 +997,6 @@
     if (turnId && reviewScopeByTurnId.has(turnId)) {
       const stored = reviewScopeByTurnId.get(turnId);
       return typeof stored === "string" ? stored : "";
-    }
-
-    if (pendingReviewScopeQueue.length > 0) {
-      const queuedScope = pendingReviewScopeQueue[0];
-      if (typeof queuedScope === "string" && queuedScope) {
-        return queuedScope;
-      }
     }
 
     const context = getActiveContext();
@@ -2071,8 +1965,6 @@
         if (turnId) {
           reviewScopeByTurnId.set(turnId, parsed.scopeKey);
         }
-        pendingReviewScopeQueue.push(parsed.scopeKey);
-        markReviewRequested(parsed.scopeKey, turnId);
         renderCommitReviewSummary();
         renderCommitOptions();
       }
@@ -2092,19 +1984,12 @@
       return;
     }
 
-    const responseLooksLikeReview = looksLikeReviewResponseBody(entry.bodyText || "");
     const scopeKey = getEntryReviewScopeKey(entry);
     if (!scopeKey) {
       return;
     }
 
     const findings = extractReviewFindingsFromBodyText(entry.bodyText || "", context.cwd);
-    if (responseLooksLikeReview) {
-      if (!turnId && pendingReviewScopeQueue.length > 0) {
-        pendingReviewScopeQueue.shift();
-      }
-      markReviewCompleted(scopeKey, turnId);
-    }
     let scopedEntries = reviewFindingsByScope.get(scopeKey);
     if (!(scopedEntries instanceof Map)) {
       scopedEntries = new Map();
@@ -4335,9 +4220,6 @@
       notesByKey = new Map();
       ensureReviewFindingStateScope("");
       reviewScopeByTurnId = new Map();
-      pendingReviewScopeQueue = [];
-      reviewRequestedTurns = new Set();
-      reviewCompletedTurns = new Set();
       renderCommitModeBadge();
       fullFileLoadingByPath = new Set();
       closeReviewModal({ keepDraft: true });
@@ -4367,9 +4249,6 @@
       notesByKey = new Map();
       ensureReviewFindingStateScope("");
       reviewScopeByTurnId = new Map();
-      pendingReviewScopeQueue = [];
-      reviewRequestedTurns = new Set();
-      reviewCompletedTurns = new Set();
       renderCommitModeBadge();
       fileOpenStateByPath = new Map();
       fullFileLoadingByPath = new Set();

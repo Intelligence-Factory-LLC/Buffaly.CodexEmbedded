@@ -13,6 +13,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private const int WatchActiveDetailMaxIntermediateEntries = 24;
 	private readonly WebRuntimeDefaults _defaults;
 	private readonly TimelineProjectionService _timelineProjection;
+	private readonly ReviewStore _reviewStore;
 	private readonly object _sync = new();
 	private readonly object _coreSignalSync = new();
 	private readonly object _turnCacheSync = new();
@@ -29,10 +30,11 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	public event Action? SessionsChanged;
 	public event Action<string, object>? Broadcast;
 
-	public SessionOrchestrator(WebRuntimeDefaults defaults, TimelineProjectionService timelineProjection)
+	public SessionOrchestrator(WebRuntimeDefaults defaults, TimelineProjectionService timelineProjection, ReviewStore reviewStore)
 	{
 		_defaults = defaults;
 		_timelineProjection = timelineProjection;
+		_reviewStore = reviewStore;
 	}
 
 	private static void WriteOrchestratorAudit(string message)
@@ -1920,12 +1922,20 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			if (!lockAcquired)
 			{
 				var waitSeconds = _defaults.TurnSlotWaitTimeoutSeconds;
+				_reviewStore.TryCompleteFromPromptText(
+					request.Text,
+					sessionId,
+					session.Session.ThreadId,
+					turnId: null,
+					resultStatus: "queueTimedOut",
+					assistantText: null);
 				session.Log.Write($"[turn_gate] wait timed out after {waitSeconds}s");
 				Broadcast?.Invoke(
 					"turn_complete",
 					new
 					{
 						sessionId,
+						turnId = session.ResolveActiveTurnId(),
 						status = "queueTimedOut",
 						errorMessage = $"Timed out waiting {waitSeconds}s for previous turn to release.",
 						isPlanTurn,
@@ -1950,7 +1960,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			var turnToken = turnCts.Token;
 			if (session.TryMarkTurnStarted(turnCts, collaborationModeKind, dispatchId))
 			{
-				Broadcast?.Invoke("turn_started", new { sessionId, isPlanTurn, collaborationMode = collaborationModeKind });
+				var activeTurnId = session.ResolveActiveTurnId();
+				_reviewStore.TryMarkRunningFromPromptText(
+					request.Text,
+					sessionId,
+					session.Session.ThreadId,
+					activeTurnId);
+				Broadcast?.Invoke("turn_started", new { sessionId, turnId = activeTurnId, isPlanTurn, collaborationMode = collaborationModeKind });
 				SessionsChanged?.Invoke();
 			}
 			else
@@ -2015,11 +2031,20 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				$"event=turn_rpc_result sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} elapsedMs={turnRpcStopwatch.ElapsedMilliseconds} status={result.Status ?? "unknown"} hasError={!string.IsNullOrWhiteSpace(result.ErrorMessage)} {session.BuildTurnDebugSummary()}");
 
 			Broadcast?.Invoke("assistant_done", new { sessionId, text = result.Text });
+			_reviewStore.TryCompleteFromPromptText(
+				request.Text,
+				sessionId,
+				session.Session.ThreadId,
+				result.TurnId,
+				result.Status,
+				result.Text);
 			completionPublished = TryPublishTurnComplete(
 				sessionId,
 				session,
 				result.Status,
-				result.ErrorMessage);
+				result.ErrorMessage,
+				result.TurnId,
+				result.Text);
 			session.ClearRecoverableTurn(dispatchId);
 			WriteOrchestratorAudit(
 				$"event=turn_send_completed sessionId={sessionId} dispatchId={dispatchId} status={result.Status ?? "unknown"} hasError={!string.IsNullOrWhiteSpace(result.ErrorMessage)}");
@@ -2045,21 +2070,37 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 			if (timedOut)
 			{
+				_reviewStore.TryCompleteFromPromptText(
+					request.Text,
+					sessionId,
+					session.Session.ThreadId,
+					turnId: session.ResolveActiveTurnId(),
+					resultStatus: "timedOut",
+					assistantText: null);
 				completionPublished = TryPublishTurnComplete(
 					sessionId,
 					session,
 					status: "timedOut",
-					errorMessage: "Timed out.");
+					errorMessage: "Timed out.",
+					turnId: session.ResolveActiveTurnId());
 			}
 			else
 			{
+				_reviewStore.TryCompleteFromPromptText(
+					request.Text,
+					sessionId,
+					session.Session.ThreadId,
+					turnId: session.ResolveActiveTurnId(),
+					resultStatus: "interrupted",
+					assistantText: null);
 				completionPublished = TryPublishTurnComplete(
 					sessionId,
 					session,
 					status: "interrupted",
 					errorMessage: staleStartCanceled
 						? "Turn start did not acknowledge before recovery."
-						: "Turn canceled.");
+						: "Turn canceled.",
+					turnId: session.ResolveActiveTurnId());
 			}
 
 			if (!completionPublished && staleStartCanceled)
@@ -2070,6 +2111,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					new
 					{
 						sessionId,
+						turnId = session.ResolveActiveTurnId(),
 						status = "interrupted",
 						errorMessage = "Turn start did not acknowledge before recovery.",
 						isPlanTurn,
@@ -2094,11 +2136,19 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			WriteOrchestratorAudit(
 				$"event=turn_rpc_failed sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} error={ex.Message} {session.BuildTurnDebugSummary()}");
 			WriteOrchestratorAudit($"event=turn_send_failed sessionId={sessionId} dispatchId={dispatchId} error={ex.Message}");
+			_reviewStore.TryCompleteFromPromptText(
+				request.Text,
+				sessionId,
+				session.Session.ThreadId,
+				turnId: session.ResolveActiveTurnId(),
+				resultStatus: "failed",
+				assistantText: null);
 			completionPublished = TryPublishTurnComplete(
 				sessionId,
 				session,
 				status: "failed",
-				errorMessage: ex.Message);
+				errorMessage: ex.Message,
+				turnId: session.ResolveActiveTurnId());
 			session.ClearRecoverableTurn(dispatchId);
 		}
 		finally
@@ -2784,12 +2834,14 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					{
 						sessionLog.Write($"[turn_recovery] marked started from core signal ({signal.Source})");
 						WriteOrchestratorAudit($"event=turn_started_from_core_signal sessionId={sessionId} source={signal.Source} turnId={signal.TurnId ?? "(none)"}");
+						_reviewStore.TryBindTurnToNextActiveReview(sessionId, managed.Session.ThreadId, signal.TurnId);
 						var collaborationMode = managed.GetActiveCollaborationMode();
 						Broadcast?.Invoke(
 							"turn_started",
 							new
 							{
 								sessionId,
+								turnId = signal.TurnId,
 								isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal),
 								collaborationMode
 							});
@@ -2800,7 +2852,8 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					sessionId,
 					managed,
 					signal.Status ?? "completed",
-					signal.ErrorMessage))
+					signal.ErrorMessage,
+					signal.TurnId))
 				{
 					sessionLog.Write($"[turn_recovery] marked complete from core signal ({signal.Source})");
 					WriteOrchestratorAudit(
@@ -3012,7 +3065,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		string sessionId,
 		ManagedSession session,
 		string? status,
-		string? errorMessage)
+		string? errorMessage,
+		string? turnId = null,
+		string? assistantText = null)
 	{
 		var collaborationMode = session.GetActiveCollaborationMode();
 		var isPlanTurn = string.Equals(collaborationMode, "plan", StringComparison.Ordinal);
@@ -3022,7 +3077,9 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		}
 
 		var normalizedStatus = string.IsNullOrWhiteSpace(status) ? "unknown" : status!;
-		Broadcast?.Invoke("turn_complete", new { sessionId, status = normalizedStatus, errorMessage, isPlanTurn, collaborationMode });
+		var effectiveTurnId = string.IsNullOrWhiteSpace(turnId) ? session.ResolveActiveTurnId() : turnId;
+		_reviewStore.TryCompleteByTurn(sessionId, session.Session.ThreadId, effectiveTurnId, normalizedStatus, assistantText);
+		Broadcast?.Invoke("turn_complete", new { sessionId, turnId = effectiveTurnId, status = normalizedStatus, errorMessage, isPlanTurn, collaborationMode });
 		WriteOrchestratorAudit(
 			$"event=turn_completion_published sessionId={sessionId} status={normalizedStatus} hasError={!string.IsNullOrWhiteSpace(errorMessage)}");
 		SessionsChanged?.Invoke();

@@ -61,6 +61,136 @@ internal sealed class ReviewStore
 		return new ReviewCreateResult(record.Clone(), promptText);
 	}
 
+	public bool TryMarkRunningFromPromptText(string? promptText, string? sessionId, string? threadId, string? turnId = null)
+	{
+		var metadata = ParseReviewMetadata(promptText);
+		if (metadata is null)
+		{
+			return false;
+		}
+
+		lock (_sync)
+		{
+			var record = _records.FirstOrDefault(x => string.Equals(x.ReviewId, metadata.ReviewId, StringComparison.Ordinal));
+			if (record is null)
+			{
+				return false;
+			}
+
+			return ApplyRunningStateNoLock(
+				record,
+				sessionId,
+				threadId,
+				turnId,
+				DateTimeOffset.UtcNow);
+		}
+	}
+
+	public bool TryBindTurnToNextActiveReview(string? sessionId, string? threadId, string? turnId)
+	{
+		var normalizedSessionId = sessionId?.Trim() ?? string.Empty;
+		var normalizedThreadId = threadId?.Trim() ?? string.Empty;
+		var normalizedTurnId = turnId?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(normalizedTurnId))
+		{
+			return false;
+		}
+
+		lock (_sync)
+		{
+			var record = _records
+				.Where(x =>
+					!IsTerminalStatus(NormalizeStatus(x.Status)) &&
+					string.IsNullOrWhiteSpace(x.TurnId) &&
+					(string.IsNullOrWhiteSpace(normalizedSessionId) || string.Equals(x.SessionId, normalizedSessionId, StringComparison.Ordinal)) &&
+					(string.IsNullOrWhiteSpace(normalizedThreadId) || string.Equals(x.ThreadId, normalizedThreadId, StringComparison.Ordinal)))
+				.OrderBy(x => x.QueuedAtUtc)
+				.ThenBy(x => x.ReviewId, StringComparer.Ordinal)
+				.FirstOrDefault();
+			if (record is null)
+			{
+				return false;
+			}
+
+			return ApplyRunningStateNoLock(
+				record,
+				normalizedSessionId,
+				normalizedThreadId,
+				normalizedTurnId,
+				DateTimeOffset.UtcNow);
+		}
+	}
+
+	public bool TryCompleteFromPromptText(
+		string? promptText,
+		string? sessionId,
+		string? threadId,
+		string? turnId,
+		string? resultStatus,
+		string? assistantText)
+	{
+		var metadata = ParseReviewMetadata(promptText);
+		if (metadata is null)
+		{
+			return false;
+		}
+
+		lock (_sync)
+		{
+			var record = _records.FirstOrDefault(x => string.Equals(x.ReviewId, metadata.ReviewId, StringComparison.Ordinal));
+			if (record is null)
+			{
+				return false;
+			}
+
+			return ApplyCompletionStateNoLock(
+				record,
+				sessionId,
+				threadId,
+				turnId,
+				resultStatus,
+				assistantText,
+				DateTimeOffset.UtcNow);
+		}
+	}
+
+	public bool TryCompleteByTurn(
+		string? sessionId,
+		string? threadId,
+		string? turnId,
+		string? resultStatus,
+		string? assistantText)
+	{
+		var normalizedTurnId = turnId?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(normalizedTurnId))
+		{
+			return false;
+		}
+
+		var normalizedSessionId = sessionId?.Trim() ?? string.Empty;
+		var normalizedThreadId = threadId?.Trim() ?? string.Empty;
+		lock (_sync)
+		{
+			var record = _records.FirstOrDefault(x =>
+				string.Equals(x.TurnId, normalizedTurnId, StringComparison.Ordinal) &&
+				(string.IsNullOrWhiteSpace(normalizedSessionId) || string.Equals(x.SessionId, normalizedSessionId, StringComparison.Ordinal)) &&
+				(string.IsNullOrWhiteSpace(normalizedThreadId) || string.Equals(x.ThreadId, normalizedThreadId, StringComparison.Ordinal)));
+			if (record is null)
+			{
+				return false;
+			}
+
+			return ApplyCompletionStateNoLock(
+				record,
+				normalizedSessionId,
+				normalizedThreadId,
+				normalizedTurnId,
+				resultStatus,
+				assistantText,
+				DateTimeOffset.UtcNow);
+		}
+	}
+
 	public bool TryUpdateStatus(string reviewId, string status)
 	{
 		var normalizedReviewId = reviewId?.Trim() ?? string.Empty;
@@ -272,33 +402,33 @@ internal sealed class ReviewStore
 		}
 
 		var turn = matchedTurn;
-		var assistantText = turn.AssistantFinal?.Text ?? string.Empty;
-		var hasAssistantFinal = turn.AssistantFinal is not null && !string.IsNullOrWhiteSpace(assistantText);
-		var hasCompletedReviewOutput = hasAssistantFinal && LooksLikeCompletedReviewAssistantText(assistantText);
 		var currentStatus = NormalizeStatus(record.Status);
+		var assistantText = turn.AssistantFinal?.Text ?? record.AssistantText ?? string.Empty;
+		var hasAssistantFinal = turn.AssistantFinal is not null && !string.IsNullOrWhiteSpace(turn.AssistantFinal?.Text);
 		var nextStatus = currentStatus;
-		if (string.Equals(currentStatus, "dismissed", StringComparison.Ordinal))
+		if (!IsTerminalStatus(currentStatus) && !string.Equals(currentStatus, "dismissed", StringComparison.Ordinal))
 		{
-			nextStatus = "dismissed";
-		}
-		else if (hasCompletedReviewOutput || hasAssistantFinal)
-		{
-			nextStatus = "completed";
-		}
-		else if (turn.IsInFlight)
-		{
-			nextStatus = "running";
-		}
-		else if (string.Equals(currentStatus, "running", StringComparison.Ordinal))
-		{
-			nextStatus = "stale";
+			if (hasAssistantFinal)
+			{
+				nextStatus = "completed";
+			}
+			else if (turn.IsInFlight)
+			{
+				nextStatus = "running";
+			}
+			else if (string.Equals(currentStatus, "running", StringComparison.Ordinal))
+			{
+				nextStatus = "stale";
+			}
 		}
 
-		var nextStartedAt = ParseUtc(turn.User.Timestamp) ?? record.StartedAtUtc ?? record.QueuedAtUtc;
-		DateTimeOffset? nextCompletedAt = IsTerminalStatus(nextStatus)
-			? (ParseUtc(turn.AssistantFinal?.Timestamp) ?? record.CompletedAtUtc ?? DateTimeOffset.UtcNow)
-			: null;
-		var nextFindings = (hasCompletedReviewOutput || hasAssistantFinal)
+		var nextStartedAt = record.StartedAtUtc ?? ParseUtc(turn.User.Timestamp) ?? record.QueuedAtUtc;
+		DateTimeOffset? nextCompletedAt = record.CompletedAtUtc;
+		if (IsTerminalStatus(nextStatus) && nextCompletedAt is null)
+		{
+			nextCompletedAt = ParseUtc(turn.AssistantFinal?.Timestamp) ?? DateTimeOffset.UtcNow;
+		}
+		var nextFindings = !string.IsNullOrWhiteSpace(assistantText)
 			? ExtractFindings(assistantText, record.Cwd, record.DismissedFindingKeys)
 			: record.Findings;
 		var nextTurnId = turn.TurnId?.Trim() ?? string.Empty;
@@ -347,6 +477,137 @@ internal sealed class ReviewStore
 		return best;
 	}
 
+	private bool ApplyRunningStateNoLock(
+		ReviewRecord record,
+		string? sessionId,
+		string? threadId,
+		string? turnId,
+		DateTimeOffset now)
+	{
+		var changed = false;
+		var normalizedSessionId = sessionId?.Trim() ?? string.Empty;
+		var normalizedThreadId = threadId?.Trim() ?? string.Empty;
+		var normalizedTurnId = turnId?.Trim() ?? string.Empty;
+		if (!string.IsNullOrWhiteSpace(normalizedSessionId) &&
+			!string.Equals(record.SessionId, normalizedSessionId, StringComparison.Ordinal))
+		{
+			record.SessionId = normalizedSessionId;
+			changed = true;
+		}
+		if (!string.IsNullOrWhiteSpace(normalizedThreadId) &&
+			!string.Equals(record.ThreadId, normalizedThreadId, StringComparison.Ordinal))
+		{
+			record.ThreadId = normalizedThreadId;
+			changed = true;
+		}
+		if (!string.IsNullOrWhiteSpace(normalizedTurnId) &&
+			!string.Equals(record.TurnId, normalizedTurnId, StringComparison.Ordinal))
+		{
+			record.TurnId = normalizedTurnId;
+			changed = true;
+		}
+
+		var currentStatus = NormalizeStatus(record.Status);
+		if (IsAllowedTransition(currentStatus, "running") &&
+			!string.Equals(currentStatus, "running", StringComparison.Ordinal))
+		{
+			record.Status = "running";
+			record.CompletedAtUtc = null;
+			changed = true;
+		}
+		if (record.StartedAtUtc is null)
+		{
+			record.StartedAtUtc = now;
+			changed = true;
+		}
+
+		if (changed)
+		{
+			SaveNoLock();
+		}
+
+		return changed;
+	}
+
+	private bool ApplyCompletionStateNoLock(
+		ReviewRecord record,
+		string? sessionId,
+		string? threadId,
+		string? turnId,
+		string? resultStatus,
+		string? assistantText,
+		DateTimeOffset now)
+	{
+		var changed = false;
+		var normalizedSessionId = sessionId?.Trim() ?? string.Empty;
+		var normalizedThreadId = threadId?.Trim() ?? string.Empty;
+		var normalizedTurnId = turnId?.Trim() ?? string.Empty;
+		if (!string.IsNullOrWhiteSpace(normalizedSessionId) &&
+			!string.Equals(record.SessionId, normalizedSessionId, StringComparison.Ordinal))
+		{
+			record.SessionId = normalizedSessionId;
+			changed = true;
+		}
+		if (!string.IsNullOrWhiteSpace(normalizedThreadId) &&
+			!string.Equals(record.ThreadId, normalizedThreadId, StringComparison.Ordinal))
+		{
+			record.ThreadId = normalizedThreadId;
+			changed = true;
+		}
+		if (!string.IsNullOrWhiteSpace(normalizedTurnId) &&
+			!string.Equals(record.TurnId, normalizedTurnId, StringComparison.Ordinal))
+		{
+			record.TurnId = normalizedTurnId;
+			changed = true;
+		}
+
+		var currentStatus = NormalizeStatus(record.Status);
+		var nextStatus = string.Equals(currentStatus, "dismissed", StringComparison.Ordinal)
+			? "dismissed"
+			: NormalizeCompletionStatus(resultStatus, assistantText);
+		if (IsAllowedTransition(currentStatus, nextStatus) &&
+			!string.Equals(currentStatus, nextStatus, StringComparison.Ordinal))
+		{
+			record.Status = nextStatus;
+			changed = true;
+		}
+
+		if (record.StartedAtUtc is null)
+		{
+			record.StartedAtUtc = now;
+			changed = true;
+		}
+		if (IsTerminalStatus(nextStatus) && record.CompletedAtUtc is null)
+		{
+			record.CompletedAtUtc = now;
+			changed = true;
+		}
+
+		var normalizedAssistantText = assistantText ?? string.Empty;
+		if (!string.IsNullOrWhiteSpace(normalizedAssistantText) &&
+			!string.Equals(record.AssistantText ?? string.Empty, normalizedAssistantText, StringComparison.Ordinal))
+		{
+			record.AssistantText = normalizedAssistantText;
+			changed = true;
+		}
+
+		var nextFindings = !string.IsNullOrWhiteSpace(normalizedAssistantText)
+			? ExtractFindings(normalizedAssistantText, record.Cwd, record.DismissedFindingKeys)
+			: record.Findings;
+		if (!AreFindingsEqual(record.Findings, nextFindings))
+		{
+			record.Findings = nextFindings.ToList();
+			changed = true;
+		}
+
+		if (changed)
+		{
+			SaveNoLock();
+		}
+
+		return changed;
+	}
+
 	private static bool ReconcileWithoutTurnMatch(ReviewRecord record)
 	{
 		var currentStatus = NormalizeStatus(record.Status);
@@ -383,41 +644,34 @@ internal sealed class ReviewStore
 		return true;
 	}
 
-	private static bool LooksLikeCompletedReviewAssistantText(string? text)
+	private static string NormalizeCompletionStatus(string? status, string? assistantText)
 	{
-		var source = text?.Trim() ?? string.Empty;
-		if (string.IsNullOrWhiteSpace(source))
+		var normalized = status?.Trim() ?? string.Empty;
+		if (string.Equals(normalized, "completed", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(normalized, "success", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(normalized, "succeeded", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(normalized, "ok", StringComparison.OrdinalIgnoreCase))
 		{
-			return false;
+			return "completed";
 		}
 
-		if (source.IndexOf("findings", StringComparison.OrdinalIgnoreCase) >= 0)
+		if (string.Equals(normalized, "failed", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(normalized, "error", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(normalized, "interrupted", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(normalized, "canceled", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(normalized, "cancelled", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(normalized, "queuetimedout", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(normalized, "timeout", StringComparison.OrdinalIgnoreCase))
 		{
-			return true;
+			return "failed";
 		}
 
-		if (Regex.IsMatch(source, @"^\s*\d+\.\s*(critical|high|medium|low)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Multiline))
+		if (!string.IsNullOrWhiteSpace(assistantText))
 		{
-			return true;
+			return "completed";
 		}
 
-		if (Regex.IsMatch(source, @"^\s*(?:[-*]\s+)?(?:#{1,6}\s*)?(critical|high|medium|low)\b(?:\s*[:\-]\s*|\s+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Multiline))
-		{
-			return true;
-		}
-
-		if (Regex.IsMatch(source, @"\bno\s+(critical|high|medium|low)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
-		{
-			return true;
-		}
-
-		if (source.IndexOf("missing tests", StringComparison.OrdinalIgnoreCase) >= 0 ||
-			source.IndexOf("residual risks", StringComparison.OrdinalIgnoreCase) >= 0)
-		{
-			return true;
-		}
-
-		return false;
+		return "failed";
 	}
 
 	private static bool AreFindingsEqual(IReadOnlyList<ReviewFindingRecord> left, IReadOnlyList<ReviewFindingRecord> right)
