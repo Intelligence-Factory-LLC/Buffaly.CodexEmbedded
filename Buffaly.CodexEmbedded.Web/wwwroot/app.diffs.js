@@ -1228,7 +1228,14 @@
     }
 
     html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    html = html.replace(/`([^`]+)`/g, (_, inner) => {
+      const content = typeof inner === "string" ? inner : "";
+      // Keep review jump anchors clickable when they originate from inline code spans.
+      if (content.includes("data-review-md-link=")) {
+        return content;
+      }
+      return `<code>${content}</code>`;
+    });
     return html;
   }
 
