@@ -7791,6 +7791,34 @@ function getWeeklyRemainingPercent(rateLimit) {
   return null;
 }
 
+function pickMoreConservativeWeeklyRateLimitPayload(primaryPayload, fallbackPayload) {
+  const primary = primaryPayload && typeof primaryPayload === "object" ? primaryPayload : null;
+  const fallback = fallbackPayload && typeof fallbackPayload === "object" ? fallbackPayload : null;
+  if (!primary) {
+    return fallback;
+  }
+  if (!fallback) {
+    return primary;
+  }
+
+  const primaryWeeklyRemaining = getWeeklyRemainingPercent(primary);
+  const fallbackWeeklyRemaining = getWeeklyRemainingPercent(fallback);
+  const primaryHasWeekly = Number.isFinite(primaryWeeklyRemaining);
+  const fallbackHasWeekly = Number.isFinite(fallbackWeeklyRemaining);
+
+  if (primaryHasWeekly && fallbackHasWeekly) {
+    return primaryWeeklyRemaining <= fallbackWeeklyRemaining ? primary : fallback;
+  }
+  if (primaryHasWeekly) {
+    return primary;
+  }
+  if (fallbackHasWeekly) {
+    return fallback;
+  }
+
+  return primary;
+}
+
 function renderSessionMetaUsageWeeklyProgress(container, rateLimit) {
   if (!container) {
     return;
@@ -7871,16 +7899,22 @@ function refreshLatestRateLimitSnapshot(force = false) {
       }
 
       const latest = payload.latest && typeof payload.latest === "object" ? payload.latest : null;
-      if (!latest) {
+      const snapshots = Array.isArray(payload.sessions)
+        ? payload.sessions.filter((x) => x && typeof x === "object")
+        : [];
+      const selected = snapshots.reduce(
+        (best, current) => pickMoreConservativeWeeklyRateLimitPayload(best, current),
+        latest);
+      if (!selected) {
         return null;
       }
 
-      latestRateLimitSnapshot = latest;
+      latestRateLimitSnapshot = selected;
       if (!rateLimitBySession.has(activeSessionId || "")) {
         refreshSessionMetaUsage();
       }
 
-      return latest;
+      return selected;
     })
     .catch(() => null)
     .finally(() => {
@@ -7902,9 +7936,9 @@ function refreshSessionMetaUsage() {
   }
 
   const sessionId = typeof activeSessionId === "string" ? activeSessionId : "";
-  const rateLimit = sessionId
-    ? (rateLimitBySession.get(sessionId) || getAnyKnownRateLimitPayload())
-    : getAnyKnownRateLimitPayload();
+  const sessionRateLimit = sessionId ? rateLimitBySession.get(sessionId) : null;
+  const fallbackRateLimit = latestRateLimitSnapshot || getAnyKnownRateLimitPayload();
+  const rateLimit = pickMoreConservativeWeeklyRateLimitPayload(sessionRateLimit, fallbackRateLimit);
   sessionMetaUsageItem.classList.remove("hidden");
   renderSessionMetaUsageWeeklyProgress(sessionMetaUsageValue, rateLimit);
   if (!rateLimit) {
@@ -9964,6 +9998,7 @@ function handleServerEvent(frame) {
         ? payload.summary.trim()
         : "Rate limits updated";
       appendLog(`[rate_limit] session=${sessionId || "unknown"} ${summary}`);
+      refreshLatestRateLimitSnapshot();
       return;
     }
 
