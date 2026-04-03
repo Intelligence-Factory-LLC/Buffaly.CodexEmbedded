@@ -4759,6 +4759,71 @@ body {
 	padding: 0.35rem 0.45rem;
 }
 
+.diff-review-structured {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 0.35rem;
+	margin-bottom: 0.4rem;
+}
+
+.diff-review-finding-row {
+	border: 1px solid #fecaca;
+	border-radius: 8px;
+	background: #fff7ed;
+	padding: 0.35rem 0.4rem;
+}
+
+.diff-review-finding-header {
+	display: flex;
+	gap: 0.35rem;
+	align-items: baseline;
+	flex-wrap: wrap;
+	margin-bottom: 0.2rem;
+}
+
+.diff-review-finding-severity {
+	font-size: 0.62rem;
+	font-weight: 700;
+	letter-spacing: 0.02em;
+	color: #7f1d1d;
+	background: #fee2e2;
+	border-radius: 999px;
+	padding: 0.04rem 0.35rem;
+}
+
+.diff-review-finding-detail {
+	font-size: 0.72rem;
+	font-weight: 600;
+	color: #7f1d1d;
+}
+
+.diff-review-refs {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.3rem;
+}
+
+.diff-review-ref-link {
+	border: 1px solid #bfdbfe;
+	background: #eff6ff;
+	color: #1d4ed8;
+	border-radius: 6px;
+	padding: 0.08rem 0.35rem;
+	font-size: 0.66rem;
+	font-weight: 600;
+	line-height: 1.2;
+	cursor: pointer;
+}
+
+.diff-review-ref-link:hover {
+	background: #dbeafe;
+}
+
+.diff-review-refs-empty {
+	font-size: 0.66rem;
+	color: #9ca3af;
+}
+
 .diff-review-md-body {
 	font-size: 0.69rem;
 	line-height: 1.45;
@@ -6177,6 +6242,34 @@ html[data-theme="dark"] .diff-review-item-text {
 html[data-theme="dark"] .diff-review-output-item {
 	border-color: #7f1d1d;
 	background: #0f172a;
+}
+
+html[data-theme="dark"] .diff-review-finding-row {
+	border-color: #7f1d1d;
+	background: #1f2937;
+}
+
+html[data-theme="dark"] .diff-review-finding-severity {
+	background: #450a0a;
+	color: #fecaca;
+}
+
+html[data-theme="dark"] .diff-review-finding-detail {
+	color: #fecaca;
+}
+
+html[data-theme="dark"] .diff-review-ref-link {
+	border-color: #1d4ed8;
+	background: #172554;
+	color: #bfdbfe;
+}
+
+html[data-theme="dark"] .diff-review-ref-link:hover {
+	background: #1e3a8a;
+}
+
+html[data-theme="dark"] .diff-review-refs-empty {
+	color: #94a3b8;
 }
 
 html[data-theme="dark"] .diff-review-output-meta {

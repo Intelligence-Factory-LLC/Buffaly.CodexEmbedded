@@ -330,7 +330,33 @@ internal sealed class ReviewStore
 				a.LineNo != b.LineNo ||
 				!string.Equals(a.Severity, b.Severity, StringComparison.Ordinal) ||
 				!string.Equals(a.Detail, b.Detail, StringComparison.Ordinal) ||
-				a.Done != b.Done)
+				a.Done != b.Done ||
+				!AreReferencesEqual(a.References, b.References))
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private static bool AreReferencesEqual(IReadOnlyList<ReviewReferenceRecord>? left, IReadOnlyList<ReviewReferenceRecord>? right)
+	{
+		var a = left ?? Array.Empty<ReviewReferenceRecord>();
+		var b = right ?? Array.Empty<ReviewReferenceRecord>();
+		if (a.Count != b.Count)
+		{
+			return false;
+		}
+
+		for (var i = 0; i < a.Count; i += 1)
+		{
+			var x = a[i];
+			var y = b[i];
+			if (!string.Equals(x.Path, y.Path, StringComparison.Ordinal) ||
+				x.LineStart != y.LineStart ||
+				x.LineEnd != y.LineEnd ||
+				!string.Equals(x.Label, y.Label, StringComparison.Ordinal))
 			{
 				return false;
 			}
@@ -628,6 +654,7 @@ internal sealed class ReviewStore
 		}
 
 		var detail = parsed.Value.Detail;
+		var references = parsed.Value.References ?? Array.Empty<ReviewReferenceRecord>();
 		var key = !string.IsNullOrWhiteSpace(parsed.Value.Path) && parsed.Value.LineNo > 0
 			? $"{parsed.Value.Path}|{parsed.Value.LineNo}|{detail}"
 			: $"summary||{detail}";
@@ -642,10 +669,11 @@ internal sealed class ReviewStore
 			parsed.Value.LineNo,
 			parsed.Value.Severity,
 			detail,
-			dismissed.Contains(key)));
+			dismissed.Contains(key),
+			references));
 	}
 
-	private static (string Path, int LineNo, string Severity, string Detail)? ParseFindingBlock(IReadOnlyList<string> blockLines, string cwd)
+	private static (string Path, int LineNo, string Severity, string Detail, IReadOnlyList<ReviewReferenceRecord> References)? ParseFindingBlock(IReadOnlyList<string> blockLines, string cwd)
 	{
 		if (blockLines is null || blockLines.Count == 0)
 		{
@@ -671,21 +699,24 @@ internal sealed class ReviewStore
 			return null;
 		}
 
-		var attachments = ExtractFileReferences(blockLines, cwd)
-			.Where(x => !string.IsNullOrWhiteSpace(x.Path) && x.LineNo > 0)
-			.Distinct()
+		var references = ExtractFileReferences(blockLines, cwd)
+			.Where(x => !string.IsNullOrWhiteSpace(x.Path))
 			.ToArray();
-		if (attachments.Length == 1)
+
+		var firstLineReference = references
+			.FirstOrDefault(x => x.LineStart > 0);
+		if (firstLineReference is not null)
 		{
-			return (attachments[0].Path, attachments[0].LineNo, severity, detail);
+			return (firstLineReference.Path, firstLineReference.LineStart, severity, detail, references);
 		}
 
-		return (string.Empty, 0, severity, detail);
+		return (string.Empty, 0, severity, detail, references);
 	}
 
-	private static IReadOnlyList<(string Path, int LineNo)> ExtractFileReferences(IReadOnlyList<string> blockLines, string cwd)
+	private static IReadOnlyList<ReviewReferenceRecord> ExtractFileReferences(IReadOnlyList<string> blockLines, string cwd)
 	{
-		var results = new List<(string Path, int LineNo)>();
+		var results = new List<ReviewReferenceRecord>();
+		var dedupe = new HashSet<string>(StringComparer.Ordinal);
 		if (blockLines is null || blockLines.Count == 0)
 		{
 			return results;
@@ -693,7 +724,8 @@ internal sealed class ReviewStore
 
 		foreach (var line in blockLines)
 		{
-			foreach (Match linkMatch in Regex.Matches(line ?? string.Empty, @"\[([^\]]+)\]\(([^)]+)\)", RegexOptions.CultureInvariant))
+			var sourceLine = line ?? string.Empty;
+			foreach (Match linkMatch in Regex.Matches(sourceLine, @"\[([^\]]+)\]\(([^)]+)\)", RegexOptions.CultureInvariant))
 			{
 				var parsed = ParseFileLink(linkMatch.Groups[2].Value);
 				if (parsed is null)
@@ -701,12 +733,70 @@ internal sealed class ReviewStore
 					continue;
 				}
 
-				var normalizedPath = NormalizeFindingPath(parsed.Value.Path, cwd);
-				results.Add((normalizedPath, parsed.Value.LineNo));
+				var label = linkMatch.Groups[1].Value.Trim();
+				AddReference(results, dedupe, parsed.Value.Path, parsed.Value.LineStart, parsed.Value.LineEnd, label, cwd);
+			}
+
+			foreach (Match codeMatch in Regex.Matches(sourceLine, @"`(?<token>[^`]+)`(?:\s*:\s*(?<line>\d+(?:\s*-\s*\d+)?))?", RegexOptions.CultureInvariant))
+			{
+				var token = codeMatch.Groups["token"].Value.Trim();
+				if (string.IsNullOrWhiteSpace(token))
+				{
+					continue;
+				}
+
+				var lineSuffix = codeMatch.Groups["line"].Success ? codeMatch.Groups["line"].Value : string.Empty;
+				var parsed = ParseFileToken(token, lineSuffix);
+				if (parsed is null)
+				{
+					continue;
+				}
+
+				AddReference(results, dedupe, parsed.Value.Path, parsed.Value.LineStart, parsed.Value.LineEnd, token, cwd);
+			}
+
+			foreach (Match pathMatch in Regex.Matches(sourceLine, @"(?<token>(?:[A-Za-z]:[\\/]|/)?[A-Za-z0-9_.\-\\/]+?\.(?:cs|csx|js|jsx|ts|tsx|json|md|markdown|pts|ps1|psm1|cmd|bat|css|html|htm|sql|xml|yml|yaml|csproj|props|targets|sln|config)(?:[:#]L?\d+(?:[-:]\d+)?)?)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+			{
+				var token = pathMatch.Groups["token"].Value.Trim();
+				var parsed = ParseFileToken(token, string.Empty);
+				if (parsed is null)
+				{
+					continue;
+				}
+				AddReference(results, dedupe, parsed.Value.Path, parsed.Value.LineStart, parsed.Value.LineEnd, token, cwd);
 			}
 		}
 
 		return results;
+	}
+
+	private static void AddReference(
+		List<ReviewReferenceRecord> results,
+		HashSet<string> dedupe,
+		string path,
+		int lineStart,
+		int lineEnd,
+		string label,
+		string cwd)
+	{
+		var normalizedPath = NormalizeFindingPath(path, cwd);
+		if (string.IsNullOrWhiteSpace(normalizedPath))
+		{
+			return;
+		}
+
+		var effectiveEnd = lineEnd > 0 ? lineEnd : lineStart;
+		var key = $"{normalizedPath}|{lineStart}|{effectiveEnd}";
+		if (!dedupe.Add(key))
+		{
+			return;
+		}
+
+		results.Add(new ReviewReferenceRecord(
+			normalizedPath,
+			lineStart,
+			effectiveEnd,
+			label?.Trim() ?? string.Empty));
 	}
 
 	private static bool IsFindingStartLine(string line)
@@ -741,7 +831,7 @@ internal sealed class ReviewStore
 			string.Equals(heading, "change summary", StringComparison.OrdinalIgnoreCase);
 	}
 
-	private static (string Path, int LineNo)? ParseFileLink(string? href)
+	private static (string Path, int LineStart, int LineEnd)? ParseFileLink(string? href)
 	{
 		var value = href?.Trim() ?? string.Empty;
 		if (string.IsNullOrWhiteSpace(value))
@@ -761,15 +851,60 @@ internal sealed class ReviewStore
 		}
 
 		value = Regex.Replace(value, @"[?#].*$", string.Empty);
-		var lineNo = 0;
-		var lineMatch = Regex.Match(value, @":(\d+)(?::\d+)?$", RegexOptions.CultureInvariant);
-		if (lineMatch.Success && int.TryParse(lineMatch.Groups[1].Value, out var parsedLine))
+		return ParseFileToken(value, string.Empty);
+	}
+
+	private static (string Path, int LineStart, int LineEnd)? ParseFileToken(string? token, string? externalLineSuffix)
+	{
+		var value = token?.Trim() ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(value))
 		{
-			lineNo = parsedLine;
-			value = value[..lineMatch.Index];
+			return null;
 		}
 
-		return (value.Replace('\\', '/'), lineNo);
+		var lineStart = 0;
+		var lineEnd = 0;
+
+		var inlineLineMatch = Regex.Match(value, @"(?::|#L)(\d+)(?:[-:](\d+))?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+		if (inlineLineMatch.Success)
+		{
+			if (int.TryParse(inlineLineMatch.Groups[1].Value, out var parsedStart))
+			{
+				lineStart = parsedStart;
+				lineEnd = parsedStart;
+				if (inlineLineMatch.Groups[2].Success && int.TryParse(inlineLineMatch.Groups[2].Value, out var parsedEnd) && parsedEnd >= parsedStart)
+				{
+					lineEnd = parsedEnd;
+				}
+			}
+			value = value[..inlineLineMatch.Index];
+		}
+		else if (!string.IsNullOrWhiteSpace(externalLineSuffix))
+		{
+			var suffixMatch = Regex.Match(externalLineSuffix, @"(\d+)(?:\s*-\s*(\d+))?", RegexOptions.CultureInvariant);
+			if (suffixMatch.Success && int.TryParse(suffixMatch.Groups[1].Value, out var parsedStart))
+			{
+				lineStart = parsedStart;
+				lineEnd = parsedStart;
+				if (suffixMatch.Groups[2].Success && int.TryParse(suffixMatch.Groups[2].Value, out var parsedEnd) && parsedEnd >= parsedStart)
+				{
+					lineEnd = parsedEnd;
+				}
+			}
+		}
+
+		value = value.Trim().Trim('"', '\'', '`');
+		if (string.IsNullOrWhiteSpace(value))
+		{
+			return null;
+		}
+
+		if (!Regex.IsMatch(value, @"\.(cs|csx|js|jsx|ts|tsx|json|md|markdown|pts|ps1|psm1|cmd|bat|css|html|htm|sql|xml|yml|yaml|csproj|props|targets|sln|config)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+		{
+			return null;
+		}
+
+		return (value.Replace('\\', '/'), lineStart, lineEnd);
 	}
 
 	private static string NormalizeFindingPath(string path, string cwd)
@@ -883,7 +1018,14 @@ internal sealed class ReviewStore
 		int LineNo,
 		string Severity,
 		string Detail,
-		bool Done);
+		bool Done,
+		IReadOnlyList<ReviewReferenceRecord>? References = null);
+
+	internal sealed record ReviewReferenceRecord(
+		string Path,
+		int LineStart,
+		int LineEnd,
+		string Label);
 
 	private sealed record ReviewMetadata(
 		string ReviewId,

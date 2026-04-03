@@ -3824,7 +3824,9 @@ async function setWorkspaceTab(tab, options = {}) {
   renderWorkspaceTabUi();
   refreshSessionMeta();
 
-  if (currentWorkspaceTab !== WORKSPACE_TAB_CODE_REVIEWS && (changed || options.forceRestore === true)) {
+  if (currentWorkspaceTab !== WORKSPACE_TAB_CODE_REVIEWS
+    && options.skipTaskRestore !== true
+    && (changed || options.forceRestore === true)) {
     await restoreTaskSessionForCurrentProject(options.reason || "workspace_tab_tasks");
   }
 }
@@ -5100,7 +5102,27 @@ function normalizeStoredReviewFinding(finding) {
     label: typeof finding.label === "string" ? finding.label : "",
     path,
     lineNo,
-    done: finding.done === true
+    done: finding.done === true,
+    references: Array.isArray(finding.references)
+      ? finding.references.map((reference) => {
+        if (!reference || typeof reference !== "object") {
+          return null;
+        }
+        const referencePath = typeof reference.path === "string" ? reference.path.trim() : "";
+        if (!referencePath) {
+          return null;
+        }
+        const lineStart = Number.isFinite(reference.lineStart) ? Math.max(0, Math.floor(reference.lineStart)) : 0;
+        const lineEndRaw = Number.isFinite(reference.lineEnd) ? Math.max(0, Math.floor(reference.lineEnd)) : 0;
+        const lineEnd = lineEndRaw >= lineStart ? lineEndRaw : lineStart;
+        return {
+          path: referencePath,
+          lineStart,
+          lineEnd,
+          label: typeof reference.label === "string" ? reference.label : ""
+        };
+      }).filter((x) => !!x)
+      : []
   };
 }
 
@@ -8124,6 +8146,12 @@ function setActiveSession(sessionId, options = {}) {
     restorePromptDraftForActiveSession();
   }
   renderProjectSidebar();
+  if (changed && currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS) {
+    setWorkspaceTab(WORKSPACE_TAB_TASKS, {
+      reason: "active_session_changed_exit_code_reviews",
+      skipTaskRestore: true
+    }).catch((error) => appendLog(`[workspace] failed to restore tasks view after thread change: ${error}`));
+  }
   if (changed && isMobileViewport()) {
     setMobileProjectsOpen(false);
   }

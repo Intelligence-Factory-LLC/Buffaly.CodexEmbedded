@@ -634,20 +634,45 @@
 
     const index = new Map();
     for (const finding of findings) {
-      if (!finding || typeof finding.path !== "string" || !finding.path || !Number.isFinite(finding.lineNo) || finding.lineNo <= 0) {
+      if (!finding || typeof finding !== "object") {
         continue;
       }
-      let byLine = index.get(finding.path);
-      if (!(byLine instanceof Map)) {
-        byLine = new Map();
-        index.set(finding.path, byLine);
+
+      const references = Array.isArray(finding.references) && finding.references.length > 0
+        ? finding.references
+        : [{
+          path: finding.path,
+          lineStart: finding.lineNo,
+          lineEnd: finding.lineEnd || finding.lineNo,
+          label: ""
+        }];
+
+      for (const reference of references) {
+        if (!reference || typeof reference.path !== "string" || !reference.path) {
+          continue;
+        }
+        const lineStart = Number.isFinite(reference.lineStart) ? Math.floor(reference.lineStart) : 0;
+        if (lineStart <= 0) {
+          continue;
+        }
+        const lineEnd = Number.isFinite(reference.lineEnd) && reference.lineEnd >= lineStart
+          ? Math.floor(reference.lineEnd)
+          : lineStart;
+
+        let byLine = index.get(reference.path);
+        if (!(byLine instanceof Map)) {
+          byLine = new Map();
+          index.set(reference.path, byLine);
+        }
+        for (let lineNo = lineStart; lineNo <= lineEnd; lineNo += 1) {
+          let list = byLine.get(lineNo);
+          if (!Array.isArray(list)) {
+            list = [];
+            byLine.set(lineNo, list);
+          }
+          list.push(finding);
+        }
       }
-      let list = byLine.get(finding.lineNo);
-      if (!Array.isArray(list)) {
-        list = [];
-        byLine.set(finding.lineNo, list);
-      }
-      list.push(finding);
     }
     return index;
   }
@@ -764,8 +789,15 @@
       return "";
     }
 
-    const path = typeof finding.path === "string" ? finding.path.trim() : "";
-    const lineNo = Number.isFinite(finding.lineNo) && finding.lineNo > 0 ? Math.floor(finding.lineNo) : 0;
+    const reference = Array.isArray(finding.references) && finding.references.length > 0
+      ? finding.references[0]
+      : null;
+    const path = typeof finding.path === "string" && finding.path.trim()
+      ? finding.path.trim()
+      : (typeof reference?.path === "string" ? reference.path.trim() : "");
+    const lineNo = Number.isFinite(finding.lineNo) && finding.lineNo > 0
+      ? Math.floor(finding.lineNo)
+      : (Number.isFinite(reference?.lineStart) && reference.lineStart > 0 ? Math.floor(reference.lineStart) : 0);
     const detail = typeof finding.detail === "string"
       ? finding.detail.replace(/\s+/g, " ").trim().toLowerCase()
       : "";
@@ -897,9 +929,27 @@
         reviewLabel: typeof finding.reviewLabel === "string" ? finding.reviewLabel : "",
         path: typeof finding.path === "string" ? finding.path : "",
         lineNo: Number.isFinite(finding.lineNo) ? finding.lineNo : 0,
+        lineEnd: Number.isFinite(finding.lineEnd) ? finding.lineEnd : 0,
         severity: finding.severity || "",
         detail: finding.detail || finding.label || "Review finding",
-        done
+        done,
+        references: Array.isArray(finding.references) && finding.references.length > 0
+          ? finding.references.map((reference) => ({
+            path: typeof reference?.path === "string" ? reference.path : "",
+            lineStart: Number.isFinite(reference?.lineStart) ? Math.floor(reference.lineStart) : 0,
+            lineEnd: Number.isFinite(reference?.lineEnd) ? Math.floor(reference.lineEnd) : 0,
+            label: typeof reference?.label === "string" ? reference.label : ""
+          })).filter((reference) => reference.path)
+          : (typeof finding.path === "string" && finding.path && Number.isFinite(finding.lineNo) && finding.lineNo > 0
+            ? [{
+              path: finding.path,
+              lineStart: Math.floor(finding.lineNo),
+              lineEnd: Number.isFinite(finding.lineEnd) && finding.lineEnd >= finding.lineNo
+                ? Math.floor(finding.lineEnd)
+                : Math.floor(finding.lineNo),
+              label: ""
+            }]
+            : [])
       });
     }
 
@@ -912,12 +962,22 @@
       if (sev !== 0) {
         return sev;
       }
-      const pathCompare = a.path.localeCompare(b.path);
+      const aRef = Array.isArray(a.references) && a.references.length > 0 ? a.references[0] : null;
+      const bRef = Array.isArray(b.references) && b.references.length > 0 ? b.references[0] : null;
+      const aPath = a.path || (aRef && typeof aRef.path === "string" ? aRef.path : "");
+      const bPath = b.path || (bRef && typeof bRef.path === "string" ? bRef.path : "");
+      const pathCompare = aPath.localeCompare(bPath);
       if (pathCompare !== 0) {
         return pathCompare;
       }
-      if (a.lineNo !== b.lineNo) {
-        return a.lineNo - b.lineNo;
+      const aLine = Number.isFinite(a.lineNo) && a.lineNo > 0
+        ? a.lineNo
+        : (aRef && Number.isFinite(aRef.lineStart) ? aRef.lineStart : 0);
+      const bLine = Number.isFinite(b.lineNo) && b.lineNo > 0
+        ? b.lineNo
+        : (bRef && Number.isFinite(bRef.lineStart) ? bRef.lineStart : 0);
+      if (aLine !== bLine) {
+        return aLine - bLine;
       }
       return a.detail.localeCompare(b.detail);
     });
@@ -1155,93 +1215,10 @@
     if (!source) {
       return "";
     }
-    // Normalize common model output where line suffix is emitted outside inline code:
-    // `File.cs`:39-48 -> `File.cs:39-48`
-    const normalizedSource = source.replace(/`([^`]+\.[A-Za-z0-9]{1,8})`\s*:\s*(\d+(?:[-:]\d+)?)/g, "`$1:$2`");
-
-    function renderInlineReviewTextSegment(segmentText) {
-      const sourceText = typeof segmentText === "string" ? segmentText : "";
-      if (!sourceText) {
-        return "";
-      }
-
-      const knownFileExtensions = "(?:cs|csx|js|jsx|ts|tsx|json|md|markdown|pts|ps1|psm1|cmd|bat|css|html|htm|sql|xml|yml|yaml|csproj|props|targets|sln|config)";
-      const fileRefPattern = new RegExp(
-        `(^|[^A-Za-z0-9_./\\\\-])((?:(?:[A-Za-z]:[\\\\/]|/)(?:[A-Za-z0-9_.-]+[\\\\/])*[A-Za-z0-9_.-]+\\.${knownFileExtensions}(?:[:#]L?\\d+(?:[-:]\\d+)?)?)|(?:(?:[A-Za-z0-9_.-]+[\\\\/])+[A-Za-z0-9_.-]+\\.${knownFileExtensions}(?:[:#]L?\\d+(?:[-:]\\d+)?)?)|(?:[A-Za-z0-9_.-]+\\.${knownFileExtensions}(?:[:#]L?\\d+(?:[-:]\\d+)?)))`,
-        "g"
-      );
-      let htmlSegment = "";
-      let cursorSegment = 0;
-      let matchSegment = fileRefPattern.exec(sourceText);
-      while (matchSegment) {
-        const prefix = String(matchSegment[1] || "");
-        const candidate = String(matchSegment[2] || "");
-        const matchStart = matchSegment.index + prefix.length;
-        if (matchSegment.index > cursorSegment) {
-          htmlSegment += escapeHtml(sourceText.slice(cursorSegment, matchSegment.index));
-        }
-        if (prefix) {
-          htmlSegment += escapeHtml(prefix);
-        }
-
-        const parsedCandidate = parseFileLinkTarget(candidate);
-        const rawPath = parsedCandidate && parsedCandidate.path ? String(parsedCandidate.path).replace(/\\/g, "/").trim() : "";
-        const lineNo = parsedCandidate && Number.isFinite(parsedCandidate.lineNo) && parsedCandidate.lineNo > 0
-          ? parsedCandidate.lineNo
-          : null;
-        if (rawPath) {
-          htmlSegment += `<a href="#" class="diff-review-md-link" data-review-md-link="1" data-review-jump-path="${escapeAttribute(rawPath)}"${lineNo ? ` data-review-jump-line="${lineNo}"` : ""} title="Open ${escapeAttribute(candidate)}">${escapeHtml(candidate)}</a>`;
-        } else {
-          htmlSegment += escapeHtml(candidate);
-        }
-
-        cursorSegment = matchStart + candidate.length;
-        matchSegment = fileRefPattern.exec(sourceText);
-      }
-
-      if (cursorSegment < sourceText.length) {
-        htmlSegment += escapeHtml(sourceText.slice(cursorSegment));
-      }
-      return htmlSegment;
-    }
-
-    let html = "";
-    let cursor = 0;
-    const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
-    let match = linkPattern.exec(normalizedSource);
-    while (match) {
-      if (match.index > cursor) {
-        html += renderInlineReviewTextSegment(normalizedSource.slice(cursor, match.index));
-      }
-
-      const label = match[1] || "";
-      const href = match[2] || "";
-      const parsed = parseFileLinkTarget(href);
-      if (parsed && parsed.path && Number.isFinite(parsed.lineNo) && parsed.lineNo > 0) {
-        html += `<a href="#" class="diff-review-md-link" data-review-md-link="1" data-review-jump-path="${escapeAttribute(parsed.path)}" data-review-jump-line="${parsed.lineNo}" title="Open ${escapeAttribute(parsed.path)}:${parsed.lineNo}">${escapeHtml(label || `${parsed.path}:${parsed.lineNo}`)}</a>`;
-      } else {
-        const fallbackInline = renderInlineReviewTextSegment(label || href);
-        html += fallbackInline
-          ? `<span class="diff-review-md-link-static">${fallbackInline}</span>`
-          : `<span class="diff-review-md-link-static">${escapeHtml(label || href)}</span>`;
-      }
-
-      cursor = match.index + match[0].length;
-      match = linkPattern.exec(normalizedSource);
-    }
-    if (cursor < normalizedSource.length) {
-      html += renderInlineReviewTextSegment(normalizedSource.slice(cursor));
-    }
-
+    let html = escapeHtml(source);
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label) => escapeHtml(label || ""));
     html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    html = html.replace(/`([^`]+)`/g, (_, inner) => {
-      const content = typeof inner === "string" ? inner : "";
-      // Keep review jump anchors clickable when they originate from inline code spans.
-      if (content.includes("data-review-md-link=")) {
-        return content;
-      }
-      return `<code>${content}</code>`;
-    });
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
     return html;
   }
 
@@ -1330,6 +1307,84 @@
     return completed[0] || null;
   }
 
+  function getFindingReferences(finding) {
+    if (!finding || typeof finding !== "object") {
+      return [];
+    }
+
+    if (Array.isArray(finding.references) && finding.references.length > 0) {
+      return finding.references
+        .map((reference) => {
+          if (!reference || typeof reference.path !== "string" || !reference.path) {
+            return null;
+          }
+          const lineStart = Number.isFinite(reference.lineStart) ? Math.floor(reference.lineStart) : 0;
+          const lineEnd = Number.isFinite(reference.lineEnd) && reference.lineEnd >= lineStart
+            ? Math.floor(reference.lineEnd)
+            : lineStart;
+          return {
+            path: reference.path,
+            lineStart,
+            lineEnd,
+            label: typeof reference.label === "string" ? reference.label : ""
+          };
+        })
+        .filter((reference) => !!reference);
+    }
+
+    if (typeof finding.path === "string" && finding.path && Number.isFinite(finding.lineNo) && finding.lineNo > 0) {
+      return [{
+        path: finding.path,
+        lineStart: Math.floor(finding.lineNo),
+        lineEnd: Number.isFinite(finding.lineEnd) && finding.lineEnd >= finding.lineNo
+          ? Math.floor(finding.lineEnd)
+          : Math.floor(finding.lineNo),
+        label: ""
+      }];
+    }
+
+    return [];
+  }
+
+  function renderStructuredReviewFindings(record) {
+    if (!record || !Array.isArray(record.findings) || record.findings.length === 0) {
+      return "";
+    }
+
+    const rows = record.findings.map((finding) => {
+      if (!finding || typeof finding !== "object") {
+        return "";
+      }
+      const severity = normalizeReviewSeverity(finding.severity || "");
+      const severityLabel = severity ? severity.toUpperCase() : "INFO";
+      const detail = typeof finding.detail === "string" && finding.detail.trim()
+        ? finding.detail.trim()
+        : "Review finding";
+      const references = getFindingReferences(finding);
+      const referenceButtons = references.length > 0
+        ? `<div class="diff-review-refs">${references.map((reference) => {
+          const lineLabel = reference.lineStart > 0
+            ? (reference.lineEnd > reference.lineStart ? `${reference.lineStart}-${reference.lineEnd}` : `${reference.lineStart}`)
+            : "";
+          const label = reference.label && reference.label.trim()
+            ? reference.label.trim()
+            : `${reference.path}${lineLabel ? `:${lineLabel}` : ""}`;
+          return `<button type="button" class="diff-review-ref-link" data-review-jump-path="${escapeAttribute(reference.path)}"${reference.lineStart > 0 ? ` data-review-jump-line="${reference.lineStart}"` : ""}${reference.lineEnd > reference.lineStart ? ` data-review-jump-end="${reference.lineEnd}"` : ""} title="Open ${escapeAttribute(reference.path)}${lineLabel ? `:${lineLabel}` : ""}">${escapeHtml(label)}</button>`;
+        }).join("")}</div>`
+        : "<div class=\"diff-review-refs-empty\">No file reference extracted.</div>";
+
+      return `<div class="diff-review-finding-row">
+        <div class="diff-review-finding-header"><span class="diff-review-finding-severity">${escapeHtml(severityLabel)}</span><span class="diff-review-finding-detail">${escapeHtml(detail)}</span></div>
+        ${referenceButtons}
+      </div>`;
+    }).filter((row) => !!row);
+
+    if (rows.length === 0) {
+      return "";
+    }
+    return `<div class="diff-review-structured">${rows.join("")}</div>`;
+  }
+
   function renderReviewFindingsPanel() {
     if (isCodeReviewsWorkspace() && currentMode === "commit" && !selectedCommitSha) {
       reviewFindingsNode.classList.add("hidden");
@@ -1352,6 +1407,7 @@
     const when = typeof record.completedAtUtc === "string" ? record.completedAtUtc : "";
     const statusLabel = record.status === "reviewed" ? "Reviewed" : "Review Completed";
     const bodyHtml = renderReviewMarkdownBody(record.assistantText);
+    const structuredHtml = renderStructuredReviewFindings(record);
     const openCount = Number.isFinite(summary.openFindingCount) ? summary.openFindingCount : 0;
     const notesCount = notesByKey.size;
 
@@ -1366,6 +1422,7 @@
       ? "<div class=\"diff-review-collapsed-note\">Review details hidden.</div>"
       : `<div class="diff-review-output-item">
       <div class="diff-review-output-meta">${escapeHtml(targetLabel)}${when ? ` | ${escapeHtml(when)}` : ""}</div>
+      ${structuredHtml}
       <div class="diff-review-md-body">${bodyHtml}</div>
     </div>`}`;
     reviewFindingsNode.classList.remove("hidden");
@@ -1660,6 +1717,7 @@
 
     const path = jumpBtn.getAttribute("data-review-jump-path") || "";
     const lineNo = Number.parseInt(jumpBtn.getAttribute("data-review-jump-line") || "", 10);
+    const lineEnd = Number.parseInt(jumpBtn.getAttribute("data-review-jump-end") || "", 10);
     if (!path) {
       return true;
     }
@@ -1671,11 +1729,11 @@
       event.stopPropagation();
     }
     const reviewContext = extractReviewContextFromElement(jumpBtn, path, lineNo);
-    openReviewLinkInFullFile(path, lineNo, reviewContext).catch(() => { });
+    openReviewLinkInFullFile(path, lineNo, lineEnd, reviewContext).catch(() => { });
     return true;
   }
 
-  function openReviewLinkInFullFile(path, lineNo, reviewContext) {
+  function openReviewLinkInFullFile(path, lineNo, lineEnd, reviewContext) {
     if (!path) {
       return Promise.resolve();
     }
@@ -1703,10 +1761,11 @@
       && fullFileViewerState.content) {
       setFullFileReviewContext(resolvedReviewContext);
       if (Number.isFinite(lineNo) && lineNo > 0) {
+        const normalizedLineEnd = Number.isFinite(lineEnd) && lineEnd >= lineNo ? lineEnd : lineNo;
         setFullFileNoteTarget({
           path: resolvedPath,
           startLine: lineNo,
-          endLine: lineNo,
+          endLine: normalizedLineEnd,
           snippet: "",
           origin: "file"
         }, { focus: true, resetDraft: true });
@@ -1717,7 +1776,11 @@
       return Promise.resolve();
     }
 
-    return openFullFileWindow(resolvedPath, { lineNo, reviewContext: resolvedReviewContext });
+    return openFullFileWindow(resolvedPath, {
+      lineNo,
+      lineEnd: Number.isFinite(lineEnd) && lineEnd >= lineNo ? lineEnd : lineNo,
+      reviewContext: resolvedReviewContext
+    });
   }
 
   function upsertReviewFindingsForEntry(entry) {
@@ -2184,15 +2247,55 @@
     return buildDiffScopeKey(context.cwd, "worktree", "");
   }
 
-  async function buildReviewRequestPayload(noteTextRaw) {
+  function findCommitInfoBySha(sha) {
+    const normalizedSha = typeof sha === "string" ? sha.trim() : "";
+    if (!normalizedSha || !Array.isArray(availableCommits)) {
+      return null;
+    }
+
+    for (const commit of availableCommits) {
+      const normalized = normalizeCommitInfo(commit);
+      if (!normalized) {
+        continue;
+      }
+      if (normalized.sha === normalizedSha) {
+        return normalized;
+      }
+    }
+
+    return null;
+  }
+
+  async function buildReviewRequestPayload(noteTextRaw, options = {}) {
     const noteText = normalizeReviewNoteText(noteTextRaw);
     const contextLabel = contextModeLabel(currentContextMode);
-    const visibleCount = Number.isFinite(currentFiles.length) ? currentFiles.length : 0;
-    const totalCount = Number.isFinite(currentTotalChangeCount) ? currentTotalChangeCount : visibleCount;
-    const hiddenBinaryCount = Number.isFinite(hiddenBinaryFileCount) ? hiddenBinaryFileCount : 0;
+    const targetTypeOverride = options && options.targetType === "worktree" ? "worktree" : (options && options.targetType === "commit" ? "commit" : "");
+    const targetType = targetTypeOverride || (currentMode === "commit" ? "commit" : "worktree");
+    const commitSha = targetType === "commit"
+      ? (typeof options?.commitSha === "string" && options.commitSha.trim() ? options.commitSha.trim() : (selectedCommitSha || ""))
+      : "";
+    const commitInfo = targetType === "commit" ? (findCommitInfoBySha(commitSha) || selectedCommitInfo || null) : null;
+    const commitSubject = targetType === "commit"
+      ? (typeof options?.commitSubject === "string" && options.commitSubject.trim()
+        ? options.commitSubject.trim()
+        : (typeof commitInfo?.subject === "string" ? commitInfo.subject : ""))
+      : "";
+    const visibleCount = Number.isFinite(options?.visibleFiles)
+      ? Math.max(0, Math.floor(options.visibleFiles))
+      : (Number.isFinite(currentFiles.length) ? currentFiles.length : 0);
+    const totalCount = Number.isFinite(options?.totalFiles)
+      ? Math.max(0, Math.floor(options.totalFiles))
+      : (Number.isFinite(currentTotalChangeCount) ? currentTotalChangeCount : visibleCount);
+    const hiddenBinaryCount = Number.isFinite(options?.hiddenBinaryFiles)
+      ? Math.max(0, Math.floor(options.hiddenBinaryFiles))
+      : (Number.isFinite(hiddenBinaryFileCount) ? hiddenBinaryFileCount : 0);
     const context = getActiveContext();
     const builder = window.codexDiffCreateReviewRequest;
     if (!context || !context.cwd || typeof builder !== "function") {
+      return null;
+    }
+
+    if (targetType === "commit" && !commitSha) {
       return null;
     }
 
@@ -2200,9 +2303,9 @@
       sessionId: context.sessionId || "",
       threadId: context.threadId || "",
       cwd: context.cwd,
-      targetType: currentMode === "commit" ? "commit" : "worktree",
-      commitSha: currentMode === "commit" ? (selectedCommitSha || "") : "",
-      commitSubject: currentMode === "commit" ? (selectedCommitInfo?.subject || "") : "",
+      targetType,
+      commitSha,
+      commitSubject,
       contextLabel,
       visibleFiles: visibleCount,
       totalFiles: totalCount,
@@ -2271,6 +2374,43 @@
     if (ok === true) {
       renderCommitReviewSummary();
       renderCommitOptions();
+    }
+  }
+
+  async function runCommitReviewRequest(sha) {
+    const normalizedSha = typeof sha === "string" ? sha.trim() : "";
+    if (!normalizedSha) {
+      return;
+    }
+
+    const reviewRequest = await buildReviewRequestPayload("", {
+      targetType: "commit",
+      commitSha: normalizedSha,
+      visibleFiles: 0,
+      totalFiles: 0,
+      hiddenBinaryFiles: 0
+    });
+    if (!reviewRequest || !reviewRequest.promptText) {
+      return;
+    }
+
+    const runReview = window.codexDiffRunReviewPrompt;
+    if (typeof runReview !== "function") {
+      return;
+    }
+
+    const ok = await runReview(reviewRequest.promptText, { logSuccess: true, reviewRequest });
+    if (ok === true) {
+      renderCommitReviewSummary();
+      renderCommitOptions();
+      setReviewQueuedBadgeActive(true);
+      if (reviewQueuedBadgeTimer) {
+        window.clearTimeout(reviewQueuedBadgeTimer);
+      }
+      reviewQueuedBadgeTimer = window.setTimeout(() => {
+        reviewQueuedBadgeTimer = null;
+        setReviewQueuedBadgeActive(false);
+      }, 900);
     }
   }
 
@@ -3631,11 +3771,14 @@
     const requestedLineNo = Number.isFinite(options?.lineNo) && options.lineNo > 0
       ? Math.floor(options.lineNo)
       : null;
+    const requestedLineEnd = Number.isFinite(options?.lineEnd) && options.lineEnd >= requestedLineNo
+      ? Math.floor(options.lineEnd)
+      : requestedLineNo;
     const selectedTarget = requestedLineNo
       ? {
         path: normalizedPath,
         startLine: requestedLineNo,
-        endLine: requestedLineNo,
+        endLine: requestedLineEnd,
         snippet: "",
         origin: "file"
       }
@@ -4282,7 +4425,7 @@
       event.preventDefault();
       event.stopPropagation();
       if (isCodeReviewsWorkspace()) {
-        openCodeReviewCommitDetail(sha, "run");
+        runCommitReviewRequest(sha).catch(() => { });
         return;
       }
       if (sha !== selectedCommitSha || currentFiles.length === 0) {
