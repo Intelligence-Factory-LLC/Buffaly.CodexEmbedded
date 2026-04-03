@@ -465,16 +465,20 @@
 			</div>
 		</div>
 
-		<div id="diffFullFileWindow" class="diff-full-window hidden" role="dialog" aria-modal="true" aria-labelledby="diffFullFileTitle">
-			<div class="diff-full-window-card">
-				<div class="diff-full-window-header">
-					<div id="diffFullFileTitle" class="diff-full-window-title">Full File</div>
-					<div class="diff-full-window-controls">
-						<select id="diffFullFileClassSelect" aria-label="Jump to class"></select>
-						<select id="diffFullFileMethodSelect" aria-label="Jump to method"></select>
-						<button id="diffFullFileCloseBtn" type="button">Close</button>
-					</div>
-				</div>
+				<div id="diffFullFileWindow" class="diff-full-window hidden" role="dialog" aria-modal="true" aria-labelledby="diffFullFileTitle">
+					<div class="diff-full-window-card">
+						<div class="diff-full-window-header">
+							<div id="diffFullFileTitle" class="diff-full-window-title">Full File</div>
+							<div class="diff-full-window-controls">
+								<select id="diffFullFilePathSelect" aria-label="Select file"></select>
+								<select id="diffFullFileClassSelect" aria-label="Jump to class"></select>
+								<select id="diffFullFileMethodSelect" aria-label="Jump to method"></select>
+								<button id="diffFullFileStartReviewBtn" type="button">Start Review</button>
+								<button id="diffFullFileRefreshBtn" type="button">Refresh</button>
+								<button id="diffFullFileBackBtn" type="button">Back</button>
+								<button id="diffFullFileCloseBtn" type="button">Close</button>
+							</div>
+						</div>
 				<div id="diffFullFileStatus" class="diff-full-window-status"></div>
 				<div class="diff-full-window-workspace">
 					<div class="diff-full-window-code-pane">
@@ -491,9 +495,7 @@
 							<div id="diffFullFileNoteTarget" class="diff-full-window-note-target">No line selected.</div>
 							<textarea id="diffFullFileNoteTextarea" class="diff-full-window-note-textarea" rows="8" placeholder="Add your note for this line or range."></textarea>
 							<div class="diff-full-window-note-actions">
-								<button id="diffFullFileNoteSaveBtn" type="button">Save Note</button>
-								<button id="diffFullFileNoteRemoveBtn" type="button">Remove Note</button>
-								<button id="diffFullFileNoteSendBtn" type="button">Send Notes To Prompt</button>
+								<button id="diffFullFileFixBtn" type="button">Fix</button>
 							</div>
 						</div>
 					</aside>

@@ -17,8 +17,12 @@
   const reviewFindingsNode = document.getElementById("diffReviewFindings");
   const fullFileWindow = document.getElementById("diffFullFileWindow");
   const fullFileTitle = document.getElementById("diffFullFileTitle");
+  const fullFilePathSelect = document.getElementById("diffFullFilePathSelect");
   const fullFileClassSelect = document.getElementById("diffFullFileClassSelect");
   const fullFileMethodSelect = document.getElementById("diffFullFileMethodSelect");
+  const fullFileStartReviewBtn = document.getElementById("diffFullFileStartReviewBtn");
+  const fullFileRefreshBtn = document.getElementById("diffFullFileRefreshBtn");
+  const fullFileBackBtn = document.getElementById("diffFullFileBackBtn");
   const fullFileCloseBtn = document.getElementById("diffFullFileCloseBtn");
   const fullFileStatus = document.getElementById("diffFullFileStatus");
   const fullFileBody = document.getElementById("diffFullFileBody");
@@ -28,9 +32,7 @@
   const fullFileReviewContext = document.getElementById("diffFullFileReviewContext");
   const fullFileNoteTarget = document.getElementById("diffFullFileNoteTarget");
   const fullFileNoteTextarea = document.getElementById("diffFullFileNoteTextarea");
-  const fullFileNoteSaveBtn = document.getElementById("diffFullFileNoteSaveBtn");
-  const fullFileNoteRemoveBtn = document.getElementById("diffFullFileNoteRemoveBtn");
-  const fullFileNoteSendBtn = document.getElementById("diffFullFileNoteSendBtn");
+  const fullFileFixBtn = document.getElementById("diffFullFileFixBtn");
   const composerNotesNode = document.getElementById("diffNotesComposer");
   const noteModal = document.getElementById("diffNoteModal");
   const noteModalPath = document.getElementById("diffNoteModalPath");
@@ -57,8 +59,12 @@
   const reviewModalReady = !!(reviewModal && reviewModalTarget && reviewModalTextarea && reviewModalQueueBtn && reviewModalRunBtn && reviewModalCancelBtn);
   const fullFileWindowReady = !!(fullFileWindow
     && fullFileTitle
+    && fullFilePathSelect
     && fullFileClassSelect
     && fullFileMethodSelect
+    && fullFileStartReviewBtn
+    && fullFileRefreshBtn
+    && fullFileBackBtn
     && fullFileCloseBtn
     && fullFileStatus
     && fullFileBody
@@ -68,9 +74,7 @@
     && fullFileReviewContext
     && fullFileNoteTarget
     && fullFileNoteTextarea
-    && fullFileNoteSaveBtn
-    && fullFileNoteRemoveBtn
-    && fullFileNoteSendBtn);
+    && fullFileFixBtn);
 
   const REFRESH_DEBOUNCE_MS = 120;
   const MAX_LINES_PER_FILE = 280;
@@ -110,6 +114,8 @@
   let fullFileLoadingByPath = new Set();
   let fullFileViewerLoadToken = 0;
   let fullFileViewerState = createEmptyFullFileViewerState();
+  let fullFilePathSelectSyncing = false;
+  let autoOpenFullScreenForDetail = false;
   let currentNoteEdit = null;
   let ignoreNextLineClick = false;
   let ignoreNextFullFileLineClick = false;
@@ -196,9 +202,17 @@
     const next = mode === "detail" ? "detail" : "list";
     if (getReviewPageMode() === next) {
       applyPanelState();
+      if (next === "detail") {
+        ensureDetailModeFullScreen({ forceOpen: true });
+      }
       return;
     }
     reviewBridge.setReviewPageMode(next);
+    if (next !== "detail") {
+      closeFullFileWindow();
+    } else {
+      autoOpenFullScreenForDetail = true;
+    }
     applyPanelState();
   }
 
@@ -209,6 +223,11 @@
     }
 
     setReviewPageMode("detail");
+    autoOpenFullScreenForDetail = true;
+    if (normalizedSha === selectedCommitSha && currentFiles.length > 0) {
+      ensureDetailModeFullScreen({ forceOpen: true });
+      return;
+    }
     selectCommitForDetails(normalizedSha);
   }
 
@@ -1253,12 +1272,7 @@
         title: findingTitle || "",
         text: findingText
       });
-      blocks.push(`<section class="diff-review-md-finding" data-review-finding="1" data-review-finding-index="${findingIndex}" data-review-finding-title="${escapeAttribute(findingTitle)}">
-        <div class="diff-review-md-finding-actions">
-          <button type="button" class="diff-review-finding-fix-btn" data-review-fix-finding-index="${findingIndex}">Fix</button>
-        </div>
-        ${findingBlocks.join("")}
-      </section>`);
+      blocks.push(`<section class="diff-review-md-finding" data-review-finding="1" data-review-finding-index="${findingIndex}" data-review-finding-title="${escapeAttribute(findingTitle)}">${findingBlocks.join("")}</section>`);
       findingBlocks = [];
       findingTitle = "";
       findingRawLines = [];
@@ -1492,16 +1506,20 @@
     ].join("\n");
   }
 
-  async function queueFixForReviewFinding(record, finding) {
+  async function queueFixForReviewFinding(record, finding, options = {}) {
     const queueFixPrompt = window.codexDiffQueueFixPrompt;
     if (typeof queueFixPrompt !== "function") {
       return;
     }
 
-    const fixPrompt = buildFixPromptForReviewFinding(record, finding);
-    if (!fixPrompt) {
+    const basePrompt = buildFixPromptForReviewFinding(record, finding);
+    if (!basePrompt) {
       return;
     }
+    const additionalNote = typeof options.additionalNote === "string" ? options.additionalNote.trim() : "";
+    const fixPrompt = additionalNote
+      ? `${basePrompt}\n\nReviewer note:\n${additionalNote}`
+      : basePrompt;
 
     const queued = await queueFixPrompt(fixPrompt, { logSuccess: true });
     if (queued === true) {
@@ -1657,7 +1675,8 @@
       html: typeof context.html === "string" ? context.html : "",
       text: typeof context.text === "string" ? context.text.trim() : "",
       path: typeof context.path === "string" ? context.path : "",
-      lineNo: Number.isFinite(context.lineNo) ? Math.floor(context.lineNo) : null
+      lineNo: Number.isFinite(context.lineNo) ? Math.floor(context.lineNo) : null,
+      findingIndex: Number.isFinite(context.findingIndex) ? Math.floor(context.findingIndex) : null
     };
     renderFullFileReviewPanel();
   }
@@ -1668,38 +1687,50 @@
     }
 
     const target = fullFileViewerState.selectedNoteTarget;
-    const reviewContext = fullFileViewerState.reviewContext;
+    const reviewContext = fullFileViewerState.reviewContext || buildScopeReviewContextForFullFile();
+    const findingIndex = Number.parseInt(String(reviewContext?.findingIndex ?? ""), 10);
+    const selectedFinding = Number.isFinite(findingIndex) && findingIndex >= 0
+      ? renderedReviewMarkdownFindings.find((item) => item && item.index === findingIndex) || null
+      : null;
     const noteKey = target
       ? buildNoteKey(target.path, target.startLine, target.endLine, "file")
       : "";
     const existing = noteKey ? notesByKey.get(noteKey) : null;
-    const noteText = noteKey && fullFileViewerState.noteDraftKey === noteKey
-      ? fullFileViewerState.noteDraftText
-      : (existing && typeof existing.note === "string" ? existing.note : "");
+    const noteText = target
+      ? (noteKey && fullFileViewerState.noteDraftKey === noteKey
+        ? fullFileViewerState.noteDraftText
+        : (existing && typeof existing.note === "string" ? existing.note : ""))
+      : (fullFileViewerState.noteDraftKey === ""
+        ? (typeof fullFileViewerState.noteDraftText === "string" ? fullFileViewerState.noteDraftText : "")
+        : "");
+    const canAnnotateAndFix = !!selectedFinding;
+    const queueFixPrompt = window.codexDiffQueueFixPrompt;
 
     fullFileReviewTitle.textContent = reviewContext && reviewContext.title
       ? reviewContext.title
       : "Review Context";
-    fullFileReviewMeta.textContent = target
-      ? `${target.path} (${noteLineLabel(target.startLine, target.endLine, "file")})`
-      : "Select a review link or code line to annotate.";
+    if (target) {
+      fullFileReviewMeta.textContent = `${target.path} (${noteLineLabel(target.startLine, target.endLine, "file")})`;
+    } else if (canAnnotateAndFix) {
+      fullFileReviewMeta.textContent = "Add an optional note, then click Fix to queue this finding.";
+    } else {
+      fullFileReviewMeta.textContent = "Select a review link or code line to annotate.";
+    }
 
     if (reviewContext && reviewContext.html) {
       fullFileReviewContext.innerHTML = `<div class="diff-full-window-review-card">${reviewContext.html}</div>`;
     } else if (reviewContext && reviewContext.text) {
       fullFileReviewContext.innerHTML = `<div class="diff-full-window-review-card"><div class="diff-review-md-paragraph">${escapeHtml(reviewContext.text)}</div></div>`;
     } else {
-      fullFileReviewContext.innerHTML = "<div class=\"diff-full-window-review-empty\">Click a finding link to keep the review note visible while you inspect and annotate the code.</div>";
+      fullFileReviewContext.innerHTML = "<div class=\"diff-full-window-review-empty\">No review output yet. Start Review to generate findings, then click links to keep context visible while annotating code.</div>";
     }
 
     fullFileNoteTarget.textContent = target
       ? `${target.path} (${noteLineLabel(target.startLine, target.endLine, "file")})`
-      : "No line selected.";
+      : (canAnnotateAndFix ? "No line selected. Optional note will be attached to this finding." : "No line selected.");
     fullFileNoteTextarea.value = noteText;
-    fullFileNoteTextarea.disabled = !target;
-    fullFileNoteSaveBtn.disabled = !target;
-    fullFileNoteRemoveBtn.disabled = !target || !existing;
-    fullFileNoteSendBtn.disabled = notesByKey.size === 0 && !noteText.trim();
+    fullFileNoteTextarea.disabled = !canAnnotateAndFix;
+    fullFileFixBtn.disabled = !canAnnotateAndFix || typeof queueFixPrompt !== "function";
   }
 
   function saveFullFilePanelNote() {
@@ -1748,6 +1779,35 @@
     renderFullFileReviewPanel();
   }
 
+  async function queueFixFromFullFilePanel() {
+    const scopeKey = getCurrentScopeKey();
+    const summary = getScopeReviewSummary(scopeKey);
+    const record = getActiveDetailReviewRecord(summary);
+    const reviewContext = fullFileViewerState.reviewContext || buildScopeReviewContextForFullFile();
+    const findingIndex = Number.parseInt(String(reviewContext?.findingIndex ?? ""), 10);
+    if (!record || !Number.isFinite(findingIndex) || findingIndex < 0) {
+      return;
+    }
+
+    const finding = renderedReviewMarkdownFindings.find((item) => item && item.index === findingIndex);
+    if (!finding) {
+      return;
+    }
+
+    const noteText = typeof fullFileNoteTextarea.value === "string" ? fullFileNoteTextarea.value.trim() : "";
+    if (fullFileViewerState.selectedNoteTarget) {
+      saveFullFilePanelNote();
+      await queueFixForReviewFinding(record, finding);
+      return;
+    }
+
+    fullFileViewerState.noteDraftKey = "";
+    fullFileViewerState.noteDraftText = noteText;
+    fullFileViewerState.noteDraftDirty = false;
+    await queueFixForReviewFinding(record, finding, { additionalNote: noteText });
+    renderFullFileReviewPanel();
+  }
+
   function sendCurrentNotesToPrompt() {
     const consumeMetadata = window.codexDiffNotesConsumePromptMetadata;
     const appendPrompt = window.codexAppendTextToPrompt;
@@ -1793,13 +1853,18 @@
     }
 
     const findingNode = element.closest("[data-review-finding='1']");
+    const findingIndex = findingNode
+      ? Number.parseInt(findingNode.getAttribute("data-review-finding-index") || "", 10)
+      : Number.NaN;
+    const normalizedFindingIndex = Number.isFinite(findingIndex) && findingIndex >= 0 ? findingIndex : null;
     if (findingNode) {
       return {
         title: findingNode.getAttribute("data-review-finding-title") || "",
         html: findingNode.innerHTML,
         text: findingNode.textContent || "",
         path,
-        lineNo
+        lineNo,
+        findingIndex: normalizedFindingIndex
       };
     }
 
@@ -1810,7 +1875,8 @@
         html: blockNode.outerHTML,
         text: blockNode.textContent || "",
         path,
-        lineNo
+        lineNo,
+        findingIndex: normalizedFindingIndex
       };
     }
 
@@ -1819,7 +1885,8 @@
       html: "",
       text: element.textContent || "",
       path,
-      lineNo
+      lineNo,
+      findingIndex: normalizedFindingIndex
     };
   }
 
@@ -2259,6 +2326,10 @@
     indicatorBtn.title = indicatorBtn.getAttribute("aria-label") || "Open repository diff";
     applyModeUiState();
     updateReviewActionAvailability();
+    updateFullFileWindowControls();
+    if (dedicatedWorkspace && reviewPageMode === "detail" && hasVisibleChanges && fullFileWindowReady && fullFileWindow.classList.contains("hidden")) {
+      ensureDetailModeFullScreen({ forceOpen: true });
+    }
   }
 
   function canSubmitReviewRequest() {
@@ -2290,6 +2361,9 @@
     }
     queueReviewBtn.disabled = !enabled;
     runReviewBtn.disabled = !enabled;
+    if (fullFileWindowReady) {
+      fullFileStartReviewBtn.disabled = !enabled;
+    }
     if (!enabled) {
       setReviewQueuedBadgeActive(false);
     }
@@ -2311,6 +2385,9 @@
 
     selectedCommitSha = normalizedSha;
     selectedCommitInfo = findSelectedCommitInfo();
+    if (isCodeReviewsWorkspace() && getReviewPageMode() === "detail") {
+      autoOpenFullScreenForDetail = true;
+    }
     lastRenderKey = "";
     refreshBtn.disabled = true;
     commitSelect.disabled = true;
@@ -3217,6 +3294,114 @@
     renderFullFileWindowMethodOptions();
   }
 
+  function renderFullFilePathOptions(selectedPath = "") {
+    if (!fullFileWindowReady) {
+      return;
+    }
+
+    const options = [];
+    for (const file of currentFiles) {
+      if (!file || typeof file.path !== "string" || !file.path.trim()) {
+        continue;
+      }
+      options.push(file.path.trim());
+    }
+
+    if (options.length === 0) {
+      fullFilePathSelectSyncing = true;
+      fullFilePathSelect.innerHTML = "<option value=\"\">Files</option>";
+      fullFilePathSelect.value = "";
+      fullFilePathSelect.disabled = true;
+      fullFilePathSelectSyncing = false;
+      return;
+    }
+
+    const preferred = selectedPath && options.includes(selectedPath)
+      ? selectedPath
+      : (options.includes(fullFileViewerState.path) ? fullFileViewerState.path : options[0]);
+
+    const optionMarkup = options.map((path) => `<option value="${escapeAttribute(path)}">${escapeHtml(path)}</option>`).join("");
+    fullFilePathSelectSyncing = true;
+    fullFilePathSelect.innerHTML = optionMarkup;
+    fullFilePathSelect.value = preferred;
+    fullFilePathSelect.disabled = false;
+    fullFilePathSelectSyncing = false;
+  }
+
+  function updateFullFileWindowControls() {
+    if (!fullFileWindowReady) {
+      return;
+    }
+
+    const inReviewDetail = isCodeReviewsWorkspace() && getReviewPageMode() === "detail";
+    fullFileBackBtn.classList.toggle("hidden", !inReviewDetail);
+    fullFileCloseBtn.classList.toggle("hidden", inReviewDetail);
+    fullFileRefreshBtn.disabled = pollInFlight === true;
+    fullFileStartReviewBtn.disabled = !canSubmitReviewRequest();
+  }
+
+  function ensureDetailModeFullScreen(options = {}) {
+    if (!fullFileWindowReady) {
+      return;
+    }
+
+    const inReviewDetail = isCodeReviewsWorkspace() && getReviewPageMode() === "detail" && currentMode === "commit";
+    if (!inReviewDetail) {
+      return;
+    }
+
+    if (!Array.isArray(currentFiles) || currentFiles.length === 0) {
+      return;
+    }
+
+    const explicitPath = typeof options.path === "string" ? options.path.trim() : "";
+    const hasExplicit = explicitPath && currentFiles.some((file) => file && file.path === explicitPath);
+    const hasOpenPath = fullFileViewerState.path && currentFiles.some((file) => file && file.path === fullFileViewerState.path);
+    const nextPath = hasExplicit
+      ? explicitPath
+      : (hasOpenPath ? fullFileViewerState.path : currentFiles[0].path);
+
+    if (!nextPath) {
+      return;
+    }
+
+    renderFullFilePathOptions(nextPath);
+    const shouldOpen = options.forceOpen === true || fullFileWindow.classList.contains("hidden");
+    const samePath = !fullFileWindow.classList.contains("hidden")
+      && normalizePathCaseInsensitive(fullFileViewerState.path) === normalizePathCaseInsensitive(nextPath);
+    if (!shouldOpen && samePath) {
+      updateFullFileWindowControls();
+      return;
+    }
+
+    openFullFileWindow(nextPath, {
+      lineNo: Number.isFinite(options.lineNo) ? options.lineNo : null,
+      lineEnd: Number.isFinite(options.lineEnd) ? options.lineEnd : null
+    }).catch(() => { });
+  }
+
+  function buildScopeReviewContextForFullFile() {
+    const scopeKey = getCurrentScopeKey();
+    const summary = getScopeReviewSummary(scopeKey);
+    const record = getActiveDetailReviewRecord(summary);
+    if (!record || typeof record.assistantText !== "string" || !record.assistantText.trim()) {
+      return null;
+    }
+
+    const targetLabel = record.targetType === "commit" && typeof record.commitSha === "string" && record.commitSha
+      ? `commit ${record.commitSha.slice(0, 7)}`
+      : "worktree";
+    const when = typeof record.completedAtUtc === "string" && record.completedAtUtc ? record.completedAtUtc : "";
+    const statusLabel = (record.status === "dismissed" || record.status === "reviewed") ? "Dismissed" : "Review Completed";
+    const openCount = Number.isFinite(summary.openFindingCount) ? summary.openFindingCount : 0;
+    const bodyHtml = renderReviewMarkdownBody(record.assistantText);
+    return {
+      title: "Review Context",
+      html: `<div class="diff-review-output-meta">${escapeHtml(statusLabel)} | ${openCount} open | ${escapeHtml(targetLabel)}${when ? ` | ${escapeHtml(when)}` : ""}</div><div class="diff-review-md-body">${bodyHtml}</div>`,
+      text: ""
+    };
+  }
+
   function closeFullFileWindow() {
     if (!fullFileWindowReady) {
       return;
@@ -3228,11 +3413,17 @@
     fullFileTitle.textContent = "Full File";
     fullFileStatus.textContent = "";
     fullFileBody.innerHTML = "";
+    fullFilePathSelectSyncing = true;
+    fullFilePathSelect.innerHTML = "<option value=\"\">Files</option>";
+    fullFilePathSelect.value = "";
+    fullFilePathSelect.disabled = true;
+    fullFilePathSelectSyncing = false;
     fullFileClassSelect.innerHTML = "<option value=\"\">Classes</option>";
     fullFileClassSelect.disabled = true;
     fullFileMethodSelect.innerHTML = "<option value=\"\">Methods</option>";
     fullFileMethodSelect.disabled = true;
     renderFullFileReviewPanel();
+    updateFullFileWindowControls();
     ignoreNextFullFileLineClick = false;
   }
 
@@ -3351,6 +3542,7 @@
     }
 
     listNode.innerHTML = html.join("");
+    renderFullFilePathOptions();
     renderReviewFindingsPanel();
   }
 
@@ -3959,6 +4151,7 @@
       fullFileViewerState.noteDraftText = existing && typeof existing.note === "string" ? existing.note : "";
       fullFileViewerState.noteDraftDirty = false;
     }
+    renderFullFilePathOptions(normalizedPath);
     fullFileTitle.textContent = normalizedPath;
     fullFileStatus.textContent = "Loading full file content...";
     fullFileBody.innerHTML = "";
@@ -3967,6 +4160,7 @@
     fullFileMethodSelect.innerHTML = "<option value=\"\">Methods</option>";
     fullFileMethodSelect.disabled = true;
     fullFileWindow.classList.remove("hidden");
+    updateFullFileWindowControls();
     renderFullFileReviewPanel();
 
     try {
@@ -4278,6 +4472,7 @@
           currentFiles = [];
           currentTotalChangeCount = 0;
           hiddenBinaryFileCount = 0;
+          closeFullFileWindow();
           updateSummary(0);
           listNode.innerHTML = isCodeReviewsWorkspace()
             ? "<div class=\"worktree-diff-empty\">Select a commit to view diffs, findings, and add notes.</div>"
@@ -4393,6 +4588,10 @@
       updateSummary(currentTotalChangeCount);
       applyPanelState();
       renderComposerNotes();
+      if (isCodeReviewsWorkspace() && getReviewPageMode() === "detail" && hasVisibleChanges) {
+        ensureDetailModeFullScreen({ forceOpen: autoOpenFullScreenForDetail });
+      }
+      autoOpenFullScreenForDetail = false;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (typeof window.uiAuditLog === "function") {
@@ -4713,6 +4912,33 @@
   }
 
   if (fullFileWindowReady) {
+    fullFilePathSelect.addEventListener("change", () => {
+      if (fullFilePathSelectSyncing) {
+        return;
+      }
+      const nextPath = typeof fullFilePathSelect.value === "string" ? fullFilePathSelect.value.trim() : "";
+      if (!nextPath || normalizePathCaseInsensitive(nextPath) === normalizePathCaseInsensitive(fullFileViewerState.path)) {
+        return;
+      }
+      openFullFileWindow(nextPath).catch(() => { });
+    });
+
+    fullFileStartReviewBtn.addEventListener("click", () => {
+      openReviewModal();
+    });
+
+    fullFileRefreshBtn.addEventListener("click", () => {
+      fetchAndRenderDiff(true).catch(() => { });
+    });
+
+    fullFileBackBtn.addEventListener("click", () => {
+      if (isCodeReviewsWorkspace() && getReviewPageMode() === "detail") {
+        setReviewPageMode("list");
+        return;
+      }
+      closeFullFileWindow();
+    });
+
     fullFileCloseBtn.addEventListener("click", () => {
       closeFullFileWindow();
     });
@@ -4779,30 +5005,17 @@
 
     fullFileNoteTextarea.addEventListener("input", () => {
       const target = fullFileViewerState.selectedNoteTarget;
-      if (!target) {
-        fullFileViewerState.noteDraftKey = "";
-        fullFileViewerState.noteDraftText = "";
-        fullFileViewerState.noteDraftDirty = false;
-        return;
-      }
-
-      fullFileViewerState.noteDraftKey = buildNoteKey(target.path, target.startLine, target.endLine, "file");
+      fullFileViewerState.noteDraftKey = target
+        ? buildNoteKey(target.path, target.startLine, target.endLine, "file")
+        : "";
       fullFileViewerState.noteDraftText = fullFileNoteTextarea.value || "";
       fullFileViewerState.noteDraftDirty = true;
-      fullFileNoteSaveBtn.disabled = false;
-      fullFileNoteSendBtn.disabled = !fullFileViewerState.noteDraftText.trim() && notesByKey.size === 0;
+      fullFileFixBtn.disabled = !fullFileViewerState.noteDraftText.trim()
+        && !(fullFileViewerState.reviewContext && Number.isFinite(fullFileViewerState.reviewContext.findingIndex));
     });
 
-    fullFileNoteSaveBtn.addEventListener("click", () => {
-      saveFullFilePanelNote();
-    });
-
-    fullFileNoteRemoveBtn.addEventListener("click", () => {
-      removeFullFilePanelNote();
-    });
-
-    fullFileNoteSendBtn.addEventListener("click", () => {
-      sendCurrentNotesToPrompt();
+    fullFileFixBtn.addEventListener("click", () => {
+      queueFixFromFullFilePanel().catch(() => { });
     });
 
     fullFileReviewPanel.addEventListener("click", (event) => {
@@ -4959,21 +5172,6 @@
           renderCommitReviewSummary();
           renderCommitOptions();
         });
-      return;
-    }
-
-    const findingFixBtn = event.target instanceof Element ? event.target.closest("[data-review-fix-finding-index]") : null;
-    if (findingFixBtn) {
-      const findingIndex = Number.parseInt(findingFixBtn.getAttribute("data-review-fix-finding-index") || "", 10);
-      const scopeKey = getCurrentScopeKey();
-      const summary = getScopeReviewSummary(scopeKey);
-      const record = getActiveDetailReviewRecord(summary);
-      const finding = Number.isFinite(findingIndex) && findingIndex >= 0
-        ? renderedReviewMarkdownFindings.find((x) => x && x.index === findingIndex)
-        : null;
-      if (record && finding) {
-        queueFixForReviewFinding(record, finding).catch(() => { });
-      }
       return;
     }
 

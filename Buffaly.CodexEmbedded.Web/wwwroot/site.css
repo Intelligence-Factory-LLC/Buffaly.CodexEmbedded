@@ -3904,6 +3904,18 @@ body {
 	max-width: min(30vw, 360px);
 }
 
+#diffFullFilePathSelect {
+	min-width: 260px;
+	max-width: min(34vw, 500px);
+}
+
+#diffFullFileStartReviewBtn,
+#diffFullFileRefreshBtn,
+#diffFullFileBackBtn,
+#diffFullFileCloseBtn {
+	font-weight: 700;
+}
+
 .diff-full-window-status {
 	font-size: 0.72rem;
 	color: #475569;
@@ -4024,6 +4036,7 @@ body {
 .diff-full-window-note-actions {
 	display: flex;
 	flex-wrap: wrap;
+	justify-content: flex-end;
 	gap: 0.4rem;
 	margin-top: 0.45rem;
 }
@@ -4036,11 +4049,23 @@ body {
 	font-size: 0.7rem;
 	font-weight: 700;
 	padding: 0.22rem 0.62rem;
+	min-width: 6.2rem;
 }
 
 .diff-full-window-note-actions button:disabled {
 	opacity: 0.55;
 	cursor: not-allowed;
+}
+
+#diffFullFileFixBtn {
+	border-color: #0f766e;
+	background: #0f766e;
+	color: #ffffff;
+}
+
+#diffFullFileFixBtn:hover {
+	background: #0e746c;
+	border-color: #0e746c;
 }
 
 .diff-full-window-line {
@@ -4102,27 +4127,6 @@ body {
 	margin-bottom: 0.5rem;
 	padding-bottom: 0.2rem;
 	border-bottom: 1px dashed rgba(248, 113, 113, 0.28);
-}
-
-.diff-review-md-finding-actions {
-	display: flex;
-	justify-content: flex-end;
-	margin: 0 0 0.18rem;
-}
-
-.diff-review-finding-fix-btn {
-	border: 1px solid #fecaca;
-	background: #fff;
-	color: #991b1b;
-	border-radius: 999px;
-	font-size: 0.65rem;
-	font-weight: 700;
-	padding: 0.1rem 0.48rem;
-	cursor: pointer;
-}
-
-.diff-review-finding-fix-btn:hover {
-	background: #fff1f2;
 }
 
 @media (max-width: 900px) {
@@ -4739,6 +4743,26 @@ body {
 	font-weight: 700;
 	padding: 0.12rem 0.48rem;
 	cursor: pointer;
+}
+
+.diff-review-copy-json {
+	border: 1px solid #fecaca;
+	background: #ffffff;
+	color: #991b1b;
+	border-radius: 999px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-family: inherit;
+	font-size: 0.66rem;
+	font-weight: 700;
+	line-height: 1.15;
+	padding: 0.12rem 0.48rem;
+	cursor: pointer;
+}
+
+.diff-review-copy-json:hover {
+	background: #fff1f2;
 }
 
 .diff-review-done-review:disabled {
@@ -6085,6 +6109,17 @@ html[data-theme="dark"] .diff-full-window-note-actions button {
 	color: #fdba74;
 }
 
+html[data-theme="dark"] #diffFullFileFixBtn {
+	background: #0f766e;
+	border-color: #0f766e;
+	color: #ecfeff;
+}
+
+html[data-theme="dark"] #diffFullFileFixBtn:hover {
+	background: #0b5f58;
+	border-color: #0b5f58;
+}
+
 html[data-theme="dark"] .diff-review-collapse-btn {
 	background: #111827;
 	border-color: #9a3412;
@@ -6348,6 +6383,12 @@ html[data-theme="dark"] .diff-review-clear-done {
 }
 
 html[data-theme="dark"] .diff-review-done-review {
+	background: #0f172a;
+	border-color: rgba(248, 113, 113, 0.45);
+	color: #fecaca;
+}
+
+html[data-theme="dark"] .diff-review-copy-json {
 	background: #0f172a;
 	border-color: rgba(248, 113, 113, 0.45);
 	color: #fecaca;
