@@ -129,6 +129,8 @@
   let commitReviewSummaryCollapsed = false;
   let reviewPanelCollapsed = false;
   let workspaceMode = "tasks";
+  let reviewPageMode = "list"; // list | detail
+  let detailReviewAction = ""; // run | queue | ""
   try {
     currentContextMode = normalizeContextMode(window.localStorage.getItem(STORAGE_CONTEXT_MODE_KEY) || "3");
   } catch {
@@ -152,6 +154,20 @@
   } catch {
     workspaceMode = "tasks";
   }
+  try {
+    const pageUrl = new URL(window.location.href);
+    const requestedMode = String(pageUrl.searchParams.get("reviewMode") || "").trim().toLowerCase();
+    reviewPageMode = requestedMode === "detail" ? "detail" : "list";
+    const requestedCommit = String(pageUrl.searchParams.get("commit") || "").trim();
+    if (requestedCommit) {
+      selectedCommitSha = requestedCommit;
+    }
+    const requestedAction = String(pageUrl.searchParams.get("reviewAction") || "").trim().toLowerCase();
+    detailReviewAction = requestedAction === "run" || requestedAction === "queue" ? requestedAction : "";
+  } catch {
+    reviewPageMode = "list";
+    detailReviewAction = "";
+  }
 
   function createEmptyFullFileViewerState() {
     return {
@@ -174,6 +190,45 @@
 
   function isCodeReviewsWorkspace() {
     return workspaceMode === "code_reviews";
+  }
+
+  function navigateToCodeReviewsListPage() {
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", "code_reviews");
+    url.searchParams.delete("reviewMode");
+    url.searchParams.delete("commit");
+    url.searchParams.delete("reviewAction");
+    window.location.assign(url.toString());
+  }
+
+  function navigateToCodeReviewsDetailPage(sha, action = "") {
+    const normalizedSha = typeof sha === "string" ? sha.trim() : "";
+    if (!normalizedSha) {
+      return;
+    }
+
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", "code_reviews");
+    url.searchParams.set("reviewMode", "detail");
+    url.searchParams.set("commit", normalizedSha);
+    if (action === "run" || action === "queue") {
+      url.searchParams.set("reviewAction", action);
+    } else {
+      url.searchParams.delete("reviewAction");
+    }
+    window.location.assign(url.toString());
+  }
+
+  function clearDetailReviewActionFromUrl() {
+    try {
+      const url = new URL(window.location.href);
+      if (!url.searchParams.has("reviewAction")) {
+        return;
+      }
+      url.searchParams.delete("reviewAction");
+      window.history.replaceState(null, "", url.toString());
+    } catch {
+    }
   }
 
   function getActiveContext() {
@@ -1896,11 +1951,13 @@
     panel.classList.toggle("worktree-diff-collapsed", false);
     panel.classList.toggle("worktree-diff-fullscreen", dedicatedWorkspace ? false : isExpanded);
     panel.classList.toggle("worktree-diff-dedicated-workspace", dedicatedWorkspace);
-    toggleBtn.textContent = "Close";
+    toggleBtn.textContent = dedicatedWorkspace && reviewPageMode === "detail" ? "Back" : "Close";
     toggleBtn.setAttribute("aria-expanded", showPanel ? "true" : "false");
     toggleBtn.disabled = false;
-    toggleBtn.classList.toggle("hidden", dedicatedWorkspace);
+    toggleBtn.classList.toggle("hidden", dedicatedWorkspace ? reviewPageMode !== "detail" : false);
     indicatorBtn.classList.toggle("hidden", dedicatedWorkspace ? true : false);
+    panel.classList.toggle("worktree-diff-review-index", dedicatedWorkspace && reviewPageMode !== "detail");
+    panel.classList.toggle("worktree-diff-review-detail", dedicatedWorkspace && reviewPageMode === "detail");
     indicatorCountNode.textContent = String(currentFiles.length);
     const fileLabel = `${currentFiles.length} file${currentFiles.length === 1 ? "" : "s"}`;
     if (!lastCwd) {
@@ -3896,6 +3953,16 @@
       updateSummary(currentTotalChangeCount);
       applyPanelState();
       renderComposerNotes();
+      if (isCodeReviewsWorkspace() && reviewPageMode === "detail" && detailReviewAction && selectedCommitSha) {
+        const action = detailReviewAction;
+        detailReviewAction = "";
+        clearDetailReviewActionFromUrl();
+        if (action === "run") {
+          runReviewFromDiffPanel("").catch(() => { });
+        } else if (action === "queue") {
+          queueReviewFromDiffPanel("").catch(() => { });
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (typeof window.uiAuditLog === "function") {
@@ -3953,7 +4020,9 @@
       currentMode = "commit";
     }
     if (workspaceMode === "code_reviews") {
-      clearCommitSelection();
+      if (reviewPageMode !== "detail") {
+        clearCommitSelection();
+      }
       lastRenderKey = "";
       queueRefresh({ force: true });
     }
@@ -3997,6 +4066,10 @@
   }
 
   toggleBtn.addEventListener("click", () => {
+    if (isCodeReviewsWorkspace() && reviewPageMode === "detail") {
+      navigateToCodeReviewsListPage();
+      return;
+    }
     persistPendingNoteDraft();
     isExpanded = false;
     applyPanelState();
@@ -4040,6 +4113,10 @@
       }
       event.preventDefault();
       event.stopPropagation();
+      if (isCodeReviewsWorkspace()) {
+        navigateToCodeReviewsDetailPage(sha);
+        return;
+      }
       selectCommitForDetails(sha);
       return;
     }
@@ -4052,6 +4129,10 @@
       }
       event.preventDefault();
       event.stopPropagation();
+      if (isCodeReviewsWorkspace()) {
+        navigateToCodeReviewsDetailPage(sha, "run");
+        return;
+      }
       if (sha !== selectedCommitSha || currentFiles.length === 0) {
         selectCommitForDetails(sha);
       }
@@ -4071,6 +4152,10 @@
       return;
     }
 
+    if (isCodeReviewsWorkspace()) {
+      navigateToCodeReviewsDetailPage(sha);
+      return;
+    }
     selectCommitForDetails(sha);
   });
 
@@ -4091,6 +4176,10 @@
     event.preventDefault();
     const sha = (row.getAttribute("data-commit-review-jump") || "").trim();
     if (!sha) {
+      return;
+    }
+    if (isCodeReviewsWorkspace()) {
+      navigateToCodeReviewsDetailPage(sha);
       return;
     }
     selectCommitForDetails(sha);
@@ -4513,6 +4602,10 @@
 
   if (workspaceMode === "code_reviews") {
     currentMode = "commit";
+    if (reviewPageMode !== "detail") {
+      selectedCommitSha = "";
+      selectedCommitInfo = null;
+    }
   }
   renderCommitOptions();
   applyModeUiState();
