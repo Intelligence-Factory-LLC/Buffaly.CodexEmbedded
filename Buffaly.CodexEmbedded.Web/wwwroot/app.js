@@ -325,6 +325,16 @@ function isCodeReviewsStateLike(entry) {
   return isCodeReviewsThreadName(entry.threadName || "");
 }
 
+function isSameProjectCwd(leftCwd, rightCwd) {
+  const left = getProjectKeyFromCwd(leftCwd || "");
+  const right = getProjectKeyFromCwd(rightCwd || "");
+  if (!left || !right || left === "(unknown)" || right === "(unknown)") {
+    return false;
+  }
+
+  return left === right;
+}
+
 function getPendingCodeReviewsProjectKey(cwd) {
   const normalizedCwd = normalizeProjectCwd(cwd || "");
   if (!normalizedCwd) {
@@ -415,7 +425,7 @@ function hasResolvedCodeReviewsSessionForCwd(cwd) {
       continue;
     }
 
-    if (normalizeProjectCwd(state.cwd || "") !== normalizedCwd) {
+    if (!isSameProjectCwd(state.cwd || "", normalizedCwd)) {
       continue;
     }
 
@@ -2884,7 +2894,7 @@ function findCodeReviewsCatalogEntryByCwd(cwd) {
 
   const matches = sessionCatalog.filter((entry) =>
     entry
-    && normalizeProjectCwd(entry.cwd || "") === normalizedCwd
+    && isSameProjectCwd(entry.cwd || "", normalizedCwd)
     && isCodeReviewsThreadName(entry.threadName || ""));
   if (matches.length === 0) {
     return null;
@@ -2906,7 +2916,7 @@ function findCodeReviewsSessionStateByCwd(cwd) {
       continue;
     }
 
-    if (normalizeProjectCwd(state.cwd || "") !== normalizedCwd) {
+    if (!isSameProjectCwd(state.cwd || "", normalizedCwd)) {
       continue;
     }
 
@@ -2993,7 +3003,7 @@ async function ensureCodeReviewsSessionForCurrentProject(reason = "workspace_tab
   }
 
   const active = getActiveSessionState();
-  if (active && normalizeProjectCwd(active.cwd || "") === cwd && isCodeReviewsStateLike(active)) {
+  if (active && isSameProjectCwd(active.cwd || "", cwd) && isCodeReviewsStateLike(active)) {
     clearPendingCodeReviewsThreadForCwd(cwd);
     return true;
   }
@@ -3017,7 +3027,7 @@ async function ensureCodeReviewsSessionForCurrentProject(reason = "workspace_tab
       if (!pending || !isCodeReviewsThreadName(pending.threadName || "")) {
         continue;
       }
-      if (normalizeProjectCwd(pending.cwd || "") === cwd) {
+      if (isSameProjectCwd(pending.cwd || "", cwd)) {
         setPendingCodeReviewsThreadForCwd(cwd, { reason });
         return true;
       }
@@ -9144,6 +9154,31 @@ function prunePendingAttachRequests() {
   }
 }
 
+function consumePendingCreateRequestByCwd(cwd, threadName) {
+  const normalizedCwd = normalizeProjectCwd(cwd || "");
+  if (!normalizedCwd) {
+    return null;
+  }
+
+  const requestedName = String(threadName || "").trim();
+  for (const [requestId, pending] of Array.from(pendingCreateRequests.entries())) {
+    if (!pending) {
+      continue;
+    }
+    if (requestedName && String(pending.threadName || "").trim() !== requestedName) {
+      continue;
+    }
+    if (!isSameProjectCwd(pending.cwd || "", normalizedCwd)) {
+      continue;
+    }
+
+    pendingCreateRequests.delete(requestId);
+    return { requestId, pending };
+  }
+
+  return null;
+}
+
 function handleServerEvent(frame) {
   const type = frame.type;
   const payload = frame.payload || {};
@@ -9269,6 +9304,12 @@ function handleServerEvent(frame) {
       }
       if (!normalizeProjectCwd(state.cwd || "") && pendingCreate?.cwd) {
         state.cwd = pendingCreate.cwd;
+      }
+      if (!pendingCreate && normalizeProjectCwd(state.cwd || "") && getPendingCodeReviewsThreadForCwd(state.cwd || "")) {
+        const fallbackPendingCreate = consumePendingCreateRequestByCwd(state.cwd || "", CODE_REVIEWS_THREAD_NAME);
+        if (fallbackPendingCreate && fallbackPendingCreate.pending) {
+          pendingCreate = fallbackPendingCreate.pending;
+        }
       }
       if (!state.createdAtTick) {
         state.createdAtTick = Date.now();
