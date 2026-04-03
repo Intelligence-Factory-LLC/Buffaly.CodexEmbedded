@@ -1071,7 +1071,6 @@
 
       const shortSha = normalized.shortSha || normalized.sha.slice(0, 7);
       const subject = normalized.subject ? normalized.subject.trim() : "";
-      const shortSubject = subject.length > 62 ? `${subject.slice(0, 61)}...` : subject;
       const statusLabel = status === "reviewed"
         ? "Reviewed"
         : (status === "completed"
@@ -1091,8 +1090,10 @@
           : (status === "completed" ? "clear" : (status === "started" ? "running" : "not run")));
       rows.push(
         `<div class="diff-commit-review-row${normalized.sha === selectedCommitSha ? " active" : ""}" data-commit-review-jump="${escapeAttribute(normalized.sha)}" tabindex="0" role="button" aria-label="Open review details for ${escapeAttribute(subject || normalized.sha)}">
-          <span class="diff-commit-review-sha">${escapeHtml(shortSha)}</span>
-          <span class="diff-commit-review-subject">${escapeHtml(shortSubject || "(no subject)")}</span>
+          <div class="diff-commit-review-main">
+            <div class="diff-commit-review-sha">${escapeHtml(shortSha)}</div>
+            <div class="diff-commit-review-subject">${escapeHtml(subject || "(no subject)")}</div>
+          </div>
           <button type="button" class="diff-commit-review-action-btn" data-commit-review-request="${escapeAttribute(normalized.sha)}"${reviewActionDisabled}>${escapeHtml(reviewActionLabel)}</button>
           <span class="diff-commit-review-status ${statusClass}">${escapeHtml(statusLabel)}</span>
           <span class="diff-commit-review-open-count">${escapeHtml(outcomeLabel)}</span>
