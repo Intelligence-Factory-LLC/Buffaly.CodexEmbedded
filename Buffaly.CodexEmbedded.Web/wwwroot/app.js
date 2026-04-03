@@ -3034,6 +3034,7 @@ async function ensureCodeReviewsSessionForCurrentProject(reason = "workspace_tab
     }
 
     if (!sessionCatalogLoadedOnce) {
+      setPendingCodeReviewsThreadForCwd(cwd, { reason: `${reason}:await_catalog` });
       send("session_catalog_list");
       return true;
     }
@@ -9695,8 +9696,15 @@ function handleServerEvent(frame) {
       updateExistingSessionSelect();
       refreshSessionMeta();
       appendLog(`[catalog] loaded ${sessionCatalog.length} existing sessions from ${payload.codexHomePath || "default CODEX_HOME"}`);
-      // Avoid catalog-driven auto-creation loops for Code Reviews threads.
-      // Explicit UI actions handle review-session selection/creation.
+      // Resume a pending code-reviews ensure only when an explicit ensure already
+      // set a pending marker (for example startup deep-link before catalog loaded).
+      if (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS) {
+        const currentCwd = getWorkspaceProjectCwd();
+        const pendingCodeReviews = getPendingCodeReviewsThreadForCwd(currentCwd || "");
+        if (pendingCodeReviews) {
+          ensureCodeReviewsSessionForCurrentProject("session_catalog_pending_code_reviews").catch(() => {});
+        }
+      }
       return;
     }
 
@@ -11508,6 +11516,9 @@ document.addEventListener("visibilitychange", () => {
 });
 
 applySavedUiSettings();
+setWorkspaceTab(currentWorkspaceTab, { reason: "startup_workspace_restore", forceRestore: true }).catch((error) => {
+  appendLog(`[workspace] startup restore failed: ${error}`);
+});
 initializeStartupRestoreGuard();
 refreshPromptInputHeight({ reset: promptInput.value.length === 0 });
 renderComposerImages();
