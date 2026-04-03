@@ -3728,8 +3728,10 @@
       currentRepoRoot = "";
       currentBranch = "";
       availableCommits = [];
-      selectedCommitSha = "";
-      selectedCommitInfo = null;
+      if (reviewPageMode !== "detail") {
+        selectedCommitSha = "";
+        selectedCommitInfo = null;
+      }
       currentNotesScopeKey = "";
       currentFileViewScopeKey = "";
       notesByKey = new Map();

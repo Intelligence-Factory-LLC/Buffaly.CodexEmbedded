@@ -9403,6 +9403,7 @@ function handleServerEvent(frame) {
       }
 
       const shouldPreferAttachedSession =
+        currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS ||
         !attachedMode ||
         !!pendingAttach ||
         !activeSessionId ||
