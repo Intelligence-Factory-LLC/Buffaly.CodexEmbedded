@@ -1156,13 +1156,49 @@
       return "";
     }
 
+    function renderInlineReviewTextSegment(segmentText) {
+      const sourceText = typeof segmentText === "string" ? segmentText : "";
+      if (!sourceText) {
+        return "";
+      }
+
+      const fileRefPattern = /((?:[A-Za-z]:[\\/]|\/)?(?:[A-Za-z0-9_.-]+[\\/])*[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})(?:[:#]L?(\d+)(?:[-:](\d+))?)?/g;
+      let htmlSegment = "";
+      let cursorSegment = 0;
+      let matchSegment = fileRefPattern.exec(sourceText);
+      while (matchSegment) {
+        if (matchSegment.index > cursorSegment) {
+          htmlSegment += escapeHtml(sourceText.slice(cursorSegment, matchSegment.index));
+        }
+
+        const rawPath = String(matchSegment[1] || "").replace(/\\/g, "/").trim();
+        const lineText = String(matchSegment[2] || "").trim();
+        const lineNo = Number.parseInt(lineText, 10);
+        const hasLineNo = Number.isFinite(lineNo) && lineNo > 0;
+        const fullMatchText = String(matchSegment[0] || "").trim();
+        if (rawPath) {
+          htmlSegment += `<a href="#" class="diff-review-md-link" data-review-md-link="1" data-review-jump-path="${escapeAttribute(rawPath)}"${hasLineNo ? ` data-review-jump-line="${lineNo}"` : ""} title="Open ${escapeAttribute(fullMatchText)}">${escapeHtml(fullMatchText)}</a>`;
+        } else {
+          htmlSegment += escapeHtml(fullMatchText);
+        }
+
+        cursorSegment = matchSegment.index + matchSegment[0].length;
+        matchSegment = fileRefPattern.exec(sourceText);
+      }
+
+      if (cursorSegment < sourceText.length) {
+        htmlSegment += escapeHtml(sourceText.slice(cursorSegment));
+      }
+      return htmlSegment;
+    }
+
     let html = "";
     let cursor = 0;
     const linkPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
     let match = linkPattern.exec(source);
     while (match) {
       if (match.index > cursor) {
-        html += escapeHtml(source.slice(cursor, match.index));
+        html += renderInlineReviewTextSegment(source.slice(cursor, match.index));
       }
 
       const label = match[1] || "";
@@ -1178,7 +1214,7 @@
       match = linkPattern.exec(source);
     }
     if (cursor < source.length) {
-      html += escapeHtml(source.slice(cursor));
+      html += renderInlineReviewTextSegment(source.slice(cursor));
     }
 
     html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
@@ -1576,19 +1612,31 @@
       return Promise.resolve();
     }
 
+    const resolvedPath = resolveDiffPathFromReviewReference(path);
+    if (!resolvedPath) {
+      return Promise.resolve();
+    }
+
+    const resolvedReviewContext = reviewContext
+      ? {
+        ...reviewContext,
+        path: resolvedPath
+      }
+      : null;
+
     if (fullFileWindowReady && fullFileViewerState.noteDraftDirty && fullFileViewerState.selectedNoteTarget) {
       saveFullFilePanelNote();
     }
 
     if (fullFileWindowReady
       && !fullFileWindow.classList.contains("hidden")
-      && fullFileViewerState.path === path
+      && normalizePathCaseInsensitive(fullFileViewerState.path) === normalizePathCaseInsensitive(resolvedPath)
       && typeof fullFileViewerState.content === "string"
       && fullFileViewerState.content) {
-      setFullFileReviewContext(reviewContext);
+      setFullFileReviewContext(resolvedReviewContext);
       if (Number.isFinite(lineNo) && lineNo > 0) {
         setFullFileNoteTarget({
-          path,
+          path: resolvedPath,
           startLine: lineNo,
           endLine: lineNo,
           snippet: "",
@@ -1601,7 +1649,7 @@
       return Promise.resolve();
     }
 
-    return openFullFileWindow(path, { lineNo, reviewContext });
+    return openFullFileWindow(resolvedPath, { lineNo, reviewContext: resolvedReviewContext });
   }
 
   function upsertReviewFindingsForEntry(entry) {
@@ -3381,6 +3429,73 @@
     return normalizedPath;
   }
 
+  function normalizePathCaseInsensitive(path) {
+    return typeof path === "string" ? path.replace(/\\/g, "/").trim().toLowerCase() : "";
+  }
+
+  function resolveDiffPathFromReviewReference(path) {
+    const source = typeof path === "string" ? path.trim() : "";
+    if (!source) {
+      return "";
+    }
+
+    const activeContext = getActiveContext();
+    const normalized = normalizePathForDiffViewer(source, activeContext && activeContext.cwd ? activeContext.cwd : "");
+    if (!normalized) {
+      return "";
+    }
+
+    const exact = currentFiles.find((x) => x && typeof x.path === "string" && x.path === normalized);
+    if (exact && typeof exact.path === "string") {
+      return exact.path;
+    }
+
+    const normalizedNeedle = normalizePathCaseInsensitive(normalized);
+    if (!normalizedNeedle) {
+      return normalized;
+    }
+
+    const exactInsensitive = currentFiles.find((x) => normalizePathCaseInsensitive(x && x.path) === normalizedNeedle);
+    if (exactInsensitive && typeof exactInsensitive.path === "string") {
+      return exactInsensitive.path;
+    }
+
+    const suffixNeedle = normalizedNeedle.startsWith("/") ? normalizedNeedle : `/${normalizedNeedle}`;
+    const suffixMatches = currentFiles.filter((x) => {
+      const candidate = normalizePathCaseInsensitive(x && x.path);
+      if (!candidate) {
+        return false;
+      }
+      if (candidate === normalizedNeedle) {
+        return true;
+      }
+      return candidate.endsWith(suffixNeedle);
+    });
+    if (suffixMatches.length === 1 && typeof suffixMatches[0]?.path === "string") {
+      return suffixMatches[0].path;
+    }
+
+    const baseName = normalizedNeedle.includes("/")
+      ? normalizedNeedle.slice(normalizedNeedle.lastIndexOf("/") + 1)
+      : normalizedNeedle;
+    if (!baseName) {
+      return normalized;
+    }
+
+    const baseNameMatches = currentFiles.filter((x) => {
+      const candidate = normalizePathCaseInsensitive(x && x.path);
+      if (!candidate) {
+        return false;
+      }
+      return candidate.endsWith(`/${baseName}`) || candidate === baseName;
+    });
+    if (baseNameMatches.length === 1 && typeof baseNameMatches[0]?.path === "string") {
+      return baseNameMatches[0].path;
+    }
+
+    return normalized;
+  }
+
   function parseFileLinkTarget(rawHref) {
     const source = typeof rawHref === "string" ? rawHref.trim() : "";
     if (!source) {
@@ -3410,7 +3525,7 @@
     }
 
     let lineNo = null;
-    const lineMatch = value.match(/:(\d+)(?::\d+)?$/);
+    const lineMatch = value.match(/:(\d+)(?:(?::\d+)|(?:-\d+))?$/);
     if (lineMatch) {
       const parsed = Number.parseInt(lineMatch[1] || "", 10);
       if (Number.isFinite(parsed) && parsed > 0) {
@@ -3437,7 +3552,7 @@
       return;
     }
 
-    const normalizedPath = normalizePathForDiffViewer(path, activeContext.cwd);
+    const normalizedPath = resolveDiffPathFromReviewReference(path);
     if (!normalizedPath) {
       return;
     }
