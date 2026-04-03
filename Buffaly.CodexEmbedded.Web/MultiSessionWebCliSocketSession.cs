@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
@@ -9,6 +10,7 @@ using BasicUtilities;
 internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 {
 	private const int MaxCatalogSessionsPerProject = 20;
+	private static readonly ConcurrentDictionary<string, SemaphoreSlim> NamedSessionEnsureLocks = new(StringComparer.OrdinalIgnoreCase);
 	private readonly WebSocket _socket;
 	private readonly WebRuntimeDefaults _defaults;
 	private readonly SessionOrchestrator _orchestrator;
@@ -185,6 +187,9 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 					return;
 				case "session_attach":
 					await AttachSessionAsync(root, cancellationToken);
+					return;
+				case "session_ensure_named":
+					await EnsureNamedSessionAsync(root, cancellationToken);
 					return;
 				case "session_select":
 					WriteAuditEvent("action=session_select_rejected reason=unsupported");
@@ -515,7 +520,150 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var sandboxMode = WebCodexUtils.NormalizeSandboxMode(TryGetSandboxModeRaw(request));
 		var cwd = TryGetString(request, "cwd") ?? _defaults.DefaultCwd;
 		var codexPath = TryGetString(request, "codexPath") ?? _defaults.CodexPath;
+		await AttachToThreadAsync(
+			requestId,
+			threadId,
+			model,
+			effort,
+			approvalPolicy,
+			sandboxMode,
+			cwd,
+			codexPath,
+			cancellationToken,
+			threadName: null);
+	}
 
+	private async Task EnsureNamedSessionAsync(JsonElement request, CancellationToken cancellationToken)
+	{
+		var requestId = TryGetString(request, "requestId");
+		var threadName = (TryGetString(request, "threadName") ?? string.Empty).Trim();
+		if (string.IsNullOrWhiteSpace(threadName))
+		{
+			WriteAuditEvent("action=session_ensure_named_rejected reason=missing_threadName");
+			await SendEventAsync("error", new { message = "threadName is required for session_ensure_named." }, cancellationToken);
+			return;
+		}
+
+		if (threadName.Length > 200)
+		{
+			WriteAuditEvent("action=session_ensure_named_rejected reason=name_too_long");
+			await SendEventAsync("error", new { message = "threadName must be 200 characters or fewer." }, cancellationToken);
+			return;
+		}
+
+		var model = TryGetString(request, "model") ?? _defaults.DefaultModel;
+		var effort = WebCodexUtils.NormalizeReasoningEffort(TryGetString(request, "effort"));
+		var approvalPolicy = WebCodexUtils.NormalizeApprovalPolicy(TryGetApprovalPolicyRaw(request));
+		var sandboxMode = WebCodexUtils.NormalizeSandboxMode(TryGetSandboxModeRaw(request));
+		var cwd = TryGetString(request, "cwd") ?? _defaults.DefaultCwd;
+		var codexPath = TryGetString(request, "codexPath") ?? _defaults.CodexPath;
+		var normalizedCwd = ServerStateSnapshotBuilder.NormalizeProjectCwd(cwd);
+		var normalizedThreadName = threadName.Trim();
+		var ensureKey = $"{normalizedCwd}||{normalizedThreadName}";
+		var gate = NamedSessionEnsureLocks.GetOrAdd(ensureKey, _ => new SemaphoreSlim(1, 1));
+		await gate.WaitAsync(cancellationToken);
+		try
+		{
+			var existing = FindStoredSessionByCwdAndThreadName(normalizedCwd, normalizedThreadName);
+			if (existing is not null)
+			{
+				WriteAuditEvent($"action=session_ensure_named_reuse threadId={existing.ThreadId} cwd={normalizedCwd} threadName={normalizedThreadName}");
+				await AttachToThreadAsync(
+					requestId,
+					existing.ThreadId,
+					model,
+					effort,
+					approvalPolicy,
+					sandboxMode,
+					cwd,
+					codexPath,
+					cancellationToken,
+					threadName: existing.ThreadName ?? normalizedThreadName);
+				return;
+			}
+
+			var sessionId = Guid.NewGuid().ToString("N");
+			WriteAuditEvent($"action=session_ensure_named_create sessionId={sessionId} cwd={normalizedCwd} threadName={normalizedThreadName}");
+			await WriteConnectionLogAsync(
+				$"[session] ensuring named session created id={sessionId} cwd={cwd} threadName={normalizedThreadName} model={model ?? "(default)"} effort={effort ?? "(default)"} approval={approvalPolicy ?? "(default)"} sandbox={sandboxMode ?? "(default)"}",
+				cancellationToken);
+
+			SessionOrchestrator.SessionCreatedPayload created;
+			try
+			{
+				created = await _orchestrator.CreateSessionAsync(sessionId, model, effort, approvalPolicy, sandboxMode, cwd, codexPath, cancellationToken);
+			}
+			catch (Exception ex)
+			{
+				Logs.LogError(ex);
+				WriteAuditEvent($"action=session_ensure_named_create_failed sessionId={sessionId} error={ex.Message}");
+				await WriteConnectionLogAsync($"[session] ensure named failed to create id={sessionId} error={ex.Message}", cancellationToken);
+				await SendEventAsync("error", new { message = $"Failed to start session: {ex.Message}" }, cancellationToken);
+				return;
+			}
+
+			var renameResult = await CodexSessionIndexMutator.TryAppendThreadRenameAsync(
+				_defaults.CodexHomePath,
+				created.threadId,
+				normalizedThreadName,
+				cancellationToken);
+			if (!renameResult.Success)
+			{
+				WriteAuditEvent($"action=session_ensure_named_rename_failed sessionId={sessionId} threadId={created.threadId} error={renameResult.ErrorMessage ?? "(none)"}");
+				await SendEventAsync("error", new { message = $"Failed to rename session: {renameResult.ErrorMessage}" }, cancellationToken);
+			}
+			else
+			{
+				WriteAuditEvent($"action=session_ensure_named_rename_completed sessionId={sessionId} threadId={created.threadId} threadName={normalizedThreadName}");
+			}
+
+			await SendEventAsync("session_created", new
+			{
+				sessionId,
+				requestId,
+				threadId = created.threadId,
+				threadName = renameResult.Success ? normalizedThreadName : null,
+				model = created.model,
+				reasoningEffort = created.reasoningEffort,
+				approvalPolicy = created.approvalPolicy,
+				sandboxPolicy = created.sandboxPolicy,
+				cwd = created.cwd,
+				logPath = created.logPath
+			}, cancellationToken);
+
+			await SendEventAsync("session_started", new
+			{
+				threadId = created.threadId,
+				threadName = renameResult.Success ? normalizedThreadName : null,
+				model = created.model,
+				reasoningEffort = created.reasoningEffort,
+				approvalPolicy = created.approvalPolicy,
+				sandboxPolicy = created.sandboxPolicy,
+				cwd = created.cwd,
+				logPath = created.logPath
+			}, cancellationToken);
+
+			await SendSessionListAsync(cancellationToken);
+			await SendSessionCatalogAsync(cancellationToken);
+		}
+		finally
+		{
+			gate.Release();
+		}
+	}
+
+	private async Task AttachToThreadAsync(
+		string? requestId,
+		string threadId,
+		string? model,
+		string? effort,
+		string? approvalPolicy,
+		string? sandboxMode,
+		string? cwd,
+		string? codexPath,
+		CancellationToken cancellationToken,
+		string? threadName)
+	{
 		var loadedResolution = _orchestrator.ResolveLoadedSessionForAttach(threadId);
 		if (loadedResolution.Kind == SessionOrchestrator.LoadedSessionAttachResolutionKind.Ambiguous)
 		{
@@ -572,6 +720,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				existingSessionId,
 				requestId,
 				loadedResolution.ThreadId,
+				threadName ?? TryGetStoredThreadName(loadedResolution.ThreadId),
 				loadedResolution.Model,
 				loadedResolution.ReasoningEffort,
 				loadedResolution.ApprovalPolicy,
@@ -612,6 +761,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			sessionId,
 			requestId,
 			attached.threadId,
+			threadName ?? TryGetStoredThreadName(attached.threadId),
 			attached.model,
 			attached.reasoningEffort,
 			attached.approvalPolicy,
@@ -627,6 +777,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		string sessionId,
 		string? requestId,
 		string? threadId,
+		string? threadName,
 		string? model,
 		string? reasoningEffort,
 		string? approvalPolicy,
@@ -642,6 +793,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			sessionId,
 			requestId,
 			threadId,
+			threadName,
 			model,
 			reasoningEffort,
 			approvalPolicy,
@@ -656,6 +808,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			sessionId,
 			requestId,
 			threadId,
+			threadName,
 			model,
 			reasoningEffort,
 			approvalPolicy,
@@ -695,6 +848,30 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			sessions = payload,
 			processingByThread
 		}, cancellationToken);
+	}
+
+	private CodexStoredSessionInfo? FindStoredSessionByCwdAndThreadName(string normalizedCwd, string threadName)
+	{
+		return CodexSessionCatalog.ListSessions(_defaults.CodexHomePath, limit: 0)
+			.Where(x =>
+				string.Equals(ServerStateSnapshotBuilder.NormalizeProjectCwd(x.Cwd), normalizedCwd, StringComparison.OrdinalIgnoreCase)
+				&& string.Equals(x.ThreadName?.Trim(), threadName, StringComparison.OrdinalIgnoreCase))
+			.OrderByDescending(x => x.UpdatedAtUtc ?? DateTimeOffset.MinValue)
+			.ThenBy(x => x.ThreadId, StringComparer.Ordinal)
+			.FirstOrDefault();
+	}
+
+	private string? TryGetStoredThreadName(string? threadId)
+	{
+		var normalizedThreadId = threadId?.Trim();
+		if (string.IsNullOrWhiteSpace(normalizedThreadId))
+		{
+			return null;
+		}
+
+		return CodexSessionCatalog.ListSessions(_defaults.CodexHomePath, limit: 0)
+			.FirstOrDefault(x => string.Equals(x.ThreadId, normalizedThreadId, StringComparison.Ordinal))
+			?.ThreadName;
 	}
 
 	private async Task SetSessionModelAsync(
@@ -797,12 +974,23 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	{
 		var snapshots = _orchestrator.GetSessionSnapshots(includeTurnCacheStats: false);
 		var codexAuthState = CodexAuthStateReader.Read(_defaults.CodexHomePath);
+		var threadNameByThreadId = CodexSessionCatalog.ListSessions(_defaults.CodexHomePath, limit: 0)
+			.Where(x => !string.IsNullOrWhiteSpace(x.ThreadId))
+			.GroupBy(x => x.ThreadId, StringComparer.Ordinal)
+			.ToDictionary(
+				x => x.Key,
+				x => x
+					.OrderByDescending(y => y.UpdatedAtUtc ?? DateTimeOffset.MinValue)
+					.Select(y => y.ThreadName)
+					.FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)),
+				StringComparer.Ordinal);
 
 		var sessions = snapshots
 			.Select(s => (object)new
 			{
 				sessionId = s.SessionId,
 				threadId = s.ThreadId,
+				threadName = threadNameByThreadId.TryGetValue(s.ThreadId, out var threadName) ? threadName : null,
 				cwd = s.Cwd,
 				model = s.Model,
 				reasoningEffort = s.ReasoningEffort,

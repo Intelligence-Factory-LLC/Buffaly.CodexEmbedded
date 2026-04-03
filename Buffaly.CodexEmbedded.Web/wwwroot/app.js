@@ -169,6 +169,7 @@ const PROMPT_INPUT_MAX_HEIGHT_MOBILE_PX = 192;
 const UI_AUDIT_OUTGOING_TYPES = new Set([
   "session_create",
   "session_attach",
+  "session_ensure_named",
   "session_stop",
   "session_rename",
   "session_set_model",
@@ -3022,47 +3023,38 @@ async function ensureCodeReviewsSessionForCurrentProject(reason = "workspace_tab
       setActiveSession(attachedCodeReviews.sessionId, { persistSelection: true, reason });
       return true;
     }
-
-    for (const pending of pendingCreateRequests.values()) {
-      if (!pending || !isCodeReviewsThreadName(pending.threadName || "")) {
-        continue;
-      }
-      if (isSameProjectCwd(pending.cwd || "", cwd)) {
-        setPendingCodeReviewsThreadForCwd(cwd, { reason });
-        return true;
-      }
+    try {
+      await ensureSocket();
+    } catch (error) {
+      appendLog(`[ws] connect failed: ${error}`);
+      return false;
     }
 
-    if (!sessionCatalogLoadedOnce) {
-      setPendingCodeReviewsThreadForCwd(cwd, { reason: `${reason}:await_catalog` });
-      send("session_catalog_list");
-      return true;
+    const requestId = createRequestId();
+    setPendingCodeReviewsThreadForCwd(cwd, { requestId, reason });
+    const payload = {
+      requestId,
+      cwd,
+      threadName: CODE_REVIEWS_THREAD_NAME
+    };
+    const model = normalizeModelValue(modelValueForCreate() ?? "");
+    if (model) {
+      payload.model = model;
+    }
+    const effort = normalizeReasoningEffort(selectedReasoningValue() ?? "");
+    if (effort) {
+      payload.effort = effort;
+    }
+    const approvalPolicy = normalizeApprovalPolicy(selectedApprovalValue() ?? "");
+    if (approvalPolicy) {
+      payload.approvalPolicy = approvalPolicy;
+    }
+    const sandbox = normalizeSandboxMode(selectedSandboxValue() ?? "");
+    if (sandbox) {
+      payload.sandbox = sandbox;
     }
 
-    const existing = findCodeReviewsCatalogEntryByCwd(cwd);
-    if (existing) {
-      clearPendingCodeReviewsThreadForCwd(cwd);
-      const attachedSessionId = existing.attachedSessionId && sessions.has(existing.attachedSessionId)
-        ? existing.attachedSessionId
-        : findAttachedSessionIdByThreadId(existing.threadId);
-      if (attachedSessionId && sessions.has(attachedSessionId)) {
-        setActiveSession(attachedSessionId, { persistSelection: true, reason });
-        return true;
-      }
-
-      beginPendingSessionLoad(existing.threadId, existing.threadName || existing.threadId);
-      const attached = await attachSessionByThreadId(existing.threadId, cwd, { persistSelection: true });
-      if (!attached) {
-        handlePendingSessionLoadFailure();
-        return false;
-      }
-      return true;
-    }
-
-    const requestId = await createSessionForCwd(cwd, { askName: false, threadName: CODE_REVIEWS_THREAD_NAME });
-    if (requestId) {
-      setPendingCodeReviewsThreadForCwd(cwd, { requestId, reason });
-    }
+    send("session_ensure_named", payload);
     return true;
   } finally {
     ensuringCodeReviewsThread = false;
@@ -9229,6 +9221,7 @@ function handleServerEvent(frame) {
       const state = ensureSessionState(sessionId);
       ensurePlanStateShape(state);
       state.threadId = payload.threadId || state.threadId;
+      state.threadName = payload.threadName || state.threadName || "";
       state.cwd = payload.cwd || state.cwd;
       state.isAppServerRecovering = false;
       let persistedPreferenceUpdated = false;
@@ -9314,6 +9307,9 @@ function handleServerEvent(frame) {
       if (!state.createdAtTick) {
         state.createdAtTick = Date.now();
       }
+      if (state.threadId && state.threadName) {
+        setLocalThreadName(state.threadId, state.threadName);
+      }
       if (state.threadId && normalizeProjectCwd(state.cwd || "")) {
         const entry = getCatalogEntryByThreadId(state.threadId);
         if (entry && !normalizeProjectCwd(entry.cwd || "")) {
@@ -9353,6 +9349,9 @@ function handleServerEvent(frame) {
           threadId: state.threadId || "",
           reason: `session_${mode}`
         });
+      }
+      if (isCodeReviewsThreadName(state.threadName || "") && normalizeProjectCwd(state.cwd || "")) {
+        clearPendingCodeReviewsThreadForCwd(state.cwd || "");
       }
 
       if (pendingCreate && pendingCreate.threadName) {
@@ -9430,6 +9429,7 @@ function handleServerEvent(frame) {
           };
         ensurePlanStateShape(st);
         st.threadId = s.threadId || st.threadId || null;
+        st.threadName = s.threadName || st.threadName || "";
         st.cwd = s.cwd || st.cwd || null;
         const serverModel = normalizeModelValue(s.model);
         const serverEffort = normalizeReasoningEffort(s.reasoningEffort ?? s.effort ?? "");
@@ -9702,7 +9702,12 @@ function handleServerEvent(frame) {
         const currentCwd = getWorkspaceProjectCwd();
         const pendingCodeReviews = getPendingCodeReviewsThreadForCwd(currentCwd || "");
         if (pendingCodeReviews) {
-          ensureCodeReviewsSessionForCurrentProject("session_catalog_pending_code_reviews").catch(() => {});
+          const resolved = findCodeReviewsCatalogEntryByCwd(currentCwd || "");
+          if (resolved) {
+            clearPendingCodeReviewsThreadForCwd(currentCwd || "");
+          } else {
+            ensureCodeReviewsSessionForCurrentProject("session_catalog_pending_code_reviews").catch(() => {});
+          }
         }
       }
       return;
