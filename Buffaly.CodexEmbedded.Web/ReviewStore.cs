@@ -334,6 +334,11 @@ internal sealed class ReviewStore
 			return true;
 		}
 
+		if (Regex.IsMatch(source, @"^\s*(?:[-*]\s+)?(?:#{1,6}\s*)?(critical|high|medium|low)\b(?:\s*[:\-]\s*|\s+)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Multiline))
+		{
+			return true;
+		}
+
 		if (Regex.IsMatch(source, @"\bno\s+(critical|high|medium|low)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
 		{
 			return true;
@@ -723,14 +728,15 @@ internal sealed class ReviewStore
 			return null;
 		}
 
+		var normalizedHeaderLine = Regex.Replace(headerLine, @"^(?:[-*]\s+)?(?:#{1,6}\s*)?", string.Empty, RegexOptions.CultureInvariant).Trim();
 		var match = Regex.Match(
-			headerLine,
-			@"^\d+\.\s*(?<severity>critical|high|medium|low)(?:\s*[:\-]\s*|\s+)(?<detail>.+)$",
+			normalizedHeaderLine,
+			@"^(?:(?:\d+)\.\s*)?(?<severity>critical|high|medium|low)(?:\s*[:\-]\s*|\s+)(?<detail>.+)$",
 			RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-		var severity = match.Success ? NormalizeSeverity(match.Groups["severity"].Value) : NormalizeSeverity(headerLine);
+		var severity = match.Success ? NormalizeSeverity(match.Groups["severity"].Value) : NormalizeSeverity(normalizedHeaderLine);
 		var detail = match.Success
 			? match.Groups["detail"].Value.Trim()
-			: Regex.Replace(headerLine, @"^\d+\.\s*", string.Empty, RegexOptions.CultureInvariant).Trim();
+			: Regex.Replace(normalizedHeaderLine, @"^\d+\.\s*", string.Empty, RegexOptions.CultureInvariant).Trim();
 		if (string.IsNullOrWhiteSpace(detail))
 		{
 			return null;
@@ -838,9 +844,15 @@ internal sealed class ReviewStore
 
 	private static bool IsFindingStartLine(string line)
 	{
-		return Regex.IsMatch(
+		var normalizedLine = Regex.Replace(
 			line ?? string.Empty,
-			@"^\d+\.\s*(critical|high|medium|low)(?:\s*[:\-]\s*|\s+)",
+			@"^(?:[-*]\s+)?(?:#{1,6}\s*)?",
+			string.Empty,
+			RegexOptions.CultureInvariant).Trim();
+
+		return Regex.IsMatch(
+			normalizedLine,
+			@"^(?:(?:\d+)\.\s*)?(critical|high|medium|low)(?:\s*[:\-]\s*|\s+)",
 			RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 	}
 

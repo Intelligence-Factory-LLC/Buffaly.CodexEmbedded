@@ -1385,6 +1385,53 @@
     return `<div class="diff-review-structured">${rows.join("")}</div>`;
   }
 
+  function buildFixPromptFromReviewRecord(record) {
+    if (!record || typeof record !== "object") {
+      return "";
+    }
+
+    const assistantText = typeof record.assistantText === "string" ? record.assistantText.trim() : "";
+    if (!assistantText) {
+      return "";
+    }
+
+    const targetLabel = record.targetType === "commit" && typeof record.commitSha === "string" && record.commitSha
+      ? `commit ${record.commitSha}${record.commitSubject ? ` (${record.commitSubject})` : ""}`
+      : "working tree";
+
+    return [
+      `Implement the requested fixes from this code review for ${targetLabel}.`,
+      "Address each finding, preserve behavior unless the finding explicitly requires a behavior change, and add or update tests for regressions where practical.",
+      "",
+      "Review output:",
+      assistantText
+    ].join("\n");
+  }
+
+  async function queueFixForCurrentReviewRecord(record) {
+    const queueFixPrompt = window.codexDiffQueueFixPrompt;
+    if (typeof queueFixPrompt !== "function") {
+      return;
+    }
+
+    const fixPrompt = buildFixPromptFromReviewRecord(record);
+    if (!fixPrompt) {
+      return;
+    }
+
+    const queued = await queueFixPrompt(fixPrompt, { logSuccess: true });
+    if (queued === true) {
+      setReviewQueuedBadgeActive(true);
+      if (reviewQueuedBadgeTimer) {
+        window.clearTimeout(reviewQueuedBadgeTimer);
+      }
+      reviewQueuedBadgeTimer = window.setTimeout(() => {
+        reviewQueuedBadgeTimer = null;
+        setReviewQueuedBadgeActive(false);
+      }, 900);
+    }
+  }
+
   function renderReviewFindingsPanel() {
     if (isCodeReviewsWorkspace() && currentMode === "commit" && !selectedCommitSha) {
       reviewFindingsNode.classList.add("hidden");
@@ -1415,6 +1462,7 @@
       <span class="diff-review-title">Review</span>
       <span class="diff-review-count">${escapeHtml(statusLabel)} | ${openCount} open | ${notesCount} notes</span>
       <button type="button" class="diff-review-collapse-btn" data-review-panel-collapse="1" aria-expanded="${reviewPanelCollapsed ? "false" : "true"}">${reviewPanelCollapsed ? "Expand" : "Collapse"}</button>
+      <button type="button" class="diff-review-send-notes" data-review-queue-fix="1">Fix</button>
       <button type="button" class="diff-review-send-notes" data-review-send-notes="1">Send Notes To Prompt</button>
       <button type="button" class="diff-review-done-review" data-review-scope-done="1"${record.status === "reviewed" ? " disabled" : ""}>Done Review</button>
     </div>
@@ -4785,6 +4833,17 @@
     const sendNotesBtn = event.target instanceof Element ? event.target.closest("[data-review-send-notes='1']") : null;
     if (sendNotesBtn) {
       sendCurrentNotesToPrompt();
+      return;
+    }
+
+    const queueFixBtn = event.target instanceof Element ? event.target.closest("[data-review-queue-fix='1']") : null;
+    if (queueFixBtn) {
+      const scopeKey = getCurrentScopeKey();
+      const summary = getScopeReviewSummary(scopeKey);
+      const record = getPrimaryCompletedReviewRecord(summary);
+      if (record) {
+        queueFixForCurrentReviewRecord(record).catch(() => { });
+      }
       return;
     }
 

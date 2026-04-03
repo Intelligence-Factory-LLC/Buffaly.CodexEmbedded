@@ -5609,6 +5609,42 @@ window.codexDiffQueueReviewPrompt = async function codexDiffQueueReviewPrompt(ra
   return true;
 };
 
+window.codexDiffQueueFixPrompt = async function codexDiffQueueFixPrompt(rawPromptText, options = {}) {
+  const promptText = typeof rawPromptText === "string" ? rawPromptText : "";
+  const normalizedPrompt = appendDiffNotesToPrompt(promptText).trim();
+  if (!normalizedPrompt) {
+    appendLog("[review] fix prompt is empty");
+    return false;
+  }
+
+  if (!activeSessionId) {
+    appendLog("[review] no active session; create or attach one first");
+    return false;
+  }
+  if (isSessionAppServerRecovering(activeSessionId)) {
+    appendLog(`[review] session=${activeSessionId} is recovering; queue is temporarily disabled`);
+    return false;
+  }
+
+  try {
+    await ensureSocket();
+  } catch (error) {
+    appendLog(`[ws] connect failed: ${error}`);
+    return false;
+  }
+
+  const queued = await queuePrompt(activeSessionId, normalizedPrompt, [], { planMode: false });
+  if (!queued) {
+    appendLog(`[review] failed to queue fix prompt for session=${activeSessionId}`);
+    return false;
+  }
+
+  if (options.logSuccess !== false) {
+    appendLog(`[review] queued fix prompt for session=${activeSessionId}`);
+  }
+  return true;
+};
+
 window.codexDiffRunReviewPrompt = async function codexDiffRunReviewPrompt(rawPromptText, options = {}) {
   const promptText = typeof rawPromptText === "string" ? rawPromptText : "";
   const normalizedPrompt = appendDiffNotesToPrompt(promptText).trim();
