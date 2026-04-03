@@ -8398,12 +8398,9 @@ function setActiveSession(sessionId, options = {}) {
   requestModelsListForSession(sessionId);
   renderTimelineSelectionIndicator();
   updateScrollToBottomButton();
-  if (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS
-    && state
-    && !isCodeReviewsStateLike(state)
-    && !getPendingCodeReviewsThreadForCwd(state.cwd || getWorkspaceProjectCwd() || "")) {
-    ensureCodeReviewsSessionForCurrentProject("active_session_changed_in_code_reviews").catch(() => {});
-  }
+  // Do not auto-create/auto-attach review sessions on active-session changes.
+  // Code Reviews session transitions should happen only from explicit user actions
+  // like switching tabs or selecting a project while already in Code Reviews.
 }
 
 function clearActiveSession() {
@@ -9696,9 +9693,8 @@ function handleServerEvent(frame) {
       updateExistingSessionSelect();
       refreshSessionMeta();
       appendLog(`[catalog] loaded ${sessionCatalog.length} existing sessions from ${payload.codexHomePath || "default CODEX_HOME"}`);
-      if (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS) {
-        ensureCodeReviewsSessionForCurrentProject("session_catalog_code_reviews").catch(() => {});
-      }
+      // Avoid catalog-driven auto-creation loops for Code Reviews threads.
+      // Explicit UI actions handle review-session selection/creation.
       return;
     }
 
