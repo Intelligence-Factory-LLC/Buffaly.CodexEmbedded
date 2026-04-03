@@ -128,6 +128,7 @@
   let reviewLifecycleByScope = new Map(); // scopeKey -> { requestedCount, completedCount, lastRequestedUtc, lastCompletedUtc }
   let currentReviewStateScopeKey = "";
   let reviewFindingStateByKey = new Map();
+  let renderedReviewMarkdownFindings = [];
   let commitReviewSummaryCollapsed = false;
   let reviewPanelCollapsed = false;
   let reviewPanelTab = "rendered"; // rendered | raw
@@ -659,11 +660,11 @@
     if (statusRaw === "reviewed") {
       return {
         key: "reviewed",
-        label: "Reviewed",
+        label: "Dismissed",
         statusClass: "reviewed",
         outcomeLabel: openCount > 0 ? `${openCount} open` : "dismissed",
         showSpinner: false,
-        reviewActionLabel: "Reviewed",
+        reviewActionLabel: "Dismissed",
         reviewActionDisabled: true
       };
     }
@@ -1342,6 +1343,7 @@
 
   function renderReviewMarkdownBody(markdownText) {
     const lines = typeof markdownText === "string" ? markdownText.split(/\r?\n/) : [];
+    renderedReviewMarkdownFindings = [];
     if (lines.length === 0) {
       return "";
     }
@@ -1349,16 +1351,29 @@
     const blocks = [];
     let findingBlocks = [];
     let findingTitle = "";
+    let findingRawLines = [];
     let findingIndex = 0;
+    const findingHeadingRegex = /^(critical|high|medium|low)\b/i;
 
     function flushFinding() {
       if (findingBlocks.length === 0) {
         return;
       }
-
-      blocks.push(`<section class="diff-review-md-finding" data-review-finding="1" data-review-finding-index="${findingIndex}" data-review-finding-title="${escapeAttribute(findingTitle)}">${findingBlocks.join("")}</section>`);
+      const findingText = findingRawLines.join("\n").trim();
+      renderedReviewMarkdownFindings.push({
+        index: findingIndex,
+        title: findingTitle || "",
+        text: findingText
+      });
+      blocks.push(`<section class="diff-review-md-finding" data-review-finding="1" data-review-finding-index="${findingIndex}" data-review-finding-title="${escapeAttribute(findingTitle)}">
+        <div class="diff-review-md-finding-actions">
+          <button type="button" class="diff-review-finding-fix-btn" data-review-fix-finding-index="${findingIndex}">Fix</button>
+        </div>
+        ${findingBlocks.join("")}
+      </section>`);
       findingBlocks = [];
       findingTitle = "";
+      findingRawLines = [];
       findingIndex += 1;
     }
 
@@ -1368,6 +1383,7 @@
       if (!trimmed) {
         if (findingBlocks.length > 0) {
           findingBlocks.push("<div class=\"diff-review-md-spacer\"></div>");
+          findingRawLines.push("");
         } else {
           blocks.push("<div class=\"diff-review-md-spacer\"></div>");
         }
@@ -1375,9 +1391,16 @@
       }
 
       if (/^#{1,6}\s+/.test(trimmed)) {
-        flushFinding();
         const text = trimmed.replace(/^#{1,6}\s+/, "");
-        blocks.push(`<div class="diff-review-md-heading">${renderInlineReviewMarkdown(text)}</div>`);
+        if (findingHeadingRegex.test(text)) {
+          flushFinding();
+          findingTitle = text;
+          findingBlocks.push(`<div class="diff-review-md-heading">${renderInlineReviewMarkdown(text)}</div>`);
+          findingRawLines.push(text);
+        } else {
+          flushFinding();
+          blocks.push(`<div class="diff-review-md-heading">${renderInlineReviewMarkdown(text)}</div>`);
+        }
         continue;
       }
 
@@ -1386,6 +1409,7 @@
         const text = trimmed.replace(/^\d+\.\s+/, "");
         findingTitle = text;
         findingBlocks.push(`<div class="diff-review-md-item ordered">${renderInlineReviewMarkdown(text)}</div>`);
+        findingRawLines.push(text);
         continue;
       }
 
@@ -1393,6 +1417,7 @@
         const text = trimmed.replace(/^-\s+/, "");
         if (findingBlocks.length > 0) {
           findingBlocks.push(`<div class="diff-review-md-item bullet">${renderInlineReviewMarkdown(text)}</div>`);
+          findingRawLines.push(`- ${text}`);
         } else {
           blocks.push(`<div class="diff-review-md-item bullet">${renderInlineReviewMarkdown(text)}</div>`);
         }
@@ -1401,6 +1426,7 @@
 
       if (findingBlocks.length > 0) {
         findingBlocks.push(`<div class="diff-review-md-paragraph">${renderInlineReviewMarkdown(trimmed)}</div>`);
+        findingRawLines.push(trimmed);
       } else {
         blocks.push(`<div class="diff-review-md-paragraph">${renderInlineReviewMarkdown(trimmed)}</div>`);
       }
@@ -1581,36 +1607,37 @@
     }
   }
 
-  function buildFixPromptFromReviewRecord(record) {
-    if (!record || typeof record !== "object") {
+  function buildFixPromptForReviewFinding(record, finding) {
+    if (!record || typeof record !== "object" || !finding || typeof finding !== "object") {
       return "";
     }
 
-    const assistantText = typeof record.assistantText === "string" ? record.assistantText.trim() : "";
-    if (!assistantText) {
+    const findingText = typeof finding.text === "string" ? finding.text.trim() : "";
+    if (!findingText) {
       return "";
     }
 
+    const findingTitle = typeof finding.title === "string" ? finding.title.trim() : "";
     const targetLabel = record.targetType === "commit" && typeof record.commitSha === "string" && record.commitSha
       ? `commit ${record.commitSha}${record.commitSubject ? ` (${record.commitSubject})` : ""}`
       : "working tree";
 
     return [
-      `Implement the requested fixes from this code review for ${targetLabel}.`,
-      "Address each finding, preserve behavior unless the finding explicitly requires a behavior change, and add or update tests for regressions where practical.",
+      `Implement a fix for this specific review finding from ${targetLabel}.`,
+      "Keep the change narrowly scoped to this finding unless broader changes are required for correctness.",
       "",
-      "Review output:",
-      assistantText
+      `Finding${findingTitle ? ` (${findingTitle})` : ""}:`,
+      findingText
     ].join("\n");
   }
 
-  async function queueFixForCurrentReviewRecord(record) {
+  async function queueFixForReviewFinding(record, finding) {
     const queueFixPrompt = window.codexDiffQueueFixPrompt;
     if (typeof queueFixPrompt !== "function") {
       return;
     }
 
-    const fixPrompt = buildFixPromptFromReviewRecord(record);
+    const fixPrompt = buildFixPromptForReviewFinding(record, finding);
     if (!fixPrompt) {
       return;
     }
@@ -1648,7 +1675,7 @@
       ? `commit ${record.commitSha.slice(0, 7)}`
       : "worktree";
     const when = typeof record.completedAtUtc === "string" ? record.completedAtUtc : "";
-    const statusLabel = record.status === "reviewed" ? "Reviewed" : "Review Completed";
+    const statusLabel = record.status === "reviewed" ? "Dismissed" : "Review Completed";
     const bodyHtml = renderReviewMarkdownBody(record.assistantText);
     const rawJsonHtml = renderReviewRawJson(scopeKey, record, summary);
     const openCount = Number.isFinite(summary.openFindingCount) ? summary.openFindingCount : 0;
@@ -1663,9 +1690,7 @@
       </div>
       <button type="button" class="diff-review-collapse-btn" data-review-panel-collapse="1" aria-expanded="${reviewPanelCollapsed ? "false" : "true"}">${reviewPanelCollapsed ? "Expand" : "Collapse"}</button>
       ${reviewPanelTab === "raw" ? "<button type=\"button\" class=\"diff-review-copy-json\" data-review-copy-json=\"1\">Copy JSON</button>" : ""}
-      <button type="button" class="diff-review-send-notes" data-review-queue-fix="1">Fix</button>
-      <button type="button" class="diff-review-send-notes" data-review-send-notes="1">Send Notes To Prompt</button>
-      <button type="button" class="diff-review-done-review" data-review-scope-done="1"${record.status === "reviewed" ? " disabled" : ""}>Done Review</button>
+      <button type="button" class="diff-review-done-review" data-review-scope-done="1"${record.status === "reviewed" ? " disabled" : ""}>Dismiss Review</button>
     </div>
     ${reviewPanelCollapsed
       ? "<div class=\"diff-review-collapsed-note\">Review details hidden.</div>"
@@ -5077,19 +5102,17 @@
       return;
     }
 
-    const sendNotesBtn = event.target instanceof Element ? event.target.closest("[data-review-send-notes='1']") : null;
-    if (sendNotesBtn) {
-      sendCurrentNotesToPrompt();
-      return;
-    }
-
-    const queueFixBtn = event.target instanceof Element ? event.target.closest("[data-review-queue-fix='1']") : null;
-    if (queueFixBtn) {
+    const findingFixBtn = event.target instanceof Element ? event.target.closest("[data-review-fix-finding-index]") : null;
+    if (findingFixBtn) {
+      const findingIndex = Number.parseInt(findingFixBtn.getAttribute("data-review-fix-finding-index") || "", 10);
       const scopeKey = getCurrentScopeKey();
       const summary = getScopeReviewSummary(scopeKey);
       const record = getPrimaryCompletedReviewRecord(summary);
-      if (record) {
-        queueFixForCurrentReviewRecord(record).catch(() => { });
+      const finding = Number.isFinite(findingIndex) && findingIndex >= 0
+        ? renderedReviewMarkdownFindings.find((x) => x && x.index === findingIndex)
+        : null;
+      if (record && finding) {
+        queueFixForReviewFinding(record, finding).catch(() => { });
       }
       return;
     }

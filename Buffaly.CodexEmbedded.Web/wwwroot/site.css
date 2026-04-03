@@ -4079,6 +4079,27 @@ body {
 	border-bottom: 1px dashed rgba(248, 113, 113, 0.28);
 }
 
+.diff-review-md-finding-actions {
+	display: flex;
+	justify-content: flex-end;
+	margin: 0 0 0.18rem;
+}
+
+.diff-review-finding-fix-btn {
+	border: 1px solid #fecaca;
+	background: #fff;
+	color: #991b1b;
+	border-radius: 999px;
+	font-size: 0.65rem;
+	font-weight: 700;
+	padding: 0.1rem 0.48rem;
+	cursor: pointer;
+}
+
+.diff-review-finding-fix-btn:hover {
+	background: #fff1f2;
+}
+
 @media (max-width: 900px) {
 	.diff-full-window-workspace {
 		flex-direction: column;
@@ -4680,7 +4701,6 @@ body {
 	cursor: pointer;
 }
 
-.diff-review-send-notes,
 .diff-review-done-review {
 	border: 1px solid #fecaca;
 	background: #ffffff;
@@ -4690,10 +4710,6 @@ body {
 	font-weight: 700;
 	padding: 0.12rem 0.48rem;
 	cursor: pointer;
-}
-
-.diff-review-send-notes {
-	margin-left: 0.35rem;
 }
 
 .diff-review-done-review:disabled {
@@ -6302,7 +6318,6 @@ html[data-theme="dark"] .diff-review-clear-done {
 	color: #fecaca;
 }
 
-html[data-theme="dark"] .diff-review-send-notes,
 html[data-theme="dark"] .diff-review-done-review {
 	background: #0f172a;
 	border-color: rgba(248, 113, 113, 0.45);
@@ -6424,6 +6439,16 @@ html[data-theme="dark"] .diff-review-md-heading {
 
 html[data-theme="dark"] .diff-review-md-link {
 	color: #93c5fd;
+}
+
+html[data-theme="dark"] .diff-review-finding-fix-btn {
+	border-color: #7f1d1d;
+	background: #111827;
+	color: #fecaca;
+}
+
+html[data-theme="dark"] .diff-review-finding-fix-btn:hover {
+	background: #1f2937;
 }
 
 html[data-theme="dark"] .worktree-diff-hunk-breadcrumb {
