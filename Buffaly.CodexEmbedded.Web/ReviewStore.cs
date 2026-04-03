@@ -454,6 +454,19 @@ internal sealed class ReviewStore
 		ReviewRecord record,
 		IReadOnlyList<SessionOrchestrator.ConsolidatedTurnSnapshot> turns)
 	{
+		var recordTurnId = record.TurnId?.Trim() ?? string.Empty;
+		if (!string.IsNullOrWhiteSpace(recordTurnId))
+		{
+			var byTurnId = turns
+				.Where(x => string.Equals(x.TurnId?.Trim(), recordTurnId, StringComparison.Ordinal))
+				.OrderByDescending(x => ParseUtc(x.AssistantFinal?.Timestamp) ?? ParseUtc(x.User.Timestamp) ?? DateTimeOffset.MinValue)
+				.FirstOrDefault();
+			if (byTurnId is not null)
+			{
+				return byTurnId;
+			}
+		}
+
 		SessionOrchestrator.ConsolidatedTurnSnapshot? best = null;
 		var bestTime = DateTimeOffset.MinValue;
 		foreach (var turn in turns)

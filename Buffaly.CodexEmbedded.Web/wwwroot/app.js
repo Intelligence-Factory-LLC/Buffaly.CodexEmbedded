@@ -5315,6 +5315,56 @@ async function refreshReviewCatalogForCwd(cwd, options = {}) {
   }
 }
 
+function getReviewCatalogCwdsForEvent(payload) {
+  const next = new Set();
+  const addCwd = (value) => {
+    const normalized = normalizeProjectCwd(value || "");
+    if (normalized) {
+      next.add(normalized);
+    }
+  };
+
+  if (payload && typeof payload === "object") {
+    addCwd(payload.cwd);
+    const sessionId = typeof payload.sessionId === "string" ? payload.sessionId.trim() : "";
+    const threadId = normalizeThreadId(payload.threadId || "");
+    const turnId = typeof payload.turnId === "string" ? payload.turnId.trim() : "";
+
+    if (sessionId) {
+      const state = sessions.get(sessionId) || null;
+      addCwd(state?.cwd || "");
+    }
+
+    for (const record of reviewRecordsById.values()) {
+      if (!record || typeof record !== "object") {
+        continue;
+      }
+      if (sessionId && record.sessionId === sessionId) {
+        addCwd(record.cwd);
+        continue;
+      }
+      if (threadId && record.threadId === threadId) {
+        addCwd(record.cwd);
+        continue;
+      }
+      if (turnId && record.turnId === turnId) {
+        addCwd(record.cwd);
+      }
+    }
+  }
+
+  return Array.from(next);
+}
+
+async function refreshReviewCatalogsForEvent(payload, options = {}) {
+  const cwds = getReviewCatalogCwdsForEvent(payload);
+  if (cwds.length <= 0) {
+    return;
+  }
+
+  await Promise.allSettled(cwds.map((cwd) => refreshReviewCatalogForCwd(cwd, options)));
+}
+
 async function updateReviewStatus(reviewId, status) {
   const normalizedReviewId = typeof reviewId === "string" ? reviewId.trim() : "";
   if (!normalizedReviewId) {
@@ -9529,14 +9579,7 @@ function handleServerEvent(frame) {
     }
 
     case "assistant_done": {
-      const sessionId = payload.sessionId || null;
-      if (sessionId) {
-        const state = sessions.get(sessionId) || null;
-        const cwd = normalizeProjectCwd(state?.cwd || "");
-        if (cwd) {
-          refreshReviewCatalogForCwd(cwd, { force: true }).catch(() => { });
-        }
-      }
+      refreshReviewCatalogsForEvent(payload, { force: true }).catch(() => { });
       return;
     }
 
@@ -9572,13 +9615,7 @@ function handleServerEvent(frame) {
       if (sidebarStateChanged) {
         renderProjectSidebar();
       }
-      if (sessionId) {
-        const state = sessions.get(sessionId) || null;
-        const cwd = normalizeProjectCwd(state?.cwd || "");
-        if (cwd) {
-          refreshReviewCatalogForCwd(cwd, { force: true }).catch(() => { });
-        }
-      }
+      refreshReviewCatalogsForEvent(payload, { force: true }).catch(() => { });
       renderPromptQueue();
       return;
     }
@@ -9587,11 +9624,9 @@ function handleServerEvent(frame) {
       const sessionId = payload.sessionId || null;
       const isPlanTurn = payload.isPlanTurn === true || normalizeCollaborationMode(payload.collaborationMode || "") === "plan";
       let sidebarStateChanged = false;
-      let reviewCwd = "";
       if (sessionId) {
         touchSessionActivity(sessionId);
         const state = sessions.get(sessionId) || null;
-        reviewCwd = normalizeCwd(state?.cwd || "");
         const threadId = normalizeThreadId(state?.threadId || "");
         if (threadId) {
           if (processingByThread.get(threadId) !== true) {
@@ -9607,9 +9642,7 @@ function handleServerEvent(frame) {
       if (sidebarStateChanged) {
         renderProjectSidebar();
       }
-      if (reviewCwd) {
-        refreshReviewCatalogForCwd(reviewCwd, { force: true }).catch(() => { });
-      }
+      refreshReviewCatalogsForEvent(payload, { force: true }).catch(() => { });
       uiAuditLog("in.turn_started", {
         sessionId: sessionId || null,
         isPlanTurn

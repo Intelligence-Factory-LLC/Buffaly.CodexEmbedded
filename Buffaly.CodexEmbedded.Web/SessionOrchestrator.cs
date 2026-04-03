@@ -1377,6 +1377,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					new
 					{
 						sessionId,
+						cwd = session.Cwd ?? string.Empty,
 						status = "interrupted",
 						errorMessage = offeredRecovery.Message,
 						isPlanTurn,
@@ -1935,6 +1936,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					new
 					{
 						sessionId,
+						cwd = session.Cwd ?? request.Cwd ?? string.Empty,
 						turnId = session.ResolveActiveTurnId(),
 						status = "queueTimedOut",
 						errorMessage = $"Timed out waiting {waitSeconds}s for previous turn to release.",
@@ -1966,7 +1968,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					sessionId,
 					session.Session.ThreadId,
 					activeTurnId);
-				Broadcast?.Invoke("turn_started", new { sessionId, turnId = activeTurnId, isPlanTurn, collaborationMode = collaborationModeKind });
+				Broadcast?.Invoke("turn_started", new { sessionId, cwd = session.Cwd ?? request.Cwd ?? string.Empty, turnId = activeTurnId, isPlanTurn, collaborationMode = collaborationModeKind });
 				SessionsChanged?.Invoke();
 			}
 			else
@@ -2030,7 +2032,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			WriteOrchestratorAudit(
 				$"event=turn_rpc_result sessionId={sessionId} threadId={session.Session.ThreadId} dispatchId={dispatchId} elapsedMs={turnRpcStopwatch.ElapsedMilliseconds} status={result.Status ?? "unknown"} hasError={!string.IsNullOrWhiteSpace(result.ErrorMessage)} {session.BuildTurnDebugSummary()}");
 
-			Broadcast?.Invoke("assistant_done", new { sessionId, text = result.Text });
+			Broadcast?.Invoke("assistant_done", new { sessionId, cwd = session.Cwd ?? request.Cwd ?? string.Empty, turnId = result.TurnId, text = result.Text });
 			_reviewStore.TryCompleteFromPromptText(
 				request.Text,
 				sessionId,
@@ -2111,6 +2113,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 					new
 					{
 						sessionId,
+						cwd = session.Cwd ?? request.Cwd ?? string.Empty,
 						turnId = session.ResolveActiveTurnId(),
 						status = "interrupted",
 						errorMessage = "Turn start did not acknowledge before recovery.",
@@ -2347,6 +2350,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				new
 				{
 					sessionId,
+					cwd = session.Cwd ?? string.Empty,
 					status = "interrupted",
 					errorMessage = "Turn was interrupted by a manual thread reset.",
 					isPlanTurn,
@@ -2393,6 +2397,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				new
 				{
 					sessionId,
+					cwd = session.Cwd ?? string.Empty,
 					status = "interrupted",
 					errorMessage = "Session stopped while a turn was in flight.",
 					isPlanTurn = stopIsPlanTurn,
@@ -3079,7 +3084,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		var normalizedStatus = string.IsNullOrWhiteSpace(status) ? "unknown" : status!;
 		var effectiveTurnId = string.IsNullOrWhiteSpace(turnId) ? session.ResolveActiveTurnId() : turnId;
 		_reviewStore.TryCompleteByTurn(sessionId, session.Session.ThreadId, effectiveTurnId, normalizedStatus, assistantText);
-		Broadcast?.Invoke("turn_complete", new { sessionId, turnId = effectiveTurnId, status = normalizedStatus, errorMessage, isPlanTurn, collaborationMode });
+		Broadcast?.Invoke("turn_complete", new { sessionId, cwd = session.Cwd ?? string.Empty, turnId = effectiveTurnId, status = normalizedStatus, errorMessage, isPlanTurn, collaborationMode });
 		WriteOrchestratorAudit(
 			$"event=turn_completion_published sessionId={sessionId} status={normalizedStatus} hasError={!string.IsNullOrWhiteSpace(errorMessage)}");
 		SessionsChanged?.Invoke();
