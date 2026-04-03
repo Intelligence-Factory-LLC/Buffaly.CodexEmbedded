@@ -4610,6 +4610,10 @@ body {
 	animation: diff-review-spin 0.9s linear infinite;
 }
 
+.diff-commit-review-activity.running.heal {
+	cursor: pointer;
+}
+
 .diff-commit-review-activity.done {
 	background: #dcfce7;
 	color: #166534;

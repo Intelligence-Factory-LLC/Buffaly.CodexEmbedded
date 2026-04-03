@@ -1274,7 +1274,7 @@
       const subject = normalized.subject ? normalized.subject.trim() : "";
       const reviewActionDisabled = display.reviewActionDisabled ? " disabled" : "";
       const runningIcon = display.showSpinner
-        ? "<span class=\"diff-commit-review-activity running\" aria-hidden=\"true\"></span>"
+        ? `<button type="button" class="diff-commit-review-activity running heal" data-commit-review-heal="${escapeAttribute(normalized.sha)}" title="Recheck review status" aria-label="Recheck review status for ${escapeAttribute(shortSha)}"></button>`
         : (display.key === "completed" || display.key === "dismissed"
           ? "<span class=\"diff-commit-review-activity done\" aria-hidden=\"true\">✓</span>"
           : (display.key === "stale"
@@ -4728,6 +4728,26 @@
       window.setTimeout(() => {
         openReviewModal("run");
       }, 0);
+      return;
+    }
+
+    const healBtn = event.target instanceof Element ? event.target.closest("[data-commit-review-heal]") : null;
+    if (healBtn) {
+      const sha = (healBtn.getAttribute("data-commit-review-heal") || "").trim();
+      event.preventDefault();
+      event.stopPropagation();
+      const context = getActiveContext();
+      const refreshCatalog = window.codexDiffRefreshReviewCatalog;
+      if (context && context.cwd && typeof refreshCatalog === "function") {
+        refreshCatalog(context.cwd, { force: true })
+          .catch(() => { })
+          .then(() => {
+            renderCommitReviewSummary();
+            if (currentMode === "commit" && selectedCommitSha === sha) {
+              renderReviewFindingsPanel();
+            }
+          });
+      }
       return;
     }
 
