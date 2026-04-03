@@ -118,7 +118,6 @@
   let fullFileViewerLoadToken = 0;
   let fullFileViewerState = createEmptyFullFileViewerState();
   let fullFilePathSelectSyncing = false;
-  let autoOpenFullScreenForDetail = false;
   let currentNoteEdit = null;
   let ignoreNextLineClick = false;
   let ignoreNextFullFileLineClick = false;
@@ -205,16 +204,11 @@
     const next = mode === "detail" ? "detail" : "list";
     if (getReviewPageMode() === next) {
       applyPanelState();
-      if (next === "detail") {
-        ensureDetailModeFullScreen({ forceOpen: true });
-      }
       return;
     }
     reviewBridge.setReviewPageMode(next);
     if (next !== "detail") {
       closeFullFileWindow();
-    } else {
-      autoOpenFullScreenForDetail = true;
     }
     applyPanelState();
   }
@@ -226,9 +220,9 @@
     }
 
     setReviewPageMode("detail");
-    autoOpenFullScreenForDetail = true;
+    closeFullFileWindow();
     if (normalizedSha === selectedCommitSha && currentFiles.length > 0) {
-      ensureDetailModeFullScreen({ forceOpen: true });
+      applyPanelState();
       return;
     }
     selectCommitForDetails(normalizedSha);
@@ -2380,9 +2374,6 @@
     applyModeUiState();
     updateReviewActionAvailability();
     updateFullFileWindowControls();
-    if (dedicatedWorkspace && reviewPageMode === "detail" && hasVisibleChanges && fullFileWindowReady && fullFileWindow.classList.contains("hidden")) {
-      ensureDetailModeFullScreen({ forceOpen: true });
-    }
   }
 
   function canSubmitReviewRequest() {
@@ -2487,9 +2478,6 @@
 
     selectedCommitSha = normalizedSha;
     selectedCommitInfo = findSelectedCommitInfo();
-    if (isCodeReviewsWorkspace() && getReviewPageMode() === "detail") {
-      autoOpenFullScreenForDetail = true;
-    }
     lastRenderKey = "";
     refreshBtn.disabled = true;
     commitSelect.disabled = true;
@@ -3440,50 +3428,10 @@
 
     const inReviewDetail = isCodeReviewsWorkspace() && getReviewPageMode() === "detail";
     fullFileBackBtn.classList.toggle("hidden", !inReviewDetail);
-    fullFileCloseBtn.classList.toggle("hidden", inReviewDetail);
+    fullFileCloseBtn.classList.remove("hidden");
     fullFileRefreshBtn.disabled = pollInFlight === true;
     fullFileStartReviewBtn.disabled = !canSubmitReviewRequest();
     fullFileApproveBtn.disabled = !canApproveCurrentCommit();
-  }
-
-  function ensureDetailModeFullScreen(options = {}) {
-    if (!fullFileWindowReady) {
-      return;
-    }
-
-    const inReviewDetail = isCodeReviewsWorkspace() && getReviewPageMode() === "detail" && currentMode === "commit";
-    if (!inReviewDetail) {
-      return;
-    }
-
-    if (!Array.isArray(currentFiles) || currentFiles.length === 0) {
-      return;
-    }
-
-    const explicitPath = typeof options.path === "string" ? options.path.trim() : "";
-    const hasExplicit = explicitPath && currentFiles.some((file) => file && file.path === explicitPath);
-    const hasOpenPath = fullFileViewerState.path && currentFiles.some((file) => file && file.path === fullFileViewerState.path);
-    const nextPath = hasExplicit
-      ? explicitPath
-      : (hasOpenPath ? fullFileViewerState.path : currentFiles[0].path);
-
-    if (!nextPath) {
-      return;
-    }
-
-    renderFullFilePathOptions(nextPath);
-    const shouldOpen = options.forceOpen === true || fullFileWindow.classList.contains("hidden");
-    const samePath = !fullFileWindow.classList.contains("hidden")
-      && normalizePathCaseInsensitive(fullFileViewerState.path) === normalizePathCaseInsensitive(nextPath);
-    if (!shouldOpen && samePath) {
-      updateFullFileWindowControls();
-      return;
-    }
-
-    openFullFileWindow(nextPath, {
-      lineNo: Number.isFinite(options.lineNo) ? options.lineNo : null,
-      lineEnd: Number.isFinite(options.lineEnd) ? options.lineEnd : null
-    }).catch(() => { });
   }
 
   function buildScopeReviewContextForFullFile() {
@@ -4694,10 +4642,6 @@
       updateSummary(currentTotalChangeCount);
       applyPanelState();
       renderComposerNotes();
-      if (isCodeReviewsWorkspace() && getReviewPageMode() === "detail" && hasVisibleChanges) {
-        ensureDetailModeFullScreen({ forceOpen: autoOpenFullScreenForDetail });
-      }
-      autoOpenFullScreenForDetail = false;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (typeof window.uiAuditLog === "function") {
@@ -5046,10 +4990,6 @@
     });
 
     fullFileBackBtn.addEventListener("click", () => {
-      if (isCodeReviewsWorkspace() && getReviewPageMode() === "detail") {
-        setReviewPageMode("list");
-        return;
-      }
       closeFullFileWindow();
     });
 
