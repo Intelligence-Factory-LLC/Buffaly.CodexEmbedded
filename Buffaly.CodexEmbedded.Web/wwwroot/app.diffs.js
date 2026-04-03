@@ -1233,7 +1233,27 @@
       return "";
     }
     let html = escapeHtml(source);
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label) => escapeHtml(label || ""));
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
+      const safeLabel = typeof label === "string" ? label.trim() : "";
+      const target = parseFileLinkTarget(typeof href === "string" ? href : "");
+      if (!target || !target.path) {
+        return escapeHtml(safeLabel || "");
+      }
+
+      const context = getActiveContext();
+      const normalizedPath = normalizePathForDiffViewer(
+        target.path,
+        context && typeof context.cwd === "string" ? context.cwd : ""
+      );
+      if (!normalizedPath) {
+        return escapeHtml(safeLabel || "");
+      }
+
+      const lineAttr = Number.isFinite(target.lineNo) && target.lineNo > 0
+        ? ` data-review-jump-line="${target.lineNo}"`
+        : "";
+      return `<button type="button" class="diff-review-ref-link diff-review-md-link" data-review-jump-path="${escapeAttribute(normalizedPath)}"${lineAttr}>${escapeHtml(safeLabel || normalizedPath)}</button>`;
+    });
     html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
     return html;
@@ -1402,26 +1422,37 @@
     return `<div class="diff-review-structured">${rows.join("")}</div>`;
   }
 
-  function renderReviewRawJson(scopeKey, record, summary) {
-    const scopedRecords = scopeKey && reviewFindingsByScope.has(scopeKey)
-      ? reviewFindingsByScope.get(scopeKey)
-      : [];
-    const lifecycle = scopeKey ? readReviewLifecycle(scopeKey) : {
-      requestedCount: 0,
-      completedCount: 0,
-      lastRequestedUtc: "",
-      lastCompletedUtc: ""
-    };
+  function buildReviewRawJsonText(scopeKey, record, summary) {
+    const scopedSummary = summary && typeof summary === "object" ? summary : getScopeReviewSummary(scopeKey);
+    const summaryRecords = Array.isArray(scopedSummary.records) ? scopedSummary.records : [];
     const flattenedFindings = scopeKey
       ? flattenReviewFindingsForScope(scopeKey, scopeKey === currentReviewStateScopeKey ? reviewFindingStateByKey : loadReviewFindingState(scopeKey))
       : [];
     const payload = {
       scopeKey: scopeKey || "",
+      selectedReviewId: record && typeof record.reviewId === "string" ? record.reviewId : "",
       review: record || null,
-      summary: summary || null,
-      lifecycle,
+      summary: {
+        status: typeof scopedSummary.status === "string" ? scopedSummary.status : "not_started",
+        reviewCount: Number.isFinite(scopedSummary.reviewCount) ? scopedSummary.reviewCount : 0,
+        queuedCount: Number.isFinite(scopedSummary.queuedCount) ? scopedSummary.queuedCount : 0,
+        runningCount: Number.isFinite(scopedSummary.runningCount) ? scopedSummary.runningCount : 0,
+        requestedCount: Number.isFinite(scopedSummary.requestedCount) ? scopedSummary.requestedCount : 0,
+        completedCount: Number.isFinite(scopedSummary.completedCount) ? scopedSummary.completedCount : 0,
+        openFindingCount: Number.isFinite(scopedSummary.openFindingCount) ? scopedSummary.openFindingCount : 0
+      },
       flattenedFindings,
-      allScopeRecords: Array.isArray(scopedRecords) ? scopedRecords : []
+      scopeRecords: summaryRecords.map((item) => ({
+        reviewId: typeof item?.reviewId === "string" ? item.reviewId : "",
+        status: typeof item?.status === "string" ? item.status : "",
+        turnId: typeof item?.turnId === "string" ? item.turnId : "",
+        commitSha: typeof item?.commitSha === "string" ? item.commitSha : "",
+        completedAtUtc: typeof item?.completedAtUtc === "string" ? item.completedAtUtc : "",
+        findingsCount: Array.isArray(item?.findings) ? item.findings.length : 0,
+        assistantTextPreview: typeof item?.assistantText === "string"
+          ? item.assistantText.slice(0, 240)
+          : ""
+      }))
     };
     let text = "";
     try {
@@ -1429,7 +1460,44 @@
     } catch {
       text = "{}";
     }
+    return text;
+  }
+
+  function renderReviewRawJson(scopeKey, record, summary) {
+    const text = buildReviewRawJsonText(scopeKey, record, summary);
     return `<pre class="diff-review-raw-json">${escapeHtml(text)}</pre>`;
+  }
+
+  async function copyTextToClipboard(text) {
+    const value = typeof text === "string" ? text : "";
+    if (!value) {
+      return false;
+    }
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch {
+    }
+
+    try {
+      const helper = document.createElement("textarea");
+      helper.value = value;
+      helper.setAttribute("readonly", "readonly");
+      helper.style.position = "fixed";
+      helper.style.left = "-9999px";
+      helper.style.top = "0";
+      document.body.appendChild(helper);
+      helper.focus();
+      helper.select();
+      const success = document.execCommand("copy");
+      helper.remove();
+      return success === true;
+    } catch {
+      return false;
+    }
   }
 
   function buildFixPromptFromReviewRecord(record) {
@@ -1514,6 +1582,7 @@
         <button type="button" class="diff-review-tab${reviewPanelTab === "raw" ? " active" : ""}" data-review-tab="raw" role="tab" aria-selected="${reviewPanelTab === "raw" ? "true" : "false"}">Raw Review JSON</button>
       </div>
       <button type="button" class="diff-review-collapse-btn" data-review-panel-collapse="1" aria-expanded="${reviewPanelCollapsed ? "false" : "true"}">${reviewPanelCollapsed ? "Expand" : "Collapse"}</button>
+      ${reviewPanelTab === "raw" ? "<button type=\"button\" class=\"diff-review-copy-json\" data-review-copy-json=\"1\">Copy JSON</button>" : ""}
       <button type="button" class="diff-review-send-notes" data-review-queue-fix="1">Fix</button>
       <button type="button" class="diff-review-send-notes" data-review-send-notes="1">Send Notes To Prompt</button>
       <button type="button" class="diff-review-done-review" data-review-scope-done="1"${record.status === "reviewed" ? " disabled" : ""}>Done Review</button>
@@ -3828,18 +3897,37 @@
       }
     }
 
-    value = value.replace(/[?#].*$/, "");
+    let lineNo = null;
+    const hashIndex = value.indexOf("#");
+    if (hashIndex >= 0) {
+      const fragment = value.slice(hashIndex + 1);
+      const hashLineMatch = fragment.match(/^L(\d+)(?:C\d+)?(?:-L?(\d+))?/i);
+      if (hashLineMatch) {
+        const parsed = Number.parseInt(hashLineMatch[1] || "", 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          lineNo = parsed;
+        }
+      }
+      value = value.slice(0, hashIndex);
+    }
+
+    const queryIndex = value.indexOf("?");
+    if (queryIndex >= 0) {
+      value = value.slice(0, queryIndex);
+    }
+
     if (!value) {
       return null;
     }
 
-    let lineNo = null;
-    const lineMatch = value.match(/:(\d+)(?:(?::\d+)|(?:-\d+))?$/);
-    if (lineMatch) {
-      const parsed = Number.parseInt(lineMatch[1] || "", 10);
-      if (Number.isFinite(parsed) && parsed > 0) {
-        lineNo = parsed;
-        value = value.slice(0, lineMatch.index);
+    if (lineNo === null) {
+      const lineMatch = value.match(/:(\d+)(?:(?::\d+)|(?:-\d+))?$/);
+      if (lineMatch) {
+        const parsed = Number.parseInt(lineMatch[1] || "", 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          lineNo = parsed;
+          value = value.slice(0, lineMatch.index);
+        }
       }
     }
 
@@ -4862,6 +4950,25 @@
     const collapseBtn = event.target instanceof Element ? event.target.closest("[data-review-panel-collapse='1']") : null;
     if (collapseBtn) {
       setReviewPanelCollapsed(!reviewPanelCollapsed);
+      return;
+    }
+
+    const copyJsonBtn = event.target instanceof Element ? event.target.closest("[data-review-copy-json='1']") : null;
+    if (copyJsonBtn) {
+      const scopeKey = getCurrentScopeKey();
+      const summary = getScopeReviewSummary(scopeKey);
+      const record = getPrimaryCompletedReviewRecord(summary);
+      const rawText = buildReviewRawJsonText(scopeKey, record, summary);
+      copyTextToClipboard(rawText).then((copied) => {
+        if (!(copyJsonBtn instanceof HTMLElement)) {
+          return;
+        }
+        const originalLabel = "Copy JSON";
+        copyJsonBtn.textContent = copied ? "Copied" : "Copy failed";
+        window.setTimeout(() => {
+          copyJsonBtn.textContent = originalLabel;
+        }, 1200);
+      }).catch(() => { });
       return;
     }
 
