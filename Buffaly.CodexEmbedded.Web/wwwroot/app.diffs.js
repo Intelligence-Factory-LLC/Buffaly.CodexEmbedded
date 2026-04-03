@@ -1650,7 +1650,6 @@
     const when = typeof record.completedAtUtc === "string" ? record.completedAtUtc : "";
     const statusLabel = record.status === "reviewed" ? "Reviewed" : "Review Completed";
     const bodyHtml = renderReviewMarkdownBody(record.assistantText);
-    const structuredHtml = renderStructuredReviewFindings(record);
     const rawJsonHtml = renderReviewRawJson(scopeKey, record, summary);
     const openCount = Number.isFinite(summary.openFindingCount) ? summary.openFindingCount : 0;
     const notesCount = notesByKey.size;
@@ -1674,7 +1673,7 @@
       <div class="diff-review-output-meta">${escapeHtml(targetLabel)}${when ? ` | ${escapeHtml(when)}` : ""}</div>
       ${reviewPanelTab === "raw"
         ? rawJsonHtml
-        : `${structuredHtml}<div class="diff-review-md-body">${bodyHtml}</div>`}
+        : `<div class="diff-review-md-body">${bodyHtml}</div>`}
     </div>`}`;
     reviewFindingsNode.classList.remove("hidden");
   }
