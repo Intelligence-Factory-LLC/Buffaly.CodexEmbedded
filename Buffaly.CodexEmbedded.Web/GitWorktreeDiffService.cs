@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 internal sealed class GitWorktreeDiffService
 {
 	private static readonly Regex DiffHeaderRegex = new("^diff --git a/(.+?) b/(.+)$", RegexOptions.Compiled);
+	private const string RecentCommitMarker = "__CODX_COMMIT__";
 
 	public GitWorktreeDiffSnapshot GetSnapshot(
 		string cwd,
@@ -89,7 +90,7 @@ internal sealed class GitWorktreeDiffService
 		var safeLimit = Math.Clamp(limit, 1, 200);
 		var logResult = RunGit(
 			repo.RepoRoot,
-			$"log -n {safeLimit} --date=iso-strict --pretty=format:%H%x1f%h%x1f%ad%x1f%an%x1f%s",
+			$"log -n {safeLimit} --date=iso-strict --numstat --pretty=format:{RecentCommitMarker}%H%x1f%h%x1f%ad%x1f%an%x1f%s",
 			timeoutMs: 7000,
 			cancellationToken);
 		if (!logResult.Success)
@@ -105,7 +106,7 @@ internal sealed class GitWorktreeDiffService
 				Commits: Array.Empty<GitRecentCommitInfo>());
 		}
 
-		var commits = ParseRecentCommitLog(logResult.StdOut);
+		var commits = ParseRecentCommitLogWithNumStat(logResult.StdOut);
 		return new GitRecentCommitCatalogSnapshot(
 			Cwd: repo.Cwd,
 			RepoRoot: repo.RepoRoot,
@@ -817,10 +818,105 @@ internal sealed class GitWorktreeDiffService
 				ShortSha: commit.ShortSha,
 				Subject: commit.Subject,
 				AuthorName: commit.AuthorName,
-				CommittedAtUtc: commit.CommittedAtUtc));
+				CommittedAtUtc: commit.CommittedAtUtc,
+				FilesChanged: 0,
+				Insertions: 0,
+				Deletions: 0));
 		}
 
 		return commits;
+	}
+
+	private static IReadOnlyList<GitRecentCommitInfo> ParseRecentCommitLogWithNumStat(string output)
+	{
+		var commits = new List<GitRecentCommitInfo>();
+		if (string.IsNullOrWhiteSpace(output))
+		{
+			return commits;
+		}
+
+		GitCommitMetadata? current = null;
+		var filesChanged = 0;
+		var additions = 0;
+		var deletions = 0;
+		void FlushCurrent()
+		{
+			if (current is null)
+			{
+				return;
+			}
+
+			commits.Add(new GitRecentCommitInfo(
+				Sha: current.Sha,
+				ShortSha: current.ShortSha,
+				Subject: current.Subject,
+				AuthorName: current.AuthorName,
+				CommittedAtUtc: current.CommittedAtUtc,
+				FilesChanged: filesChanged,
+				Insertions: additions,
+				Deletions: deletions));
+		}
+
+		foreach (var rawLine in output.Split('\n'))
+		{
+			var line = (rawLine ?? string.Empty).TrimEnd('\r');
+			if (line.StartsWith(RecentCommitMarker, StringComparison.Ordinal))
+			{
+				FlushCurrent();
+				current = ParseCommitLine(line[RecentCommitMarker.Length..]);
+				filesChanged = 0;
+				additions = 0;
+				deletions = 0;
+				continue;
+			}
+
+			if (current is null || string.IsNullOrWhiteSpace(line))
+			{
+				continue;
+			}
+
+			if (!TryParseNumStatLine(line, out var add, out var del))
+			{
+				continue;
+			}
+
+			filesChanged += 1;
+			additions += add;
+			deletions += del;
+		}
+
+		FlushCurrent();
+		return commits;
+	}
+
+	private static bool TryParseNumStatLine(string line, out int additions, out int deletions)
+	{
+		additions = 0;
+		deletions = 0;
+		if (string.IsNullOrWhiteSpace(line))
+		{
+			return false;
+		}
+
+		var parts = line.Split('\t');
+		if (parts.Length < 3)
+		{
+			return false;
+		}
+
+		var addRaw = parts[0].Trim();
+		var delRaw = parts[1].Trim();
+		if (addRaw != "-" && int.TryParse(addRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedAdd))
+		{
+			additions = Math.Max(0, parsedAdd);
+		}
+
+		if (delRaw != "-" && int.TryParse(delRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedDel))
+		{
+			deletions = Math.Max(0, parsedDel);
+		}
+
+		return true;
 	}
 
 	private static GitCommitMetadata? ParseCommitMetadata(string output)
@@ -1035,7 +1131,10 @@ internal sealed record GitRecentCommitInfo(
 	string ShortSha,
 	string Subject,
 	string AuthorName,
-	DateTimeOffset? CommittedAtUtc);
+	DateTimeOffset? CommittedAtUtc,
+	int FilesChanged,
+	int Insertions,
+	int Deletions);
 
 internal sealed record GitDiffFileContentSnapshot(
 	string Cwd,

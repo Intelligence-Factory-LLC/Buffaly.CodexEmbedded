@@ -4586,10 +4586,22 @@ body {
 	line-height: 1.2;
 }
 
+.diff-commit-review-stats {
+	font-size: 0.66rem;
+	color: #6b7280;
+	line-height: 1.2;
+}
+
 .worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-when {
 	font-size: 0.78rem;
 	font-weight: 600;
 	color: #64748b;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-stats {
+	font-size: 0.78rem;
+	font-weight: 600;
+	color: #6b7280;
 }
 
 .diff-commit-review-subject {
@@ -6325,6 +6337,10 @@ html[data-theme="dark"] .diff-commit-review-sha {
 
 html[data-theme="dark"] .diff-commit-review-when {
 	color: #fdba74;
+}
+
+html[data-theme="dark"] .diff-commit-review-stats {
+	color: #9ca3af;
 }
 
 html[data-theme="dark"] .diff-commit-review-subject {

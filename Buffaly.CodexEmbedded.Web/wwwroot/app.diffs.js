@@ -1230,6 +1230,7 @@
 
       const shortSha = normalized.shortSha || normalized.sha.slice(0, 7);
       const when = formatCommitTime(normalized.committedAtUtc);
+      const statPreview = formatCommitStatPreview(normalized);
       const subject = normalized.subject ? normalized.subject.trim() : "";
       const reviewActionDisabled = display.reviewActionDisabled ? " disabled" : "";
       const runningIcon = display.showSpinner
@@ -1246,6 +1247,7 @@
             <div class="diff-commit-review-meta-line">
               <div class="diff-commit-review-sha">${escapeHtml(shortSha)}</div>
               ${when ? `<div class="diff-commit-review-when">${escapeHtml(when)}</div>` : ""}
+              ${statPreview ? `<div class="diff-commit-review-stats">${escapeHtml(statPreview)}</div>` : ""}
             </div>
             <div class="diff-commit-review-subject">${escapeHtml(subject || "(no subject)")}</div>
           </div>
@@ -2812,8 +2814,27 @@
       shortSha: shortShaRaw || sha.slice(0, 12),
       subject: typeof commit.subject === "string" ? commit.subject.trim() : "",
       authorName: typeof commit.authorName === "string" ? commit.authorName.trim() : "",
-      committedAtUtc: typeof commit.committedAtUtc === "string" ? commit.committedAtUtc : ""
+      committedAtUtc: typeof commit.committedAtUtc === "string" ? commit.committedAtUtc : "",
+      filesChanged: Number.isFinite(commit.filesChanged) ? Math.max(0, Math.floor(commit.filesChanged)) : 0,
+      insertions: Number.isFinite(commit.insertions) ? Math.max(0, Math.floor(commit.insertions)) : 0,
+      deletions: Number.isFinite(commit.deletions) ? Math.max(0, Math.floor(commit.deletions)) : 0
     };
+  }
+
+  function formatCommitStatPreview(commitInfo) {
+    if (!commitInfo) {
+      return "";
+    }
+
+    const filesChanged = Number.isFinite(commitInfo.filesChanged) ? Math.max(0, Math.floor(commitInfo.filesChanged)) : 0;
+    const insertions = Number.isFinite(commitInfo.insertions) ? Math.max(0, Math.floor(commitInfo.insertions)) : 0;
+    const deletions = Number.isFinite(commitInfo.deletions) ? Math.max(0, Math.floor(commitInfo.deletions)) : 0;
+    if (filesChanged <= 0 && insertions <= 0 && deletions <= 0) {
+      return "";
+    }
+
+    const fileText = `${filesChanged} file${filesChanged === 1 ? "" : "s"}`;
+    return `${fileText} +${insertions} -${deletions}`;
   }
 
   function renderCommitOptions() {
@@ -2839,16 +2860,18 @@
       }
 
       const when = formatCommitTime(normalized.committedAtUtc);
+      const statPreview = formatCommitStatPreview(normalized);
       const subject = normalized.subject || "(no subject)";
       const author = normalized.authorName || "unknown";
       const scopeKey = getCommitScopeKey(normalized.sha);
       const openCount = scopeKey ? getOpenReviewCountForScope(scopeKey) : 0;
       const pendingSuffix = openCount > 0 ? ` [${openCount} open]` : "";
       const datePrefix = when ? `${when} ` : "";
-      const label = `${normalized.shortSha} ${datePrefix}${subject}${pendingSuffix}`;
+      const statsSuffix = statPreview ? ` [${statPreview}]` : "";
+      const label = `${normalized.shortSha} ${datePrefix}${subject}${statsSuffix}${pendingSuffix}`;
       const title = when
-        ? `${normalized.sha} | ${author} | ${when}`
-        : `${normalized.sha} | ${author}`;
+        ? `${normalized.sha} | ${author} | ${when}${statPreview ? ` | ${statPreview}` : ""}`
+        : `${normalized.sha} | ${author}${statPreview ? ` | ${statPreview}` : ""}`;
       options.push(`<option value="${escapeAttribute(normalized.sha)}" title="${escapeAttribute(title)}">${escapeHtml(label)}</option>`);
     }
 
