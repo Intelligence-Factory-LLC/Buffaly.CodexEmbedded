@@ -127,8 +127,6 @@
   let commitReviewSummaryCollapsed = false;
   let reviewPanelCollapsed = false;
   let reviewPanelTab = "rendered"; // rendered | raw
-  let workspaceMode = "tasks";
-  let reviewPageMode = "list"; // list | detail
   try {
     currentContextMode = normalizeContextMode(window.localStorage.getItem(STORAGE_CONTEXT_MODE_KEY) || "3");
   } catch {
@@ -150,15 +148,22 @@
   } catch {
     reviewPanelTab = "rendered";
   }
+  const reviewBridge = window.codexCodeReviewsBridge || {
+    getWorkspaceMode() { return "tasks"; },
+    setWorkspaceMode() { return "tasks"; },
+    isCodeReviewsWorkspace() { return false; },
+    getReviewPageMode() { return "list"; },
+    setReviewPageMode() { return "list"; }
+  };
+
   try {
     const workspaceProvider = window.codexWorkspaceGetTabMode;
     if (typeof workspaceProvider === "function") {
-      workspaceMode = workspaceProvider() === "code_reviews" ? "code_reviews" : "tasks";
+      reviewBridge.setWorkspaceMode(workspaceProvider() === "code_reviews" ? "code_reviews" : "tasks");
     }
   } catch {
-    workspaceMode = "tasks";
+    reviewBridge.setWorkspaceMode("tasks");
   }
-  reviewPageMode = "list";
 
   function createEmptyFullFileViewerState() {
     return {
@@ -180,16 +185,20 @@
   }
 
   function isCodeReviewsWorkspace() {
-    return workspaceMode === "code_reviews";
+    return reviewBridge.isCodeReviewsWorkspace();
+  }
+
+  function getReviewPageMode() {
+    return reviewBridge.getReviewPageMode() === "detail" ? "detail" : "list";
   }
 
   function setReviewPageMode(mode) {
     const next = mode === "detail" ? "detail" : "list";
-    if (reviewPageMode === next) {
+    if (getReviewPageMode() === next) {
       applyPanelState();
       return;
     }
-    reviewPageMode = next;
+    reviewBridge.setReviewPageMode(next);
     applyPanelState();
   }
 
@@ -2220,7 +2229,8 @@
   }
 
   function applyPanelState() {
-    const dedicatedWorkspace = workspaceMode === "code_reviews";
+    const dedicatedWorkspace = isCodeReviewsWorkspace();
+    const reviewPageMode = getReviewPageMode();
     const showPanel = dedicatedWorkspace ? true : isExpanded;
     panel.classList.toggle("hidden", !showPanel);
     panel.classList.toggle("worktree-diff-collapsed", false);
@@ -4168,7 +4178,7 @@
       currentRepoRoot = "";
       currentBranch = "";
       availableCommits = [];
-      if (reviewPageMode !== "detail") {
+      if (getReviewPageMode() !== "detail") {
         selectedCommitSha = "";
         selectedCommitInfo = null;
       }
@@ -4430,17 +4440,17 @@
 
   window.codexDiffSetWorkspaceMode = function codexDiffSetWorkspaceMode(mode) {
     const nextMode = mode === "code_reviews" ? "code_reviews" : "tasks";
-    if (workspaceMode === nextMode) {
+    if (reviewBridge.getWorkspaceMode() === nextMode) {
       applyPanelState();
       return;
     }
 
-    workspaceMode = nextMode;
-    if (workspaceMode === "code_reviews" && currentMode !== "commit") {
+    reviewBridge.setWorkspaceMode(nextMode);
+    if (reviewBridge.isCodeReviewsWorkspace() && currentMode !== "commit") {
       currentMode = "commit";
     }
-    if (workspaceMode === "code_reviews") {
-      reviewPageMode = "list";
+    if (reviewBridge.isCodeReviewsWorkspace()) {
+      reviewBridge.setReviewPageMode("list");
       clearCommitSelection();
       lastRenderKey = "";
       queueRefresh({ force: true });
@@ -4485,7 +4495,7 @@
   }
 
   toggleBtn.addEventListener("click", () => {
-    if (isCodeReviewsWorkspace() && reviewPageMode === "detail") {
+    if (isCodeReviewsWorkspace() && getReviewPageMode() === "detail") {
       setReviewPageMode("list");
       return;
     }
@@ -5065,9 +5075,9 @@
     renderCommitOptions();
   });
 
-  if (workspaceMode === "code_reviews") {
+  if (isCodeReviewsWorkspace()) {
     currentMode = "commit";
-    reviewPageMode = "list";
+    reviewBridge.setReviewPageMode("list");
     selectedCommitSha = "";
     selectedCommitInfo = null;
   }
