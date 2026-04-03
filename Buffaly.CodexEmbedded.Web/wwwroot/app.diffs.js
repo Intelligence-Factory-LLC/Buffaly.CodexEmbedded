@@ -155,20 +155,8 @@
   } catch {
     workspaceMode = "tasks";
   }
-  try {
-    const pageUrl = new URL(window.location.href);
-    const requestedMode = String(pageUrl.searchParams.get("reviewMode") || "").trim().toLowerCase();
-    reviewPageMode = requestedMode === "detail" ? "detail" : "list";
-    const requestedCommit = String(pageUrl.searchParams.get("commit") || "").trim();
-    if (requestedCommit) {
-      selectedCommitSha = requestedCommit;
-    }
-    const requestedAction = String(pageUrl.searchParams.get("reviewAction") || "").trim().toLowerCase();
-    detailReviewAction = requestedAction === "run" || requestedAction === "queue" ? requestedAction : "";
-  } catch {
-    reviewPageMode = "list";
-    detailReviewAction = "";
-  }
+  reviewPageMode = "list";
+  detailReviewAction = "";
 
   function createEmptyFullFileViewerState() {
     return {
@@ -193,42 +181,31 @@
     return workspaceMode === "code_reviews";
   }
 
-  function navigateToCodeReviewsListPage() {
-    const url = new URL(window.location.href);
-    url.searchParams.set("tab", "code_reviews");
-    url.searchParams.delete("reviewMode");
-    url.searchParams.delete("commit");
-    url.searchParams.delete("reviewAction");
-    window.location.assign(url.toString());
+  function setReviewPageMode(mode) {
+    const next = mode === "detail" ? "detail" : "list";
+    if (reviewPageMode === next) {
+      applyPanelState();
+      return;
+    }
+    reviewPageMode = next;
+    applyPanelState();
   }
 
-  function navigateToCodeReviewsDetailPage(sha, action = "") {
+  function openCodeReviewCommitDetail(sha, action = "") {
     const normalizedSha = typeof sha === "string" ? sha.trim() : "";
     if (!normalizedSha) {
       return;
     }
 
-    const url = new URL(window.location.href);
-    url.searchParams.set("tab", "code_reviews");
-    url.searchParams.set("reviewMode", "detail");
-    url.searchParams.set("commit", normalizedSha);
-    if (action === "run" || action === "queue") {
-      url.searchParams.set("reviewAction", action);
-    } else {
-      url.searchParams.delete("reviewAction");
-    }
-    window.location.assign(url.toString());
-  }
-
-  function clearDetailReviewActionFromUrl() {
-    try {
-      const url = new URL(window.location.href);
-      if (!url.searchParams.has("reviewAction")) {
-        return;
+    detailReviewAction = action === "run" || action === "queue" ? action : "";
+    setReviewPageMode("detail");
+    selectCommitForDetails(normalizedSha);
+    if (selectedCommitSha === normalizedSha && currentFiles.length > 0 && detailReviewAction) {
+      const pendingAction = detailReviewAction;
+      detailReviewAction = "";
+      if (pendingAction === "run" || pendingAction === "queue") {
+        runReviewFromDiffPanel("").catch(() => { });
       }
-      url.searchParams.delete("reviewAction");
-      window.history.replaceState(null, "", url.toString());
-    } catch {
     }
   }
 
@@ -3952,7 +3929,6 @@
       if (isCodeReviewsWorkspace() && reviewPageMode === "detail" && detailReviewAction && selectedCommitSha) {
         const action = detailReviewAction;
         detailReviewAction = "";
-        clearDetailReviewActionFromUrl();
         if (action === "run" || action === "queue") {
           runReviewFromDiffPanel("").catch(() => { });
         }
@@ -4014,9 +3990,8 @@
       currentMode = "commit";
     }
     if (workspaceMode === "code_reviews") {
-      if (reviewPageMode !== "detail") {
-        clearCommitSelection();
-      }
+      reviewPageMode = "list";
+      clearCommitSelection();
       lastRenderKey = "";
       queueRefresh({ force: true });
     }
@@ -4061,7 +4036,7 @@
 
   toggleBtn.addEventListener("click", () => {
     if (isCodeReviewsWorkspace() && reviewPageMode === "detail") {
-      navigateToCodeReviewsListPage();
+      setReviewPageMode("list");
       return;
     }
     persistPendingNoteDraft();
@@ -4108,7 +4083,7 @@
       event.preventDefault();
       event.stopPropagation();
       if (isCodeReviewsWorkspace()) {
-        navigateToCodeReviewsDetailPage(sha);
+        openCodeReviewCommitDetail(sha);
         return;
       }
       selectCommitForDetails(sha);
@@ -4124,7 +4099,7 @@
       event.preventDefault();
       event.stopPropagation();
       if (isCodeReviewsWorkspace()) {
-        navigateToCodeReviewsDetailPage(sha, "run");
+        openCodeReviewCommitDetail(sha, "run");
         return;
       }
       if (sha !== selectedCommitSha || currentFiles.length === 0) {
@@ -4147,7 +4122,7 @@
     }
 
     if (isCodeReviewsWorkspace()) {
-      navigateToCodeReviewsDetailPage(sha);
+      openCodeReviewCommitDetail(sha);
       return;
     }
     selectCommitForDetails(sha);
@@ -4173,7 +4148,7 @@
       return;
     }
     if (isCodeReviewsWorkspace()) {
-      navigateToCodeReviewsDetailPage(sha);
+      openCodeReviewCommitDetail(sha);
       return;
     }
     selectCommitForDetails(sha);
@@ -4602,10 +4577,9 @@
 
   if (workspaceMode === "code_reviews") {
     currentMode = "commit";
-    if (reviewPageMode !== "detail") {
-      selectedCommitSha = "";
-      selectedCommitInfo = null;
-    }
+    reviewPageMode = "list";
+    selectedCommitSha = "";
+    selectedCommitInfo = null;
   }
   renderCommitOptions();
   applyModeUiState();
