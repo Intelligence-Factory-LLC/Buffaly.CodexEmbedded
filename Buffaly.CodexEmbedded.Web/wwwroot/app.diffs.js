@@ -82,6 +82,7 @@
   const STORAGE_CONTEXT_MODE_KEY = "codex-worktree-diff-context-mode-v1";
   const STORAGE_COMMIT_REVIEW_COLLAPSED_KEY = "codex-worktree-diff-commit-review-collapsed-v1";
   const STORAGE_REVIEW_PANEL_COLLAPSED_KEY = "codex-worktree-diff-review-panel-collapsed-v1";
+  const STORAGE_REVIEW_PANEL_TAB_KEY = "codex-worktree-diff-review-panel-tab-v1";
   const CONTEXT_MODE_VALUES = new Set(["3", "10", "30", "full"]);
 
   let pollInFlight = false;
@@ -129,6 +130,7 @@
   let reviewFindingStateByKey = new Map();
   let commitReviewSummaryCollapsed = false;
   let reviewPanelCollapsed = false;
+  let reviewPanelTab = "rendered"; // rendered | raw
   let workspaceMode = "tasks";
   let reviewPageMode = "list"; // list | detail
   let detailReviewAction = ""; // run | queue | ""
@@ -146,6 +148,12 @@
     reviewPanelCollapsed = window.localStorage.getItem(STORAGE_REVIEW_PANEL_COLLAPSED_KEY) === "1";
   } catch {
     reviewPanelCollapsed = false;
+  }
+  try {
+    const stored = window.localStorage.getItem(STORAGE_REVIEW_PANEL_TAB_KEY);
+    reviewPanelTab = stored === "raw" ? "raw" : "rendered";
+  } catch {
+    reviewPanelTab = "rendered";
   }
   try {
     const workspaceProvider = window.codexWorkspaceGetTabMode;
@@ -1124,6 +1132,15 @@
     renderReviewFindingsPanel();
   }
 
+  function setReviewPanelTab(nextTab) {
+    reviewPanelTab = nextTab === "raw" ? "raw" : "rendered";
+    try {
+      window.localStorage.setItem(STORAGE_REVIEW_PANEL_TAB_KEY, reviewPanelTab);
+    } catch {
+    }
+    renderReviewFindingsPanel();
+  }
+
   function renderCommitReviewSummary() {
     renderCommitModeBadge();
     if (!Array.isArray(availableCommits) || availableCommits.length === 0) {
@@ -1385,6 +1402,36 @@
     return `<div class="diff-review-structured">${rows.join("")}</div>`;
   }
 
+  function renderReviewRawJson(scopeKey, record, summary) {
+    const scopedRecords = scopeKey && reviewFindingsByScope.has(scopeKey)
+      ? reviewFindingsByScope.get(scopeKey)
+      : [];
+    const lifecycle = scopeKey ? readReviewLifecycle(scopeKey) : {
+      requestedCount: 0,
+      completedCount: 0,
+      lastRequestedUtc: "",
+      lastCompletedUtc: ""
+    };
+    const flattenedFindings = scopeKey
+      ? flattenReviewFindingsForScope(scopeKey, scopeKey === currentReviewStateScopeKey ? reviewFindingStateByKey : loadReviewFindingState(scopeKey))
+      : [];
+    const payload = {
+      scopeKey: scopeKey || "",
+      review: record || null,
+      summary: summary || null,
+      lifecycle,
+      flattenedFindings,
+      allScopeRecords: Array.isArray(scopedRecords) ? scopedRecords : []
+    };
+    let text = "";
+    try {
+      text = JSON.stringify(payload, null, 2) || "";
+    } catch {
+      text = "{}";
+    }
+    return `<pre class="diff-review-raw-json">${escapeHtml(text)}</pre>`;
+  }
+
   function buildFixPromptFromReviewRecord(record) {
     if (!record || typeof record !== "object") {
       return "";
@@ -1455,12 +1502,17 @@
     const statusLabel = record.status === "reviewed" ? "Reviewed" : "Review Completed";
     const bodyHtml = renderReviewMarkdownBody(record.assistantText);
     const structuredHtml = renderStructuredReviewFindings(record);
+    const rawJsonHtml = renderReviewRawJson(scopeKey, record, summary);
     const openCount = Number.isFinite(summary.openFindingCount) ? summary.openFindingCount : 0;
     const notesCount = notesByKey.size;
 
     reviewFindingsNode.innerHTML = `<div class="diff-review-header">
       <span class="diff-review-title">Review</span>
       <span class="diff-review-count">${escapeHtml(statusLabel)} | ${openCount} open | ${notesCount} notes</span>
+      <div class="diff-review-tabs" role="tablist" aria-label="Review views">
+        <button type="button" class="diff-review-tab${reviewPanelTab === "rendered" ? " active" : ""}" data-review-tab="rendered" role="tab" aria-selected="${reviewPanelTab === "rendered" ? "true" : "false"}">Rendered Review</button>
+        <button type="button" class="diff-review-tab${reviewPanelTab === "raw" ? " active" : ""}" data-review-tab="raw" role="tab" aria-selected="${reviewPanelTab === "raw" ? "true" : "false"}">Raw Review JSON</button>
+      </div>
       <button type="button" class="diff-review-collapse-btn" data-review-panel-collapse="1" aria-expanded="${reviewPanelCollapsed ? "false" : "true"}">${reviewPanelCollapsed ? "Expand" : "Collapse"}</button>
       <button type="button" class="diff-review-send-notes" data-review-queue-fix="1">Fix</button>
       <button type="button" class="diff-review-send-notes" data-review-send-notes="1">Send Notes To Prompt</button>
@@ -1470,8 +1522,9 @@
       ? "<div class=\"diff-review-collapsed-note\">Review details hidden.</div>"
       : `<div class="diff-review-output-item">
       <div class="diff-review-output-meta">${escapeHtml(targetLabel)}${when ? ` | ${escapeHtml(when)}` : ""}</div>
-      ${structuredHtml}
-      <div class="diff-review-md-body">${bodyHtml}</div>
+      ${reviewPanelTab === "raw"
+        ? rawJsonHtml
+        : `${structuredHtml}<div class="diff-review-md-body">${bodyHtml}</div>`}
     </div>`}`;
     reviewFindingsNode.classList.remove("hidden");
   }
@@ -4799,6 +4852,13 @@
   });
 
   reviewFindingsNode.addEventListener("click", (event) => {
+    const tabBtn = event.target instanceof Element ? event.target.closest("[data-review-tab]") : null;
+    if (tabBtn) {
+      const nextTab = (tabBtn.getAttribute("data-review-tab") || "").trim();
+      setReviewPanelTab(nextTab);
+      return;
+    }
+
     const collapseBtn = event.target instanceof Element ? event.target.closest("[data-review-panel-collapse='1']") : null;
     if (collapseBtn) {
       setReviewPanelCollapsed(!reviewPanelCollapsed);
