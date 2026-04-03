@@ -2940,6 +2940,26 @@ function findCodeReviewsSessionStateByCwd(cwd) {
   return matches[0] || null;
 }
 
+function scheduleCodeReviewsEnsureIfNeeded(reason) {
+  if (currentWorkspaceTab !== WORKSPACE_TAB_CODE_REVIEWS) {
+    return;
+  }
+
+  const cwd = getWorkspaceProjectCwd();
+  if (!cwd) {
+    return;
+  }
+
+  const active = getActiveSessionState();
+  if (active && isSameProjectCwd(active.cwd || "", cwd) && isCodeReviewsStateLike(active)) {
+    return;
+  }
+
+  window.setTimeout(() => {
+    ensureCodeReviewsSessionForCurrentProject(reason).catch(() => {});
+  }, 0);
+}
+
 function findAttachedSessionIdByThreadId(threadId) {
   const normalizedThreadId = normalizeThreadId(threadId || "");
   if (!normalizedThreadId) {
@@ -9605,6 +9625,7 @@ function handleServerEvent(frame) {
       } else {
         updatePromptActionState();
       }
+      scheduleCodeReviewsEnsureIfNeeded("session_list_missing_code_reviews_session");
 
       const activeState = getActiveSessionState();
       const activePending = activeState && activeState.pendingApproval ? activeState.pendingApproval : null;
@@ -9731,8 +9752,6 @@ function handleServerEvent(frame) {
       updateExistingSessionSelect();
       refreshSessionMeta();
       appendLog(`[catalog] loaded ${sessionCatalog.length} existing sessions from ${payload.codexHomePath || "default CODEX_HOME"}`);
-      // Resume a pending code-reviews ensure only when an explicit ensure already
-      // set a pending marker (for example startup deep-link before catalog loaded).
       if (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS) {
         const currentCwd = getWorkspaceProjectCwd();
         const pendingCodeReviews = getPendingCodeReviewsThreadForCwd(currentCwd || "");
@@ -9740,11 +9759,10 @@ function handleServerEvent(frame) {
           const resolved = findCodeReviewsCatalogEntryByCwd(currentCwd || "");
           if (resolved) {
             clearPendingCodeReviewsThreadForCwd(currentCwd || "");
-          } else {
-            ensureCodeReviewsSessionForCurrentProject("session_catalog_pending_code_reviews").catch(() => {});
           }
         }
       }
+      scheduleCodeReviewsEnsureIfNeeded("session_catalog_missing_code_reviews_session");
       return;
     }
 
