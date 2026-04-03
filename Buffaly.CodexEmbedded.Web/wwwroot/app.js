@@ -125,6 +125,7 @@ const STORAGE_STARTUP_RESTORE_GUARD_KEY = "codex-web-startup-restore-guard-v1";
 const STORAGE_THREAD_MODELS_KEY = "codex-web-thread-models-v1";
 const STORAGE_THREAD_REASONING_KEY = "codex-web-thread-reasoning-v1";
 const STORAGE_THREAD_PERMISSIONS_KEY = "codex-web-thread-permissions-v1";
+const STORAGE_RATE_LIMIT_SNAPSHOT_KEY = "codex-web-rate-limit-snapshot-v1";
 const STORAGE_PROJECT_META_KEY = "codex-web-project-meta";
 const STORAGE_COLLAPSED_PROJECTS_KEY = "codex-web-collapsed-projects";
 const STORAGE_ARCHIVED_THREADS_KEY = "codex-web-archived-threads";
@@ -1627,6 +1628,27 @@ function persistThreadPermissionState() {
   }
 
   localStorage.setItem(STORAGE_THREAD_PERMISSIONS_KEY, JSON.stringify(payload));
+}
+
+function loadRateLimitSnapshotState() {
+  const raw = safeJsonParse(localStorage.getItem(STORAGE_RATE_LIMIT_SNAPSHOT_KEY), null);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return;
+  }
+
+  latestRateLimitSnapshot = raw;
+}
+
+function persistRateLimitSnapshotState(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    return;
+  }
+
+  try {
+    localStorage.setItem(STORAGE_RATE_LIMIT_SNAPSHOT_KEY, JSON.stringify(snapshot));
+  } catch {
+    // no-op
+  }
 }
 
 function getPreferredModelForThread(threadId) {
@@ -7812,6 +7834,7 @@ function refreshLatestRateLimitSnapshot(force = false) {
       }
 
       latestRateLimitSnapshot = selected;
+      persistRateLimitSnapshotState(selected);
       if (!rateLimitBySession.has(activeSessionId || "")) {
         refreshSessionMetaUsage();
       }
@@ -8748,6 +8771,7 @@ function applySavedUiSettings() {
   loadThreadModelState();
   loadThreadReasoningState();
   loadThreadPermissionState();
+  loadRateLimitSnapshotState();
 
   const savedCwd = localStorage.getItem(STORAGE_CWD_KEY);
   if (savedCwd) {
@@ -9841,6 +9865,9 @@ function handleServerEvent(frame) {
     case "rate_limits_updated": {
       const sessionId = payload.sessionId || null;
       latestRateLimitSnapshot = payload && typeof payload === "object" ? payload : latestRateLimitSnapshot;
+      if (payload && typeof payload === "object") {
+        persistRateLimitSnapshotState(payload);
+      }
       if (sessionId) {
         rateLimitBySession.set(sessionId, payload);
         if (sessionId === activeSessionId) {

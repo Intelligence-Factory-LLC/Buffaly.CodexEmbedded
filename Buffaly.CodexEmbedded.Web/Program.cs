@@ -19,6 +19,7 @@ builder.Services.AddSingleton(defaults);
 builder.Services.AddSingleton(codexPreflight);
 builder.Services.AddSingleton(userSecretsOptions);
 builder.Services.AddSingleton<RecapSettingsStore>();
+builder.Services.AddSingleton<RateLimitSnapshotStore>();
 builder.Services.AddSingleton<SessionOrchestrator>();
 builder.Services.AddSingleton<ServerRuntimeStateTracker>();
 builder.Services.AddSingleton<TimelineProjectionService>();
@@ -201,96 +202,18 @@ app.MapGet("/api/settings/codex-usage/status", (
 	}
 
 	var snapshots = orchestrator.GetLatestRateLimitSnapshots();
-	var latest = snapshots.FirstOrDefault();
+	var latest = ChooseUsageDisplaySnapshot(snapshots);
 	var message = latest is null
-		? "Usage data has not been received yet. Start or resume a session to populate limits."
-		: $"Latest usage from session {latest.SessionId}.";
+		? "Usage data has not been received yet. Usage will appear after the first rate-limit update."
+		: $"Showing last known usage from session {latest.SessionId}.";
 
 	return Results.Ok(new
 	{
 		hasUsage = latest is not null,
 		message,
 		updatedAtUtc = latest?.UpdatedAtUtc.ToString("O"),
-		latest = latest is null
-			? null
-			: new
-			{
-				sessionId = latest.SessionId,
-				threadId = latest.ThreadId,
-				scope = latest.Scope,
-				remaining = latest.Remaining,
-				limit = latest.Limit,
-				used = latest.Used,
-				retryAfterSeconds = latest.RetryAfterSeconds,
-				resetAtUtc = latest.ResetAtUtc?.ToString("O"),
-				primary = latest.Primary is null
-					? null
-					: new
-					{
-						usedPercent = latest.Primary.UsedPercent,
-						remainingPercent = latest.Primary.RemainingPercent,
-						windowMinutes = latest.Primary.WindowMinutes,
-						resetsAtUtc = latest.Primary.ResetsAtUtc?.ToString("O")
-					},
-				secondary = latest.Secondary is null
-					? null
-					: new
-					{
-						usedPercent = latest.Secondary.UsedPercent,
-						remainingPercent = latest.Secondary.RemainingPercent,
-						windowMinutes = latest.Secondary.WindowMinutes,
-						resetsAtUtc = latest.Secondary.ResetsAtUtc?.ToString("O")
-					},
-				planType = latest.PlanType,
-				credits = new
-				{
-					hasCredits = latest.HasCredits,
-					unlimited = latest.UnlimitedCredits,
-					balance = latest.CreditBalance
-				},
-				summary = latest.Summary,
-				source = latest.Source,
-				updatedAtUtc = latest.UpdatedAtUtc.ToString("O")
-			},
-		sessions = snapshots.Select(x => new
-		{
-			sessionId = x.SessionId,
-			threadId = x.ThreadId,
-			scope = x.Scope,
-			remaining = x.Remaining,
-			limit = x.Limit,
-			used = x.Used,
-			retryAfterSeconds = x.RetryAfterSeconds,
-			resetAtUtc = x.ResetAtUtc?.ToString("O"),
-			primary = x.Primary is null
-				? null
-				: new
-				{
-					usedPercent = x.Primary.UsedPercent,
-					remainingPercent = x.Primary.RemainingPercent,
-					windowMinutes = x.Primary.WindowMinutes,
-					resetsAtUtc = x.Primary.ResetsAtUtc?.ToString("O")
-				},
-			secondary = x.Secondary is null
-				? null
-				: new
-				{
-					usedPercent = x.Secondary.UsedPercent,
-					remainingPercent = x.Secondary.RemainingPercent,
-					windowMinutes = x.Secondary.WindowMinutes,
-					resetsAtUtc = x.Secondary.ResetsAtUtc?.ToString("O")
-				},
-			planType = x.PlanType,
-			credits = new
-			{
-				hasCredits = x.HasCredits,
-				unlimited = x.UnlimitedCredits,
-				balance = x.CreditBalance
-			},
-			summary = x.Summary,
-			source = x.Source,
-			updatedAtUtc = x.UpdatedAtUtc.ToString("O")
-		}).ToArray()
+		latest = latest is null ? null : ToUsagePayload(latest),
+		sessions = snapshots.Select(ToUsagePayload).ToArray()
 	});
 });
 
@@ -917,6 +840,111 @@ static string ReadBuildMetadataString(JsonElement root, string propertyName)
 
 	var value = rawValue.GetString()?.Trim() ?? string.Empty;
 	return string.IsNullOrWhiteSpace(value) ? "unknown" : value;
+}
+
+static SessionOrchestrator.SessionRateLimitSnapshot? ChooseUsageDisplaySnapshot(IReadOnlyList<SessionOrchestrator.SessionRateLimitSnapshot> snapshots)
+{
+	if (snapshots is null || snapshots.Count == 0)
+	{
+		return null;
+	}
+
+	SessionOrchestrator.SessionRateLimitSnapshot? bestByWeekly = null;
+	double? bestRemaining = null;
+	foreach (var snapshot in snapshots)
+	{
+		var weeklyRemaining = ReadWeeklyRemainingPercent(snapshot);
+		if (!weeklyRemaining.HasValue)
+		{
+			continue;
+		}
+
+		if (!bestRemaining.HasValue ||
+			weeklyRemaining.Value < bestRemaining.Value ||
+			(Math.Abs(weeklyRemaining.Value - bestRemaining.Value) < 0.0001 && snapshot.UpdatedAtUtc > bestByWeekly!.UpdatedAtUtc))
+		{
+			bestRemaining = weeklyRemaining.Value;
+			bestByWeekly = snapshot;
+		}
+	}
+
+	return bestByWeekly ?? snapshots
+		.OrderByDescending(x => x.UpdatedAtUtc)
+		.ThenBy(x => x.SessionId, StringComparer.Ordinal)
+		.FirstOrDefault();
+}
+
+static double? ReadWeeklyRemainingPercent(SessionOrchestrator.SessionRateLimitSnapshot snapshot)
+{
+	var candidates = new[] { snapshot.Secondary, snapshot.Primary };
+	foreach (var window in candidates)
+	{
+		if (window is null)
+		{
+			continue;
+		}
+
+		var minutes = window.WindowMinutes;
+		if (!minutes.HasValue || Math.Abs(minutes.Value - 10080d) > 2d)
+		{
+			continue;
+		}
+
+		if (window.RemainingPercent.HasValue)
+		{
+			return Math.Clamp(window.RemainingPercent.Value, 0, 100);
+		}
+
+		if (window.UsedPercent.HasValue)
+		{
+			return Math.Clamp(100d - window.UsedPercent.Value, 0, 100);
+		}
+	}
+
+	return null;
+}
+
+static object ToUsagePayload(SessionOrchestrator.SessionRateLimitSnapshot snapshot)
+{
+	return new
+	{
+		sessionId = snapshot.SessionId,
+		threadId = snapshot.ThreadId,
+		scope = snapshot.Scope,
+		remaining = snapshot.Remaining,
+		limit = snapshot.Limit,
+		used = snapshot.Used,
+		retryAfterSeconds = snapshot.RetryAfterSeconds,
+		resetAtUtc = snapshot.ResetAtUtc?.ToString("O"),
+		primary = snapshot.Primary is null
+			? null
+			: new
+			{
+				usedPercent = snapshot.Primary.UsedPercent,
+				remainingPercent = snapshot.Primary.RemainingPercent,
+				windowMinutes = snapshot.Primary.WindowMinutes,
+				resetsAtUtc = snapshot.Primary.ResetsAtUtc?.ToString("O")
+			},
+		secondary = snapshot.Secondary is null
+			? null
+			: new
+			{
+				usedPercent = snapshot.Secondary.UsedPercent,
+				remainingPercent = snapshot.Secondary.RemainingPercent,
+				windowMinutes = snapshot.Secondary.WindowMinutes,
+				resetsAtUtc = snapshot.Secondary.ResetsAtUtc?.ToString("O")
+			},
+		planType = snapshot.PlanType,
+		credits = new
+		{
+			hasCredits = snapshot.HasCredits,
+			unlimited = snapshot.UnlimitedCredits,
+			balance = snapshot.CreditBalance
+		},
+		summary = snapshot.Summary,
+		source = snapshot.Source,
+		updatedAtUtc = snapshot.UpdatedAtUtc.ToString("O")
+	};
 }
 
 static void EnsureDirectoryWritable(string directoryPath)

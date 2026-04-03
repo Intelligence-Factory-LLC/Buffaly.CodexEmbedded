@@ -14,15 +14,18 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	private readonly WebRuntimeDefaults _defaults;
 	private readonly TimelineProjectionService _timelineProjection;
 	private readonly ReviewStore _reviewStore;
+	private readonly RateLimitSnapshotStore _rateLimitSnapshotStore;
 	private readonly object _sync = new();
 	private readonly object _coreSignalSync = new();
 	private readonly object _turnCacheSync = new();
+	private readonly object _rateLimitSnapshotSync = new();
 	private readonly Dictionary<string, ManagedSession> _sessions = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, ThreadTurnCacheState> _turnCacheByThread = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, string> _lastSessionConfiguredFingerprintBySession = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, string> _lastThreadCompactedFingerprintByThread = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, string> _lastThreadNameByThread = new(StringComparer.Ordinal);
 	private readonly Dictionary<string, RateLimitDispatchState> _rateLimitDispatchBySession = new(StringComparer.Ordinal);
+	private readonly Dictionary<string, SessionRateLimitSnapshot> _latestRateLimitSnapshotBySession = new(StringComparer.Ordinal);
 	private static readonly TimeSpan RateLimitCoalesceDelay = TimeSpan.FromMilliseconds(350);
 	private static readonly TimeSpan ModelsListCacheTtl = TimeSpan.FromMinutes(10);
 	private const int MaxCoreStdoutJsonlParseChars = 250_000;
@@ -30,11 +33,17 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 	public event Action? SessionsChanged;
 	public event Action<string, object>? Broadcast;
 
-	public SessionOrchestrator(WebRuntimeDefaults defaults, TimelineProjectionService timelineProjection, ReviewStore reviewStore)
+	public SessionOrchestrator(
+		WebRuntimeDefaults defaults,
+		TimelineProjectionService timelineProjection,
+		ReviewStore reviewStore,
+		RateLimitSnapshotStore rateLimitSnapshotStore)
 	{
 		_defaults = defaults;
 		_timelineProjection = timelineProjection;
 		_reviewStore = reviewStore;
+		_rateLimitSnapshotStore = rateLimitSnapshotStore;
+		LoadRateLimitSnapshotCache();
 	}
 
 	private static void WriteOrchestratorAudit(string message)
@@ -114,19 +123,13 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 
 	public IReadOnlyList<SessionRateLimitSnapshot> GetLatestRateLimitSnapshots()
 	{
-		List<ManagedSession> loadedSessions;
-		lock (_sync)
+		lock (_rateLimitSnapshotSync)
 		{
-			loadedSessions = _sessions.Values.ToList();
+			return _latestRateLimitSnapshotBySession.Values
+				.OrderByDescending(x => x.UpdatedAtUtc)
+				.ThenBy(x => x.SessionId, StringComparer.Ordinal)
+				.ToList();
 		}
-
-		return loadedSessions
-			.Select(s => s.GetLatestRateLimitSnapshot())
-			.Where(x => x is not null)
-			.Select(x => x!)
-			.OrderByDescending(x => x.UpdatedAtUtc)
-			.ThenBy(x => x.SessionId, StringComparer.Ordinal)
-			.ToList();
 	}
 
 	public TurnWatchSnapshot WatchTurns(
@@ -3353,6 +3356,7 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 			Source: signal.Source,
 			UpdatedAtUtc: DateTimeOffset.UtcNow);
 		loadedSession.SetLatestRateLimitSnapshot(snapshot);
+		RememberRateLimitSnapshot(snapshot);
 
 		Broadcast?.Invoke(
 			"rate_limits_updated",
@@ -3393,6 +3397,119 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				summary = signal.Summary,
 				source = signal.Source
 			});
+	}
+
+	private void LoadRateLimitSnapshotCache()
+	{
+		var snapshots = _rateLimitSnapshotStore.ReadSnapshots();
+		if (snapshots.Count == 0)
+		{
+			return;
+		}
+
+		lock (_rateLimitSnapshotSync)
+		{
+			foreach (var persisted in snapshots)
+			{
+				var snapshot = ToSessionRateLimitSnapshot(persisted);
+				if (string.IsNullOrWhiteSpace(snapshot.SessionId))
+				{
+					continue;
+				}
+
+				if (_latestRateLimitSnapshotBySession.TryGetValue(snapshot.SessionId, out var existing) &&
+					existing.UpdatedAtUtc >= snapshot.UpdatedAtUtc)
+				{
+					continue;
+				}
+
+				_latestRateLimitSnapshotBySession[snapshot.SessionId] = snapshot;
+			}
+		}
+	}
+
+	private void RememberRateLimitSnapshot(SessionRateLimitSnapshot snapshot)
+	{
+		List<PersistedRateLimitSnapshot> toPersist;
+		lock (_rateLimitSnapshotSync)
+		{
+			_latestRateLimitSnapshotBySession[snapshot.SessionId] = snapshot;
+			toPersist = _latestRateLimitSnapshotBySession.Values
+				.OrderByDescending(x => x.UpdatedAtUtc)
+				.ThenBy(x => x.SessionId, StringComparer.Ordinal)
+				.Select(ToPersistedRateLimitSnapshot)
+				.ToList();
+		}
+
+		_rateLimitSnapshotStore.WriteSnapshots(toPersist);
+	}
+
+	private static SessionRateLimitSnapshot ToSessionRateLimitSnapshot(PersistedRateLimitSnapshot snapshot)
+	{
+		return new SessionRateLimitSnapshot(
+			SessionId: snapshot.SessionId,
+			ThreadId: snapshot.ThreadId,
+			Scope: snapshot.Scope,
+			Remaining: snapshot.Remaining,
+			Limit: snapshot.Limit,
+			Used: snapshot.Used,
+			RetryAfterSeconds: snapshot.RetryAfterSeconds,
+			ResetAtUtc: snapshot.ResetAtUtc,
+			Primary: snapshot.Primary is null
+				? null
+				: new SessionRateLimitWindowSnapshot(
+					UsedPercent: snapshot.Primary.UsedPercent,
+					RemainingPercent: snapshot.Primary.RemainingPercent,
+					WindowMinutes: snapshot.Primary.WindowMinutes,
+					ResetsAtUtc: snapshot.Primary.ResetsAtUtc),
+			Secondary: snapshot.Secondary is null
+				? null
+				: new SessionRateLimitWindowSnapshot(
+					UsedPercent: snapshot.Secondary.UsedPercent,
+					RemainingPercent: snapshot.Secondary.RemainingPercent,
+					WindowMinutes: snapshot.Secondary.WindowMinutes,
+					ResetsAtUtc: snapshot.Secondary.ResetsAtUtc),
+			PlanType: snapshot.PlanType,
+			HasCredits: snapshot.HasCredits,
+			UnlimitedCredits: snapshot.UnlimitedCredits,
+			CreditBalance: snapshot.CreditBalance,
+			Summary: snapshot.Summary,
+			Source: snapshot.Source,
+			UpdatedAtUtc: snapshot.UpdatedAtUtc);
+	}
+
+	private static PersistedRateLimitSnapshot ToPersistedRateLimitSnapshot(SessionRateLimitSnapshot snapshot)
+	{
+		return new PersistedRateLimitSnapshot(
+			SessionId: snapshot.SessionId,
+			ThreadId: snapshot.ThreadId,
+			Scope: snapshot.Scope,
+			Remaining: snapshot.Remaining,
+			Limit: snapshot.Limit,
+			Used: snapshot.Used,
+			RetryAfterSeconds: snapshot.RetryAfterSeconds,
+			ResetAtUtc: snapshot.ResetAtUtc,
+			Primary: snapshot.Primary is null
+				? null
+				: new PersistedRateLimitWindowSnapshot(
+					UsedPercent: snapshot.Primary.UsedPercent,
+					RemainingPercent: snapshot.Primary.RemainingPercent,
+					WindowMinutes: snapshot.Primary.WindowMinutes,
+					ResetsAtUtc: snapshot.Primary.ResetsAtUtc),
+			Secondary: snapshot.Secondary is null
+				? null
+				: new PersistedRateLimitWindowSnapshot(
+					UsedPercent: snapshot.Secondary.UsedPercent,
+					RemainingPercent: snapshot.Secondary.RemainingPercent,
+					WindowMinutes: snapshot.Secondary.WindowMinutes,
+					ResetsAtUtc: snapshot.Secondary.ResetsAtUtc),
+			PlanType: snapshot.PlanType,
+			HasCredits: snapshot.HasCredits,
+			UnlimitedCredits: snapshot.UnlimitedCredits,
+			CreditBalance: snapshot.CreditBalance,
+			Summary: snapshot.Summary,
+			Source: snapshot.Source,
+			UpdatedAtUtc: snapshot.UpdatedAtUtc);
 	}
 
 	private static bool TryOpenStdoutJsonlDocument(
