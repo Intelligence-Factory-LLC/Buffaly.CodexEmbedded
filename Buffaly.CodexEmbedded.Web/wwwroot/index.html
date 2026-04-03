@@ -7,7 +7,7 @@
 	<link rel="icon" type="image/x-icon" href="images/favicon.ico">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-	<link rel="stylesheet" href="site.css?v=20260403-code-reviews-cards1">
+	<link id="appStylesheet" rel="stylesheet" href="site.css">
 </head>
 <body>
 	<div class="layout">
@@ -517,11 +517,76 @@
 			<select id="sessionSelect"></select>
 		</div>
 	</div>
-	<script src="theme.js?v=20260225-settings1"></script>
-	<script src="sessionTimeline.js?v=20260402-review-turnid-scope1"></script>
-	<script src="scribe.js?v=20260313-transcribe-flow-fix1"></script>
-	<script src="app.shared.js?v=20260228-cleanup1"></script>
-	<script src="app.js?v=20260402-code-reviews-tab2"></script>
-	<script src="app.diffs.js?v=20260403-code-reviews-cards1"></script>
+	<script>
+		(function () {
+			const stylesheet = document.getElementById("appStylesheet");
+			const assets = [
+				"theme.js",
+				"sessionTimeline.js",
+				"scribe.js",
+				"app.shared.js",
+				"app.js",
+				"app.diffs.js"
+			];
+
+			function appendVersion(url, version) {
+				const join = url.indexOf("?") >= 0 ? "&" : "?";
+				return `${url}${join}v=${encodeURIComponent(version)}`;
+			}
+
+			function resolveVersion(payload) {
+				if (!payload || typeof payload !== "object") {
+					return "";
+				}
+
+				const buildNumber = typeof payload.buildNumber === "string" ? payload.buildNumber.trim() : "";
+				if (buildNumber) {
+					return buildNumber;
+				}
+
+				const buildTimestampUtc = typeof payload.buildTimestampUtc === "string" ? payload.buildTimestampUtc.trim() : "";
+				if (buildTimestampUtc) {
+					return buildTimestampUtc;
+				}
+
+				const informationalVersion = typeof payload.informationalVersion === "string" ? payload.informationalVersion.trim() : "";
+				return informationalVersion;
+			}
+
+			function loadScripts(version) {
+				let index = 0;
+				function next() {
+					if (index >= assets.length) {
+						return;
+					}
+
+					const src = assets[index];
+					index += 1;
+					const script = document.createElement("script");
+					script.src = appendVersion(src, version);
+					script.defer = false;
+					script.onload = next;
+					script.onerror = next;
+					document.body.appendChild(script);
+				}
+
+				next();
+			}
+
+			const fallbackVersion = `local-${Date.now()}`;
+			fetch(appendVersion("build-info.json", fallbackVersion), { cache: "no-store" })
+				.then((response) => response.ok ? response.json() : null)
+				.catch(() => null)
+				.then((payload) => {
+					const version = resolveVersion(payload) || fallbackVersion;
+					window.__codexAssetVersion = version;
+					document.documentElement.setAttribute("data-asset-version", version);
+					if (stylesheet) {
+						stylesheet.href = appendVersion("site.css", version);
+					}
+					loadScripts(version);
+				});
+		})();
+	</script>
 </body>
 </html>
