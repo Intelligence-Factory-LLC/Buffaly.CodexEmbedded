@@ -4257,7 +4257,15 @@ body {
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace.worktree-diff-review-detail .diff-commit-review-summary {
-	display: none;
+	display: block;
+	flex: 0 0 auto;
+	max-height: min(34vh, 320px);
+	overflow: hidden;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace.worktree-diff-review-detail .diff-commit-review-list {
+	max-height: calc(min(34vh, 320px) - 72px);
+	overflow: auto;
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace.worktree-diff-review-detail .diff-review-findings {
