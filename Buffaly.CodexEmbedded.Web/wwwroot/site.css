@@ -910,6 +910,22 @@ body {
 	display: none !important;
 }
 
+.workspace-code-reviews.code-reviews-page-list #promptForm,
+.workspace-code-reviews.code-reviews-page-list #promptQueue,
+.workspace-code-reviews.code-reviews-page-list #composerImages,
+.workspace-code-reviews.code-reviews-page-list #diffNotesComposer,
+.workspace-code-reviews.code-reviews-page-list #promptTimelineSelectionIndicator,
+.workspace-code-reviews.code-reviews-page-list #promptSelectionIndicator,
+.workspace-code-reviews.code-reviews-page-list #promptBuildFixIndicator {
+	display: none !important;
+}
+
+.workspace-code-reviews.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace.worktree-diff-review-index {
+	flex: 1 1 auto;
+	min-height: 0;
+	max-height: none;
+}
+
 .conversation-title-main {
 	display: inline-flex;
 	align-items: center;
@@ -4257,15 +4273,7 @@ body {
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace.worktree-diff-review-detail .diff-commit-review-summary {
-	display: block;
-	flex: 0 0 auto;
-	max-height: min(34vh, 320px);
-	overflow: hidden;
-}
-
-.worktree-diff-panel.worktree-diff-dedicated-workspace.worktree-diff-review-detail .diff-commit-review-list {
-	max-height: calc(min(34vh, 320px) - 72px);
-	overflow: auto;
+	display: none;
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace.worktree-diff-review-detail .diff-review-findings {

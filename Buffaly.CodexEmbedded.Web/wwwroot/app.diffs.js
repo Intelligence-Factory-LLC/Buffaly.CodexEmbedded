@@ -47,6 +47,7 @@
   const reviewModalRunBtn = document.getElementById("diffReviewModalRunBtn");
   const reviewModalCancelBtn = document.getElementById("diffReviewModalCancelBtn");
   const chatMessagesNode = document.getElementById("chatMessages");
+  const bodyNode = document.body;
 
   if (!panel || !summaryNode || !listNode || !refreshBtn || !toggleBtn || !indicatorBtn || !indicatorCountNode || !modeWorktreeBtn || !modeCommitBtn || !commitSelect || !contextSelect || !sendNotesBtn || !queueReviewBtn || !runReviewBtn || !commitReviewSummaryNode || !reviewFindingsNode || !composerNotesNode) {
     return;
@@ -1958,6 +1959,10 @@
     indicatorBtn.classList.toggle("hidden", dedicatedWorkspace ? true : false);
     panel.classList.toggle("worktree-diff-review-index", dedicatedWorkspace && reviewPageMode !== "detail");
     panel.classList.toggle("worktree-diff-review-detail", dedicatedWorkspace && reviewPageMode === "detail");
+    if (bodyNode) {
+      bodyNode.classList.toggle("code-reviews-page-list", dedicatedWorkspace && reviewPageMode !== "detail");
+      bodyNode.classList.toggle("code-reviews-page-detail", dedicatedWorkspace && reviewPageMode === "detail");
+    }
     indicatorCountNode.textContent = String(currentFiles.length);
     const fileLabel = `${currentFiles.length} file${currentFiles.length === 1 ? "" : "s"}`;
     if (!lastCwd) {
