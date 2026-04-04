@@ -7,6 +7,7 @@ internal sealed class GitWorktreeDiffService
 {
 	private static readonly Regex DiffHeaderRegex = new("^diff --git a/(.+?) b/(.+)$", RegexOptions.Compiled);
 	private const string RecentCommitMarker = "__CODX_COMMIT__";
+	private const int RecentCommitPreviewFileLimit = 4;
 
 	public GitWorktreeDiffSnapshot GetSnapshot(
 		string cwd,
@@ -821,7 +822,8 @@ internal sealed class GitWorktreeDiffService
 				CommittedAtUtc: commit.CommittedAtUtc,
 				FilesChanged: 0,
 				Insertions: 0,
-				Deletions: 0));
+				Deletions: 0,
+				FileStats: Array.Empty<GitRecentCommitFileStat>()));
 		}
 
 		return commits;
@@ -839,6 +841,7 @@ internal sealed class GitWorktreeDiffService
 		var filesChanged = 0;
 		var additions = 0;
 		var deletions = 0;
+		var fileStats = new List<GitRecentCommitFileStat>();
 		void FlushCurrent()
 		{
 			if (current is null)
@@ -854,7 +857,8 @@ internal sealed class GitWorktreeDiffService
 				CommittedAtUtc: current.CommittedAtUtc,
 				FilesChanged: filesChanged,
 				Insertions: additions,
-				Deletions: deletions));
+				Deletions: deletions,
+				FileStats: fileStats.ToArray()));
 		}
 
 		foreach (var rawLine in output.Split('\n'))
@@ -867,6 +871,7 @@ internal sealed class GitWorktreeDiffService
 				filesChanged = 0;
 				additions = 0;
 				deletions = 0;
+				fileStats.Clear();
 				continue;
 			}
 
@@ -875,7 +880,7 @@ internal sealed class GitWorktreeDiffService
 				continue;
 			}
 
-			if (!TryParseNumStatLine(line, out var add, out var del))
+			if (!TryParseNumStatLine(line, out var add, out var del, out var path, out var isBinary))
 			{
 				continue;
 			}
@@ -883,16 +888,26 @@ internal sealed class GitWorktreeDiffService
 			filesChanged += 1;
 			additions += add;
 			deletions += del;
+			if (fileStats.Count < RecentCommitPreviewFileLimit)
+			{
+				fileStats.Add(new GitRecentCommitFileStat(
+					Path: path,
+					Insertions: add,
+					Deletions: del,
+					IsBinary: isBinary));
+			}
 		}
 
 		FlushCurrent();
 		return commits;
 	}
 
-	private static bool TryParseNumStatLine(string line, out int additions, out int deletions)
+	private static bool TryParseNumStatLine(string line, out int additions, out int deletions, out string path, out bool isBinary)
 	{
 		additions = 0;
 		deletions = 0;
+		path = string.Empty;
+		isBinary = false;
 		if (string.IsNullOrWhiteSpace(line))
 		{
 			return false;
@@ -906,6 +921,12 @@ internal sealed class GitWorktreeDiffService
 
 		var addRaw = parts[0].Trim();
 		var delRaw = parts[1].Trim();
+		path = parts[2].Trim();
+		if (string.IsNullOrWhiteSpace(path))
+		{
+			return false;
+		}
+		isBinary = addRaw == "-" && delRaw == "-";
 		if (addRaw != "-" && int.TryParse(addRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedAdd))
 		{
 			additions = Math.Max(0, parsedAdd);
@@ -1134,7 +1155,14 @@ internal sealed record GitRecentCommitInfo(
 	DateTimeOffset? CommittedAtUtc,
 	int FilesChanged,
 	int Insertions,
-	int Deletions);
+	int Deletions,
+	IReadOnlyList<GitRecentCommitFileStat> FileStats);
+
+internal sealed record GitRecentCommitFileStat(
+	string Path,
+	int Insertions,
+	int Deletions,
+	bool IsBinary);
 
 internal sealed record GitDiffFileContentSnapshot(
 	string Cwd,

@@ -910,17 +910,17 @@ body {
 	display: none !important;
 }
 
-.workspace-code-reviews.code-reviews-page-list #promptForm,
-.workspace-code-reviews.code-reviews-page-list #promptQueue,
-.workspace-code-reviews.code-reviews-page-list #composerImages,
-.workspace-code-reviews.code-reviews-page-list #diffNotesComposer,
-.workspace-code-reviews.code-reviews-page-list #promptTimelineSelectionIndicator,
-.workspace-code-reviews.code-reviews-page-list #promptSelectionIndicator,
-.workspace-code-reviews.code-reviews-page-list #promptBuildFixIndicator {
+body.code-reviews-page-list #promptForm,
+body.code-reviews-page-list #promptQueue,
+body.code-reviews-page-list #composerImages,
+body.code-reviews-page-list #diffNotesComposer,
+body.code-reviews-page-list #promptTimelineSelectionIndicator,
+body.code-reviews-page-list #promptSelectionIndicator,
+body.code-reviews-page-list #promptBuildFixIndicator {
 	display: none !important;
 }
 
-.workspace-code-reviews.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace.worktree-diff-review-index {
+body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace.worktree-diff-review-index {
 	flex: 1 1 auto;
 	min-height: 0;
 	max-height: none;
@@ -4619,7 +4619,61 @@ body {
 	color: #1f2937;
 	line-height: 1.28;
 	white-space: normal;
-	overflow-wrap: anywhere;
+	word-break: normal;
+	overflow-wrap: break-word;
+}
+
+.diff-commit-review-file-preview {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 0.24rem;
+	margin-top: 0.32rem;
+	padding-top: 0.34rem;
+	border-top: 1px solid #f1f5f9;
+}
+
+.diff-commit-review-file-row {
+	display: flex;
+	align-items: baseline;
+	gap: 0.6rem;
+	min-width: 0;
+}
+
+.diff-commit-review-file-path {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.74rem;
+	color: #475569;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.diff-commit-review-file-delta {
+	flex: 0 0 auto;
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.72rem;
+	color: #64748b;
+}
+
+.diff-commit-review-file-more {
+	font-size: 0.74rem;
+	color: #64748b;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-file-preview {
+	margin-top: 0.42rem;
+	padding-top: 0.45rem;
+	gap: 0.28rem;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-file-path {
+	font-size: 0.84rem;
+}
+
+.worktree-diff-panel.worktree-diff-dedicated-workspace .diff-commit-review-file-delta {
+	font-size: 0.8rem;
 }
 
 .diff-commit-review-status {

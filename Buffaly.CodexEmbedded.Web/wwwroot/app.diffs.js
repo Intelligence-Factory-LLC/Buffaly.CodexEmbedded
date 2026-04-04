@@ -1234,6 +1234,7 @@
       const when = formatCommitTime(normalized.committedAtUtc);
       const statPreview = formatCommitStatPreview(normalized);
       const subject = normalized.subject ? normalized.subject.trim() : "";
+      const filePreview = renderCommitFilePreview(normalized);
       const reviewActionDisabled = display.reviewActionDisabled ? " disabled" : "";
       const runningIcon = display.showSpinner
         ? `<button type="button" class="diff-commit-review-activity running heal" data-commit-review-heal="${escapeAttribute(normalized.sha)}" title="Recheck review status" aria-label="Recheck review status for ${escapeAttribute(shortSha)}"></button>`
@@ -1252,6 +1253,7 @@
               ${statPreview ? `<div class="diff-commit-review-stats">${escapeHtml(statPreview)}</div>` : ""}
             </div>
             <div class="diff-commit-review-subject">${escapeHtml(subject || "(no subject)")}</div>
+            ${filePreview}
           </div>
           <div class="diff-commit-review-actions">
             <button type="button" class="diff-commit-review-open-btn" data-commit-review-open="${escapeAttribute(normalized.sha)}">Open</button>
@@ -2825,6 +2827,24 @@
     }
 
     const shortShaRaw = typeof commit.shortSha === "string" ? commit.shortSha.trim() : "";
+    const fileStatsRaw = Array.isArray(commit.fileStats) ? commit.fileStats : [];
+    const fileStats = [];
+    for (const item of fileStatsRaw) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      const path = typeof item.path === "string" ? item.path.trim() : "";
+      if (!path) {
+        continue;
+      }
+      fileStats.push({
+        path,
+        insertions: Number.isFinite(item.insertions) ? Math.max(0, Math.floor(item.insertions)) : 0,
+        deletions: Number.isFinite(item.deletions) ? Math.max(0, Math.floor(item.deletions)) : 0,
+        isBinary: item.isBinary === true
+      });
+    }
+
     return {
       sha,
       shortSha: shortShaRaw || sha.slice(0, 12),
@@ -2833,7 +2853,8 @@
       committedAtUtc: typeof commit.committedAtUtc === "string" ? commit.committedAtUtc : "",
       filesChanged: Number.isFinite(commit.filesChanged) ? Math.max(0, Math.floor(commit.filesChanged)) : 0,
       insertions: Number.isFinite(commit.insertions) ? Math.max(0, Math.floor(commit.insertions)) : 0,
-      deletions: Number.isFinite(commit.deletions) ? Math.max(0, Math.floor(commit.deletions)) : 0
+      deletions: Number.isFinite(commit.deletions) ? Math.max(0, Math.floor(commit.deletions)) : 0,
+      fileStats
     };
   }
 
@@ -2851,6 +2872,56 @@
 
     const fileText = `${filesChanged} file${filesChanged === 1 ? "" : "s"}`;
     return `${fileText} +${insertions} -${deletions}`;
+  }
+
+  function formatCommitFilePreviewPath(path) {
+    if (typeof path !== "string") {
+      return "";
+    }
+    const normalized = path.replace(/\\/g, "/").trim();
+    if (!normalized) {
+      return "";
+    }
+
+    const segments = normalized.split("/").filter(Boolean);
+    if (segments.length <= 3) {
+      return normalized;
+    }
+    return `.../${segments.slice(-3).join("/")}`;
+  }
+
+  function renderCommitFilePreview(commitInfo) {
+    if (!commitInfo || !Array.isArray(commitInfo.fileStats) || commitInfo.fileStats.length === 0) {
+      return "";
+    }
+
+    const rows = [];
+    for (const stat of commitInfo.fileStats.slice(0, 4)) {
+      if (!stat || typeof stat.path !== "string" || !stat.path) {
+        continue;
+      }
+      const pathLabel = formatCommitFilePreviewPath(stat.path);
+      const deltaLabel = stat.isBinary === true
+        ? "binary"
+        : `+${Number.isFinite(stat.insertions) ? stat.insertions : 0} -${Number.isFinite(stat.deletions) ? stat.deletions : 0}`;
+      rows.push(
+        `<div class="diff-commit-review-file-row">
+          <span class="diff-commit-review-file-path" title="${escapeAttribute(stat.path)}">${escapeHtml(pathLabel || stat.path)}</span>
+          <span class="diff-commit-review-file-delta">${escapeHtml(deltaLabel)}</span>
+        </div>`
+      );
+    }
+
+    if (rows.length === 0) {
+      return "";
+    }
+
+    const filesChanged = Number.isFinite(commitInfo.filesChanged) ? Math.max(0, Math.floor(commitInfo.filesChanged)) : 0;
+    const hiddenCount = Math.max(0, filesChanged - rows.length);
+    const moreRow = hiddenCount > 0
+      ? `<div class="diff-commit-review-file-more">+${hiddenCount} more file${hiddenCount === 1 ? "" : "s"}</div>`
+      : "";
+    return `<div class="diff-commit-review-file-preview">${rows.join("")}${moreRow}</div>`;
   }
 
   function renderCommitOptions() {
