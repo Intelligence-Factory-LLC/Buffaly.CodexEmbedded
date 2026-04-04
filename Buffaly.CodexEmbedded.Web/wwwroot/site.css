@@ -3939,6 +3939,58 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	border-right: 1px solid #e2e8f0;
 }
 
+.diff-full-window-diff-list {
+	flex: 0 0 360px;
+	min-width: 300px;
+	max-width: 420px;
+	min-height: 0;
+	overflow: auto;
+	border-right: 1px solid #e2e8f0;
+	background: #f8fafc;
+	padding: 0.45rem;
+}
+
+.diff-full-window-diff-list-empty {
+	font-size: 0.76rem;
+	color: #64748b;
+	padding: 0.4rem 0.2rem;
+}
+
+.diff-full-window-diff-item {
+	display: block;
+	width: 100%;
+	text-align: left;
+	border: 1px solid #dbe3ee;
+	border-radius: 10px;
+	background: #ffffff;
+	padding: 0.5rem 0.56rem;
+	margin-bottom: 0.38rem;
+	cursor: pointer;
+}
+
+.diff-full-window-diff-item.active {
+	border-color: #93c5fd;
+	background: #eff6ff;
+}
+
+.diff-full-window-diff-item-path {
+	display: block;
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.72rem;
+	color: #1f2937;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.diff-full-window-diff-item-stat {
+	display: block;
+	margin-top: 0.2rem;
+	font-family: Consolas, "Courier New", monospace;
+	font-size: 0.7rem;
+	color: #64748b;
+}
+
 .diff-full-window-body {
 	flex: 1 1 auto;
 	min-height: 0;
@@ -3976,6 +4028,67 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	font-size: 0.7rem;
 	color: #7c2d12;
 	word-break: break-word;
+}
+
+.diff-full-window-side-actions {
+	display: flex;
+	gap: 0.35rem;
+	margin-top: 0.32rem;
+}
+
+.diff-full-window-side-actions button {
+	border: 1px solid #fdba74;
+	border-radius: 999px;
+	background: #ffffff;
+	color: #9a3412;
+	font-size: 0.68rem;
+	font-weight: 700;
+	padding: 0.18rem 0.56rem;
+}
+
+.diff-full-window-issue-list {
+	flex: 0 0 auto;
+	max-height: 30vh;
+	overflow: auto;
+	padding: 0.48rem 0.65rem;
+	border-bottom: 1px solid #f3d3cc;
+	background: #fffaf9;
+}
+
+.diff-full-window-issue-list-empty {
+	font-size: 0.72rem;
+	color: #7c2d12;
+}
+
+.diff-full-window-issue-item {
+	display: block;
+	width: 100%;
+	text-align: left;
+	border: 1px solid #f3d3cc;
+	border-radius: 10px;
+	background: #ffffff;
+	padding: 0.48rem 0.52rem;
+	margin-bottom: 0.35rem;
+	cursor: pointer;
+}
+
+.diff-full-window-issue-item.active {
+	border-color: #f59e0b;
+	background: #fff7ed;
+}
+
+.diff-full-window-issue-item-title {
+	display: block;
+	font-size: 0.75rem;
+	font-weight: 700;
+	color: #7f1d1d;
+}
+
+.diff-full-window-issue-item-meta {
+	display: block;
+	margin-top: 0.2rem;
+	font-size: 0.68rem;
+	color: #9a3412;
 }
 
 .diff-full-window-review-context {
@@ -4137,7 +4250,17 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	.diff-full-window-code-pane {
 		border-right: 0;
 		border-bottom: 1px solid #e2e8f0;
-		min-height: 40vh;
+		min-height: 44vh;
+		flex-direction: column;
+	}
+
+	.diff-full-window-diff-list {
+		flex: 0 0 auto;
+		max-width: none;
+		min-width: 0;
+		max-height: 26vh;
+		border-right: 0;
+		border-bottom: 1px solid #e2e8f0;
 	}
 
 	.diff-full-window-side {
