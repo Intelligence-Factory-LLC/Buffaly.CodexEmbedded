@@ -4915,6 +4915,14 @@ function normalizeReviewStatus(value) {
   return "queued";
 }
 
+function parseUtcTimestamp(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return 0;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function normalizeReviewCommitSha(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
@@ -5664,10 +5672,29 @@ function getReviewRecordsForScope(scopeKey) {
       records.push(record);
     }
   }
+  const getRecordActivityTime = (record) => {
+    if (!record || typeof record !== "object") {
+      return 0;
+    }
+    const completed = parseUtcTimestamp(record.completedAtUtc);
+    const started = parseUtcTimestamp(record.startedAtUtc);
+    const queued = parseUtcTimestamp(record.queuedAtUtc);
+    return Math.max(completed, started, queued);
+  };
   records.sort((a, b) => {
-    const aTime = a.completedAtUtc || a.startedAtUtc || a.queuedAtUtc || "";
-    const bTime = b.completedAtUtc || b.startedAtUtc || b.queuedAtUtc || "";
-    return bTime.localeCompare(aTime);
+    const bTime = getRecordActivityTime(b);
+    const aTime = getRecordActivityTime(a);
+    if (bTime !== aTime) {
+      return bTime - aTime;
+    }
+    const bQueued = parseUtcTimestamp(b?.queuedAtUtc);
+    const aQueued = parseUtcTimestamp(a?.queuedAtUtc);
+    if (bQueued !== aQueued) {
+      return bQueued - aQueued;
+    }
+    const bId = typeof b?.reviewId === "string" ? b.reviewId : "";
+    const aId = typeof a?.reviewId === "string" ? a.reviewId : "";
+    return bId.localeCompare(aId);
   });
   return records;
 }
@@ -5681,25 +5708,55 @@ function buildReviewScopeSummary(scopeKey) {
   let dismissedCount = 0;
   let failedCount = 0;
   let staleCount = 0;
-  const primaryRecord = records.length > 0 ? records[0] : null;
+  let latestRunningRecord = null;
+  let latestQueuedRecord = null;
+  let latestTerminalRecord = null;
   for (const record of records) {
-    if (record.status === "dismissed") {
+    if (record.status === "running") {
+      runningCount += 1;
+      if (!latestRunningRecord) {
+        latestRunningRecord = record;
+      }
+    } else if (record.status === "queued") {
+      queuedCount += 1;
+      if (!latestQueuedRecord) {
+        latestQueuedRecord = record;
+      }
+    } else if (record.status === "dismissed") {
       dismissedCount += 1;
+      if (!latestTerminalRecord) {
+        latestTerminalRecord = record;
+      }
     } else if (record.status === "completed") {
       completedCount += 1;
-    } else if (record.status === "running") {
-      runningCount += 1;
+      if (!latestTerminalRecord) {
+        latestTerminalRecord = record;
+      }
     } else if (record.status === "failed") {
       failedCount += 1;
+      if (!latestTerminalRecord) {
+        latestTerminalRecord = record;
+      }
     } else if (record.status === "stale") {
       staleCount += 1;
+      if (!latestTerminalRecord) {
+        latestTerminalRecord = record;
+      }
     } else {
       queuedCount += 1;
+      if (!latestQueuedRecord) {
+        latestQueuedRecord = record;
+      }
     }
   }
 
+  const primaryRecord = latestRunningRecord || latestQueuedRecord || latestTerminalRecord || (records.length > 0 ? records[0] : null);
   let status = "not_started";
-  if (primaryRecord && typeof primaryRecord.status === "string" && primaryRecord.status) {
+  if (latestRunningRecord) {
+    status = "running";
+  } else if (latestQueuedRecord) {
+    status = "queued";
+  } else if (primaryRecord && typeof primaryRecord.status === "string" && primaryRecord.status) {
     status = primaryRecord.status;
   } else if (dismissedCount > 0 && completedCount === 0 && failedCount === 0 && staleCount === 0) {
     status = "dismissed";
