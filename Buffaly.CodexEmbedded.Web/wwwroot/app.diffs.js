@@ -255,10 +255,12 @@
   }
 
   function buildDiffScopeKey(cwd, mode, commitSha) {
-    const normalizedCwd = typeof cwd === "string" ? cwd.trim() : "";
+    const normalizedCwd = typeof cwd === "string"
+      ? cwd.trim().replace(/\\/g, "/").replace(/\/+$/, "")
+      : "";
     const normalizedMode = mode === "commit" ? "commit" : "worktree";
     if (normalizedMode === "commit") {
-      const normalizedCommit = typeof commitSha === "string" ? commitSha.trim() : "";
+      const normalizedCommit = typeof commitSha === "string" ? commitSha.trim().toLowerCase() : "";
       return `${normalizedCwd}::${normalizedMode}::${normalizedCommit}`;
     }
 
@@ -2433,12 +2435,26 @@
       return;
     }
 
-    await setApproval({
-      cwd: context.cwd,
-      targetType: "commit",
-      commitSha: selectedCommitSha,
-      approved: true
-    }).catch(() => { });
+    try {
+      await setApproval({
+        cwd: context.cwd,
+        targetType: "commit",
+        commitSha: selectedCommitSha,
+        approved: true
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (typeof window.uiAuditLog === "function") {
+        window.uiAuditLog("review.approve_failed", {
+          cwd: context.cwd,
+          commitSha: selectedCommitSha,
+          error: message
+        }, "warn");
+      } else if (typeof console !== "undefined" && typeof console.warn === "function") {
+        console.warn(`${new Date().toISOString()} review.approve_failed cwd=${context.cwd} commit=${selectedCommitSha} error=${message}`);
+      }
+      return;
+    }
     if (typeof refreshCatalog === "function") {
       await refreshCatalog(context.cwd, { force: true }).catch(() => { });
     }

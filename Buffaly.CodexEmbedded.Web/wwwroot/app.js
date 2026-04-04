@@ -5280,9 +5280,7 @@ function normalizeStoredReviewApproval(approval) {
     return null;
   }
 
-  const fallbackScopeKey = buildReviewScopeKey(cwd, targetType, commitSha);
-  const scopeKeyRaw = typeof approval.scopeKey === "string" ? approval.scopeKey.trim() : "";
-  const scopeKey = scopeKeyRaw || fallbackScopeKey;
+  const scopeKey = buildReviewScopeKey(cwd, targetType, commitSha);
   if (!scopeKey) {
     return null;
   }
