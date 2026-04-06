@@ -24,6 +24,7 @@
   const fullFileRefreshBtn = document.getElementById("diffFullFileRefreshBtn");
   const fullFileBackBtn = document.getElementById("diffFullFileBackBtn");
   const fullFileCloseBtn = document.getElementById("diffFullFileCloseBtn");
+  const fullFileReviewPanelToggleBtn = document.getElementById("diffFullFileReviewPanelToggleBtn");
   const fullFileStatus = document.getElementById("diffFullFileStatus");
   const fullFileWorkspace = fullFileWindow ? fullFileWindow.querySelector(".diff-full-window-workspace") : null;
   const fullFileBody = document.getElementById("diffFullFileBody");
@@ -47,6 +48,16 @@
   const noteModalTitle = document.getElementById("diffNoteModalTitle");
   const chatMessagesNode = document.getElementById("chatMessages");
   const bodyNode = document.body;
+  const urlSearchParams = new URLSearchParams(window.location.search || "");
+  const isDedicatedReviewDetailPage = true;
+  const requestedReviewCommitSha = typeof urlSearchParams.get("review_commit") === "string"
+    ? (urlSearchParams.get("review_commit") || "").trim()
+    : "";
+  const requestedReviewPath = typeof urlSearchParams.get("review_path") === "string"
+    ? (urlSearchParams.get("review_path") || "").trim()
+    : "";
+  const requestedReviewLine = Number.parseInt(urlSearchParams.get("review_line") || "", 10);
+  let requestedReviewOpenAttempted = false;
 
   if (!panel || !summaryNode || !listNode || !refreshBtn || !toggleBtn || !indicatorBtn || !indicatorCountNode || !modeWorktreeBtn || !modeCommitBtn || !commitSelect || !contextSelect || !sendNotesBtn || !queueReviewBtn || !approveBtn || !runReviewBtn || !commitReviewSummaryNode || !reviewFindingsNode || !composerNotesNode) {
     return;
@@ -61,6 +72,7 @@
     && fullFileRefreshBtn
     && fullFileBackBtn
     && fullFileCloseBtn
+    && fullFileReviewPanelToggleBtn
     && fullFileStatus
     && fullFileBody
     && fullFileReviewPanel
@@ -82,6 +94,7 @@
   const STORAGE_COMMIT_REVIEW_COLLAPSED_KEY = "codex-worktree-diff-commit-review-collapsed-v1";
   const STORAGE_REVIEW_PANEL_COLLAPSED_KEY = "codex-worktree-diff-review-panel-collapsed-v1";
   const STORAGE_REVIEW_PANEL_TAB_KEY = "codex-worktree-diff-review-panel-tab-v1";
+  const STORAGE_FULL_FILE_REVIEW_PANEL_COLLAPSED_KEY = "codex-worktree-diff-full-file-review-panel-collapsed-v1";
   const CONTEXT_MODE_VALUES = new Set(["3", "10", "30", "full"]);
 
   let pollInFlight = false;
@@ -126,6 +139,7 @@
   let renderedReviewMarkdownFindings = [];
   let commitReviewSummaryCollapsed = false;
   let reviewPanelCollapsed = false;
+  let fullFileReviewPanelCollapsed = false;
   let reviewPanelTab = "rendered"; // rendered | raw
   try {
     currentContextMode = normalizeContextMode(window.localStorage.getItem(STORAGE_CONTEXT_MODE_KEY) || "3");
@@ -141,6 +155,11 @@
     reviewPanelCollapsed = window.localStorage.getItem(STORAGE_REVIEW_PANEL_COLLAPSED_KEY) === "1";
   } catch {
     reviewPanelCollapsed = false;
+  }
+  try {
+    fullFileReviewPanelCollapsed = window.localStorage.getItem(STORAGE_FULL_FILE_REVIEW_PANEL_COLLAPSED_KEY) === "1";
+  } catch {
+    fullFileReviewPanelCollapsed = false;
   }
   try {
     const stored = window.localStorage.getItem(STORAGE_REVIEW_PANEL_TAB_KEY);
@@ -164,6 +183,12 @@
   } catch {
     reviewBridge.setWorkspaceMode("tasks");
   }
+  if (isDedicatedReviewDetailPage) {
+    reviewBridge.setWorkspaceMode("code_reviews");
+    reviewBridge.setReviewPageMode("detail");
+    currentMode = "commit";
+  }
+
   function createEmptyFullFileViewerState() {
     return {
       path: "",
@@ -202,54 +227,10 @@
     applyPanelState();
   }
 
-  function buildReviewDetailPageUrl(commitSha, path, lineNo, context = null) {
-    const url = new URL("code-review-detail.html", document.baseURI);
+  function buildCodeReviewsListUrl() {
+    const url = new URL("index.html", document.baseURI);
     url.searchParams.set("tab", "code_reviews");
-    const normalizedCommit = typeof commitSha === "string" ? commitSha.trim() : "";
-    const normalizedPath = typeof path === "string" ? path.trim() : "";
-    if (normalizedCommit) {
-      url.searchParams.set("review_commit", normalizedCommit);
-    } else {
-      url.searchParams.delete("review_commit");
-    }
-    if (normalizedPath) {
-      url.searchParams.set("review_path", normalizedPath);
-    } else {
-      url.searchParams.delete("review_path");
-    }
-    if (Number.isFinite(lineNo) && lineNo > 0) {
-      url.searchParams.set("review_line", String(Math.floor(lineNo)));
-    } else {
-      url.searchParams.delete("review_line");
-    }
-    if (context && typeof context === "object") {
-      const sessionId = typeof context.sessionId === "string" ? context.sessionId.trim() : "";
-      const threadId = typeof context.threadId === "string" ? context.threadId.trim() : "";
-      const cwd = typeof context.cwd === "string" ? context.cwd.trim() : "";
-      if (sessionId) {
-        url.searchParams.set("review_session", sessionId);
-      }
-      if (threadId) {
-        url.searchParams.set("review_thread", threadId);
-      }
-      if (cwd) {
-        url.searchParams.set("review_cwd", cwd);
-      }
-    }
     return url.toString();
-  }
-
-  function maybeNavigateToReviewDetailPage(path, options = {}) {
-    if (!isCodeReviewsWorkspace()) {
-      return false;
-    }
-    if (options && options.allowNavigation === false) {
-      return false;
-    }
-    const context = getActiveContext();
-    const href = buildReviewDetailPageUrl(selectedCommitSha, path, options?.lineNo, context);
-    window.location.assign(href);
-    return true;
   }
 
   function appendTextToDetailComposer(rawText, options = {}) {
@@ -1245,6 +1226,40 @@
     renderReviewFindingsPanel();
   }
 
+  function applyFullFileReviewPanelState() {
+    if (!fullFileWindowReady) {
+      return;
+    }
+    if (fullFileWorkspace) {
+      fullFileWorkspace.classList.toggle("diff-full-window-workspace-side-collapsed", fullFileReviewPanelCollapsed === true);
+    }
+    fullFileReviewPanel.classList.toggle("hidden", fullFileReviewPanelCollapsed === true);
+    const toggleLabel = fullFileReviewPanelCollapsed ? "Show Review" : "Hide Review";
+    const toggleIcon = fullFileReviewPanelCollapsed ? "bi-layout-sidebar-inset-reverse" : "bi-layout-sidebar-inset";
+    const iconNode = fullFileReviewPanelToggleBtn ? fullFileReviewPanelToggleBtn.querySelector("i") : null;
+    const labelNode = fullFileReviewPanelToggleBtn ? fullFileReviewPanelToggleBtn.querySelector("span") : null;
+    if (labelNode) {
+      labelNode.textContent = toggleLabel;
+    }
+    if (iconNode) {
+      iconNode.className = `bi ${toggleIcon}`;
+    }
+    if (fullFileReviewPanelToggleBtn) {
+      fullFileReviewPanelToggleBtn.setAttribute("aria-pressed", fullFileReviewPanelCollapsed ? "true" : "false");
+      fullFileReviewPanelToggleBtn.title = toggleLabel;
+      fullFileReviewPanelToggleBtn.setAttribute("aria-label", toggleLabel);
+    }
+  }
+
+  function setFullFileReviewPanelCollapsed(nextCollapsed) {
+    fullFileReviewPanelCollapsed = nextCollapsed === true;
+    try {
+      window.localStorage.setItem(STORAGE_FULL_FILE_REVIEW_PANEL_COLLAPSED_KEY, fullFileReviewPanelCollapsed ? "1" : "0");
+    } catch {
+    }
+    applyFullFileReviewPanelState();
+  }
+
   function setReviewPanelTab(nextTab) {
     reviewPanelTab = nextTab === "raw" ? "raw" : "rendered";
     try {
@@ -1834,6 +1849,7 @@
     const canFixFinding = !!selectedFinding;
     const issueEntries = getFullFileIssueEntries();
     const noReviewState = !hasContext && issueEntries.length === 0;
+    applyFullFileReviewPanelState();
 
     fullFileReviewTitle.textContent = reviewContext && reviewContext.title
       ? reviewContext.title
@@ -1856,9 +1872,29 @@
       fullFileReviewContext.innerHTML = "";
     }
 
-    fullFileReviewPanel.classList.toggle("hidden", noReviewState);
+    if (noReviewState) {
+      if (!fullFileReviewPanelCollapsed) {
+        fullFileReviewPanel.classList.remove("hidden");
+      }
+      if (fullFileWorkspace) {
+        fullFileWorkspace.classList.remove("diff-full-window-workspace-no-review");
+      }
+      fullFilePrevIssueBtn.classList.add("hidden");
+      fullFileNextIssueBtn.classList.add("hidden");
+      fullFileFixBtn.textContent = "Start Review";
+      fullFileFixBtn.title = "Start review for this file/commit";
+      fullFileFixBtn.disabled = false;
+      fullFileIssueList.innerHTML = "";
+      fullFileReviewContext.innerHTML = "<div class=\"diff-full-window-review-empty\">No review findings yet. Click Start Review to generate findings.</div>";
+      return;
+    }
+
+    fullFileReviewPanel.classList.remove("hidden");
+    if (fullFileReviewPanelCollapsed) {
+      fullFileReviewPanel.classList.add("hidden");
+    }
     if (fullFileWorkspace) {
-      fullFileWorkspace.classList.toggle("diff-full-window-workspace-no-review", noReviewState);
+      fullFileWorkspace.classList.remove("diff-full-window-workspace-no-review");
     }
     if (!noReviewState) {
       fullFilePrevIssueBtn.classList.remove("hidden");
@@ -2881,13 +2917,15 @@
         continue;
       }
       const pathLabel = formatCommitFilePreviewPath(stat.path);
-      const deltaLabel = stat.isBinary === true
+      const insertionCount = Number.isFinite(stat.insertions) ? stat.insertions : 0;
+      const deletionCount = Number.isFinite(stat.deletions) ? stat.deletions : 0;
+      const deltaMarkup = stat.isBinary === true
         ? "binary"
-        : `+${Number.isFinite(stat.insertions) ? stat.insertions : 0} -${Number.isFinite(stat.deletions) ? stat.deletions : 0}`;
+        : `<span class="diff-commit-review-file-plus">+${escapeHtml(String(insertionCount))}</span> <span class="diff-commit-review-file-minus">-${escapeHtml(String(deletionCount))}</span>`;
       rows.push(
         `<div class="diff-commit-review-file-row">
           <span class="diff-commit-review-file-path" title="${escapeAttribute(stat.path)}">${escapeHtml(pathLabel || stat.path)}</span>
-          <span class="diff-commit-review-file-delta">${escapeHtml(deltaLabel)}</span>
+          <span class="diff-commit-review-file-delta">${deltaMarkup}</span>
         </div>`
       );
     }
@@ -3588,9 +3626,11 @@
     fullFileNextIssueBtn.disabled = true;
     if (fullFileWorkspace) {
       fullFileWorkspace.classList.remove("diff-full-window-workspace-no-review");
+      fullFileWorkspace.classList.remove("diff-full-window-workspace-side-collapsed");
     }
     renderFullFileReviewPanel();
     updateFullFileWindowControls();
+    applyFullFileReviewPanelState();
     ignoreNextFullFileLineClick = false;
   }
 
@@ -4401,12 +4441,40 @@
     fullFileNextIssueBtn.disabled = issues.length <= 1;
   }
 
+  function maybeOpenRequestedReviewDetailFromUrl() {
+    if (!isDedicatedReviewDetailPage || requestedReviewOpenAttempted || !fullFileWindowReady) {
+      return;
+    }
+    if (!Array.isArray(currentFiles) || currentFiles.length === 0) {
+      return;
+    }
+
+    let targetPath = "";
+    const normalizedRequestedPath = requestedReviewPath ? normalizePathCaseInsensitive(requestedReviewPath) : "";
+    if (normalizedRequestedPath) {
+      const match = currentFiles.find((item) => normalizePathCaseInsensitive(item?.path || "") === normalizedRequestedPath);
+      if (match && typeof match.path === "string") {
+        targetPath = match.path;
+      }
+    }
+    if (!targetPath) {
+      targetPath = typeof currentFiles[0]?.path === "string" ? currentFiles[0].path : "";
+    }
+    if (!targetPath) {
+      return;
+    }
+
+    requestedReviewOpenAttempted = true;
+    openFullFileWindow(targetPath, {
+      lineNo: Number.isFinite(requestedReviewLine) && requestedReviewLine > 0 ? requestedReviewLine : null,
+      allowNavigation: false
+    }).catch(() => {
+    });
+  }
+
   async function openFullFileWindow(path, options = {}) {
     const normalizedPath = resolveDiffPathFromReviewReference(path);
     if (!normalizedPath) {
-      return;
-    }
-    if (maybeNavigateToReviewDetailPage(normalizedPath, options)) {
       return;
     }
     if (!fullFileWindowReady) {
@@ -4763,8 +4831,13 @@
         }
 
         const hasSelectedCommit = !!(selectedCommitSha && availableCommits.some((x) => x.sha === selectedCommitSha));
+        const hasRequestedCommit = !!(requestedReviewCommitSha
+          && availableCommits.some((x) => typeof x?.sha === "string" && x.sha.toLowerCase() === requestedReviewCommitSha.toLowerCase()));
         if (isCodeReviewsWorkspace()) {
-          if (!hasSelectedCommit) {
+          if (hasRequestedCommit) {
+            const requestedMatch = availableCommits.find((x) => typeof x?.sha === "string" && x.sha.toLowerCase() === requestedReviewCommitSha.toLowerCase());
+            selectedCommitSha = requestedMatch ? requestedMatch.sha : selectedCommitSha;
+          } else if (!hasSelectedCommit) {
             selectedCommitSha = "";
             selectedCommitInfo = null;
           }
@@ -4900,6 +4973,7 @@
       }
       updateSummary(currentTotalChangeCount);
       applyPanelState();
+      maybeOpenRequestedReviewDetailFromUrl();
       renderComposerNotes();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -4958,7 +5032,7 @@
       currentMode = "commit";
     }
     if (reviewBridge.isCodeReviewsWorkspace()) {
-      reviewBridge.setReviewPageMode("list");
+      reviewBridge.setReviewPageMode("detail");
       clearCommitSelection();
       lastRenderKey = "";
       queueRefresh({ force: true });
@@ -5219,19 +5293,11 @@
     });
 
     fullFileBackBtn.addEventListener("click", () => {
-      if (isCodeReviewsWorkspace()) {
-        setReviewPageMode("list");
-        return;
-      }
-      closeFullFileWindow();
+      window.location.assign(buildCodeReviewsListUrl());
     });
 
     fullFileCloseBtn.addEventListener("click", () => {
-      if (isCodeReviewsWorkspace()) {
-        setReviewPageMode("list");
-        return;
-      }
-      closeFullFileWindow();
+      window.location.assign(buildCodeReviewsListUrl());
     });
 
     fullFileClassSelect.addEventListener("change", () => {
@@ -5309,13 +5375,13 @@
       handleReviewJumpFromEvent(event);
     });
 
+    fullFileReviewPanelToggleBtn.addEventListener("click", () => {
+      setFullFileReviewPanelCollapsed(!fullFileReviewPanelCollapsed);
+    });
+
     window.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !fullFileWindow.classList.contains("hidden")) {
-        if (isCodeReviewsWorkspace()) {
-          setReviewPageMode("list");
-          return;
-        }
-        closeFullFileWindow();
+        window.location.assign(buildCodeReviewsListUrl());
       }
     });
   }

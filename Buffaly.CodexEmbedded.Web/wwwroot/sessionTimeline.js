@@ -180,6 +180,7 @@
         timestamp: entry.timestamp || null,
         rawType: entry.rawType || "",
         kind: entry.kind || "",
+        turnId: typeof entry.turnId === "string" ? entry.turnId : "",
         compact: entry.compact === true,
         taskId: entry.taskId || null,
         taskDepth: Number.isFinite(entry.taskDepth) ? entry.taskDepth : 0,
@@ -495,15 +496,15 @@
 
         const turnIdRaw = typeof rawTurn.turnId === "string" ? rawTurn.turnId.trim() : "";
         const turnId = turnIdRaw || `turn-${i + 1}`;
-        const user = this.normalizeTurnEntry(rawTurn.user, "user", "User");
-        const assistantFinal = this.normalizeTurnEntry(rawTurn.assistantFinal, "assistant", "Assistant");
+        const user = this.normalizeTurnEntry(rawTurn.user, "user", "User", turnId);
+        const assistantFinal = this.normalizeTurnEntry(rawTurn.assistantFinal, "assistant", "Assistant", turnId);
         const intermediateRaw = Array.isArray(rawTurn.intermediate) ? rawTurn.intermediate : [];
         let intermediate = [];
         const clampedIntermediateCount = Math.max(0, intermediateRaw.length - MAX_TIMELINE_INTERMEDIATE_PER_TURN);
         const maxIntermediateEntries = Math.min(intermediateRaw.length, MAX_TIMELINE_INTERMEDIATE_PER_TURN);
         for (let index = 0; index < maxIntermediateEntries; index += 1) {
           const item = intermediateRaw[index];
-          const normalized = this.normalizeTurnEntry(item, "system", "System");
+          const normalized = this.normalizeTurnEntry(item, "system", "System", turnId);
           if (normalized) {
             intermediate.push(normalized);
           }
@@ -547,6 +548,7 @@
           text: "(history window begins in the middle of a turn)",
           timestamp: (assistantFinal && assistantFinal.timestamp) || (intermediate[0] && intermediate[0].timestamp) || null,
           rawType: "turn_window_anchor",
+          turnId,
           compact: true,
           images: []
         };
@@ -567,6 +569,7 @@
               text: `${hiddenByBudget} additional events hidden for performance`,
               timestamp: null,
               rawType: "inline_notice",
+              turnId,
               compact: true,
               images: []
             });
@@ -600,7 +603,7 @@
       return turns;
     }
 
-    normalizeTurnEntry(rawEntry, fallbackRole, fallbackTitle) {
+    normalizeTurnEntry(rawEntry, fallbackRole, fallbackTitle, turnId = "") {
       if (!rawEntry || typeof rawEntry !== "object") {
         return null;
       }
@@ -629,6 +632,7 @@
         text,
         timestamp: rawEntry.timestamp || null,
         rawType: typeof rawEntry.rawType === "string" ? rawEntry.rawType : "",
+        turnId: typeof turnId === "string" ? turnId : "",
         compact: rawEntry.compact === true,
         images
       };

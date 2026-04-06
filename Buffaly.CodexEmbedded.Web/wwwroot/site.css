@@ -920,6 +920,100 @@ body.code-reviews-page-list #promptBuildFixIndicator {
 	display: none !important;
 }
 
+body.code-review-detail-page .main {
+	padding: 0.7rem;
+	max-width: 100%;
+}
+
+body.code-review-detail-page .chat-panel {
+	border: 0;
+	box-shadow: none;
+	background: linear-gradient(180deg, #f6f8fb 0%, #ffffff 54%);
+	padding: 0.55rem;
+	display: flex;
+	flex-direction: column;
+	min-height: calc(100vh - 2rem);
+}
+
+body.code-review-detail-page #worktreeDiffPanel {
+	border-radius: 14px;
+	border: 1px solid #dce4ee;
+	box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}
+
+body.code-review-detail-page #worktreeDiffPanel.worktree-diff-dedicated-workspace.worktree-diff-review-detail {
+	flex: 1 1 auto;
+	min-height: 0;
+	max-height: none;
+	overflow: hidden;
+}
+
+body.code-review-detail-page .prompt-form {
+	position: sticky;
+	bottom: 0;
+	z-index: 7;
+	margin-top: 0.45rem;
+	width: 100%;
+	border: 1px solid #dce4ee;
+	border-radius: 12px;
+	background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.review-detail-page-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.8rem;
+	margin: 0.1rem 0 0.7rem;
+	padding: 0.85rem 0.95rem;
+	border: 1px solid #dbe5ef;
+	border-radius: 14px;
+	background: linear-gradient(120deg, #f8fafc 0%, #eaf3ff 100%);
+}
+
+.review-detail-page-header-main {
+	min-width: 0;
+}
+
+.review-detail-page-eyebrow {
+	font-size: 0.68rem;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: #0f4c81;
+}
+
+.review-detail-page-title {
+	margin: 0.12rem 0 0.14rem;
+	font-size: 1.35rem;
+	font-weight: 800;
+	line-height: 1.08;
+	color: #0f172a;
+}
+
+.review-detail-page-subtitle {
+	font-size: 0.82rem;
+	color: #334155;
+}
+
+.review-detail-page-back-link {
+	flex: 0 0 auto;
+	text-decoration: none;
+	border: 1px solid #0f766e;
+	background: #0f766e;
+	color: #ecfeff;
+	border-radius: 999px;
+	padding: 0.42rem 0.85rem;
+	font-size: 0.76rem;
+	font-weight: 700;
+}
+
+.review-detail-page-back-link:hover {
+	background: #0d6f66;
+	border-color: #0d6f66;
+	color: #ecfeff;
+}
+
 body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace.worktree-diff-review-index {
 	flex: 1 1 auto;
 	min-height: 0;
@@ -3541,6 +3635,8 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	display: flex;
 	flex-direction: column;
 	min-height: 420px;
+	max-height: calc(100vh - 210px);
+	overflow: hidden;
 }
 
 .worktree-diff-header {
@@ -3842,7 +3938,7 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 
 .diff-full-window {
 	position: fixed;
-	inset: 0.5rem;
+	inset: 0.5rem 0.5rem 12.5rem 0.5rem;
 	z-index: 140;
 	background: rgba(15, 23, 42, 0.28);
 	display: flex;
@@ -3863,11 +3959,46 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	overflow: hidden;
 }
 
+body.code-reviews-page-detail .diff-full-window {
+	position: relative;
+	inset: auto;
+	z-index: auto;
+	background: transparent;
+	margin: 0;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+body.code-reviews-page-detail .diff-full-window-card {
+	border-radius: 16px;
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+body.code-review-detail-page .diff-full-window-header {
+	grid-template-columns: minmax(0, 1fr);
+	padding: 0.6rem 0.72rem;
+}
+
+body.code-review-detail-page .diff-full-window-controls,
+body.code-review-detail-page .diff-full-window-controls-row {
+	width: 100%;
+}
+
+body.code-review-detail-page .diff-full-window-controls-row-selects {
+	justify-content: flex-start;
+}
+
+body.code-review-detail-page .diff-full-window-controls select {
+	flex: 1 1 0;
+	max-width: none;
+	min-width: 170px;
+}
+
 .diff-full-window-header {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 0.5rem;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+	align-items: start;
+	gap: 0.45rem 0.7rem;
 	padding: 0.42rem 0.5rem;
 	border-bottom: 1px solid #e2e8f0;
 	background: #f8fafc;
@@ -3884,36 +4015,139 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 
 .diff-full-window-controls {
 	display: flex;
-	align-items: center;
+	flex-direction: column;
+	gap: 0.34rem;
+	min-width: 0;
+	max-width: 100%;
+}
+
+.diff-full-window-controls-row {
+	display: flex;
+	flex-wrap: wrap;
 	gap: 0.35rem;
+	min-width: 0;
+}
+
+.diff-full-window-controls-row-selects {
+	justify-content: flex-end;
+}
+
+.diff-full-window-controls-row-actions {
+	justify-content: flex-end;
 }
 
 .diff-full-window-controls select,
 .diff-full-window-controls button {
 	border: 1px solid #cbd5e1;
-	border-radius: 6px;
+	border-radius: 10px;
 	background: #ffffff;
 	color: #0f172a;
-	font-size: 0.72rem;
+	font-size: 0.78rem;
 	font-weight: 600;
-	padding: 0.16rem 0.4rem;
+	padding: 0.34rem 0.6rem;
+}
+
+.diff-full-window-action-btn {
+	flex: 0 0 auto;
+	min-width: 7.2rem;
+	height: 2.2rem;
+	padding: 0 0.8rem;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.42rem;
+	font-size: 0.78rem;
+	font-weight: 700;
+	line-height: 1;
+	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+	transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+}
+
+.diff-full-window-action-btn i {
+	font-size: 0.92rem;
+}
+
+.diff-full-window-action-btn:hover {
+	background: #f8fafc;
+	border-color: #94a3b8;
+	color: #0f172a;
+	box-shadow: 0 2px 6px rgba(15, 23, 42, 0.12);
+}
+
+.diff-full-window-action-btn-primary {
+	background: #0b766a;
+	border-color: #0b766a;
+	color: #f0fdfa;
+}
+
+.diff-full-window-action-btn-primary:hover {
+	background: #0a675d;
+	border-color: #0a675d;
+	color: #f0fdfa;
+}
+
+body.code-review-detail-page .diff-full-window-controls-row-actions {
+	justify-content: flex-start;
+	width: 100%;
+	padding: 0.45rem;
+	border-radius: 13px;
+	border: 1px solid #d8e2ef;
+	background: linear-gradient(180deg, #eff5fb 0%, #e2ecf8 100%);
+	gap: 0.5rem;
+}
+
+body.code-review-detail-page .diff-full-window-action-btn {
+	min-width: 8rem;
+	border-radius: 999px;
+	background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+	border-color: #c3d1e4;
+	color: #0f172a;
+	box-shadow: 0 3px 10px rgba(15, 23, 42, 0.12);
+}
+
+body.code-review-detail-page .diff-full-window-action-btn:hover {
+	background: linear-gradient(180deg, #f8fafc 0%, #e9f1fb 100%);
+	border-color: #8fa8c8;
+	color: #0f172a;
+	box-shadow: 0 8px 16px rgba(15, 23, 42, 0.16);
+}
+
+body.code-review-detail-page .diff-full-window-action-btn-primary {
+	background: linear-gradient(180deg, #15803d 0%, #166534 100%);
+	border-color: #166534;
+	color: #f0fdf4;
+}
+
+body.code-review-detail-page .diff-full-window-action-btn-primary:hover {
+	background: linear-gradient(180deg, #166534 0%, #14532d 100%);
+	border-color: #14532d;
+	color: #f0fdf4;
+}
+
+.diff-full-window-workspace.diff-full-window-workspace-side-collapsed .diff-full-window-side {
+	display: none;
+}
+
+.diff-full-window-workspace.diff-full-window-workspace-side-collapsed .diff-full-window-code-pane {
+	border-right: 0;
+}
+
+.diff-full-window-action-btn.is-approved {
+	background: #ecfdf3;
+	border-color: #16a34a;
+	color: #166534;
 }
 
 .diff-full-window-controls select {
-	min-width: 170px;
-	max-width: min(30vw, 360px);
+	flex: 1 1 170px;
+	min-width: 130px;
+	max-width: 320px;
 }
 
 #diffFullFilePathSelect {
-	min-width: 260px;
-	max-width: min(34vw, 500px);
-}
-
-#diffFullFileStartReviewBtn,
-#diffFullFileRefreshBtn,
-#diffFullFileBackBtn,
-#diffFullFileCloseBtn {
-	font-weight: 700;
+	flex: 2 1 300px;
+	min-width: 200px;
+	max-width: 520px;
 }
 
 .diff-full-window-status {
@@ -3930,65 +4164,21 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	display: flex;
 	align-items: stretch;
 }
+.diff-full-window-workspace.diff-full-window-workspace-no-review .diff-full-window-code-pane {
+	border-right: 0;
+}
+
+.diff-full-window-workspace.diff-full-window-workspace-no-review .diff-full-window-side {
+	display: none;
+}
 
 .diff-full-window-code-pane {
 	flex: 1 1 auto;
 	min-width: 0;
 	min-height: 0;
 	display: flex;
+	flex-direction: column;
 	border-right: 1px solid #e2e8f0;
-}
-
-.diff-full-window-diff-list {
-	flex: 0 0 360px;
-	min-width: 300px;
-	max-width: 420px;
-	min-height: 0;
-	overflow: auto;
-	border-right: 1px solid #e2e8f0;
-	background: #f8fafc;
-	padding: 0.45rem;
-}
-
-.diff-full-window-diff-list-empty {
-	font-size: 0.76rem;
-	color: #64748b;
-	padding: 0.4rem 0.2rem;
-}
-
-.diff-full-window-diff-item {
-	display: block;
-	width: 100%;
-	text-align: left;
-	border: 1px solid #dbe3ee;
-	border-radius: 10px;
-	background: #ffffff;
-	padding: 0.5rem 0.56rem;
-	margin-bottom: 0.38rem;
-	cursor: pointer;
-}
-
-.diff-full-window-diff-item.active {
-	border-color: #93c5fd;
-	background: #eff6ff;
-}
-
-.diff-full-window-diff-item-path {
-	display: block;
-	font-family: Consolas, "Courier New", monospace;
-	font-size: 0.72rem;
-	color: #1f2937;
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.diff-full-window-diff-item-stat {
-	display: block;
-	margin-top: 0.2rem;
-	font-family: Consolas, "Courier New", monospace;
-	font-size: 0.7rem;
-	color: #64748b;
 }
 
 .diff-full-window-body {
@@ -4003,9 +4193,9 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 }
 
 .diff-full-window-side {
-	flex: 0 0 min(34vw, 430px);
-	min-width: 290px;
-	max-width: 460px;
+	flex: 0 0 clamp(260px, 28vw, 360px);
+	min-width: 240px;
+	max-width: 380px;
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
@@ -4048,7 +4238,7 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 
 .diff-full-window-issue-list {
 	flex: 0 0 auto;
-	max-height: 30vh;
+	max-height: 22vh;
 	overflow: auto;
 	padding: 0.48rem 0.65rem;
 	border-bottom: 1px solid #f3d3cc;
@@ -4135,7 +4325,7 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 
 .diff-full-window-note-textarea {
 	width: 100%;
-	min-height: 8rem;
+	min-height: 6rem;
 	border: 1px solid #fdba74;
 	border-radius: 8px;
 	background: #ffffff;
@@ -4242,25 +4432,52 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	border-bottom: 1px dashed rgba(248, 113, 113, 0.28);
 }
 
+@media (max-width: 1280px) {
+	.diff-full-window-header {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.diff-full-window-controls-row-selects,
+	.diff-full-window-controls-row-actions {
+		justify-content: flex-start;
+	}
+}
+
 @media (max-width: 900px) {
+	.review-detail-page-header {
+		flex-direction: column;
+		align-items: flex-start;
+	}
+
+	.review-detail-page-title {
+		font-size: 1.15rem;
+	}
+
+	.diff-full-window {
+		inset: 0.4rem 0.4rem 0.4rem 0.4rem;
+	}
+
+	body.code-reviews-page-detail .diff-full-window {
+		inset: auto;
+	}
+
 	.diff-full-window-workspace {
 		flex-direction: column;
+	}
+
+	.diff-full-window-header {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.diff-full-window-controls-row-selects,
+	.diff-full-window-controls-row-actions {
+		justify-content: flex-start;
 	}
 
 	.diff-full-window-code-pane {
 		border-right: 0;
 		border-bottom: 1px solid #e2e8f0;
 		min-height: 44vh;
-		flex-direction: column;
-	}
-
-	.diff-full-window-diff-list {
-		flex: 0 0 auto;
-		max-width: none;
-		min-width: 0;
-		max-height: 26vh;
-		border-right: 0;
-		border-bottom: 1px solid #e2e8f0;
 	}
 
 	.diff-full-window-side {
@@ -4269,6 +4486,7 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 		min-width: 0;
 		max-height: 42vh;
 	}
+
 }
 
 .worktree-diff-file-drawer {
@@ -4455,10 +4673,7 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace.worktree-diff-review-detail .worktree-diff-list {
-	flex: 1 1 auto;
-	min-height: 240px;
-	max-height: calc(100vh - 460px);
-	overflow: auto;
+	display: none !important;
 }
 
 .worktree-diff-panel.worktree-diff-dedicated-workspace .worktree-diff-empty {
@@ -4778,6 +4993,20 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	font-family: Consolas, "Courier New", monospace;
 	font-size: 0.72rem;
 	color: #64748b;
+	display: inline-flex;
+	align-items: baseline;
+	gap: 0.28rem;
+	white-space: nowrap;
+}
+
+.diff-commit-review-file-plus {
+	color: #15803d;
+	font-weight: 700;
+}
+
+.diff-commit-review-file-minus {
+	color: #b91c1c;
+	font-weight: 700;
 }
 
 .diff-commit-review-file-more {
@@ -6290,8 +6519,86 @@ html[data-theme="dark"] .diff-full-window-controls button {
 	color: #e2e8f0;
 }
 
+html[data-theme="dark"] .diff-full-window-action-btn:hover {
+	background: #111827;
+	border-color: #64748b;
+	color: #f8fafc;
+}
+
 html[data-theme="dark"] .diff-full-window-status {
 	color: #94a3b8;
+}
+
+html[data-theme="dark"] .diff-full-window-action-btn-primary {
+	background: #0f766e;
+	border-color: #0f766e;
+	color: #ecfeff;
+}
+
+html[data-theme="dark"] .diff-full-window-action-btn-primary:hover {
+	background: #0e6b63;
+	border-color: #0e6b63;
+	color: #ecfeff;
+}
+
+html[data-theme="dark"] body.code-review-detail-page .diff-full-window-controls-row-actions {
+	border-color: #334155;
+	background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+}
+
+html[data-theme="dark"] body.code-review-detail-page .diff-full-window-header {
+	background: #111827;
+	border-color: #334155;
+}
+
+html[data-theme="dark"] body.code-review-detail-page .diff-full-window-action-btn {
+	background: linear-gradient(180deg, #111827 0%, #0f172a 100%);
+	border-color: #334155;
+	color: #e2e8f0;
+	box-shadow: 0 3px 10px rgba(2, 6, 23, 0.45);
+}
+
+html[data-theme="dark"] body.code-review-detail-page .diff-full-window-action-btn:hover {
+	background: linear-gradient(180deg, #1f2937 0%, #111827 100%);
+	border-color: #64748b;
+	color: #f8fafc;
+	box-shadow: 0 8px 16px rgba(2, 6, 23, 0.6);
+}
+
+html[data-theme="dark"] .diff-commit-review-file-plus {
+	color: #4ade80;
+}
+
+html[data-theme="dark"] .diff-commit-review-file-minus {
+	color: #f87171;
+}
+
+html[data-theme="dark"] body.code-review-detail-page .prompt-form {
+	border-color: #334155;
+	background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+}
+
+html[data-theme="dark"] .review-detail-page-header {
+	border-color: #334155;
+	background: linear-gradient(120deg, #0f172a 0%, #111827 100%);
+}
+
+html[data-theme="dark"] .review-detail-page-eyebrow {
+	color: #7dd3fc;
+}
+
+html[data-theme="dark"] .review-detail-page-title {
+	color: #f8fafc;
+}
+
+html[data-theme="dark"] .review-detail-page-subtitle {
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .diff-full-window-action-btn.is-approved {
+	background: rgba(22, 163, 74, 0.18);
+	border-color: #16a34a;
+	color: #bbf7d0;
 }
 
 html[data-theme="dark"] .diff-full-window-body {
