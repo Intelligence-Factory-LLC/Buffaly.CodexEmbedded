@@ -231,13 +231,7 @@
     } catch {
     }
 
-    const browserLanguage = normalizeLanguageTag(
-      (navigator.languages && navigator.languages.length > 0 ? navigator.languages[0] : navigator.language) || "");
-    if (browserLanguage === "en" || browserLanguage.startsWith("en-")) {
-      return "en";
-    }
-
-    return "";
+    return "en";
   }
 
   function hasScriptMismatch(text, expectedLanguage) {
