@@ -1,6 +1,6 @@
 (function () {
   const SILENCE_GAP_MS = 550;
-  const MIN_SEGMENT_MS = 650;
+  const MIN_SEGMENT_MS = 1400;
   const RECORDER_SLICE_MS = 300;
   const RMS_THRESHOLD = 0.02;
   const VAD_POLL_MS = 100;
@@ -210,6 +210,7 @@
     const extension = inferExtension(blob.type || "");
     const formData = new FormData();
     formData.append("file", blob, `speech_${Date.now()}.${extension}`);
+    const startedAt = performance.now();
     const response = await fetch(transcribeUrl, {
       method: "POST",
       body: formData
@@ -225,9 +226,14 @@
       }
       const error = new Error(detail);
       error.status = response.status;
+      error.elapsedMs = Math.round(Math.max(0, performance.now() - startedAt));
       throw error;
     }
-    return response.text();
+    const text = await response.text();
+    return {
+      text,
+      elapsedMs: Math.round(Math.max(0, performance.now() - startedAt))
+    };
   }
 
   window.initScribe = function initScribe(config) {
@@ -373,16 +379,20 @@
       }
     }
 
-    function enqueueSegment(blob) {
+    function enqueueSegment(blob, voicedMs) {
       if (!blob || blob.size <= 0 || queueClosed) {
         return;
       }
+      const segment = {
+        blob,
+        voicedMs: Number.isFinite(voicedMs) ? Math.max(0, Math.round(voicedMs)) : 0
+      };
       if (queueWaiters.length > 0) {
         const waiter = queueWaiters.shift();
-        waiter(blob);
+        waiter(segment);
         return;
       }
-      queue.push(blob);
+      queue.push(segment);
     }
 
     function dequeueSegment() {
@@ -566,7 +576,7 @@
           const keep = Math.max(1, Math.min(segmentChunks.length, Math.ceil(voicedMs / RECORDER_SLICE_MS)));
           const type = segmentChunks[0] ? segmentChunks[0].type : (preferredMimeType || "audio/webm");
           const blob = new Blob(segmentChunks.slice(0, keep), { type });
-          enqueueSegment(blob);
+          enqueueSegment(blob, voicedMs);
         }
         segmentChunks = [];
         segmentRecorder = null;
@@ -591,19 +601,30 @@
 
     async function runSegmentProcessor() {
       for (;;) {
-        const blob = await dequeueSegment();
-        if (!blob) {
+        const segment = await dequeueSegment();
+        if (!segment || !segment.blob) {
           return;
         }
         try {
-          const text = await transcribeBlob(transcribeUrl, blob);
-          if (appendIncrementalTranscript(text)) {
-            log("[voice] incremental transcription appended");
+          const { text, elapsedMs } = await transcribeBlob(transcribeUrl, segment.blob);
+          const normalized = String(text || "").trim();
+          log(
+            `[voice] incremental transcription ok chars=${normalized.length} ` +
+            `elapsedMs=${elapsedMs} blobBytes=${segment.blob.size} voicedMs=${segment.voicedMs} mime=${segment.blob.type || "unknown"}`);
+          if (normalized) {
+            if (!recordingContext) {
+              recordingContext = createRecordingContext();
+            }
+            recordingContext.segmentTexts.push(normalized);
           } else {
             log("[voice] incremental transcription returned no text");
           }
         } catch (error) {
-          log(`[voice] incremental transcription failed: ${error}`);
+          const elapsed = Number(error && error.elapsedMs);
+          const elapsedSuffix = Number.isFinite(elapsed) ? ` elapsedMs=${elapsed}` : "";
+          log(
+            `[voice] incremental transcription failed: ${error}` +
+            `${elapsedSuffix} blobBytes=${segment.blob.size} voicedMs=${segment.voicedMs} mime=${segment.blob.type || "unknown"}`);
           if (Number(error && error.status) === 400) {
             skipFinalTranscriptionForCapture = true;
             queue = [];
@@ -805,14 +826,22 @@
 
       if (!skipFinalTranscriptionForCapture && fullBlob && fullBlob.size > 0) {
         try {
-          const fullText = await transcribeBlob(transcribeUrl, fullBlob);
+          const { text: fullText, elapsedMs } = await transcribeBlob(transcribeUrl, fullBlob);
+          const normalized = String(fullText || "").trim();
+          log(
+            `[voice] final transcription ok chars=${normalized.length} ` +
+            `elapsedMs=${elapsedMs} blobBytes=${fullBlob.size} mime=${fullBlob.type || "unknown"}`);
           if (applyFinalTranscript(fullText)) {
             log("[voice] final transcription replaced this recording slice");
           } else {
             log("[voice] final transcription returned no text");
           }
         } catch (error) {
-          log(`[voice] final transcription failed: ${error}`);
+          const elapsed = Number(error && error.elapsedMs);
+          const elapsedSuffix = Number.isFinite(elapsed) ? ` elapsedMs=${elapsed}` : "";
+          log(
+            `[voice] final transcription failed: ${error}` +
+            `${elapsedSuffix} blobBytes=${fullBlob.size} mime=${fullBlob.type || "unknown"}`);
         }
       }
 

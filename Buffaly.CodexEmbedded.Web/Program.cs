@@ -323,6 +323,7 @@ app.MapPost("/api/transcribe", async (
 	}
 
 	byte[] audioBytes;
+	var transcribeStartedAt = DateTimeOffset.UtcNow;
 	try
 	{
 		using var memoryStream = new MemoryStream();
@@ -337,6 +338,9 @@ app.MapPost("/api/transcribe", async (
 
 	try
 	{
+		Logs.DebugLog.WriteEvent(
+			"Transcribe",
+			$"Request start bytes={audioBytes.Length} contentType={file.ContentType ?? "(unknown)"} fileName={file.FileName ?? "(unknown)"}");
 		var transcript = await openAiTranscriptionClient.TranscribeAsync(
 			apiKey,
 			audioBytes,
@@ -344,11 +348,19 @@ app.MapPost("/api/transcribe", async (
 			file.ContentType,
 			"gpt-4o-mini-transcribe",
 			context.RequestAborted);
+		var elapsedMs = Math.Max(0, (DateTimeOffset.UtcNow - transcribeStartedAt).TotalMilliseconds);
+		var chars = string.IsNullOrWhiteSpace(transcript) ? 0 : transcript.Trim().Length;
+		Logs.DebugLog.WriteEvent(
+			"Transcribe",
+			$"Request success bytes={audioBytes.Length} chars={chars} elapsedMs={Math.Round(elapsedMs)}");
 		return Results.Text(transcript ?? string.Empty, "text/plain; charset=utf-8");
 	}
 	catch (OpenAiTranscriptionException ex)
 	{
-		Logs.DebugLog.WriteEvent("Transcribe", ex.Message);
+		var elapsedMs = Math.Max(0, (DateTimeOffset.UtcNow - transcribeStartedAt).TotalMilliseconds);
+		Logs.DebugLog.WriteEvent(
+			"Transcribe",
+			$"Request failed bytes={audioBytes.Length} status={ex.StatusCode} elapsedMs={Math.Round(elapsedMs)} error={ex.Message}");
 		return Results.Problem(
 			statusCode: StatusCodes.Status502BadGateway,
 			title: "Transcription request failed.",
@@ -356,6 +368,10 @@ app.MapPost("/api/transcribe", async (
 	}
 	catch (OperationCanceledException)
 	{
+		var elapsedMs = Math.Max(0, (DateTimeOffset.UtcNow - transcribeStartedAt).TotalMilliseconds);
+		Logs.DebugLog.WriteEvent(
+			"Transcribe",
+			$"Request canceled bytes={audioBytes.Length} elapsedMs={Math.Round(elapsedMs)}");
 		return Results.BadRequest(new { message = "Transcription request was canceled." });
 	}
 	catch (Exception ex)
