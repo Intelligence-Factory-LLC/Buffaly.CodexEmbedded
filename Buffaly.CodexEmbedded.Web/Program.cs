@@ -310,6 +310,7 @@ app.MapPost("/api/transcribe", async (
 
 	var file = form.Files.GetFile("file") ?? (form.Files.Count > 0 ? form.Files[0] : null);
 	var requestedLanguage = NormalizeTranscriptionLanguage(form["language"].FirstOrDefault());
+	var requestedModel = NormalizeTranscriptionModel(form["model"].FirstOrDefault());
 	if (file is null)
 	{
 		return Results.BadRequest(new { message = "No audio file was uploaded." });
@@ -342,13 +343,13 @@ app.MapPost("/api/transcribe", async (
 	{
 		Logs.DebugLog.WriteEvent(
 			"Transcribe",
-			$"Request start bytes={audioBytes.Length} contentType={file.ContentType ?? "(unknown)"} fileName={file.FileName ?? "(unknown)"} language={(string.IsNullOrWhiteSpace(requestedLanguage) ? "(auto)" : requestedLanguage)}");
+			$"Request start bytes={audioBytes.Length} contentType={file.ContentType ?? "(unknown)"} fileName={file.FileName ?? "(unknown)"} language={(string.IsNullOrWhiteSpace(requestedLanguage) ? "(auto)" : requestedLanguage)} model={requestedModel}");
 		var transcript = await openAiTranscriptionClient.TranscribeAsync(
 			apiKey,
 			audioBytes,
 			file.FileName,
 			file.ContentType,
-			"gpt-4o-mini-transcribe",
+			requestedModel,
 			requestedLanguage,
 			context.RequestAborted);
 		var elapsedMs = Math.Max(0, (DateTimeOffset.UtcNow - transcribeStartedAt).TotalMilliseconds);
@@ -874,6 +875,21 @@ static string NormalizeTranscriptionLanguage(string? language)
 	return Regex.IsMatch(candidate, "^[a-z]{2,3}(-[a-z]{2})?$", RegexOptions.CultureInvariant)
 		? candidate
 		: string.Empty;
+}
+
+static string NormalizeTranscriptionModel(string? model)
+{
+	var candidate = string.IsNullOrWhiteSpace(model)
+		? string.Empty
+		: model.Trim().ToLowerInvariant();
+
+	return candidate switch
+	{
+		"gpt-4o-transcribe" => "gpt-4o-transcribe",
+		"gpt-4o-mini-transcribe" => "gpt-4o-mini-transcribe",
+		"whisper-1" => "whisper-1",
+		_ => "gpt-4o-mini-transcribe"
+	};
 }
 
 static SessionOrchestrator.SessionRateLimitSnapshot? ChooseUsageDisplaySnapshot(IReadOnlyList<SessionOrchestrator.SessionRateLimitSnapshot> snapshots)

@@ -8,6 +8,8 @@
   const MIN_INCREMENTAL_CHARS = 10;
   const FINAL_REPLACE_GAIN_CHARS = 20;
   const SUGGESTED_LANGUAGE_STORAGE_KEY = "codex.voice.transcribeLanguage";
+  const DEFAULT_INCREMENTAL_MODEL = "gpt-4o-transcribe";
+  const DEFAULT_FINAL_MODEL = "whisper-1";
 
   function isSupported() {
     return typeof window.MediaRecorder === "function"
@@ -217,6 +219,14 @@
     return /^[a-z]{2,3}(-[a-z]{2})?$/.test(candidate) ? candidate : "";
   }
 
+  function normalizeModelName(value) {
+    const candidate = String(value || "").trim().toLowerCase();
+    if (candidate === "gpt-4o-transcribe" || candidate === "gpt-4o-mini-transcribe" || candidate === "whisper-1") {
+      return candidate;
+    }
+    return "";
+  }
+
   function detectPreferredLanguage(options) {
     if (options && typeof options.transcribeLanguage === "string") {
       return normalizeLanguageTag(options.transcribeLanguage);
@@ -277,13 +287,17 @@
       || finalChars >= Math.ceil(incrementalChars * 1.25);
   }
 
-  async function transcribeBlob(transcribeUrl, blob, language) {
+  async function transcribeBlob(transcribeUrl, blob, language, model) {
     const extension = inferExtension(blob.type || "");
     const formData = new FormData();
     formData.append("file", blob, `speech_${Date.now()}.${extension}`);
     const safeLanguage = normalizeLanguageTag(language);
     if (safeLanguage) {
       formData.append("language", safeLanguage);
+    }
+    const safeModel = normalizeModelName(model);
+    if (safeModel) {
+      formData.append("model", safeModel);
     }
     const startedAt = performance.now();
     const response = await fetch(transcribeUrl, {
@@ -320,6 +334,8 @@
     const beforeStart = typeof options.beforeStart === "function" ? options.beforeStart : null;
     const transcribeUrl = options.transcribeUrl || new URL("api/transcribe", document.baseURI);
     const transcribeLanguage = detectPreferredLanguage(options);
+    const incrementalModel = normalizeModelName(options.incrementalTranscribeModel) || DEFAULT_INCREMENTAL_MODEL;
+    const finalModel = normalizeModelName(options.finalTranscribeModel) || DEFAULT_FINAL_MODEL;
 
     if (!button || !target) {
       return null;
@@ -689,12 +705,12 @@
           return;
         }
         try {
-          const { text, elapsedMs } = await transcribeBlob(transcribeUrl, segment.blob, transcribeLanguage);
+          const { text, elapsedMs } = await transcribeBlob(transcribeUrl, segment.blob, transcribeLanguage, incrementalModel);
           const normalized = String(text || "").trim();
           log(
             `[voice] incremental transcription ok chars=${normalized.length} ` +
             `elapsedMs=${elapsedMs} blobBytes=${segment.blob.size} voicedMs=${segment.voicedMs} ` +
-            `mime=${segment.blob.type || "unknown"} language=${transcribeLanguage || "auto"}`);
+            `mime=${segment.blob.type || "unknown"} language=${transcribeLanguage || "auto"} model=${incrementalModel}`);
           if (normalized && normalized.length < MIN_INCREMENTAL_CHARS) {
             log(`[voice] incremental transcription ignored for low chars=${normalized.length}`);
             continue;
@@ -919,13 +935,13 @@
 
       if (!skipFinalTranscriptionForCapture && fullBlob && fullBlob.size > 0) {
         try {
-          const { text: fullText, elapsedMs } = await transcribeBlob(transcribeUrl, fullBlob, transcribeLanguage);
+          const { text: fullText, elapsedMs } = await transcribeBlob(transcribeUrl, fullBlob, transcribeLanguage, finalModel);
           const normalized = String(fullText || "").trim();
           const incrementalAggregate = getIncrementalAggregateText();
           log(
             `[voice] final transcription ok chars=${normalized.length} ` +
             `elapsedMs=${elapsedMs} blobBytes=${fullBlob.size} mime=${fullBlob.type || "unknown"} ` +
-            `language=${transcribeLanguage || "auto"} incrementalChars=${incrementalAggregate.length}`);
+            `language=${transcribeLanguage || "auto"} model=${finalModel} incrementalChars=${incrementalAggregate.length}`);
           if (!normalized) {
             log("[voice] final transcription returned no text");
           } else if (hasScriptMismatch(normalized, transcribeLanguage)) {
