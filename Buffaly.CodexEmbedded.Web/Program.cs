@@ -365,8 +365,11 @@ app.MapPost("/api/transcribe", async (
 		Logs.DebugLog.WriteEvent(
 			"Transcribe",
 			$"Request failed bytes={audioBytes.Length} status={ex.StatusCode} elapsedMs={Math.Round(elapsedMs)} error={ex.Message}");
+		var statusCode = (ex.StatusCode >= 400 && ex.StatusCode <= 599)
+			? ex.StatusCode
+			: StatusCodes.Status502BadGateway;
 		return Results.Problem(
-			statusCode: StatusCodes.Status502BadGateway,
+			statusCode: statusCode,
 			title: "Transcription request failed.",
 			detail: ex.Message);
 	}

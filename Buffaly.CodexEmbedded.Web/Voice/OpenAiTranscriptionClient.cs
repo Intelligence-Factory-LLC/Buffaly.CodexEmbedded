@@ -52,7 +52,11 @@ internal sealed class OpenAiTranscriptionClient
 				catch (OpenAiTranscriptionException ex)
 				{
 					lastError = ex;
-					if (i >= modelCandidates.Count - 1 || !ShouldTryFallbackModel(ex))
+					var hasFallbackCandidate = i < modelCandidates.Count - 1;
+					var shouldFallback =
+						ShouldTryFallbackModel(ex)
+						|| ShouldTryFallbackForFormatMismatch(ex, candidate);
+					if (!hasFallbackCandidate || !shouldFallback)
 					{
 						throw;
 					}
@@ -125,6 +129,29 @@ internal sealed class OpenAiTranscriptionClient
 			|| message.Contains("unknown model")
 			|| message.Contains("unsupported model")
 			|| message.Contains("do not have access");
+	}
+
+	private static bool ShouldTryFallbackForFormatMismatch(OpenAiTranscriptionException ex, string attemptedModel)
+	{
+		if (ex is null || string.IsNullOrWhiteSpace(attemptedModel))
+		{
+			return false;
+		}
+
+		if (!string.Equals(attemptedModel.Trim(), "whisper-1", StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		if (ex.StatusCode != 400)
+		{
+			return false;
+		}
+
+		var message = (ex.Message ?? string.Empty).ToLowerInvariant();
+		return message.Contains("invalid file format")
+			|| message.Contains("unsupported format")
+			|| message.Contains("unsupported audio format");
 	}
 
 	private static async Task<string> TranscribeWithModelAsync(
