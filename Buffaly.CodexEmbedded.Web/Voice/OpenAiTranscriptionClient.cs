@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 internal sealed class OpenAiTranscriptionClient
 {
@@ -16,6 +17,7 @@ internal sealed class OpenAiTranscriptionClient
 		string? fileName,
 		string? contentType,
 		string model,
+		string? language,
 		CancellationToken cancellationToken)
 	{
 		if (string.IsNullOrWhiteSpace(apiKey))
@@ -44,6 +46,7 @@ internal sealed class OpenAiTranscriptionClient
 						fileName,
 						contentType,
 						candidate,
+						language,
 						cancellationToken);
 				}
 				catch (OpenAiTranscriptionException ex)
@@ -131,6 +134,7 @@ internal sealed class OpenAiTranscriptionClient
 		string? fileName,
 		string? contentType,
 		string model,
+		string? language,
 		CancellationToken cancellationToken)
 	{
 		using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/audio/transcriptions");
@@ -150,6 +154,11 @@ internal sealed class OpenAiTranscriptionClient
 		audioContent.Headers.ContentType = parsedContentType;
 		form.Add(audioContent, "file", safeName);
 		form.Add(new StringContent(safeModel), "model");
+		var safeLanguage = NormalizeLanguage(language);
+		if (!string.IsNullOrWhiteSpace(safeLanguage))
+		{
+			form.Add(new StringContent(safeLanguage), "language");
+		}
 		request.Content = form;
 
 		using var response = await client.SendAsync(request, cancellationToken);
@@ -175,6 +184,21 @@ internal sealed class OpenAiTranscriptionClient
 		}
 
 		return string.Empty;
+	}
+
+	private static string NormalizeLanguage(string? language)
+	{
+		var candidate = string.IsNullOrWhiteSpace(language)
+			? string.Empty
+			: language.Trim().ToLowerInvariant();
+		if (string.IsNullOrWhiteSpace(candidate))
+		{
+			return string.Empty;
+		}
+
+		return Regex.IsMatch(candidate, "^[a-z]{2,3}(-[a-z]{2})?$", RegexOptions.CultureInvariant)
+			? candidate
+			: string.Empty;
 	}
 
 	private static string BuildFailureMessage(int statusCode, string model, string body)

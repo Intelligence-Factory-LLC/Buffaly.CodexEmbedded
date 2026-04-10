@@ -2,6 +2,7 @@ using System.IO;
 using System.Net.WebSockets;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Buffaly.CodexEmbedded.Core;
 using BasicUtilities;
 using Microsoft.AspNetCore.DataProtection;
@@ -308,6 +309,7 @@ app.MapPost("/api/transcribe", async (
 	}
 
 	var file = form.Files.GetFile("file") ?? (form.Files.Count > 0 ? form.Files[0] : null);
+	var requestedLanguage = NormalizeTranscriptionLanguage(form["language"].FirstOrDefault());
 	if (file is null)
 	{
 		return Results.BadRequest(new { message = "No audio file was uploaded." });
@@ -340,13 +342,14 @@ app.MapPost("/api/transcribe", async (
 	{
 		Logs.DebugLog.WriteEvent(
 			"Transcribe",
-			$"Request start bytes={audioBytes.Length} contentType={file.ContentType ?? "(unknown)"} fileName={file.FileName ?? "(unknown)"}");
+			$"Request start bytes={audioBytes.Length} contentType={file.ContentType ?? "(unknown)"} fileName={file.FileName ?? "(unknown)"} language={(string.IsNullOrWhiteSpace(requestedLanguage) ? "(auto)" : requestedLanguage)}");
 		var transcript = await openAiTranscriptionClient.TranscribeAsync(
 			apiKey,
 			audioBytes,
 			file.FileName,
 			file.ContentType,
 			"gpt-4o-mini-transcribe",
+			requestedLanguage,
 			context.RequestAborted);
 		var elapsedMs = Math.Max(0, (DateTimeOffset.UtcNow - transcribeStartedAt).TotalMilliseconds);
 		var chars = string.IsNullOrWhiteSpace(transcript) ? 0 : transcript.Trim().Length;
@@ -856,6 +859,21 @@ static string ReadBuildMetadataString(JsonElement root, string propertyName)
 
 	var value = rawValue.GetString()?.Trim() ?? string.Empty;
 	return string.IsNullOrWhiteSpace(value) ? "unknown" : value;
+}
+
+static string NormalizeTranscriptionLanguage(string? language)
+{
+	var candidate = string.IsNullOrWhiteSpace(language)
+		? string.Empty
+		: language.Trim().ToLowerInvariant();
+	if (string.IsNullOrWhiteSpace(candidate))
+	{
+		return string.Empty;
+	}
+
+	return Regex.IsMatch(candidate, "^[a-z]{2,3}(-[a-z]{2})?$", RegexOptions.CultureInvariant)
+		? candidate
+		: string.Empty;
 }
 
 static SessionOrchestrator.SessionRateLimitSnapshot? ChooseUsageDisplaySnapshot(IReadOnlyList<SessionOrchestrator.SessionRateLimitSnapshot> snapshots)
