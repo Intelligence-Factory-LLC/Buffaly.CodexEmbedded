@@ -56,6 +56,10 @@ internal sealed class OpenAiTranscriptionClient
 					var shouldFallback =
 						ShouldTryFallbackModel(ex)
 						|| ShouldTryFallbackForFormatMismatch(ex, candidate);
+					if (!shouldFallback)
+					{
+						shouldFallback = ShouldTryFallbackForTransportFailure(ex);
+					}
 					if (!hasFallbackCandidate || !shouldFallback)
 					{
 						throw;
@@ -152,6 +156,27 @@ internal sealed class OpenAiTranscriptionClient
 		return message.Contains("invalid file format")
 			|| message.Contains("unsupported format")
 			|| message.Contains("unsupported audio format");
+	}
+
+	private static bool ShouldTryFallbackForTransportFailure(OpenAiTranscriptionException ex)
+	{
+		if (ex is null)
+		{
+			return false;
+		}
+
+		if (ex.StatusCode != 0)
+		{
+			return false;
+		}
+
+		var message = (ex.Message ?? string.Empty).ToLowerInvariant();
+		return message.Contains("while sending the request")
+			|| message.Contains("timed out")
+			|| message.Contains("copying content to a stream")
+			|| message.Contains("connection")
+			|| message.Contains("name or service not known")
+			|| message.Contains("no such host");
 	}
 
 	private static async Task<string> TranscribeWithModelAsync(
