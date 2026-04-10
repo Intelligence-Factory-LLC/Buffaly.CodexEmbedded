@@ -612,6 +612,11 @@
             `[voice] incremental transcription ok chars=${normalized.length} ` +
             `elapsedMs=${elapsedMs} blobBytes=${segment.blob.size} voicedMs=${segment.voicedMs} mime=${segment.blob.type || "unknown"}`);
           if (normalized) {
+            if (appendIncrementalTranscript(normalized)) {
+              log("[voice] incremental transcription appended");
+            } else {
+              log("[voice] incremental transcription append skipped");
+            }
             if (!recordingContext) {
               recordingContext = createRecordingContext();
             }
