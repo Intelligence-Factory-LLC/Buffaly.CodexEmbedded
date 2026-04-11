@@ -5,11 +5,7 @@
   const RMS_THRESHOLD = 0.02;
   const VAD_POLL_MS = 100;
   const MAX_SEGMENT_MS = 8000;
-  const MIN_INCREMENTAL_CHARS = 10;
-  const FINAL_REPLACE_GAIN_CHARS = 20;
   const SUGGESTED_LANGUAGE_STORAGE_KEY = "codex.voice.transcribeLanguage";
-  const DEFAULT_INCREMENTAL_MODEL = "gpt-4o-transcribe";
-  const DEFAULT_FINAL_MODEL = "whisper-1";
   const INCREMENTAL_TRANSCRIBE_TIMEOUT_MS = 30000;
   const FINAL_TRANSCRIBE_TIMEOUT_MS = 90000;
   const ARCHIVE_STOP_TIMEOUT_MS = 5000;
@@ -222,14 +218,6 @@
     return /^[a-z]{2,3}(-[a-z]{2})?$/.test(candidate) ? candidate : "";
   }
 
-  function normalizeModelName(value) {
-    const candidate = String(value || "").trim().toLowerCase();
-    if (candidate === "gpt-4o-transcribe" || candidate === "gpt-4o-mini-transcribe" || candidate === "whisper-1") {
-      return candidate;
-    }
-    return "";
-  }
-
   function detectPreferredLanguage(options) {
     if (options && typeof options.transcribeLanguage === "string") {
       return normalizeLanguageTag(options.transcribeLanguage);
@@ -245,49 +233,6 @@
     }
 
     return "en";
-  }
-
-  function hasScriptMismatch(text, expectedLanguage) {
-    if (!text || !expectedLanguage || !expectedLanguage.startsWith("en")) {
-      return false;
-    }
-
-    let letterCount = 0;
-    let latinCount = 0;
-    let cyrillicCount = 0;
-    for (const ch of String(text)) {
-      if (/[A-Za-z]/.test(ch)) {
-        letterCount += 1;
-        latinCount += 1;
-        continue;
-      }
-      if (/[\u0400-\u04FF]/.test(ch)) {
-        letterCount += 1;
-        cyrillicCount += 1;
-      }
-    }
-
-    if (letterCount < 8) {
-      return false;
-    }
-
-    const latinShare = latinCount / letterCount;
-    const cyrillicShare = cyrillicCount / letterCount;
-    return cyrillicShare >= 0.35 && latinShare <= 0.45;
-  }
-
-  function shouldReplaceWithFinalTranscript(finalText, incrementalText) {
-    const finalChars = String(finalText || "").trim().length;
-    const incrementalChars = String(incrementalText || "").trim().length;
-    if (finalChars <= 0) {
-      return false;
-    }
-    if (incrementalChars <= 0) {
-      return true;
-    }
-
-    return finalChars >= (incrementalChars + FINAL_REPLACE_GAIN_CHARS)
-      || finalChars >= Math.ceil(incrementalChars * 1.25);
   }
 
   function formatBlobPrefixHex(bytes) {
@@ -326,17 +271,13 @@
     return `size=${blob.size} type=${blob.type || "unknown"} prefix=${prefix || "(none)"} signature=${signature}`;
   }
 
-  async function transcribeBlob(transcribeUrl, blob, language, model, timeoutMs, phase) {
+  async function transcribeBlob(transcribeUrl, blob, language, timeoutMs, phase) {
     const extension = inferExtension(blob.type || "");
     const formData = new FormData();
     formData.append("file", blob, `speech_${Date.now()}.${extension}`);
     const safeLanguage = normalizeLanguageTag(language);
     if (safeLanguage) {
       formData.append("language", safeLanguage);
-    }
-    const safeModel = normalizeModelName(model);
-    if (safeModel) {
-      formData.append("model", safeModel);
     }
     const safePhase = String(phase || "").trim().toLowerCase();
     if (safePhase === "incremental" || safePhase === "final") {
@@ -411,8 +352,6 @@
     const beforeStart = typeof options.beforeStart === "function" ? options.beforeStart : null;
     const transcribeUrl = options.transcribeUrl || new URL("api/transcribe", document.baseURI);
     const transcribeLanguage = detectPreferredLanguage(options);
-    const incrementalModel = normalizeModelName(options.incrementalTranscribeModel) || DEFAULT_INCREMENTAL_MODEL;
-    const finalModel = normalizeModelName(options.finalTranscribeModel) || DEFAULT_FINAL_MODEL;
 
     if (!button || !target) {
       return null;
@@ -453,7 +392,6 @@
     let isProcessing = false;
     let disposed = false;
     let recordingContext = null;
-    let skipFinalTranscriptionForCapture = false;
     let idleWaiters = [];
 
     function log(message) {
@@ -688,13 +626,6 @@
       return applyScopedTranscript(normalized);
     }
 
-    function getIncrementalAggregateText() {
-      if (!recordingContext || !Array.isArray(recordingContext.segmentTexts)) {
-        return "";
-      }
-      return recordingContext.segmentTexts.join("\n").trim();
-    }
-
     function resetAudioGraph() {
       if (vadTimer) {
         clearInterval(vadTimer);
@@ -786,22 +717,13 @@
             transcribeUrl,
             segment.blob,
             transcribeLanguage,
-            incrementalModel,
             INCREMENTAL_TRANSCRIBE_TIMEOUT_MS,
             "incremental");
           const normalized = String(text || "").trim();
           log(
             `[voice] incremental transcription ok chars=${normalized.length} ` +
             `elapsedMs=${elapsedMs} blobBytes=${segment.blob.size} voicedMs=${segment.voicedMs} ` +
-            `mime=${segment.blob.type || "unknown"} language=${transcribeLanguage || "auto"} model=${incrementalModel}`);
-          if (normalized && normalized.length < MIN_INCREMENTAL_CHARS) {
-            log(`[voice] incremental transcription ignored for low chars=${normalized.length}`);
-            continue;
-          }
-          if (normalized && hasScriptMismatch(normalized, transcribeLanguage)) {
-            log("[voice] incremental transcription ignored for script mismatch");
-            continue;
-          }
+            `mime=${segment.blob.type || "unknown"} language=${transcribeLanguage || "auto"}`);
           if (normalized) {
             if (appendIncrementalTranscript(normalized)) {
               log("[voice] incremental transcription appended");
@@ -817,12 +739,6 @@
           log(
             `[voice] incremental transcription failed: ${error}` +
             `${elapsedSuffix} blobBytes=${segment.blob.size} voicedMs=${segment.voicedMs} mime=${segment.blob.type || "unknown"}`);
-          if (Number(error && error.status) === 400) {
-            skipFinalTranscriptionForCapture = true;
-            queue = [];
-            closeQueue();
-            return;
-          }
         }
       }
     }
@@ -858,7 +774,6 @@
       segmentRecorder = null;
       segmentChunks = [];
       recordingContext = createRecordingContext();
-      skipFinalTranscriptionForCapture = false;
 
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -1030,7 +945,7 @@
       archiveRecorder = null;
       resetAudioGraph();
 
-      if (!skipFinalTranscriptionForCapture && fullBlob && fullBlob.size > 0) {
+      if (fullBlob && fullBlob.size > 0) {
         try {
           const blobInfo = await describeBlob(fullBlob);
           log(`[voice] final blob info ${blobInfo}`);
@@ -1038,23 +953,19 @@
             transcribeUrl,
             fullBlob,
             transcribeLanguage,
-            finalModel,
             FINAL_TRANSCRIBE_TIMEOUT_MS,
             "final");
           const normalized = String(fullText || "").trim();
-          const incrementalAggregate = getIncrementalAggregateText();
           log(
             `[voice] final transcription ok chars=${normalized.length} ` +
             `elapsedMs=${elapsedMs} blobBytes=${fullBlob.size} mime=${fullBlob.type || "unknown"} ` +
-            `language=${transcribeLanguage || "auto"} model=${finalModel} incrementalChars=${incrementalAggregate.length}`);
+            `language=${transcribeLanguage || "auto"}`);
           if (!normalized) {
             log("[voice] final transcription returned no text");
-          } else if (hasScriptMismatch(normalized, transcribeLanguage)) {
-            log("[voice] final transcription ignored for script mismatch");
-          } else if (shouldReplaceWithFinalTranscript(normalized, incrementalAggregate) && applyFinalTranscript(fullText)) {
+          } else if (applyFinalTranscript(fullText)) {
             log("[voice] final transcription replaced this recording slice");
           } else {
-            log("[voice] final transcription kept incremental aggregate");
+            log("[voice] final transcription append skipped");
           }
         } catch (error) {
           const elapsed = Number(error && error.elapsedMs);

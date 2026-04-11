@@ -310,7 +310,6 @@ app.MapPost("/api/transcribe", async (
 
 	var file = form.Files.GetFile("file") ?? (form.Files.Count > 0 ? form.Files[0] : null);
 	var requestedLanguage = NormalizeTranscriptionLanguage(form["language"].FirstOrDefault());
-	var requestedModel = NormalizeTranscriptionModel(form["model"].FirstOrDefault());
 	var requestPhase = NormalizeTranscriptionPhase(form["phase"].FirstOrDefault());
 	if (file is null)
 	{
@@ -344,13 +343,13 @@ app.MapPost("/api/transcribe", async (
 	{
 		Logs.DebugLog.WriteEvent(
 			"Transcribe",
-			$"Request start bytes={audioBytes.Length} contentType={file.ContentType ?? "(unknown)"} fileName={file.FileName ?? "(unknown)"} phase={requestPhase} language={(string.IsNullOrWhiteSpace(requestedLanguage) ? "(auto)" : requestedLanguage)} model={requestedModel} signature={DescribeAudioSignature(audioBytes)}");
+			$"Request start bytes={audioBytes.Length} contentType={file.ContentType ?? "(unknown)"} fileName={file.FileName ?? "(unknown)"} phase={requestPhase} language={(string.IsNullOrWhiteSpace(requestedLanguage) ? "(auto)" : requestedLanguage)} signature={DescribeAudioSignature(audioBytes)}");
 		var transcript = await openAiTranscriptionClient.TranscribeAsync(
 			apiKey,
 			audioBytes,
 			file.FileName,
 			file.ContentType,
-			requestedModel,
+			requestPhase,
 			requestedLanguage,
 			context.RequestAborted);
 		var elapsedMs = Math.Max(0, (DateTimeOffset.UtcNow - transcribeStartedAt).TotalMilliseconds);
@@ -372,7 +371,6 @@ app.MapPost("/api/transcribe", async (
 				audioBytes,
 				file.FileName,
 				file.ContentType,
-				requestedModel,
 				requestPhase,
 				ex.Message);
 			if (!string.IsNullOrWhiteSpace(dumpPath))
@@ -895,21 +893,6 @@ static string NormalizeTranscriptionLanguage(string? language)
 		: string.Empty;
 }
 
-static string NormalizeTranscriptionModel(string? model)
-{
-	var candidate = string.IsNullOrWhiteSpace(model)
-		? string.Empty
-		: model.Trim().ToLowerInvariant();
-
-	return candidate switch
-	{
-		"gpt-4o-transcribe" => "gpt-4o-transcribe",
-		"gpt-4o-mini-transcribe" => "gpt-4o-mini-transcribe",
-		"whisper-1" => "whisper-1",
-		_ => "gpt-4o-mini-transcribe"
-	};
-}
-
 static string NormalizeTranscriptionPhase(string? phase)
 {
 	var candidate = string.IsNullOrWhiteSpace(phase)
@@ -983,7 +966,6 @@ static string? TryPersistFailedTranscriptionPayload(
 	byte[] audioBytes,
 	string? fileName,
 	string? contentType,
-	string model,
 	string phase,
 	string error)
 {
@@ -993,8 +975,8 @@ static string? TryPersistFailedTranscriptionPayload(
 		Directory.CreateDirectory(root);
 
 		var utc = DateTimeOffset.UtcNow;
-		var safeModel = string.IsNullOrWhiteSpace(model) ? "unknown-model" : model.Replace("/", "-");
 		var safePhase = string.IsNullOrWhiteSpace(phase) ? "unknown" : phase;
+		var safeModel = safePhase == "final" ? "whisper-1" : "gpt-4o-transcribe";
 		var ext = Path.GetExtension(fileName ?? string.Empty);
 		if (string.IsNullOrWhiteSpace(ext))
 		{

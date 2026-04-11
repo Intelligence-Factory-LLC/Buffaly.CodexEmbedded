@@ -17,7 +17,7 @@ internal sealed class OpenAiTranscriptionClient
 		byte[] audioBytes,
 		string? fileName,
 		string? contentType,
-		string model,
+		string phase,
 		string? language,
 		CancellationToken cancellationToken)
 	{
@@ -33,7 +33,7 @@ internal sealed class OpenAiTranscriptionClient
 		try
 		{
 			var client = _httpClientFactory.CreateClient();
-			var modelCandidates = BuildModelCandidates(model);
+			var modelCandidates = BuildModelCandidates(phase);
 			OpenAiTranscriptionException? lastError = null;
 			for (var i = 0; i < modelCandidates.Count; i += 1)
 			{
@@ -59,13 +59,7 @@ internal sealed class OpenAiTranscriptionClient
 				catch (OpenAiTranscriptionException ex)
 				{
 					lastError = ex;
-					var shouldFallback =
-						ShouldTryFallbackModel(ex)
-						|| ShouldTryFallbackForFormatMismatch(ex, candidate);
-					if (!shouldFallback)
-					{
-						shouldFallback = ShouldTryFallbackForTransportFailure(ex);
-					}
+					var shouldFallback = ShouldTryFallback(phase, candidate, ex);
 					if (!hasFallbackCandidate || !shouldFallback)
 					{
 						throw;
@@ -123,105 +117,34 @@ internal sealed class OpenAiTranscriptionClient
 		}
 	}
 
-	private static IReadOnlyList<string> BuildModelCandidates(string? preferredModel)
+	private static IReadOnlyList<string> BuildModelCandidates(string? phase)
 	{
-		var candidates = new List<string>();
-		void AddCandidate(string? value)
+		if (string.Equals(phase, "final", StringComparison.OrdinalIgnoreCase))
 		{
-			var normalized = string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim();
-			if (string.IsNullOrWhiteSpace(normalized))
-			{
-				return;
-			}
-
-			if (!candidates.Contains(normalized, StringComparer.OrdinalIgnoreCase))
-			{
-				candidates.Add(normalized);
-			}
+			return new[] { "whisper-1", "gpt-4o-transcribe" };
 		}
 
-		var preferred = string.IsNullOrWhiteSpace(preferredModel)
-			? string.Empty
-			: preferredModel.Trim();
-		AddCandidate(preferred);
-
-		// When final pass starts on whisper-1, fall back to gpt-4o-transcribe first.
-		// This mirrors live incremental behavior and avoids jumping to mini first.
-		AddCandidate("gpt-4o-transcribe");
-		AddCandidate("gpt-4o-mini-transcribe");
-		AddCandidate("whisper-1");
-		return candidates;
+		return new[] { "gpt-4o-transcribe" };
 	}
 
-	private static bool ShouldTryFallbackModel(OpenAiTranscriptionException ex)
-	{
-		if (ex is null)
-		{
-			return false;
-		}
-
-		if (ex.StatusCode != 400 && ex.StatusCode != 404)
-		{
-			return false;
-		}
-
-		var message = (ex.Message ?? string.Empty).ToLowerInvariant();
-		if (!message.Contains("model"))
-		{
-			return false;
-		}
-
-		return message.Contains("not found")
-			|| message.Contains("does not exist")
-			|| message.Contains("not available")
-			|| message.Contains("invalid model")
-			|| message.Contains("unknown model")
-			|| message.Contains("unsupported model")
-			|| message.Contains("do not have access");
-	}
-
-	private static bool ShouldTryFallbackForFormatMismatch(OpenAiTranscriptionException ex, string attemptedModel)
+	private static bool ShouldTryFallback(string? phase, string attemptedModel, OpenAiTranscriptionException ex)
 	{
 		if (ex is null || string.IsNullOrWhiteSpace(attemptedModel))
 		{
 			return false;
 		}
 
-		if (!string.Equals(attemptedModel.Trim(), "whisper-1", StringComparison.OrdinalIgnoreCase))
+		if (!string.Equals(phase, "final", StringComparison.OrdinalIgnoreCase))
 		{
 			return false;
 		}
 
-		if (ex.StatusCode != 400)
+		if (!string.Equals(attemptedModel, "whisper-1", StringComparison.OrdinalIgnoreCase))
 		{
 			return false;
 		}
 
-		var message = (ex.Message ?? string.Empty).ToLowerInvariant();
-		return message.Contains("invalid file format")
-			|| message.Contains("unsupported format")
-			|| message.Contains("unsupported audio format");
-	}
-
-	private static bool ShouldTryFallbackForTransportFailure(OpenAiTranscriptionException ex)
-	{
-		if (ex is null)
-		{
-			return false;
-		}
-
-		if (ex.StatusCode != 0)
-		{
-			return false;
-		}
-
-		var message = (ex.Message ?? string.Empty).ToLowerInvariant();
-		return message.Contains("while sending the request")
-			|| message.Contains("timed out")
-			|| message.Contains("copying content to a stream")
-			|| message.Contains("connection")
-			|| message.Contains("name or service not known")
-			|| message.Contains("no such host");
+		return true;
 	}
 
 	private static async Task<string> TranscribeWithModelAsync(
@@ -240,7 +163,7 @@ internal sealed class OpenAiTranscriptionClient
 		using var form = new MultipartFormDataContent();
 		var safeName = string.IsNullOrWhiteSpace(fileName) ? "audio.webm" : fileName.Trim();
 		var safeContentType = string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType.Trim();
-		var safeModel = string.IsNullOrWhiteSpace(model) ? "gpt-4o-mini-transcribe" : model.Trim();
+		var safeModel = string.IsNullOrWhiteSpace(model) ? "gpt-4o-transcribe" : model.Trim();
 
 		var audioContent = new ByteArrayContent(audioBytes);
 		if (!MediaTypeHeaderValue.TryParse(safeContentType, out var parsedContentType) || parsedContentType is null)
