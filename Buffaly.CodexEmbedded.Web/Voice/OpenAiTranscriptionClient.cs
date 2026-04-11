@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 
 internal sealed class OpenAiTranscriptionClient
 {
+	private static readonly TimeSpan AttemptTimeout = TimeSpan.FromSeconds(45);
 	private readonly IHttpClientFactory _httpClientFactory;
 
 	public OpenAiTranscriptionClient(IHttpClientFactory httpClientFactory)
@@ -37,8 +38,14 @@ internal sealed class OpenAiTranscriptionClient
 			for (var i = 0; i < modelCandidates.Count; i += 1)
 			{
 				var candidate = modelCandidates[i];
+				var hasFallbackCandidate = i < modelCandidates.Count - 1;
+				using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+				attemptCts.CancelAfter(AttemptTimeout);
 				try
 				{
+					Logs.DebugLog.WriteEvent(
+						"Transcribe",
+						$"OpenAI attempt start model={candidate} bytes={audioBytes.Length} timeoutSeconds={Math.Round(AttemptTimeout.TotalSeconds)}");
 					return await TranscribeWithModelAsync(
 						client,
 						apiKey,
@@ -47,12 +54,11 @@ internal sealed class OpenAiTranscriptionClient
 						contentType,
 						candidate,
 						language,
-						cancellationToken);
+						attemptCts.Token);
 				}
 				catch (OpenAiTranscriptionException ex)
 				{
 					lastError = ex;
-					var hasFallbackCandidate = i < modelCandidates.Count - 1;
 					var shouldFallback =
 						ShouldTryFallbackModel(ex)
 						|| ShouldTryFallbackForFormatMismatch(ex, candidate);
@@ -64,6 +70,39 @@ internal sealed class OpenAiTranscriptionClient
 					{
 						throw;
 					}
+
+					Logs.DebugLog.WriteEvent(
+						"Transcribe",
+						$"OpenAI attempt failed model={candidate} status={ex.StatusCode} fallback=true error={ex.Message}");
+					continue;
+				}
+				catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && attemptCts.IsCancellationRequested)
+				{
+					lastError = new OpenAiTranscriptionException(
+						0,
+						$"OpenAI transcription request timed out after {Math.Round(AttemptTimeout.TotalSeconds)} seconds (model={candidate}).");
+					if (!hasFallbackCandidate)
+					{
+						throw lastError;
+					}
+
+					Logs.DebugLog.WriteEvent(
+						"Transcribe",
+						$"OpenAI attempt timeout model={candidate} fallback=true error={ex.Message}");
+					continue;
+				}
+				catch (HttpRequestException ex)
+				{
+					lastError = new OpenAiTranscriptionException(0, $"OpenAI transcription request failed: {ex.Message}");
+					if (!hasFallbackCandidate)
+					{
+						throw lastError;
+					}
+
+					Logs.DebugLog.WriteEvent(
+						"Transcribe",
+						$"OpenAI attempt transport failure model={candidate} fallback=true error={ex.Message}");
+					continue;
 				}
 			}
 
@@ -101,9 +140,15 @@ internal sealed class OpenAiTranscriptionClient
 			}
 		}
 
-		AddCandidate(preferredModel);
-		AddCandidate("gpt-4o-mini-transcribe");
+		var preferred = string.IsNullOrWhiteSpace(preferredModel)
+			? string.Empty
+			: preferredModel.Trim();
+		AddCandidate(preferred);
+
+		// When final pass starts on whisper-1, fall back to gpt-4o-transcribe first.
+		// This mirrors live incremental behavior and avoids jumping to mini first.
 		AddCandidate("gpt-4o-transcribe");
+		AddCandidate("gpt-4o-mini-transcribe");
 		AddCandidate("whisper-1");
 		return candidates;
 	}
