@@ -343,7 +343,7 @@ app.MapPost("/api/transcribe", async (
 	{
 		Logs.DebugLog.WriteEvent(
 			"Transcribe",
-			$"Request start bytes={audioBytes.Length} contentType={file.ContentType ?? "(unknown)"} fileName={file.FileName ?? "(unknown)"} language={(string.IsNullOrWhiteSpace(requestedLanguage) ? "(auto)" : requestedLanguage)} model={requestedModel}");
+			$"Request start bytes={audioBytes.Length} contentType={file.ContentType ?? "(unknown)"} fileName={file.FileName ?? "(unknown)"} language={(string.IsNullOrWhiteSpace(requestedLanguage) ? "(auto)" : requestedLanguage)} model={requestedModel} signature={DescribeAudioSignature(audioBytes)}");
 		var transcript = await openAiTranscriptionClient.TranscribeAsync(
 			apiKey,
 			audioBytes,
@@ -893,6 +893,48 @@ static string NormalizeTranscriptionModel(string? model)
 		"whisper-1" => "whisper-1",
 		_ => "gpt-4o-mini-transcribe"
 	};
+}
+
+static string DescribeAudioSignature(byte[] audioBytes)
+{
+	if (audioBytes is null || audioBytes.Length <= 0)
+	{
+		return "empty";
+	}
+
+	var prefixLength = Math.Min(12, audioBytes.Length);
+	var prefixHex = Convert.ToHexString(audioBytes.AsSpan(0, prefixLength)).ToLowerInvariant();
+	string signature;
+	if (audioBytes.Length >= 4 &&
+		audioBytes[0] == 0x1A &&
+		audioBytes[1] == 0x45 &&
+		audioBytes[2] == 0xDF &&
+		audioBytes[3] == 0xA3)
+	{
+		signature = "webm-ebml";
+	}
+	else if (audioBytes.Length >= 4 &&
+		audioBytes[0] == 0x52 &&
+		audioBytes[1] == 0x49 &&
+		audioBytes[2] == 0x46 &&
+		audioBytes[3] == 0x46)
+	{
+		signature = "wav-riff";
+	}
+	else if (audioBytes.Length >= 4 &&
+		audioBytes[0] == 0x4F &&
+		audioBytes[1] == 0x67 &&
+		audioBytes[2] == 0x67 &&
+		audioBytes[3] == 0x53)
+	{
+		signature = "ogg";
+	}
+	else
+	{
+		signature = "unknown";
+	}
+
+	return $"{signature}:{prefixHex}";
 }
 
 static SessionOrchestrator.SessionRateLimitSnapshot? ChooseUsageDisplaySnapshot(IReadOnlyList<SessionOrchestrator.SessionRateLimitSnapshot> snapshots)

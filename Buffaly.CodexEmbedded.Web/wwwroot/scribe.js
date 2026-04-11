@@ -10,6 +10,9 @@
   const SUGGESTED_LANGUAGE_STORAGE_KEY = "codex.voice.transcribeLanguage";
   const DEFAULT_INCREMENTAL_MODEL = "gpt-4o-transcribe";
   const DEFAULT_FINAL_MODEL = "whisper-1";
+  const INCREMENTAL_TRANSCRIBE_TIMEOUT_MS = 30000;
+  const FINAL_TRANSCRIBE_TIMEOUT_MS = 90000;
+  const ARCHIVE_STOP_TIMEOUT_MS = 5000;
 
   function isSupported() {
     return typeof window.MediaRecorder === "function"
@@ -287,7 +290,43 @@
       || finalChars >= Math.ceil(incrementalChars * 1.25);
   }
 
-  async function transcribeBlob(transcribeUrl, blob, language, model) {
+  function formatBlobPrefixHex(bytes) {
+    const hex = [];
+    for (let i = 0; i < bytes.length; i += 1) {
+      hex.push(bytes[i].toString(16).padStart(2, "0"));
+    }
+    return hex.join("");
+  }
+
+  async function describeBlob(blob) {
+    if (!blob || typeof blob.size !== "number") {
+      return "blob=(missing)";
+    }
+
+    let prefix = "";
+    try {
+      const slice = blob.slice(0, 12);
+      const buffer = await slice.arrayBuffer();
+      prefix = formatBlobPrefixHex(new Uint8Array(buffer));
+    } catch {
+      prefix = "";
+    }
+
+    const signature = prefix
+      ? (prefix.startsWith("1a45dfa3")
+        ? "webm-ebml"
+        : prefix.startsWith("52494646")
+          ? "wav-riff"
+          : prefix.startsWith("4f676753")
+            ? "ogg"
+            : prefix.startsWith("000000") && prefix.includes("66747970")
+              ? "mp4-ftyp"
+              : "unknown")
+      : "unknown";
+    return `size=${blob.size} type=${blob.type || "unknown"} prefix=${prefix || "(none)"} signature=${signature}`;
+  }
+
+  async function transcribeBlob(transcribeUrl, blob, language, model, timeoutMs) {
     const extension = inferExtension(blob.type || "");
     const formData = new FormData();
     formData.append("file", blob, `speech_${Date.now()}.${extension}`);
@@ -299,11 +338,45 @@
     if (safeModel) {
       formData.append("model", safeModel);
     }
+    const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? Math.round(timeoutMs)
+      : FINAL_TRANSCRIBE_TIMEOUT_MS;
+    const controller = typeof AbortController === "function"
+      ? new AbortController()
+      : null;
+    const timeoutHandle = controller
+      ? setTimeout(() => {
+        try {
+          controller.abort();
+        } catch {
+        }
+      }, timeout)
+      : null;
     const startedAt = performance.now();
-    const response = await fetch(transcribeUrl, {
-      method: "POST",
-      body: formData
-    });
+    let response;
+    try {
+      response = await fetch(transcribeUrl, {
+        method: "POST",
+        body: formData,
+        signal: controller ? controller.signal : undefined
+      });
+    } catch (error) {
+      const elapsedMs = Math.round(Math.max(0, performance.now() - startedAt));
+      if (controller && controller.signal && controller.signal.aborted) {
+        const timeoutError = new Error(`Transcription request timed out after ${timeout}ms`);
+        timeoutError.status = 0;
+        timeoutError.elapsedMs = elapsedMs;
+        throw timeoutError;
+      }
+      if (error && typeof error === "object") {
+        error.elapsedMs = elapsedMs;
+      }
+      throw error;
+    } finally {
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+      }
+    }
     if (!response.ok) {
       let detail = `HTTP ${response.status}`;
       try {
@@ -705,7 +778,12 @@
           return;
         }
         try {
-          const { text, elapsedMs } = await transcribeBlob(transcribeUrl, segment.blob, transcribeLanguage, incrementalModel);
+          const { text, elapsedMs } = await transcribeBlob(
+            transcribeUrl,
+            segment.blob,
+            transcribeLanguage,
+            incrementalModel,
+            INCREMENTAL_TRANSCRIBE_TIMEOUT_MS);
           const normalized = String(text || "").trim();
           log(
             `[voice] incremental transcription ok chars=${normalized.length} ` +
@@ -801,12 +879,17 @@
           }
         };
         archiveRecorder.onstop = () => {
+          const chunkCount = archiveChunks.length;
+          const rawBytes = archiveChunks.reduce((sum, chunk) => sum + (chunk ? chunk.size : 0), 0);
           if (archiveChunks.length > 0) {
             const type = archiveChunks[0] ? archiveChunks[0].type : (preferredMimeType || "audio/webm");
             archiveBlob = new Blob(archiveChunks, { type });
           } else {
             archiveBlob = null;
           }
+          log(
+            `[voice] archive recorder stopped chunks=${chunkCount} rawBytes=${rawBytes} ` +
+            `blobBytes=${archiveBlob ? archiveBlob.size : 0} blobType=${archiveBlob ? (archiveBlob.type || "unknown") : "none"}`);
           archiveChunks = [];
           if (archiveResolve) {
             archiveResolve(archiveBlob);
@@ -915,8 +998,6 @@
         maybeCloseQueue();
       }
 
-      resetAudioGraph();
-
       try {
         if (processorPromise) {
           await processorPromise;
@@ -927,15 +1008,33 @@
 
       let fullBlob = null;
       try {
-        fullBlob = archivePromise ? await archivePromise : null;
+        if (archivePromise) {
+          const timeoutPromise = new Promise((resolve) => {
+            window.setTimeout(() => resolve(null), ARCHIVE_STOP_TIMEOUT_MS);
+          });
+          fullBlob = await Promise.race([archivePromise, timeoutPromise]);
+          if (!fullBlob) {
+            log(`[voice] archive recorder did not flush within ${ARCHIVE_STOP_TIMEOUT_MS}ms`);
+          }
+        } else {
+          fullBlob = null;
+        }
       } catch {
       }
       archivePromise = null;
       archiveRecorder = null;
+      resetAudioGraph();
 
       if (!skipFinalTranscriptionForCapture && fullBlob && fullBlob.size > 0) {
         try {
-          const { text: fullText, elapsedMs } = await transcribeBlob(transcribeUrl, fullBlob, transcribeLanguage, finalModel);
+          const blobInfo = await describeBlob(fullBlob);
+          log(`[voice] final blob info ${blobInfo}`);
+          const { text: fullText, elapsedMs } = await transcribeBlob(
+            transcribeUrl,
+            fullBlob,
+            transcribeLanguage,
+            finalModel,
+            FINAL_TRANSCRIBE_TIMEOUT_MS);
           const normalized = String(fullText || "").trim();
           const incrementalAggregate = getIncrementalAggregateText();
           log(
