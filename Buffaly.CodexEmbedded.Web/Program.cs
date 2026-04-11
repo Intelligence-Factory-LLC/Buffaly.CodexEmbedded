@@ -311,6 +311,7 @@ app.MapPost("/api/transcribe", async (
 	var file = form.Files.GetFile("file") ?? (form.Files.Count > 0 ? form.Files[0] : null);
 	var requestedLanguage = NormalizeTranscriptionLanguage(form["language"].FirstOrDefault());
 	var requestedModel = NormalizeTranscriptionModel(form["model"].FirstOrDefault());
+	var requestPhase = NormalizeTranscriptionPhase(form["phase"].FirstOrDefault());
 	if (file is null)
 	{
 		return Results.BadRequest(new { message = "No audio file was uploaded." });
@@ -343,7 +344,7 @@ app.MapPost("/api/transcribe", async (
 	{
 		Logs.DebugLog.WriteEvent(
 			"Transcribe",
-			$"Request start bytes={audioBytes.Length} contentType={file.ContentType ?? "(unknown)"} fileName={file.FileName ?? "(unknown)"} language={(string.IsNullOrWhiteSpace(requestedLanguage) ? "(auto)" : requestedLanguage)} model={requestedModel} signature={DescribeAudioSignature(audioBytes)}");
+			$"Request start bytes={audioBytes.Length} contentType={file.ContentType ?? "(unknown)"} fileName={file.FileName ?? "(unknown)"} phase={requestPhase} language={(string.IsNullOrWhiteSpace(requestedLanguage) ? "(auto)" : requestedLanguage)} model={requestedModel} signature={DescribeAudioSignature(audioBytes)}");
 		var transcript = await openAiTranscriptionClient.TranscribeAsync(
 			apiKey,
 			audioBytes,
@@ -364,7 +365,21 @@ app.MapPost("/api/transcribe", async (
 		var elapsedMs = Math.Max(0, (DateTimeOffset.UtcNow - transcribeStartedAt).TotalMilliseconds);
 		Logs.DebugLog.WriteEvent(
 			"Transcribe",
-			$"Request failed bytes={audioBytes.Length} status={ex.StatusCode} elapsedMs={Math.Round(elapsedMs)} error={ex.Message}");
+			$"Request failed bytes={audioBytes.Length} status={ex.StatusCode} phase={requestPhase} elapsedMs={Math.Round(elapsedMs)} error={ex.Message}");
+		if (ShouldPersistFailedTranscriptionPayload(ex))
+		{
+			var dumpPath = TryPersistFailedTranscriptionPayload(
+				audioBytes,
+				file.FileName,
+				file.ContentType,
+				requestedModel,
+				requestPhase,
+				ex.Message);
+			if (!string.IsNullOrWhiteSpace(dumpPath))
+			{
+				Logs.DebugLog.WriteEvent("Transcribe", $"Failed payload dumped path={dumpPath}");
+			}
+		}
 		var statusCode = (ex.StatusCode >= 400 && ex.StatusCode <= 599)
 			? ex.StatusCode
 			: StatusCodes.Status502BadGateway;
@@ -895,6 +910,19 @@ static string NormalizeTranscriptionModel(string? model)
 	};
 }
 
+static string NormalizeTranscriptionPhase(string? phase)
+{
+	var candidate = string.IsNullOrWhiteSpace(phase)
+		? string.Empty
+		: phase.Trim().ToLowerInvariant();
+	return candidate switch
+	{
+		"incremental" => "incremental",
+		"final" => "final",
+		_ => "unknown"
+	};
+}
+
 static string DescribeAudioSignature(byte[] audioBytes)
 {
 	if (audioBytes is null || audioBytes.Length <= 0)
@@ -935,6 +963,67 @@ static string DescribeAudioSignature(byte[] audioBytes)
 	}
 
 	return $"{signature}:{prefixHex}";
+}
+
+static bool ShouldPersistFailedTranscriptionPayload(OpenAiTranscriptionException ex)
+{
+	if (ex is null || ex.StatusCode != 400)
+	{
+		return false;
+	}
+
+	var message = (ex.Message ?? string.Empty).ToLowerInvariant();
+	return message.Contains("invalid file format")
+		|| message.Contains("corrupted")
+		|| message.Contains("unsupported")
+		|| message.Contains("\"param\": \"file\"");
+}
+
+static string? TryPersistFailedTranscriptionPayload(
+	byte[] audioBytes,
+	string? fileName,
+	string? contentType,
+	string model,
+	string phase,
+	string error)
+{
+	try
+	{
+		var root = Path.Combine("C:\\logs\\Buffaly", "transcribe-failures");
+		Directory.CreateDirectory(root);
+
+		var utc = DateTimeOffset.UtcNow;
+		var safeModel = string.IsNullOrWhiteSpace(model) ? "unknown-model" : model.Replace("/", "-");
+		var safePhase = string.IsNullOrWhiteSpace(phase) ? "unknown" : phase;
+		var ext = Path.GetExtension(fileName ?? string.Empty);
+		if (string.IsNullOrWhiteSpace(ext))
+		{
+			ext = ".webm";
+		}
+
+		var baseName = $"{utc:yyyyMMdd_HHmmss_fff}_{safePhase}_{safeModel}";
+		var audioPath = Path.Combine(root, baseName + ext);
+		File.WriteAllBytes(audioPath, audioBytes);
+
+		var metaPath = Path.Combine(root, baseName + ".meta.txt");
+		var metaLines = new[]
+		{
+			$"utc={utc:O}",
+			$"phase={safePhase}",
+			$"model={safeModel}",
+			$"bytes={audioBytes?.Length ?? 0}",
+			$"contentType={(string.IsNullOrWhiteSpace(contentType) ? "(unknown)" : contentType)}",
+			$"fileName={(string.IsNullOrWhiteSpace(fileName) ? "(unknown)" : fileName)}",
+			$"signature={DescribeAudioSignature(audioBytes ?? Array.Empty<byte>())}",
+			$"error={error ?? string.Empty}"
+		};
+		File.WriteAllLines(metaPath, metaLines);
+		return audioPath;
+	}
+	catch
+	{
+		return null;
+	}
 }
 
 static SessionOrchestrator.SessionRateLimitSnapshot? ChooseUsageDisplaySnapshot(IReadOnlyList<SessionOrchestrator.SessionRateLimitSnapshot> snapshots)

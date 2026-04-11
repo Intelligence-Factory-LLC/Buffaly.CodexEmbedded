@@ -326,7 +326,7 @@
     return `size=${blob.size} type=${blob.type || "unknown"} prefix=${prefix || "(none)"} signature=${signature}`;
   }
 
-  async function transcribeBlob(transcribeUrl, blob, language, model, timeoutMs) {
+  async function transcribeBlob(transcribeUrl, blob, language, model, timeoutMs, phase) {
     const extension = inferExtension(blob.type || "");
     const formData = new FormData();
     formData.append("file", blob, `speech_${Date.now()}.${extension}`);
@@ -337,6 +337,10 @@
     const safeModel = normalizeModelName(model);
     if (safeModel) {
       formData.append("model", safeModel);
+    }
+    const safePhase = String(phase || "").trim().toLowerCase();
+    if (safePhase === "incremental" || safePhase === "final") {
+      formData.append("phase", safePhase);
     }
     const timeout = Number.isFinite(timeoutMs) && timeoutMs > 0
       ? Math.round(timeoutMs)
@@ -783,7 +787,8 @@
             segment.blob,
             transcribeLanguage,
             incrementalModel,
-            INCREMENTAL_TRANSCRIBE_TIMEOUT_MS);
+            INCREMENTAL_TRANSCRIBE_TIMEOUT_MS,
+            "incremental");
           const normalized = String(text || "").trim();
           log(
             `[voice] incremental transcription ok chars=${normalized.length} ` +
@@ -1034,7 +1039,8 @@
             fullBlob,
             transcribeLanguage,
             finalModel,
-            FINAL_TRANSCRIBE_TIMEOUT_MS);
+            FINAL_TRANSCRIBE_TIMEOUT_MS,
+            "final");
           const normalized = String(fullText || "").trim();
           const incrementalAggregate = getIncrementalAggregateText();
           log(
