@@ -648,6 +648,12 @@
         return;
       }
 
+      const snapshotInfo = await describeBlob(snapshot);
+      if (!snapshotInfo.includes("signature=webm-ebml")) {
+        log(`[voice] live retranscription skipped invalid snapshot ${snapshotInfo}`);
+        return;
+      }
+
       liveRetranscribeInFlight = true;
       liveRetranscribeRequestId += 1;
       const requestId = liveRetranscribeRequestId;
