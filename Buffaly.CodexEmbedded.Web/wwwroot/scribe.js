@@ -1,6 +1,7 @@
 (function () {
-  const SILENCE_GAP_MS = 550;
+  const SILENCE_GAP_MS = 850;
   const MIN_SEGMENT_MS = 1400;
+  const TARGET_INCREMENTAL_SEGMENT_MS = 3200;
   const RECORDER_SLICE_MS = 300;
   const RMS_THRESHOLD = 0.02;
   const VAD_POLL_MS = 100;
@@ -1006,6 +1007,7 @@
           const now = performance.now();
 
           if (segmentRecorder && (now - segmentStartAt) >= MAX_SEGMENT_MS) {
+            log(`[voice] segment cut at max window voicedMs=${Math.max(0, lastSpeechAt - segmentStartAt)}`);
             stopSegment();
             silenceMs = 0;
             isSpeaking = false;
@@ -1021,7 +1023,8 @@
           } else if (segmentRecorder) {
             silenceMs += VAD_POLL_MS;
             const voicedMs = Math.max(0, lastSpeechAt - segmentStartAt);
-            if (silenceMs >= SILENCE_GAP_MS && voicedMs >= MIN_SEGMENT_MS) {
+            if (silenceMs >= SILENCE_GAP_MS && voicedMs >= TARGET_INCREMENTAL_SEGMENT_MS) {
+              log(`[voice] segment cut on silence voicedMs=${voicedMs} silenceMs=${silenceMs}`);
               stopSegment();
               silenceMs = 0;
               isSpeaking = false;
