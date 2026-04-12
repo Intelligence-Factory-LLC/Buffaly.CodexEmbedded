@@ -6,6 +6,7 @@
   const RMS_THRESHOLD = 0.02;
   const VAD_POLL_MS = 100;
   const MAX_SEGMENT_MS = 8000;
+  const LIVE_RETRANSCRIBE_MS = 2000;
   const SUGGESTED_LANGUAGE_STORAGE_KEY = "codex.voice.transcribeLanguage";
   const INCREMENTAL_TRANSCRIBE_TIMEOUT_MS = 30000;
   const FINAL_TRANSCRIBE_TIMEOUT_MS = 90000;
@@ -428,16 +429,16 @@
     let archiveResolve = null;
     let archivePromise = null;
 
-    let queue = [];
-    let queueWaiters = [];
     let queueClosed = false;
-    let processorPromise = null;
     let isRecording = false;
     let isProcessing = false;
     let disposed = false;
     let recordingContext = null;
     let idleWaiters = [];
     let lastCapture = null;
+    let liveRetranscribeTimer = null;
+    let liveRetranscribeInFlight = false;
+    let liveRetranscribePending = false;
 
     function log(message) {
       if (onLog) {
@@ -535,38 +536,15 @@
       if (!blob || blob.size <= 0 || queueClosed) {
         return;
       }
-      const segment = {
-        blob,
-        voicedMs: Number.isFinite(voicedMs) ? Math.max(0, Math.round(voicedMs)) : 0,
-        captureChunk: null
-      };
+      const roundedVoicedMs = Number.isFinite(voicedMs) ? Math.max(0, Math.round(voicedMs)) : 0;
       const capture = ensureLastCapture();
-      segment.captureChunk = {
+      capture.chunks.push({
         blob,
-        voicedMs: segment.voicedMs,
+        voicedMs: roundedVoicedMs,
         transcript: "",
         objectUrl: URL.createObjectURL(blob)
-      };
-      capture.chunks.push(segment.captureChunk);
-      renderLastCapture();
-      if (queueWaiters.length > 0) {
-        const waiter = queueWaiters.shift();
-        waiter(segment);
-        return;
-      }
-      queue.push(segment);
-    }
-
-    function dequeueSegment() {
-      if (queue.length > 0) {
-        return Promise.resolve(queue.shift());
-      }
-      if (queueClosed) {
-        return Promise.resolve(null);
-      }
-      return new Promise((resolve) => {
-        queueWaiters.push(resolve);
       });
+      renderLastCapture();
     }
 
     function closeQueue() {
@@ -574,10 +552,6 @@
         return;
       }
       queueClosed = true;
-      while (queueWaiters.length > 0) {
-        const waiter = queueWaiters.shift();
-        waiter(null);
-      }
     }
 
     function maybeCloseQueue() {
@@ -588,6 +562,94 @@
       const archiveDone = !archiveRecorder || archiveRecorder.state === "inactive";
       if (segmentDone && archiveDone) {
         closeQueue();
+      }
+    }
+
+    function buildArchiveSnapshot() {
+      if (!Array.isArray(archiveChunks) || archiveChunks.length === 0) {
+        return null;
+      }
+
+      const type = archiveChunks[0] ? archiveChunks[0].type : (preferredMimeType || "audio/webm");
+      const blob = new Blob(archiveChunks.slice(), { type });
+      return blob.size > 0 ? blob : null;
+    }
+
+    async function requestLiveRetranscription() {
+      if (disposed || !isRecording || stopRequested) {
+        return;
+      }
+
+      if (liveRetranscribeInFlight) {
+        liveRetranscribePending = true;
+        return;
+      }
+
+      const snapshot = buildArchiveSnapshot();
+      if (!snapshot) {
+        return;
+      }
+
+      liveRetranscribeInFlight = true;
+      liveRetranscribePending = false;
+      try {
+        const { text, elapsedMs } = await transcribeBlob(
+          transcribeUrl,
+          snapshot,
+          transcribeLanguage,
+          INCREMENTAL_TRANSCRIBE_TIMEOUT_MS,
+          "incremental");
+        const normalized = String(text || "").trim();
+        log(
+          `[voice] live retranscription ok chars=${normalized.length} elapsedMs=${elapsedMs} ` +
+          `blobBytes=${snapshot.size} mime=${snapshot.type || "unknown"} language=${transcribeLanguage || "auto"}`);
+        if (normalized && isRecording && !stopRequested && !disposed) {
+          if (applyScopedTranscript(normalized)) {
+            log("[voice] live retranscription replaced current recording slice");
+          } else {
+            log("[voice] live retranscription apply skipped");
+          }
+        } else if (normalized) {
+          log("[voice] live retranscription result ignored because recording state changed");
+        } else {
+          log("[voice] live retranscription returned no text");
+        }
+      } catch (error) {
+        const elapsed = Number(error && error.elapsedMs);
+        const elapsedSuffix = Number.isFinite(elapsed) ? ` elapsedMs=${elapsed}` : "";
+        log(
+          `[voice] live retranscription failed: ${error}` +
+          `${elapsedSuffix} blobBytes=${snapshot.size} mime=${snapshot.type || "unknown"}`);
+      } finally {
+        liveRetranscribeInFlight = false;
+        if (liveRetranscribePending && isRecording && !stopRequested && !disposed) {
+          window.setTimeout(() => {
+            requestLiveRetranscription();
+          }, 0);
+        }
+      }
+    }
+
+    function startLiveRetranscribeLoop() {
+      if (liveRetranscribeTimer) {
+        clearInterval(liveRetranscribeTimer);
+      }
+      liveRetranscribeTimer = window.setInterval(() => {
+        requestLiveRetranscription();
+      }, LIVE_RETRANSCRIBE_MS);
+    }
+
+    function stopLiveRetranscribeLoop() {
+      if (liveRetranscribeTimer) {
+        clearInterval(liveRetranscribeTimer);
+        liveRetranscribeTimer = null;
+      }
+      liveRetranscribePending = false;
+    }
+
+    async function waitForLiveRetranscribeIdle() {
+      while (liveRetranscribeInFlight) {
+        await new Promise((resolve) => window.setTimeout(resolve, 25));
       }
     }
 
@@ -658,19 +720,6 @@
       // and scope this recording to a new tail slice instead of replacing all text.
       recordingContext = createRecordingContext();
       return applyWithinCurrentContext();
-    }
-
-    function appendIncrementalTranscript(text) {
-      const normalized = String(text || "").trim();
-      if (!normalized) {
-        return false;
-      }
-      if (!recordingContext) {
-        recordingContext = createRecordingContext();
-      }
-      recordingContext.segmentTexts.push(normalized);
-      const merged = recordingContext.segmentTexts.join("\n");
-      return applyScopedTranscript(merged);
     }
 
     function applyFinalTranscript(text) {
@@ -865,47 +914,6 @@
       }
     }
 
-    async function runSegmentProcessor() {
-      for (;;) {
-        const segment = await dequeueSegment();
-        if (!segment || !segment.blob) {
-          return;
-        }
-        try {
-          const { text, elapsedMs } = await transcribeBlob(
-            transcribeUrl,
-            segment.blob,
-            transcribeLanguage,
-            INCREMENTAL_TRANSCRIBE_TIMEOUT_MS,
-            "incremental");
-          const normalized = String(text || "").trim();
-          log(
-            `[voice] incremental transcription ok chars=${normalized.length} ` +
-            `elapsedMs=${elapsedMs} blobBytes=${segment.blob.size} voicedMs=${segment.voicedMs} ` +
-            `mime=${segment.blob.type || "unknown"} language=${transcribeLanguage || "auto"}`);
-          if (normalized) {
-            if (appendIncrementalTranscript(normalized)) {
-              log("[voice] incremental transcription appended");
-            } else {
-              log("[voice] incremental transcription append skipped");
-            }
-            if (segment.captureChunk) {
-              segment.captureChunk.transcript = normalized;
-              renderLastCapture();
-            }
-          } else {
-            log("[voice] incremental transcription returned no text");
-          }
-        } catch (error) {
-          const elapsed = Number(error && error.elapsedMs);
-          const elapsedSuffix = Number.isFinite(elapsed) ? ` elapsedMs=${elapsed}` : "";
-          log(
-            `[voice] incremental transcription failed: ${error}` +
-            `${elapsedSuffix} blobBytes=${segment.blob.size} voicedMs=${segment.voicedMs} mime=${segment.blob.type || "unknown"}`);
-        }
-      }
-    }
-
     async function startCapture() {
       if (isRecording || isProcessing || disposed) {
         return;
@@ -928,8 +936,6 @@
         }
       }
 
-      queue = [];
-      queueWaiters = [];
       queueClosed = false;
       archiveBlob = null;
       clearLastCapture();
@@ -938,6 +944,8 @@
       segmentRecorder = null;
       segmentChunks = [];
       recordingContext = createRecordingContext();
+      liveRetranscribeInFlight = false;
+      liveRetranscribePending = false;
 
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -987,7 +995,7 @@
         isRecording = true;
         setState("recording");
         log("[voice] recording started");
-        processorPromise = runSegmentProcessor();
+        startLiveRetranscribeLoop();
 
         const vadData = new Float32Array(analyser.fftSize);
         let isSpeaking = false;
@@ -1037,6 +1045,7 @@
           button.classList.toggle("speaking", isSpeaking);
         }, VAD_POLL_MS);
       } catch (error) {
+        stopLiveRetranscribeLoop();
         resetAudioGraph();
         isRecording = false;
         recordingContext = null;
@@ -1062,6 +1071,8 @@
         vadTimer = null;
       }
 
+      stopLiveRetranscribeLoop();
+
       stopSegment();
 
       if (archiveRecorder) {
@@ -1084,13 +1095,7 @@
         maybeCloseQueue();
       }
 
-      try {
-        if (processorPromise) {
-          await processorPromise;
-        }
-      } catch {
-      }
-      processorPromise = null;
+      await waitForLiveRetranscribeIdle();
 
       let fullBlob = null;
       try {
