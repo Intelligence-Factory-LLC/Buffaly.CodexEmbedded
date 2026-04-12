@@ -7,6 +7,8 @@
   const VAD_POLL_MS = 100;
   const MAX_SEGMENT_MS = 8000;
   const LIVE_RETRANSCRIBE_MS = 2000;
+  const LIVE_WAV_SAMPLE_RATE = 16000;
+  const PCM_BUFFER_SIZE = 4096;
   const SUGGESTED_LANGUAGE_STORAGE_KEY = "codex.voice.transcribeLanguage";
   const INCREMENTAL_TRANSCRIBE_TIMEOUT_MS = 30000;
   const FINAL_TRANSCRIBE_TIMEOUT_MS = 90000;
@@ -316,6 +318,68 @@
     return hex.join("");
   }
 
+  function downsampleBuffer(input, inputSampleRate, outputSampleRate) {
+    if (!input || input.length === 0) {
+      return new Float32Array(0);
+    }
+    if (!Number.isFinite(inputSampleRate) || inputSampleRate <= 0 || inputSampleRate === outputSampleRate) {
+      return input;
+    }
+
+    const ratio = inputSampleRate / outputSampleRate;
+    const outputLength = Math.max(1, Math.round(input.length / ratio));
+    const output = new Float32Array(outputLength);
+    let offsetResult = 0;
+    let offsetBuffer = 0;
+    while (offsetResult < output.length) {
+      const nextOffsetBuffer = Math.min(input.length, Math.round((offsetResult + 1) * ratio));
+      let accum = 0;
+      let count = 0;
+      for (let i = offsetBuffer; i < nextOffsetBuffer; i += 1) {
+        accum += input[i];
+        count += 1;
+      }
+      output[offsetResult] = count > 0 ? (accum / count) : 0;
+      offsetResult += 1;
+      offsetBuffer = nextOffsetBuffer;
+    }
+    return output;
+  }
+
+  function encodeWavBlobFromFloat32(samples, sampleRate) {
+    const safeSamples = samples instanceof Float32Array ? samples : new Float32Array(0);
+    const buffer = new ArrayBuffer(44 + (safeSamples.length * 2));
+    const view = new DataView(buffer);
+    const writeString = (offset, value) => {
+      for (let i = 0; i < value.length; i += 1) {
+        view.setUint8(offset + i, value.charCodeAt(i));
+      }
+    };
+
+    writeString(0, "RIFF");
+    view.setUint32(4, 36 + (safeSamples.length * 2), true);
+    writeString(8, "WAVE");
+    writeString(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, "data");
+    view.setUint32(40, safeSamples.length * 2, true);
+
+    let offset = 44;
+    for (let i = 0; i < safeSamples.length; i += 1) {
+      const sample = Math.max(-1, Math.min(1, safeSamples[i]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      offset += 2;
+    }
+
+    return new Blob([buffer], { type: "audio/wav" });
+  }
+
   async function describeBlob(blob) {
     if (!blob || typeof blob.size !== "number") {
       return "blob=(missing)";
@@ -444,6 +508,8 @@
     let audioContext = null;
     let analyser = null;
     let source = null;
+    let pcmProcessor = null;
+    let pcmSink = null;
     let vadTimer = null;
 
     let segmentRecorder = null;
@@ -458,6 +524,8 @@
     let archiveBlob = null;
     let archiveResolve = null;
     let archivePromise = null;
+    let pcmChunks = [];
+    let pcmSampleCount = 0;
 
     let queueClosed = false;
     let isRecording = false;
@@ -624,14 +692,24 @@
       }
     }
 
-    function buildArchiveSnapshot() {
-      if (!Array.isArray(archiveChunks) || archiveChunks.length === 0) {
+    function buildLiveSnapshot() {
+      if (!Array.isArray(pcmChunks) || pcmChunks.length === 0 || pcmSampleCount <= 0 || !audioContext) {
         return null;
       }
 
-      const type = archiveChunks[0] ? archiveChunks[0].type : (preferredMimeType || "audio/webm");
-      const blob = new Blob(archiveChunks.slice(), { type });
-      return blob.size > 0 ? blob : null;
+      const merged = new Float32Array(pcmSampleCount);
+      let offset = 0;
+      for (const chunk of pcmChunks) {
+        if (!chunk || !chunk.length) {
+          continue;
+        }
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      const downsampled = downsampleBuffer(merged, audioContext.sampleRate, LIVE_WAV_SAMPLE_RATE);
+      const blob = encodeWavBlobFromFloat32(downsampled, LIVE_WAV_SAMPLE_RATE);
+      return blob.size > 44 ? blob : null;
     }
 
     async function requestLiveRetranscription() {
@@ -643,14 +721,8 @@
         return;
       }
 
-      const snapshot = buildArchiveSnapshot();
+      const snapshot = buildLiveSnapshot();
       if (!snapshot) {
-        return;
-      }
-
-      const snapshotInfo = await describeBlob(snapshot);
-      if (!snapshotInfo.includes("signature=webm-ebml")) {
-        log(`[voice] live retranscription skipped invalid snapshot ${snapshotInfo}`);
         return;
       }
 
@@ -908,6 +980,20 @@
       } catch {
       }
       source = null;
+      try {
+        if (pcmProcessor) {
+          pcmProcessor.disconnect();
+        }
+      } catch {
+      }
+      pcmProcessor = null;
+      try {
+        if (pcmSink) {
+          pcmSink.disconnect();
+        }
+      } catch {
+      }
+      pcmSink = null;
       analyser = null;
       if (audioContext) {
         try {
@@ -925,6 +1011,8 @@
         }
       }
       stream = null;
+      pcmChunks = [];
+      pcmSampleCount = 0;
       visualizer.setSpeaking(false);
       visualizer.stop();
     }
@@ -1005,6 +1093,8 @@
       pendingSegmentStops = 0;
       segmentRecorder = null;
       segmentChunks = [];
+      pcmChunks = [];
+      pcmSampleCount = 0;
       recordingContext = createRecordingContext();
       liveRetranscribeInFlight = false;
       liveRetranscribeRequestId = 0;
@@ -1019,6 +1109,35 @@
         analyser.fftSize = 2048;
         source = audioContext.createMediaStreamSource(stream);
         source.connect(analyser);
+        pcmProcessor = audioContext.createScriptProcessor(PCM_BUFFER_SIZE, 1, 1);
+        pcmSink = audioContext.createGain();
+        pcmSink.gain.value = 0;
+        pcmProcessor.onaudioprocess = (event) => {
+          if (!isRecording || stopRequested || disposed) {
+            return;
+          }
+          const input = event.inputBuffer;
+          if (!input || input.numberOfChannels <= 0) {
+            return;
+          }
+          const channel = input.getChannelData(0);
+          if (!channel || channel.length === 0) {
+            return;
+          }
+          const copy = new Float32Array(channel.length);
+          copy.set(channel);
+          pcmChunks.push(copy);
+          pcmSampleCount += copy.length;
+          const output = event.outputBuffer;
+          if (output && output.numberOfChannels > 0) {
+            for (let channelIndex = 0; channelIndex < output.numberOfChannels; channelIndex += 1) {
+              output.getChannelData(channelIndex).fill(0);
+            }
+          }
+        };
+        source.connect(pcmProcessor);
+        pcmProcessor.connect(pcmSink);
+        pcmSink.connect(audioContext.destination);
 
         archiveChunks = [];
         archivePromise = new Promise((resolve) => {
