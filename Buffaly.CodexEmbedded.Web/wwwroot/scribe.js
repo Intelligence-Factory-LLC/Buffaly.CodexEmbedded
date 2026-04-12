@@ -236,7 +236,7 @@
     toggle.title = "Show voice debug";
     toggle.setAttribute("aria-label", "Show voice debug");
     toggle.setAttribute("aria-pressed", "false");
-    toggle.innerHTML = '<i class="bi bi-soundwave"></i>';
+    toggle.innerHTML = '<i class="bi bi-bug"></i>';
 
     if (buttonEl && buttonEl.parentNode) {
       buttonEl.parentNode.insertBefore(toggle, buttonEl.nextSibling);

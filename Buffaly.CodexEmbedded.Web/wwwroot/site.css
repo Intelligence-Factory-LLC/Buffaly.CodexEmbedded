@@ -2479,15 +2479,15 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 1.7rem;
-	height: 1.7rem;
-	margin-left: 0.25rem;
+	width: 1.45rem;
+	height: 1.45rem;
+	margin-left: 0.18rem;
 	border-radius: 999px;
-	border: 1px solid #e2e8f0;
-	background: #f8fafc;
-	color: #94a3b8;
+	border: 1px solid transparent;
+	background: transparent;
+	color: #cbd5e1;
 	cursor: pointer;
-	opacity: 0.82;
+	opacity: 0.7;
 }
 
 .scribe-debug-toggle.hidden {
@@ -2495,21 +2495,21 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 }
 
 .scribe-debug-toggle:hover {
-	background: #f1f5f9;
-	border-color: #cbd5e1;
+	background: #f8fafc;
+	border-color: #e2e8f0;
 	color: #64748b;
 	opacity: 1;
 }
 
 .scribe-debug-toggle[aria-pressed="true"] {
-	background: #eef2f7;
+	background: #f1f5f9;
 	border-color: #cbd5e1;
 	color: #475569;
 	opacity: 1;
 }
 
 .scribe-debug-toggle i {
-	font-size: 0.8rem;
+	font-size: 0.68rem;
 }
 
 .scribe-dot {
@@ -7797,15 +7797,15 @@ html[data-theme="dark"] .scribe-vis {
 }
 
 html[data-theme="dark"] .scribe-debug-toggle {
-	border-color: #334155;
-	background: #0f172a;
-	color: #64748b;
-	opacity: 0.82;
+	border-color: transparent;
+	background: transparent;
+	color: #475569;
+	opacity: 0.7;
 }
 
 html[data-theme="dark"] .scribe-debug-toggle:hover {
 	background: #111827;
-	border-color: #475569;
+	border-color: #334155;
 	color: #94a3b8;
 	opacity: 1;
 }
