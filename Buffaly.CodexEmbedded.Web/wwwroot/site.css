@@ -2332,6 +2332,7 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 
 .prompt-actions {
 	margin-top: 0.55rem;
+	position: relative;
 	display: flex;
 	align-items: center;
 	justify-content: flex-end;
@@ -2476,18 +2477,23 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 }
 
 .scribe-debug-toggle {
+	position: absolute;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 1.45rem;
-	height: 1.45rem;
-	margin-left: 0.18rem;
+	width: 1rem;
+	height: 1rem;
+	margin: 0;
 	border-radius: 999px;
-	border: 1px solid transparent;
-	background: transparent;
-	color: #cbd5e1;
+	border: 1px solid #dbe3ef !important;
+	background: #ffffff !important;
+	color: #94a3b8 !important;
 	cursor: pointer;
-	opacity: 0.7;
+	opacity: 0.92;
+	padding: 0 !important;
+	transform: translateX(-50%);
+	z-index: 2;
+	box-shadow: 0 3px 10px rgba(15, 23, 42, 0.08);
 }
 
 .scribe-debug-toggle.hidden {
@@ -2495,21 +2501,22 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 }
 
 .scribe-debug-toggle:hover {
-	background: #f8fafc;
-	border-color: #e2e8f0;
-	color: #64748b;
+	background: #ffffff !important;
+	border-color: #cbd5e1 !important;
+	color: #64748b !important;
 	opacity: 1;
 }
 
 .scribe-debug-toggle[aria-pressed="true"] {
-	background: #f1f5f9;
-	border-color: #cbd5e1;
-	color: #475569;
+	background: #ffffff !important;
+	border-color: #cbd5e1 !important;
+	color: #475569 !important;
 	opacity: 1;
 }
 
 .scribe-debug-toggle i {
-	font-size: 0.68rem;
+	font-size: 0.58rem;
+	line-height: 1;
 }
 
 .scribe-dot {
@@ -7797,23 +7804,23 @@ html[data-theme="dark"] .scribe-vis {
 }
 
 html[data-theme="dark"] .scribe-debug-toggle {
-	border-color: transparent;
-	background: transparent;
-	color: #475569;
-	opacity: 0.7;
+	border-color: #334155 !important;
+	background: #0f172a !important;
+	color: #64748b !important;
+	opacity: 0.94;
 }
 
 html[data-theme="dark"] .scribe-debug-toggle:hover {
-	background: #111827;
-	border-color: #334155;
-	color: #94a3b8;
+	background: #0f172a !important;
+	border-color: #475569 !important;
+	color: #94a3b8 !important;
 	opacity: 1;
 }
 
 html[data-theme="dark"] .scribe-debug-toggle[aria-pressed="true"] {
-	background: #1e293b;
-	border-color: #475569;
-	color: #cbd5e1;
+	background: #0f172a !important;
+	border-color: #475569 !important;
+	color: #cbd5e1 !important;
 	opacity: 1;
 }
 

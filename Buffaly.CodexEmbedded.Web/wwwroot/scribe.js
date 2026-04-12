@@ -238,14 +238,23 @@
     toggle.title = "Show voice debug";
     toggle.setAttribute("aria-label", "Show voice debug");
     toggle.setAttribute("aria-pressed", "false");
-    toggle.innerHTML = '<i class="bi bi-question-circle"></i>';
+    toggle.innerHTML = '<i class="bi bi-question"></i>';
 
     if (buttonEl && buttonEl.parentNode) {
-      buttonEl.parentNode.insertBefore(toggle, buttonEl.nextSibling);
+      buttonEl.parentNode.appendChild(toggle);
     }
 
     return {
       element: toggle,
+      syncAnchor() {
+        if (!buttonEl || !buttonEl.parentNode) {
+          return;
+        }
+        const left = buttonEl.offsetLeft + (buttonEl.offsetWidth / 2);
+        const top = buttonEl.offsetTop + buttonEl.offsetHeight + 3;
+        toggle.style.left = `${Math.round(left)}px`;
+        toggle.style.top = `${Math.round(top)}px`;
+      },
       show() {
         toggle.classList.remove("hidden");
       },
@@ -561,6 +570,7 @@
 
     function syncDebugUi() {
       const available = isRecording || isProcessing || hasDebugCapture();
+      debugToggle.syncAnchor();
       if (available) {
         debugToggle.show();
       } else {
