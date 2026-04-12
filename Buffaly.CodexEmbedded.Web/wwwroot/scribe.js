@@ -250,8 +250,8 @@
         if (!buttonEl || !buttonEl.parentNode) {
           return;
         }
-        const left = buttonEl.offsetLeft + (buttonEl.offsetWidth / 2);
-        const top = buttonEl.offsetTop + buttonEl.offsetHeight + 3;
+        const left = buttonEl.offsetLeft + buttonEl.offsetWidth - 2;
+        const top = buttonEl.offsetTop + buttonEl.offsetHeight - 2;
         toggle.style.left = `${Math.round(left)}px`;
         toggle.style.top = `${Math.round(top)}px`;
       },

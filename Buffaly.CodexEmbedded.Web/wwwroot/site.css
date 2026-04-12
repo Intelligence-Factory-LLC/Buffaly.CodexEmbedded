@@ -2481,8 +2481,8 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 1rem;
-	height: 1rem;
+	width: 0.92rem;
+	height: 0.92rem;
 	margin: 0;
 	border-radius: 999px;
 	border: 1px solid #dbe3ef !important;
@@ -2491,9 +2491,9 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	cursor: pointer;
 	opacity: 0.92;
 	padding: 0 !important;
-	transform: translateX(-50%);
-	z-index: 2;
-	box-shadow: 0 3px 10px rgba(15, 23, 42, 0.08);
+	transform: translate(-35%, -35%);
+	z-index: 3;
+	box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
 }
 
 .scribe-debug-toggle.hidden {
@@ -2515,7 +2515,7 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 }
 
 .scribe-debug-toggle i {
-	font-size: 0.58rem;
+	font-size: 0.52rem;
 	line-height: 1;
 }
 
