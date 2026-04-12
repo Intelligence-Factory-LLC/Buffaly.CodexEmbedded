@@ -236,7 +236,7 @@
     toggle.title = "Show voice debug";
     toggle.setAttribute("aria-label", "Show voice debug");
     toggle.setAttribute("aria-pressed", "false");
-    toggle.innerHTML = '<i class="bi bi-bug"></i>';
+    toggle.innerHTML = '<i class="bi bi-question-circle"></i>';
 
     if (buttonEl && buttonEl.parentNode) {
       buttonEl.parentNode.insertBefore(toggle, buttonEl.nextSibling);
@@ -469,7 +469,7 @@
     let debugTrayVisible = false;
     let liveRetranscribeTimer = null;
     let liveRetranscribeInFlight = false;
-    let liveRetranscribePending = false;
+    let liveRetranscribeRequestId = 0;
 
     function log(message) {
       if (onLog) {
@@ -640,7 +640,6 @@
       }
 
       if (liveRetranscribeInFlight) {
-        liveRetranscribePending = true;
         return;
       }
 
@@ -650,7 +649,8 @@
       }
 
       liveRetranscribeInFlight = true;
-      liveRetranscribePending = false;
+      liveRetranscribeRequestId += 1;
+      const requestId = liveRetranscribeRequestId;
       try {
         const { text, elapsedMs } = await transcribeBlob(
           transcribeUrl,
@@ -660,9 +660,11 @@
           "incremental");
         const normalized = String(text || "").trim();
         log(
-          `[voice] live retranscription ok chars=${normalized.length} elapsedMs=${elapsedMs} ` +
+          `[voice] live retranscription ok requestId=${requestId} chars=${normalized.length} elapsedMs=${elapsedMs} ` +
           `blobBytes=${snapshot.size} mime=${snapshot.type || "unknown"} language=${transcribeLanguage || "auto"}`);
-        if (normalized && isRecording && !stopRequested && !disposed) {
+        if (requestId !== liveRetranscribeRequestId) {
+          log(`[voice] live retranscription ignored stale result requestId=${requestId}`);
+        } else if (normalized && isRecording && !stopRequested && !disposed) {
           if (applyScopedTranscript(normalized)) {
             log("[voice] live retranscription replaced current recording slice");
           } else {
@@ -681,11 +683,6 @@
           `${elapsedSuffix} blobBytes=${snapshot.size} mime=${snapshot.type || "unknown"}`);
       } finally {
         liveRetranscribeInFlight = false;
-        if (liveRetranscribePending && isRecording && !stopRequested && !disposed) {
-          window.setTimeout(() => {
-            requestLiveRetranscription();
-          }, 0);
-        }
       }
     }
 
@@ -703,7 +700,6 @@
         clearInterval(liveRetranscribeTimer);
         liveRetranscribeTimer = null;
       }
-      liveRetranscribePending = false;
     }
 
     async function waitForLiveRetranscribeIdle() {
@@ -1005,7 +1001,7 @@
       segmentChunks = [];
       recordingContext = createRecordingContext();
       liveRetranscribeInFlight = false;
-      liveRetranscribePending = false;
+      liveRetranscribeRequestId = 0;
 
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
