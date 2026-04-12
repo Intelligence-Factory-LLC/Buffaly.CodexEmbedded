@@ -920,43 +920,44 @@ body.code-reviews-page-list #promptBuildFixIndicator {
 	display: none !important;
 }
 
-body.code-review-detail-page .main {
-	padding: 0.7rem;
-	max-width: 100%;
-}
-
-body.code-review-detail-page .chat-panel {
-	border: 0;
-	box-shadow: none;
-	background: linear-gradient(180deg, #f6f8fb 0%, #ffffff 54%);
-	padding: 0.55rem;
+body.code-review-detail-page .layout {
+	height: 100dvh;
+	min-height: 100dvh;
 	display: flex;
 	flex-direction: column;
-	min-height: calc(100vh - 2rem);
-}
-
-body.code-review-detail-page #worktreeDiffPanel {
-	border-radius: 14px;
-	border: 1px solid #dce4ee;
-	box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-}
-
-body.code-review-detail-page #worktreeDiffPanel.worktree-diff-dedicated-workspace.worktree-diff-review-detail {
-	flex: 1 1 auto;
-	min-height: 0;
-	max-height: none;
-	overflow: hidden;
 }
 
 body.code-review-detail-page .prompt-form {
-	position: sticky;
-	bottom: 0;
-	z-index: 7;
-	margin-top: 0.45rem;
-	width: 100%;
-	border: 1px solid #dce4ee;
-	border-radius: 12px;
-	background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+	position: relative;
+	left: auto;
+	right: auto;
+	bottom: auto;
+	z-index: auto;
+	margin: 0;
+	border: 1px solid #e2e8f0;
+	border-radius: 10px;
+	background: #ffffff;
+	box-shadow: none;
+}
+
+body.code-review-detail-page .diff-notes-composer {
+	position: relative;
+	left: auto;
+	right: auto;
+	bottom: auto;
+	z-index: auto;
+	padding: 0.45rem 0.6rem;
+	border: 1px solid #fcd34d;
+	border-radius: 10px;
+	background: #fffef8;
+}
+
+body.code-review-detail-page #reviewDetailComposerHost {
+	order: 2;
+	flex: 0 0 auto;
+	padding: 0.55rem;
+	border-top: 1px solid #e2e8f0;
+	background: #f8fafc;
 }
 
 .review-detail-page-header {
@@ -2510,6 +2511,106 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	display: block;
 }
 
+.scribe-debug {
+	margin: 0.75rem 0 0;
+	padding: 0.8rem 0.9rem;
+	border-radius: 0.9rem;
+	border: 1px solid #dbe3ef;
+	background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+	box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+}
+
+.scribe-debug.hidden {
+	display: none;
+}
+
+.scribe-debug-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	margin-bottom: 0.8rem;
+}
+
+.scribe-debug-title {
+	font-size: 0.95rem;
+	font-weight: 700;
+	color: #0f172a;
+}
+
+.scribe-debug-actions {
+	display: flex;
+	align-items: center;
+	gap: 0.45rem;
+}
+
+.scribe-debug-actions button {
+	border: 1px solid #cbd5e1;
+	background: #ffffff;
+	color: #334155;
+	border-radius: 999px;
+	padding: 0.4rem 0.8rem;
+	font-size: 0.78rem;
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.scribe-debug-actions button:hover {
+	background: #f8fafc;
+	border-color: #94a3b8;
+}
+
+.scribe-debug-section + .scribe-debug-section {
+	margin-top: 0.9rem;
+}
+
+.scribe-debug-label {
+	font-size: 0.76rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: #475569;
+	margin-bottom: 0.45rem;
+}
+
+.scribe-debug audio {
+	width: 100%;
+}
+
+.scribe-debug-meta {
+	margin-top: 0.35rem;
+	font-size: 0.75rem;
+	color: #64748b;
+}
+
+.scribe-debug-chunks {
+	display: grid;
+	gap: 0.75rem;
+}
+
+.scribe-debug-chunk {
+	padding: 0.7rem 0.75rem;
+	border-radius: 0.8rem;
+	border: 1px solid #e2e8f0;
+	background: #ffffff;
+}
+
+.scribe-debug-chunk-head {
+	font-size: 0.82rem;
+	font-weight: 700;
+	color: #1e293b;
+	margin-bottom: 0.35rem;
+}
+
+.scribe-debug-text {
+	margin-top: 0.45rem;
+	font-size: 0.84rem;
+	line-height: 1.45;
+	color: #0f172a;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
 .prompt-plan-btn {
 	background: #ffffff !important;
 	color: #334155 !important;
@@ -3969,9 +4070,40 @@ body.code-reviews-page-detail .diff-full-window {
 	min-height: 0;
 }
 
+body.code-review-detail-page #diffFullFileWindow,
+body.code-review-detail-page #diffFullFileWindow.hidden {
+	display: flex;
+	position: relative;
+	inset: auto;
+	z-index: auto;
+	background: transparent;
+	margin: 0;
+	order: 1;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+body.code-review-detail-page.diff-full-window-active .diff-full-window {
+	position: relative;
+	inset: auto;
+	z-index: auto;
+	margin: 0;
+	background: transparent;
+}
+
 body.code-reviews-page-detail .diff-full-window-card {
 	border-radius: 16px;
 	box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+
+body.code-review-detail-page.diff-full-window-active .diff-full-window-card {
+	box-shadow: none;
+}
+
+body.code-review-detail-page .diff-full-window-card {
+	border-radius: 0;
+	border: 0;
+	box-shadow: none;
 }
 
 body.code-review-detail-page .diff-full-window-header {
@@ -4065,6 +4197,10 @@ body.code-review-detail-page .diff-full-window-controls select {
 
 .diff-full-window-action-btn i {
 	font-size: 0.92rem;
+}
+
+.diff-full-window-action-btn-toggle i {
+	font-size: 1rem;
 }
 
 .diff-full-window-action-btn:hover {
@@ -4207,10 +4343,43 @@ body.code-review-detail-page .diff-full-window-action-btn-primary:hover {
 	border-bottom: 1px solid #f3d3cc;
 }
 
+.diff-full-window-side-title-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.4rem;
+}
+
 .diff-full-window-side-title {
 	font-size: 0.82rem;
 	font-weight: 700;
 	color: #9f1239;
+}
+
+.diff-full-window-side-collapse-btn {
+	width: 1.7rem;
+	height: 1.7rem;
+	border: 1px solid #f3d3cc;
+	border-radius: 999px;
+	background: #ffffff;
+	color: #9f1239;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	cursor: pointer;
+	transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.diff-full-window-side-collapse-btn:hover {
+	background: #fff1f2;
+	border-color: #fb7185;
+	transform: translateX(1px);
+}
+
+.diff-full-window-side-collapse-btn i {
+	font-size: 0.88rem;
+	line-height: 1;
 }
 
 .diff-full-window-side-meta {
@@ -4237,11 +4406,10 @@ body.code-review-detail-page .diff-full-window-action-btn-primary:hover {
 }
 
 .diff-full-window-issue-list {
-	flex: 0 0 auto;
-	max-height: 22vh;
+	flex: 1 1 auto;
+	max-height: none;
 	overflow: auto;
 	padding: 0.48rem 0.65rem;
-	border-bottom: 1px solid #f3d3cc;
 	background: #fffaf9;
 }
 
@@ -4251,20 +4419,32 @@ body.code-review-detail-page .diff-full-window-action-btn-primary:hover {
 }
 
 .diff-full-window-issue-item {
-	display: block;
+	display: flex;
+	flex-direction: column;
 	width: 100%;
 	text-align: left;
 	border: 1px solid #f3d3cc;
 	border-radius: 10px;
 	background: #ffffff;
-	padding: 0.48rem 0.52rem;
+	padding: 0.36rem 0.42rem;
 	margin-bottom: 0.35rem;
-	cursor: pointer;
+	gap: 0.28rem;
 }
 
 .diff-full-window-issue-item.active {
 	border-color: #f59e0b;
 	background: #fff7ed;
+}
+
+.diff-full-window-issue-item-head {
+	border: 0;
+	background: transparent;
+	padding: 0;
+	cursor: pointer;
+	text-align: left;
+	display: flex;
+	flex-direction: column;
+	gap: 0.18rem;
 }
 
 .diff-full-window-issue-item-title {
@@ -4279,6 +4459,38 @@ body.code-review-detail-page .diff-full-window-action-btn-primary:hover {
 	margin-top: 0.2rem;
 	font-size: 0.68rem;
 	color: #9a3412;
+}
+
+.diff-full-window-issue-item-body {
+	font-size: 0.72rem;
+	line-height: 1.4;
+	color: #7f1d1d;
+}
+
+.diff-full-window-issue-item-links {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.28rem;
+}
+
+.diff-full-window-issue-item-actions {
+	display: flex;
+	justify-content: flex-end;
+}
+
+.diff-full-window-issue-fix-btn {
+	border: 1px solid #fdba74;
+	border-radius: 999px;
+	background: #ffffff;
+	color: #9a3412;
+	font-size: 0.68rem;
+	font-weight: 700;
+	padding: 0.18rem 0.56rem;
+	cursor: pointer;
+}
+
+.diff-full-window-issue-fix-btn:hover {
+	background: #ffedd5;
 }
 
 .diff-full-window-review-context {
@@ -4360,21 +4572,20 @@ body.code-review-detail-page .diff-full-window-action-btn-primary:hover {
 	cursor: not-allowed;
 }
 
-#diffFullFileFixBtn {
-	border-color: #0f766e;
-	background: #0f766e;
-	color: #ffffff;
-}
-
-#diffFullFileFixBtn:hover {
-	background: #0e746c;
-	border-color: #0e746c;
-}
-
 .diff-full-window-line {
 	display: flex;
 	align-items: flex-start;
 	gap: 0.45rem;
+}
+
+.diff-full-window-line-marker {
+	flex: 0 0 auto;
+	width: 0.8rem;
+	text-align: center;
+	font-family: Consolas, "Courier New", monospace;
+	font-weight: 700;
+	color: #94a3b8;
+	user-select: none;
 }
 
 .diff-full-window-line-clickable {
@@ -4406,6 +4617,22 @@ body.code-review-detail-page .diff-full-window-action-btn-primary:hover {
 	background: rgba(59, 130, 246, 0.1);
 }
 
+.diff-full-window-line-added {
+	background: rgba(16, 185, 129, 0.14);
+}
+
+.diff-full-window-line-added .diff-full-window-line-marker {
+	color: #15803d;
+}
+
+.diff-full-window-line-removed {
+	background: rgba(239, 68, 68, 0.14);
+}
+
+.diff-full-window-line-removed .diff-full-window-line-marker {
+	color: #b91c1c;
+}
+
 .diff-full-window-line-requested {
 	background: rgba(245, 158, 11, 0.22);
 	outline: 1px solid rgba(217, 119, 6, 0.55);
@@ -4424,6 +4651,19 @@ body.code-review-detail-page .diff-full-window-action-btn-primary:hover {
 .diff-full-window-line-selected {
 	outline: 1px solid rgba(249, 115, 22, 0.85);
 	outline-offset: -1px;
+}
+
+.diff-full-window-gap {
+	margin: 0.14rem 0;
+	padding: 0.16rem 0.55rem;
+	border: 1px dashed #cbd5e1;
+	border-radius: 8px;
+	background: #f8fafc;
+	color: #64748b;
+	font-size: 0.68rem;
+	font-weight: 700;
+	letter-spacing: 0.01em;
+	text-align: center;
 }
 
 .diff-review-md-finding {
@@ -4459,6 +4699,10 @@ body.code-review-detail-page .diff-full-window-action-btn-primary:hover {
 
 	body.code-reviews-page-detail .diff-full-window {
 		inset: auto;
+	}
+
+	body.code-review-detail-page.diff-full-window-active .diff-full-window {
+		inset: 0.4rem 0.4rem 7.8rem 0.4rem;
 	}
 
 	.diff-full-window-workspace {
@@ -6496,6 +6740,10 @@ html[data-theme="dark"] .diff-full-window {
 	background: rgba(2, 6, 23, 0.65);
 }
 
+html[data-theme="dark"] body.code-review-detail-page.diff-full-window-active .diff-full-window {
+	background: transparent;
+}
+
 html[data-theme="dark"] .diff-full-window-card {
 	background: #0f172a;
 	border-color: #334155;
@@ -6575,7 +6823,13 @@ html[data-theme="dark"] .diff-commit-review-file-minus {
 
 html[data-theme="dark"] body.code-review-detail-page .prompt-form {
 	border-color: #334155;
-	background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+	background: #0f172a;
+	box-shadow: none;
+}
+
+html[data-theme="dark"] body.code-review-detail-page #reviewDetailComposerHost {
+	border-top-color: #334155;
+	background: #020617;
 }
 
 html[data-theme="dark"] .review-detail-page-header {
@@ -6615,6 +6869,17 @@ html[data-theme="dark"] .diff-full-window-side {
 
 html[data-theme="dark"] .diff-full-window-side-header {
 	border-bottom-color: #4c1d2f;
+}
+
+html[data-theme="dark"] .diff-full-window-side-collapse-btn {
+	background: #1f2937;
+	border-color: #7f1d1d;
+	color: #fecdd3;
+}
+
+html[data-theme="dark"] .diff-full-window-side-collapse-btn:hover {
+	background: #111827;
+	border-color: #fb7185;
 }
 
 html[data-theme="dark"] .diff-full-window-side-title {
@@ -6659,15 +6924,15 @@ html[data-theme="dark"] .diff-full-window-note-actions button {
 	color: #fdba74;
 }
 
-html[data-theme="dark"] #diffFullFileFixBtn {
-	background: #0f766e;
-	border-color: #0f766e;
-	color: #ecfeff;
+html[data-theme="dark"] .diff-full-window-issue-fix-btn {
+	background: #111827;
+	border-color: #9a3412;
+	color: #fdba74;
 }
 
-html[data-theme="dark"] #diffFullFileFixBtn:hover {
-	background: #0b5f58;
-	border-color: #0b5f58;
+html[data-theme="dark"] .diff-full-window-issue-fix-btn:hover {
+	background: #1f2937;
+	border-color: #c2410c;
 }
 
 html[data-theme="dark"] .diff-review-collapse-btn {
@@ -6685,12 +6950,32 @@ html[data-theme="dark"] .diff-full-window-line-no {
 	color: #94a3b8;
 }
 
+html[data-theme="dark"] .diff-full-window-line-marker {
+	color: #64748b;
+}
+
 html[data-theme="dark"] .diff-full-window-line-text {
 	color: #e2e8f0;
 }
 
 html[data-theme="dark"] .diff-full-window-line-changed {
 	background: rgba(59, 130, 246, 0.24);
+}
+
+html[data-theme="dark"] .diff-full-window-line-added {
+	background: rgba(22, 163, 74, 0.2);
+}
+
+html[data-theme="dark"] .diff-full-window-line-added .diff-full-window-line-marker {
+	color: #4ade80;
+}
+
+html[data-theme="dark"] .diff-full-window-line-removed {
+	background: rgba(220, 38, 38, 0.2);
+}
+
+html[data-theme="dark"] .diff-full-window-line-removed .diff-full-window-line-marker {
+	color: #f87171;
 }
 
 html[data-theme="dark"] .diff-full-window-line-requested {
@@ -6713,6 +6998,12 @@ html[data-theme="dark"] .diff-full-window-line-reviewed {
 
 html[data-theme="dark"] .diff-full-window-line-selected {
 	outline-color: rgba(251, 146, 60, 0.95);
+}
+
+html[data-theme="dark"] .diff-full-window-gap {
+	border-color: #334155;
+	background: #0f172a;
+	color: #94a3b8;
 }
 
 html[data-theme="dark"] .diff-review-md-finding {
@@ -7470,6 +7761,45 @@ html[data-theme="dark"] .scribe-vis {
 
 html[data-theme="dark"] .scribe-time {
 	color: #d1fae5;
+}
+
+html[data-theme="dark"] .scribe-debug {
+	border-color: #334155;
+	background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+	box-shadow: 0 16px 32px rgba(2, 6, 23, 0.38);
+}
+
+html[data-theme="dark"] .scribe-debug-title {
+	color: #f8fafc;
+}
+
+html[data-theme="dark"] .scribe-debug-actions button {
+	border-color: #475569;
+	background: #111827;
+	color: #e2e8f0;
+}
+
+html[data-theme="dark"] .scribe-debug-actions button:hover {
+	background: #1e293b;
+	border-color: #64748b;
+}
+
+html[data-theme="dark"] .scribe-debug-label {
+	color: #94a3b8;
+}
+
+html[data-theme="dark"] .scribe-debug-meta {
+	color: #94a3b8;
+}
+
+html[data-theme="dark"] .scribe-debug-chunk {
+	border-color: #334155;
+	background: rgba(15, 23, 42, 0.88);
+}
+
+html[data-theme="dark"] .scribe-debug-chunk-head,
+html[data-theme="dark"] .scribe-debug-text {
+	color: #e2e8f0;
 }
 
 html[data-theme="dark"] .prompt-plan-btn:hover {

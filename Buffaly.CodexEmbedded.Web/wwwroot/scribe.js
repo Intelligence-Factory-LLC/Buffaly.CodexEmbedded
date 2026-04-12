@@ -185,6 +185,48 @@
     };
   }
 
+  function createDebugTray(buttonEl) {
+    const tray = document.createElement("div");
+    tray.className = "scribe-debug hidden";
+    tray.innerHTML = [
+      '<div class="scribe-debug-header">',
+      '<span class="scribe-debug-title">Voice Capture</span>',
+      '<div class="scribe-debug-actions">',
+      '<button class="scribe-debug-retranscribe" type="button">Retranscribe</button>',
+      '<button class="scribe-debug-clear" type="button">Clear</button>',
+      "</div>",
+      "</div>",
+      '<div class="scribe-debug-section">',
+      '<div class="scribe-debug-label">Full Recording</div>',
+      '<audio class="scribe-debug-full" controls preload="metadata"></audio>',
+      '<div class="scribe-debug-meta scribe-debug-full-meta">No recording yet.</div>',
+      "</div>",
+      '<div class="scribe-debug-section">',
+      '<div class="scribe-debug-label">Chunks</div>',
+      '<div class="scribe-debug-chunks"></div>',
+      "</div>"
+    ].join("");
+
+    if (buttonEl && buttonEl.parentNode && buttonEl.parentNode.parentNode) {
+      buttonEl.parentNode.parentNode.insertAdjacentElement("afterend", tray);
+    }
+
+    return {
+      element: tray,
+      retranscribeBtn: tray.querySelector(".scribe-debug-retranscribe"),
+      clearBtn: tray.querySelector(".scribe-debug-clear"),
+      fullAudio: tray.querySelector(".scribe-debug-full"),
+      fullMeta: tray.querySelector(".scribe-debug-full-meta"),
+      chunksEl: tray.querySelector(".scribe-debug-chunks"),
+      show() {
+        tray.classList.remove("hidden");
+      },
+      hide() {
+        tray.classList.add("hidden");
+      }
+    };
+  }
+
   function readErrorMessage(rawText) {
     const raw = String(rawText || "").trim();
     if (!raw) {
@@ -363,6 +405,7 @@
 
     const icon = button.querySelector("i");
     const visualizer = createVisualizer(button);
+    const debugTray = createDebugTray(button);
     const preferredMimeType = chooseMimeType();
 
     let stream = null;
@@ -393,6 +436,7 @@
     let disposed = false;
     let recordingContext = null;
     let idleWaiters = [];
+    let lastCapture = null;
 
     function log(message) {
       if (onLog) {
@@ -492,8 +536,18 @@
       }
       const segment = {
         blob,
-        voicedMs: Number.isFinite(voicedMs) ? Math.max(0, Math.round(voicedMs)) : 0
+        voicedMs: Number.isFinite(voicedMs) ? Math.max(0, Math.round(voicedMs)) : 0,
+        captureChunk: null
       };
+      const capture = ensureLastCapture();
+      segment.captureChunk = {
+        blob,
+        voicedMs: segment.voicedMs,
+        transcript: "",
+        objectUrl: URL.createObjectURL(blob)
+      };
+      capture.chunks.push(segment.captureChunk);
+      renderLastCapture();
       if (queueWaiters.length > 0) {
         const waiter = queueWaiters.shift();
         waiter(segment);
@@ -626,6 +680,110 @@
       return applyScopedTranscript(normalized);
     }
 
+    function revokeCaptureUrls(capture) {
+      if (!capture) {
+        return;
+      }
+
+      if (capture.fullObjectUrl) {
+        try {
+          URL.revokeObjectURL(capture.fullObjectUrl);
+        } catch {
+        }
+      }
+
+      if (Array.isArray(capture.chunks)) {
+        for (const chunk of capture.chunks) {
+          if (!chunk || !chunk.objectUrl) {
+            continue;
+          }
+          try {
+            URL.revokeObjectURL(chunk.objectUrl);
+          } catch {
+          }
+        }
+      }
+    }
+
+    function clearLastCapture() {
+      revokeCaptureUrls(lastCapture);
+      lastCapture = null;
+      if (debugTray.fullAudio) {
+        debugTray.fullAudio.removeAttribute("src");
+        debugTray.fullAudio.load();
+      }
+      if (debugTray.fullMeta) {
+        debugTray.fullMeta.textContent = "No recording yet.";
+      }
+      if (debugTray.chunksEl) {
+        debugTray.chunksEl.innerHTML = "";
+      }
+      debugTray.hide();
+    }
+
+    function ensureLastCapture() {
+      if (lastCapture) {
+        return lastCapture;
+      }
+
+      lastCapture = {
+        fullBlob: null,
+        fullObjectUrl: "",
+        chunks: []
+      };
+      return lastCapture;
+    }
+
+    function renderLastCapture() {
+      if (!lastCapture) {
+        clearLastCapture();
+        return;
+      }
+
+      debugTray.show();
+      if (debugTray.fullAudio) {
+        debugTray.fullAudio.src = lastCapture.fullObjectUrl || "";
+      }
+      if (debugTray.fullMeta) {
+        debugTray.fullMeta.textContent =
+          `bytes=${lastCapture.fullBlob ? lastCapture.fullBlob.size : 0} type=${lastCapture.fullBlob ? (lastCapture.fullBlob.type || "unknown") : "unknown"} chunks=${lastCapture.chunks.length}`;
+      }
+      if (debugTray.chunksEl) {
+        debugTray.chunksEl.innerHTML = "";
+        for (let i = 0; i < lastCapture.chunks.length; i += 1) {
+          const chunk = lastCapture.chunks[i];
+          const row = document.createElement("div");
+          row.className = "scribe-debug-chunk";
+          const transcript = String(chunk.transcript || "").trim();
+          const header = document.createElement("div");
+          header.className = "scribe-debug-chunk-head";
+          header.textContent = `Chunk ${i + 1}`;
+
+          const audio = document.createElement("audio");
+          audio.controls = true;
+          audio.preload = "metadata";
+          if (chunk.objectUrl) {
+            audio.src = chunk.objectUrl;
+          }
+
+          const meta = document.createElement("div");
+          meta.className = "scribe-debug-meta";
+          meta.textContent =
+            `bytes=${chunk.blob ? chunk.blob.size : 0} voicedMs=${chunk.voicedMs || 0} chars=${transcript.length}`;
+
+          const text = document.createElement("div");
+          text.className = "scribe-debug-text";
+          text.textContent = transcript || "(no transcript yet)";
+
+          row.appendChild(header);
+          row.appendChild(audio);
+          row.appendChild(meta);
+          row.appendChild(text);
+          debugTray.chunksEl.appendChild(row);
+        }
+      }
+    }
+
     function resetAudioGraph() {
       if (vadTimer) {
         clearInterval(vadTimer);
@@ -730,6 +888,10 @@
             } else {
               log("[voice] incremental transcription append skipped");
             }
+            if (segment.captureChunk) {
+              segment.captureChunk.transcript = normalized;
+              renderLastCapture();
+            }
           } else {
             log("[voice] incremental transcription returned no text");
           }
@@ -769,6 +931,7 @@
       queueWaiters = [];
       queueClosed = false;
       archiveBlob = null;
+      clearLastCapture();
       stopRequested = false;
       pendingSegmentStops = 0;
       segmentRecorder = null;
@@ -946,6 +1109,13 @@
       resetAudioGraph();
 
       if (fullBlob && fullBlob.size > 0) {
+        const capture = ensureLastCapture();
+        capture.fullBlob = fullBlob;
+        capture.fullObjectUrl = URL.createObjectURL(fullBlob);
+        renderLastCapture();
+      }
+
+      if (fullBlob && fullBlob.size > 0) {
         try {
           const blobInfo = await describeBlob(fullBlob);
           log(`[voice] final blob info ${blobInfo}`);
@@ -995,6 +1165,45 @@
       await waitForIdle();
     }
 
+    async function retranscribeLastCapture() {
+      if (disposed || isRecording || isProcessing || !lastCapture || !lastCapture.fullBlob) {
+        return;
+      }
+
+      isProcessing = true;
+      setState("processing");
+      try {
+        log("[voice] retranscribing saved full audio");
+        const { text: fullText, elapsedMs } = await transcribeBlob(
+          transcribeUrl,
+          lastCapture.fullBlob,
+          transcribeLanguage,
+          FINAL_TRANSCRIBE_TIMEOUT_MS,
+          "final");
+        const normalized = String(fullText || "").trim();
+        log(
+          `[voice] retranscription ok chars=${normalized.length} elapsedMs=${elapsedMs} ` +
+          `blobBytes=${lastCapture.fullBlob.size} mime=${lastCapture.fullBlob.type || "unknown"} language=${transcribeLanguage || "auto"}`);
+        if (!normalized) {
+          log("[voice] retranscription returned no text");
+        } else if (applyFinalTranscript(fullText)) {
+          log("[voice] retranscription replaced this recording slice");
+        } else {
+          log("[voice] retranscription append skipped");
+        }
+      } catch (error) {
+        const elapsed = Number(error && error.elapsedMs);
+        const elapsedSuffix = Number.isFinite(elapsed) ? ` elapsedMs=${elapsed}` : "";
+        log(
+          `[voice] retranscription failed: ${error}` +
+          `${elapsedSuffix} blobBytes=${lastCapture.fullBlob.size} mime=${lastCapture.fullBlob.type || "unknown"}`);
+      } finally {
+        isProcessing = false;
+        setState("idle");
+        resolveIdleWaiters();
+      }
+    }
+
     async function onClick() {
       if (disposed) {
         return;
@@ -1020,8 +1229,16 @@
       } else {
         resetAudioGraph();
       }
+      clearLastCapture();
       closeQueue();
       visualizer.dispose();
+      if (debugTray.retranscribeBtn) {
+        debugTray.retranscribeBtn.removeEventListener("click", retranscribeLastCapture);
+      }
+      if (debugTray.clearBtn) {
+        debugTray.clearBtn.removeEventListener("click", clearLastCapture);
+      }
+      debugTray.element.remove();
       button.classList.remove("speaking");
       setState("idle");
       resolveIdleWaiters();
@@ -1029,11 +1246,18 @@
     }
 
     button.addEventListener("click", onClick);
+    if (debugTray.retranscribeBtn) {
+      debugTray.retranscribeBtn.addEventListener("click", retranscribeLastCapture);
+    }
+    if (debugTray.clearBtn) {
+      debugTray.clearBtn.addEventListener("click", clearLastCapture);
+    }
 
     const controller = {
       start: startCapture,
       stop: stopCapture,
       stopAndWaitForIdle,
+      retranscribeLastCapture,
       dispose,
       get recording() {
         return isRecording;
