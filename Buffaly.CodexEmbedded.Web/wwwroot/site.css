@@ -2475,6 +2475,40 @@ body.code-reviews-page-list #worktreeDiffPanel.worktree-diff-dedicated-workspace
 	display: inline-flex;
 }
 
+.scribe-debug-toggle {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 2.2rem;
+	height: 2.2rem;
+	margin-left: 0.35rem;
+	border-radius: 999px;
+	border: 1px solid #cbd5e1;
+	background: #ffffff;
+	color: #475569;
+	cursor: pointer;
+}
+
+.scribe-debug-toggle.hidden {
+	display: none;
+}
+
+.scribe-debug-toggle:hover {
+	background: #f8fafc;
+	border-color: #94a3b8;
+	color: #0f172a;
+}
+
+.scribe-debug-toggle[aria-pressed="true"] {
+	background: #e0f2fe;
+	border-color: #38bdf8;
+	color: #0c4a6e;
+}
+
+.scribe-debug-toggle i {
+	font-size: 1rem;
+}
+
 .scribe-dot {
 	width: 0.42rem;
 	height: 0.42rem;
@@ -7757,6 +7791,24 @@ html[data-theme="dark"] .prompt-speech-btn.speaking {
 html[data-theme="dark"] .scribe-vis {
 	background: rgba(255, 255, 255, 0.06);
 	border-color: rgba(255, 255, 255, 0.14);
+}
+
+html[data-theme="dark"] .scribe-debug-toggle {
+	border-color: #475569;
+	background: #111827;
+	color: #cbd5e1;
+}
+
+html[data-theme="dark"] .scribe-debug-toggle:hover {
+	background: #1e293b;
+	border-color: #64748b;
+	color: #f8fafc;
+}
+
+html[data-theme="dark"] .scribe-debug-toggle[aria-pressed="true"] {
+	background: #082f49;
+	border-color: #38bdf8;
+	color: #bae6fd;
 }
 
 html[data-theme="dark"] .scribe-time {

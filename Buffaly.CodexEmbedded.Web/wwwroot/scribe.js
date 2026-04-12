@@ -229,6 +229,35 @@
     };
   }
 
+  function createDebugToggle(buttonEl) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "scribe-debug-toggle hidden";
+    toggle.title = "Show voice debug";
+    toggle.setAttribute("aria-label", "Show voice debug");
+    toggle.setAttribute("aria-pressed", "false");
+    toggle.innerHTML = '<i class="bi bi-soundwave"></i>';
+
+    if (buttonEl && buttonEl.parentNode) {
+      buttonEl.parentNode.insertBefore(toggle, buttonEl.nextSibling);
+    }
+
+    return {
+      element: toggle,
+      show() {
+        toggle.classList.remove("hidden");
+      },
+      hide() {
+        toggle.classList.add("hidden");
+      },
+      setExpanded(expanded) {
+        toggle.setAttribute("aria-pressed", expanded ? "true" : "false");
+        toggle.title = expanded ? "Hide voice debug" : "Show voice debug";
+        toggle.setAttribute("aria-label", expanded ? "Hide voice debug" : "Show voice debug");
+      }
+    };
+  }
+
   function readErrorMessage(rawText) {
     const raw = String(rawText || "").trim();
     if (!raw) {
@@ -407,6 +436,7 @@
 
     const icon = button.querySelector("i");
     const visualizer = createVisualizer(button);
+    const debugToggle = createDebugToggle(button);
     const debugTray = createDebugTray(button);
     const preferredMimeType = chooseMimeType();
 
@@ -436,6 +466,7 @@
     let recordingContext = null;
     let idleWaiters = [];
     let lastCapture = null;
+    let debugTrayVisible = false;
     let liveRetranscribeTimer = null;
     let liveRetranscribeInFlight = false;
     let liveRetranscribePending = false;
@@ -446,6 +477,34 @@
           onLog(message);
         } catch {
         }
+      }
+    }
+
+    function hasDebugCapture() {
+      if (!lastCapture) {
+        return false;
+      }
+
+      return !!(
+        (lastCapture.fullBlob && lastCapture.fullBlob.size > 0)
+        || (Array.isArray(lastCapture.chunks) && lastCapture.chunks.length > 0)
+      );
+    }
+
+    function syncDebugUi() {
+      const available = isRecording || isProcessing || hasDebugCapture();
+      if (available) {
+        debugToggle.show();
+      } else {
+        debugToggle.hide();
+        debugTrayVisible = false;
+      }
+
+      debugToggle.setExpanded(available && debugTrayVisible);
+      if (available && debugTrayVisible) {
+        debugTray.show();
+      } else {
+        debugTray.hide();
       }
     }
 
@@ -758,6 +817,7 @@
     function clearLastCapture() {
       revokeCaptureUrls(lastCapture);
       lastCapture = null;
+      debugTrayVisible = false;
       if (debugTray.fullAudio) {
         debugTray.fullAudio.removeAttribute("src");
         debugTray.fullAudio.load();
@@ -768,7 +828,7 @@
       if (debugTray.chunksEl) {
         debugTray.chunksEl.innerHTML = "";
       }
-      debugTray.hide();
+      syncDebugUi();
     }
 
     function ensureLastCapture() {
@@ -790,7 +850,6 @@
         return;
       }
 
-      debugTray.show();
       if (debugTray.fullAudio) {
         debugTray.fullAudio.src = lastCapture.fullObjectUrl || "";
       }
@@ -832,6 +891,7 @@
           debugTray.chunksEl.appendChild(row);
         }
       }
+      syncDebugUi();
     }
 
     function resetAudioGraph() {
@@ -994,6 +1054,7 @@
         visualizer.start(analyser);
         isRecording = true;
         setState("recording");
+        syncDebugUi();
         log("[voice] recording started");
         startLiveRetranscribeLoop();
 
@@ -1050,6 +1111,7 @@
         isRecording = false;
         recordingContext = null;
         setState("idle");
+        syncDebugUi();
         resolveIdleWaiters();
         log(`[voice] unable to start microphone capture: ${error}`);
       }
@@ -1062,6 +1124,7 @@
       isRecording = false;
       isProcessing = true;
       setState("processing");
+      syncDebugUi();
       button.classList.remove("speaking");
       visualizer.setSpeaking(false);
       stopRequested = true;
@@ -1157,6 +1220,7 @@
       isProcessing = false;
       recordingContext = null;
       setState("idle");
+      syncDebugUi();
       resolveIdleWaiters();
     }
 
@@ -1180,6 +1244,7 @@
 
       isProcessing = true;
       setState("processing");
+      syncDebugUi();
       try {
         log("[voice] retranscribing saved full audio");
         const { text: fullText, elapsedMs } = await transcribeBlob(
@@ -1208,8 +1273,19 @@
       } finally {
         isProcessing = false;
         setState("idle");
+        syncDebugUi();
         resolveIdleWaiters();
       }
+    }
+
+    function toggleDebugTray() {
+      const available = isRecording || isProcessing || hasDebugCapture();
+      if (!available) {
+        return;
+      }
+
+      debugTrayVisible = !debugTrayVisible;
+      syncDebugUi();
     }
 
     async function onClick() {
@@ -1246,6 +1322,8 @@
       if (debugTray.clearBtn) {
         debugTray.clearBtn.removeEventListener("click", clearLastCapture);
       }
+      debugToggle.element.removeEventListener("click", toggleDebugTray);
+      debugToggle.element.remove();
       debugTray.element.remove();
       button.classList.remove("speaking");
       setState("idle");
@@ -1260,6 +1338,7 @@
     if (debugTray.clearBtn) {
       debugTray.clearBtn.addEventListener("click", clearLastCapture);
     }
+    debugToggle.element.addEventListener("click", toggleDebugTray);
 
     const controller = {
       start: startCapture,
@@ -1282,6 +1361,7 @@
     } else {
       setState("idle");
     }
+    syncDebugUi();
 
     return controller;
   };
