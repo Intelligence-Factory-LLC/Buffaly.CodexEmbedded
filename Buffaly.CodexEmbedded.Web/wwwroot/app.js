@@ -127,7 +127,6 @@ const STORAGE_STARTUP_RESTORE_GUARD_KEY = "codex-web-startup-restore-guard-v1";
 const STORAGE_THREAD_MODELS_KEY = "codex-web-thread-models-v1";
 const STORAGE_THREAD_REASONING_KEY = "codex-web-thread-reasoning-v1";
 const STORAGE_THREAD_PERMISSIONS_KEY = "codex-web-thread-permissions-v1";
-const STORAGE_RATE_LIMIT_SNAPSHOT_KEY = "codex-web-rate-limit-snapshot-v1";
 const STORAGE_PROJECT_META_KEY = "codex-web-project-meta";
 const STORAGE_COLLAPSED_PROJECTS_KEY = "codex-web-collapsed-projects";
 const STORAGE_ARCHIVED_THREADS_KEY = "codex-web-archived-threads";
@@ -1630,27 +1629,6 @@ function persistThreadPermissionState() {
   }
 
   localStorage.setItem(STORAGE_THREAD_PERMISSIONS_KEY, JSON.stringify(payload));
-}
-
-function loadRateLimitSnapshotState() {
-  const raw = safeJsonParse(localStorage.getItem(STORAGE_RATE_LIMIT_SNAPSHOT_KEY), null);
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return;
-  }
-
-  latestRateLimitSnapshot = raw;
-}
-
-function persistRateLimitSnapshotState(snapshot) {
-  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
-    return;
-  }
-
-  try {
-    localStorage.setItem(STORAGE_RATE_LIMIT_SNAPSHOT_KEY, JSON.stringify(snapshot));
-  } catch {
-    // no-op
-  }
 }
 
 function getPreferredModelForThread(threadId) {
@@ -7929,32 +7907,18 @@ function getWeeklyRemainingPercent(rateLimit) {
   return null;
 }
 
-function pickMoreConservativeWeeklyRateLimitPayload(primaryPayload, fallbackPayload) {
-  const primary = primaryPayload && typeof primaryPayload === "object" ? primaryPayload : null;
-  const fallback = fallbackPayload && typeof fallbackPayload === "object" ? fallbackPayload : null;
-  if (!primary) {
-    return fallback;
-  }
-  if (!fallback) {
-    return primary;
+function getRateLimitUpdatedAtMs(rateLimit) {
+  if (!rateLimit || typeof rateLimit !== "object") {
+    return 0;
   }
 
-  const primaryWeeklyRemaining = getWeeklyRemainingPercent(primary);
-  const fallbackWeeklyRemaining = getWeeklyRemainingPercent(fallback);
-  const primaryHasWeekly = Number.isFinite(primaryWeeklyRemaining);
-  const fallbackHasWeekly = Number.isFinite(fallbackWeeklyRemaining);
-
-  if (primaryHasWeekly && fallbackHasWeekly) {
-    return primaryWeeklyRemaining <= fallbackWeeklyRemaining ? primary : fallback;
-  }
-  if (primaryHasWeekly) {
-    return primary;
-  }
-  if (fallbackHasWeekly) {
-    return fallback;
+  const updatedAt = typeof rateLimit.updatedAtUtc === "string" ? rateLimit.updatedAtUtc.trim() : "";
+  if (!updatedAt) {
+    return 0;
   }
 
-  return primary;
+  const parsed = Date.parse(updatedAt);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function renderSessionMetaUsageWeeklyProgress(container, rateLimit) {
@@ -8000,17 +7964,23 @@ function renderSessionMetaUsageWeeklyProgress(container, rateLimit) {
 }
 
 function getAnyKnownRateLimitPayload() {
+  let latest = latestRateLimitSnapshot && typeof latestRateLimitSnapshot === "object"
+    ? latestRateLimitSnapshot
+    : null;
+  let latestTick = getRateLimitUpdatedAtMs(latest);
   for (const payload of rateLimitBySession.values()) {
-    if (payload && typeof payload === "object") {
-      return payload;
+    if (!payload || typeof payload !== "object") {
+      continue;
+    }
+
+    const payloadTick = getRateLimitUpdatedAtMs(payload);
+    if (!latest || payloadTick > latestTick) {
+      latest = payload;
+      latestTick = payloadTick;
     }
   }
 
-  if (latestRateLimitSnapshot && typeof latestRateLimitSnapshot === "object") {
-    return latestRateLimitSnapshot;
-  }
-
-  return null;
+  return latest;
 }
 
 function refreshLatestRateLimitSnapshot(force = false) {
@@ -8037,18 +8007,12 @@ function refreshLatestRateLimitSnapshot(force = false) {
       }
 
       const latest = payload.latest && typeof payload.latest === "object" ? payload.latest : null;
-      const snapshots = Array.isArray(payload.sessions)
-        ? payload.sessions.filter((x) => x && typeof x === "object")
-        : [];
-      const selected = snapshots.reduce(
-        (best, current) => pickMoreConservativeWeeklyRateLimitPayload(best, current),
-        latest);
+      const selected = latest;
       if (!selected) {
         return null;
       }
 
       latestRateLimitSnapshot = selected;
-      persistRateLimitSnapshotState(selected);
       if (!rateLimitBySession.has(activeSessionId || "")) {
         refreshSessionMetaUsage();
       }
@@ -8076,8 +8040,10 @@ function refreshSessionMetaUsage() {
 
   const sessionId = typeof activeSessionId === "string" ? activeSessionId : "";
   const sessionRateLimit = sessionId ? rateLimitBySession.get(sessionId) : null;
-  const fallbackRateLimit = latestRateLimitSnapshot || getAnyKnownRateLimitPayload();
-  const rateLimit = pickMoreConservativeWeeklyRateLimitPayload(sessionRateLimit, fallbackRateLimit);
+  const fallbackRateLimit = getAnyKnownRateLimitPayload();
+  const rateLimit = sessionRateLimit && typeof sessionRateLimit === "object"
+    ? sessionRateLimit
+    : fallbackRateLimit;
   sessionMetaUsageItem.classList.remove("hidden");
   renderSessionMetaUsageWeeklyProgress(sessionMetaUsageValue, rateLimit);
   if (!rateLimit) {
@@ -8088,6 +8054,9 @@ function refreshSessionMetaUsage() {
   if (rateLimit && typeof rateLimit === "object") {
     if (typeof rateLimit.scope === "string" && rateLimit.scope.trim()) {
       titleParts.push(`scope=${rateLimit.scope.trim()}`);
+    }
+    if (rateLimit !== sessionRateLimit && typeof rateLimit.sessionId === "string" && rateLimit.sessionId.trim()) {
+      titleParts.push(`fallbackSession=${rateLimit.sessionId.trim()}`);
     }
     if (typeof rateLimit.source === "string" && rateLimit.source.trim()) {
       titleParts.push(`source=${rateLimit.source.trim()}`);
@@ -8987,8 +8956,6 @@ function applySavedUiSettings() {
   loadThreadModelState();
   loadThreadReasoningState();
   loadThreadPermissionState();
-  loadRateLimitSnapshotState();
-
   const savedCwd = localStorage.getItem(STORAGE_CWD_KEY);
   if (savedCwd) {
     cwdInput.value = normalizeProjectCwd(savedCwd);
@@ -10114,9 +10081,6 @@ function handleServerEvent(frame) {
     case "rate_limits_updated": {
       const sessionId = payload.sessionId || null;
       latestRateLimitSnapshot = payload && typeof payload === "object" ? payload : latestRateLimitSnapshot;
-      if (payload && typeof payload === "object") {
-        persistRateLimitSnapshotState(payload);
-      }
       if (sessionId) {
         rateLimitBySession.set(sessionId, payload);
         if (sessionId === activeSessionId) {

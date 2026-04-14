@@ -1015,59 +1015,10 @@ static SessionOrchestrator.SessionRateLimitSnapshot? ChooseUsageDisplaySnapshot(
 		return null;
 	}
 
-	SessionOrchestrator.SessionRateLimitSnapshot? bestByWeekly = null;
-	double? bestRemaining = null;
-	foreach (var snapshot in snapshots)
-	{
-		var weeklyRemaining = ReadWeeklyRemainingPercent(snapshot);
-		if (!weeklyRemaining.HasValue)
-		{
-			continue;
-		}
-
-		if (!bestRemaining.HasValue ||
-			weeklyRemaining.Value < bestRemaining.Value ||
-			(Math.Abs(weeklyRemaining.Value - bestRemaining.Value) < 0.0001 && snapshot.UpdatedAtUtc > bestByWeekly!.UpdatedAtUtc))
-		{
-			bestRemaining = weeklyRemaining.Value;
-			bestByWeekly = snapshot;
-		}
-	}
-
-	return bestByWeekly ?? snapshots
+	return snapshots
 		.OrderByDescending(x => x.UpdatedAtUtc)
 		.ThenBy(x => x.SessionId, StringComparer.Ordinal)
 		.FirstOrDefault();
-}
-
-static double? ReadWeeklyRemainingPercent(SessionOrchestrator.SessionRateLimitSnapshot snapshot)
-{
-	var candidates = new[] { snapshot.Secondary, snapshot.Primary };
-	foreach (var window in candidates)
-	{
-		if (window is null)
-		{
-			continue;
-		}
-
-		var minutes = window.WindowMinutes;
-		if (!minutes.HasValue || Math.Abs(minutes.Value - 10080d) > 2d)
-		{
-			continue;
-		}
-
-		if (window.RemainingPercent.HasValue)
-		{
-			return Math.Clamp(window.RemainingPercent.Value, 0, 100);
-		}
-
-		if (window.UsedPercent.HasValue)
-		{
-			return Math.Clamp(100d - window.UsedPercent.Value, 0, 100);
-		}
-	}
-
-	return null;
 }
 
 static object ToUsagePayload(SessionOrchestrator.SessionRateLimitSnapshot snapshot)
