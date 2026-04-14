@@ -6194,6 +6194,138 @@ function getTimelineSelectionSignature(snapshot) {
   ].join("||");
 }
 
+function normalizeTimelineSelectionWhitespace(text) {
+  return String(text || "").replace(/\s+/g, " ").trim();
+}
+
+function collectTimelineSelectionInlineText(node) {
+  if (!node) {
+    return "";
+  }
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    return String(node.textContent || "");
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return "";
+  }
+
+  const element = node;
+  const tagName = String(element.tagName || "").toUpperCase();
+  if (tagName === "OL" || tagName === "UL") {
+    return "";
+  }
+  if (tagName === "BR") {
+    return "\n";
+  }
+
+  let text = "";
+  for (const child of Array.from(element.childNodes || [])) {
+    text += collectTimelineSelectionInlineText(child);
+    const childTag = child && child.nodeType === Node.ELEMENT_NODE
+      ? String(child.tagName || "").toUpperCase()
+      : "";
+    if (childTag === "P" || childTag === "DIV") {
+      text += "\n";
+    }
+  }
+
+  return text;
+}
+
+function appendTimelineSelectionNodeText(node, lines, indent = "") {
+  if (!node) {
+    return;
+  }
+
+  if (node.nodeType === Node.TEXT_NODE) {
+    const text = normalizeTimelineSelectionWhitespace(node.textContent || "");
+    if (text) {
+      lines.push(`${indent}${text}`);
+    }
+    return;
+  }
+
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return;
+  }
+
+  const element = node;
+  const tagName = String(element.tagName || "").toUpperCase();
+  if (tagName === "OL" || tagName === "UL") {
+    let itemIndex = 1;
+    for (const child of Array.from(element.children || [])) {
+      if (String(child.tagName || "").toUpperCase() !== "LI") {
+        continue;
+      }
+
+      const marker = tagName === "OL" ? `${itemIndex}. ` : "- ";
+      const inlineText = normalizeTimelineSelectionWhitespace(collectTimelineSelectionInlineText(child));
+      if (inlineText) {
+        lines.push(`${indent}${marker}${inlineText}`);
+      }
+
+      for (const nested of Array.from(child.children || [])) {
+        const nestedTag = String(nested.tagName || "").toUpperCase();
+        if (nestedTag === "OL" || nestedTag === "UL") {
+          appendTimelineSelectionNodeText(nested, lines, `${indent}  `);
+        }
+      }
+
+      itemIndex += 1;
+    }
+    return;
+  }
+
+  if (tagName === "PRE") {
+    const text = String(element.textContent || "").replace(/\r/g, "").trim();
+    if (text) {
+      lines.push(text);
+    }
+    return;
+  }
+
+  if (/^H[1-6]$/.test(tagName) || tagName === "P" || tagName === "DIV") {
+    const text = normalizeTimelineSelectionWhitespace(collectTimelineSelectionInlineText(element));
+    if (text) {
+      lines.push(`${indent}${text}`);
+    }
+
+    for (const child of Array.from(element.children || [])) {
+      const childTag = String(child.tagName || "").toUpperCase();
+      if (childTag === "OL" || childTag === "UL" || childTag === "PRE") {
+        appendTimelineSelectionNodeText(child, lines, indent);
+      }
+    }
+    return;
+  }
+
+  for (const child of Array.from(element.childNodes || [])) {
+    appendTimelineSelectionNodeText(child, lines, indent);
+  }
+}
+
+function buildTimelineSelectionText(range) {
+  if (!range || typeof range.cloneContents !== "function") {
+    return "";
+  }
+
+  const fragment = range.cloneContents();
+  const lines = [];
+  for (const node of Array.from(fragment.childNodes || [])) {
+    appendTimelineSelectionNodeText(node, lines);
+  }
+
+  const normalized = lines
+    .map((line) => String(line || "").replace(/\r/g, "").trimEnd())
+    .filter((line, index, source) => line.length > 0 || (index > 0 && source[index - 1].length > 0))
+    .join("\n")
+    .trim();
+
+  return normalized;
+}
+
 function getCurrentTimelineSelectionSnapshot() {
   if (!chatMessages || typeof window === "undefined" || typeof window.getSelection !== "function") {
     return null;
@@ -6204,7 +6336,8 @@ function getCurrentTimelineSelectionSnapshot() {
     return null;
   }
 
-  const selectedText = String(selection || "");
+  const range = selection.getRangeAt(0);
+  const selectedText = buildTimelineSelectionText(range) || String(selection || "");
   if (!selectedText.trim()) {
     return null;
   }
@@ -6215,7 +6348,6 @@ function getCurrentTimelineSelectionSnapshot() {
     return null;
   }
 
-  const range = selection.getRangeAt(0);
   const ancestor = range && range.commonAncestorContainer
     ? range.commonAncestorContainer
     : null;
