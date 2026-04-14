@@ -332,6 +332,7 @@ function renderPlanMarkdownIntoBody(container, markdownText) {
   let paragraphLines = [];
   let listElement = null;
   let listType = "";
+  let lastListItem = null;
   let codeBlock = null;
 
   const flushParagraph = () => {
@@ -347,6 +348,7 @@ function renderPlanMarkdownIntoBody(container, markdownText) {
   const clearList = () => {
     listElement = null;
     listType = "";
+    lastListItem = null;
   };
 
   for (const rawLine of lines) {
@@ -362,10 +364,10 @@ function renderPlanMarkdownIntoBody(container, markdownText) {
       continue;
     }
 
-    if (trimmed.startsWith("```")) {
-      flushParagraph();
-      clearList();
-      const pre = document.createElement("pre");
+  if (trimmed.startsWith("```")) {
+    flushParagraph();
+    clearList();
+    const pre = document.createElement("pre");
       const code = document.createElement("code");
       pre.appendChild(code);
       fragment.appendChild(pre);
@@ -373,17 +375,16 @@ function renderPlanMarkdownIntoBody(container, markdownText) {
       continue;
     }
 
-    if (!trimmed) {
-      flushParagraph();
-      clearList();
-      continue;
-    }
+  if (!trimmed) {
+    flushParagraph();
+    continue;
+  }
 
     const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
-    if (headingMatch) {
-      flushParagraph();
-      clearList();
-      const level = Math.min(6, headingMatch[1].length);
+  if (headingMatch) {
+    flushParagraph();
+    clearList();
+    const level = Math.min(6, headingMatch[1].length);
       const heading = document.createElement(`h${level}`);
       appendPlanInlineMarkdown(heading, headingMatch[2]);
       fragment.appendChild(heading);
@@ -393,6 +394,17 @@ function renderPlanMarkdownIntoBody(container, markdownText) {
     const unorderedMatch = trimmed.match(/^[-*]\s+(.*)$/);
     if (unorderedMatch) {
       flushParagraph();
+      if (listType === "ol" && lastListItem) {
+        let nestedList = lastListItem.lastElementChild;
+        if (!nestedList || nestedList.tagName !== "UL") {
+          nestedList = document.createElement("ul");
+          lastListItem.appendChild(nestedList);
+        }
+        const item = document.createElement("li");
+        appendPlanInlineMarkdown(item, unorderedMatch[1]);
+        nestedList.appendChild(item);
+        continue;
+      }
       if (!listElement || listType !== "ul") {
         listElement = document.createElement("ul");
         listType = "ul";
@@ -401,6 +413,7 @@ function renderPlanMarkdownIntoBody(container, markdownText) {
       const item = document.createElement("li");
       appendPlanInlineMarkdown(item, unorderedMatch[1]);
       listElement.appendChild(item);
+      lastListItem = item;
       continue;
     }
 
@@ -415,6 +428,7 @@ function renderPlanMarkdownIntoBody(container, markdownText) {
       const item = document.createElement("li");
       appendPlanInlineMarkdown(item, orderedMatch[1]);
       listElement.appendChild(item);
+      lastListItem = item;
       continue;
     }
 

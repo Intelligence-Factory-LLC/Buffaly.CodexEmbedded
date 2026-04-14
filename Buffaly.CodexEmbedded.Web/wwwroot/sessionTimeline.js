@@ -2341,6 +2341,7 @@
       let paragraphLines = [];
       let listElement = null;
       let listType = "";
+      let lastListItem = null;
       let codeBlock = null;
       let codeBlockLines = [];
 
@@ -2357,6 +2358,7 @@
       const clearList = () => {
         listElement = null;
         listType = "";
+        lastListItem = null;
       };
 
       let index = 0;
@@ -2392,7 +2394,6 @@
 
         if (!trimmed) {
           flushParagraph();
-          clearList();
           index += 1;
           continue;
         }
@@ -2438,6 +2439,18 @@
         const unorderedMatch = trimmed.match(/^[-*]\s+(.*)$/);
         if (unorderedMatch) {
           flushParagraph();
+          if (listType === "ol" && lastListItem) {
+            let nestedList = lastListItem.lastElementChild;
+            if (!nestedList || nestedList.tagName !== "UL") {
+              nestedList = document.createElement("ul");
+              lastListItem.appendChild(nestedList);
+            }
+            const item = document.createElement("li");
+            this.appendPlanInlineMarkdown(item, unorderedMatch[1]);
+            nestedList.appendChild(item);
+            index += 1;
+            continue;
+          }
           if (!listElement || listType !== "ul") {
             listElement = document.createElement("ul");
             listType = "ul";
@@ -2446,6 +2459,7 @@
           const item = document.createElement("li");
           this.appendPlanInlineMarkdown(item, unorderedMatch[1]);
           listElement.appendChild(item);
+          lastListItem = item;
           index += 1;
           continue;
         }
@@ -2461,6 +2475,7 @@
           const item = document.createElement("li");
           this.appendPlanInlineMarkdown(item, orderedMatch[1]);
           listElement.appendChild(item);
+          lastListItem = item;
           index += 1;
           continue;
         }
