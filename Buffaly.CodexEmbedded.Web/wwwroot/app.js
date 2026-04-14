@@ -2351,18 +2351,26 @@ function setLocalThreadName(threadId, threadName) {
   }
 }
 
-function getAttachedSessionIdByThreadId(threadId) {
-  if (!threadId) {
+function findAttachedSessionIdByThreadId(threadId) {
+  const normalizedThreadId = normalizeThreadId(threadId || "");
+  if (!normalizedThreadId) {
     return null;
   }
 
   for (const [sessionId, state] of sessions.entries()) {
-    if (state && state.threadId === threadId) {
+    if (normalizeThreadId(state?.threadId || "") === normalizedThreadId) {
       return sessionId;
     }
   }
 
   return null;
+}
+
+function isPendingSessionLoadForThread(threadId) {
+  const normalizedThreadId = normalizeThreadId(threadId || "");
+  return !!normalizedThreadId &&
+    !!pendingSessionLoadThreadId &&
+    normalizedThreadId === normalizeThreadId(pendingSessionLoadThreadId);
 }
 
 function getProjectForSessionState(state) {
@@ -2405,7 +2413,7 @@ function buildSidebarProjectGroups() {
       continue;
     }
 
-    const attachedSessionId = getAttachedSessionIdByThreadId(entry.threadId);
+    const attachedSessionId = findAttachedSessionIdByThreadId(entry.threadId);
     const attachedState = attachedSessionId ? sessions.get(attachedSessionId) : null;
     const effectiveCwd = getEffectiveProjectCwd(entry.cwd || attachedState?.cwd || "");
     const project = ensureProject(effectiveCwd);
@@ -2763,21 +2771,6 @@ function rememberTaskThreadForSessionState(sessionId, state) {
     persistTaskThreadByProjectMap();
   } catch {
   }
-}
-
-function findAttachedSessionIdByThreadId(threadId) {
-  const normalizedThreadId = normalizeThreadId(threadId || "");
-  if (!normalizedThreadId) {
-    return null;
-  }
-
-  for (const [sessionId, state] of sessions.entries()) {
-    if (normalizeThreadId(state?.threadId || "") === normalizedThreadId) {
-      return sessionId;
-    }
-  }
-
-  return null;
 }
 
 async function restoreTaskSessionForCurrentProject(reason = "workspace_tab_tasks") {
@@ -3571,7 +3564,7 @@ function renderProjectSidebarNow() {
     for (const entry of sessionsToRender) {
       const row = document.createElement("div");
       row.className = "session-row";
-      const isPendingLoad = pendingSessionLoadThreadId && entry.threadId === pendingSessionLoadThreadId;
+      const isPendingLoad = isPendingSessionLoadForThread(entry.threadId);
       const showOnlyPendingAsActive = !!pendingSessionLoadThreadId;
       if (!showOnlyPendingAsActive && entry.attachedSessionId && entry.attachedSessionId === activeSessionId) {
         row.classList.add("active");
@@ -7560,7 +7553,7 @@ async function tryAutoAttachStoredThread() {
     return;
   }
 
-  if (getAttachedSessionIdByThreadId(threadId)) {
+  if (findAttachedSessionIdByThreadId(threadId)) {
     autoAttachAttempted = true;
     return;
   }
@@ -8521,7 +8514,7 @@ function setActiveSession(sessionId, options = {}) {
       });
     }
   }
-  if (state?.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
+  if (isPendingSessionLoadForThread(state?.threadId || "")) {
     clearPendingSessionLoad();
   }
   rememberTaskThreadForSessionState(sessionId, state);
@@ -8637,10 +8630,7 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     ? activeIdFromServer
     : null;
   const serverActiveState = serverActiveId ? sessions.get(serverActiveId) || null : null;
-  const pendingThreadMatch =
-    !!pendingSessionLoadThreadId &&
-    !!serverActiveState &&
-    normalizeThreadId(serverActiveState.threadId || "") === normalizeThreadId(pendingSessionLoadThreadId);
+  const pendingThreadMatch = !!serverActiveState && isPendingSessionLoadForThread(serverActiveState.threadId || "");
   const preferServerActive = options.preferServerActive === true || pendingThreadMatch;
   const pinnedActiveSessionId =
     activeSessionId &&
@@ -8648,15 +8638,18 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     (isTurnInFlight(activeSessionId) || isTurnStartGraceActive(activeSessionId))
       ? activeSessionId
       : null;
+  const firstVisibleSessionId = visibleIds.length > 0 ? visibleIds[0] : null;
   const toSelect = pinnedActiveSessionId ||
     (preferServerActive
     ? (serverActiveId ||
       activeSessionId ||
       current ||
+      firstVisibleSessionId ||
       null)
     : (activeSessionId ||
       current ||
       serverActiveId ||
+      firstVisibleSessionId ||
       null));
   let selectionReason = "none";
   if (pinnedActiveSessionId && toSelect === pinnedActiveSessionId) {
@@ -8669,6 +8662,8 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     selectionReason = "preserve_current_active";
   } else if (toSelect && toSelect === current) {
     selectionReason = "preserve_selector_value";
+  } else if (toSelect && toSelect === firstVisibleSessionId) {
+    selectionReason = "fallback_first_visible";
   }
   if (toSelect && sessions.has(toSelect)) {
     const changed = activeSessionId !== toSelect;
@@ -9333,6 +9328,40 @@ function prunePendingAttachRequests() {
   }
 }
 
+function consumePendingAttachRequest(requestId, threadId) {
+  const normalizedRequestId = typeof requestId === "string" && requestId.trim()
+    ? requestId.trim()
+    : "";
+  if (normalizedRequestId && pendingAttachRequests.has(normalizedRequestId)) {
+    const pendingAttach = pendingAttachRequests.get(normalizedRequestId) || null;
+    pendingAttachRequests.delete(normalizedRequestId);
+    return pendingAttach;
+  }
+
+  const normalizedThreadId = normalizeThreadId(threadId || "");
+  if (!normalizedThreadId) {
+    return null;
+  }
+
+  // Some attach confirmations do not round-trip the client requestId. Fall back to the
+  // requested thread so explicit user selection still wins over stale active-session state.
+  for (const [pendingRequestId, value] of Array.from(pendingAttachRequests.entries())) {
+    const pendingThreadId = normalizeThreadId(value?.threadId || "");
+    if (!pendingThreadId || pendingThreadId !== normalizedThreadId) {
+      continue;
+    }
+
+    pendingAttachRequests.delete(pendingRequestId);
+    return {
+      ...value,
+      requestId: pendingRequestId,
+      matchedByThreadId: true
+    };
+  }
+
+  return null;
+}
+
 function handleServerEvent(frame) {
   const type = frame.type;
   const payload = frame.payload || {};
@@ -9452,11 +9481,8 @@ function handleServerEvent(frame) {
         pendingCreateRequests.delete(requestId);
       }
       prunePendingAttachRequests();
-      let pendingAttach = null;
-      if (requestId && pendingAttachRequests.has(requestId)) {
-        pendingAttach = pendingAttachRequests.get(requestId) || null;
-        pendingAttachRequests.delete(requestId);
-      }
+      const pendingAttach = consumePendingAttachRequest(requestId, state.threadId);
+      const matchedPendingSessionLoad = isPendingSessionLoadForThread(state.threadId);
       if (!normalizeProjectCwd(state.cwd || "") && pendingCreate?.cwd) {
         state.cwd = pendingCreate.cwd;
       }
@@ -9486,7 +9512,7 @@ function handleServerEvent(frame) {
       if (!attachedMode) {
         touchSessionActivity(sessionId);
       }
-      if (state.threadId && pendingSessionLoadThreadId && state.threadId === pendingSessionLoadThreadId) {
+      if (matchedPendingSessionLoad) {
         clearPendingSessionLoad();
       }
       setTurnInFlight(sessionId, false);
@@ -9516,6 +9542,7 @@ function handleServerEvent(frame) {
         currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS ||
         !attachedMode ||
         !!pendingAttach ||
+        matchedPendingSessionLoad ||
         !activeSessionId ||
         !sessions.has(activeSessionId);
       uiAuditLog("in.session_attached_focus_decision", {
@@ -9523,6 +9550,7 @@ function handleServerEvent(frame) {
         requestId,
         mode,
         initiatedByClient: !!pendingAttach,
+        initiatedByThreadMatch: pendingAttach?.matchedByThreadId === true,
         hadActiveSession: !!activeSessionId,
         activeSessionExists: !!(activeSessionId && sessions.has(activeSessionId)),
         preferAttachedSession: shouldPreferAttachedSession
@@ -9651,7 +9679,7 @@ function handleServerEvent(frame) {
         }
         st.createdAtTick = st.createdAtTick || Date.now();
         st.lastActivityTick = Number.isFinite(st.lastActivityTick) ? st.lastActivityTick : st.createdAtTick;
-        if (pendingSessionLoadThreadId && st.threadId === pendingSessionLoadThreadId) {
+        if (isPendingSessionLoadForThread(st.threadId)) {
           matchedPendingThread = true;
         }
 
