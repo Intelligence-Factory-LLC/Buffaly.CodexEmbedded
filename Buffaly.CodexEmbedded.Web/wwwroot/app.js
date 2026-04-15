@@ -2351,6 +2351,17 @@ function isPendingSessionLoadForThread(threadId) {
     normalizedThreadId === normalizeThreadId(pendingSessionLoadThreadId);
 }
 
+function getPendingSessionLoadAttachedSessionId() {
+  if (!pendingSessionLoadThreadId) {
+    return null;
+  }
+
+  const attachedSessionId = findAttachedSessionIdByThreadId(pendingSessionLoadThreadId);
+  return attachedSessionId && sessions.has(attachedSessionId)
+    ? attachedSessionId
+    : null;
+}
+
 function getProjectForSessionState(state) {
   if (!state) {
     return { key: "(unknown)", cwd: "" };
@@ -3561,9 +3572,12 @@ function renderProjectSidebarNow() {
       openBtn.addEventListener("click", async () => {
         selectProject(group.key, group.cwd);
 
-        if (entry.attachedSessionId && sessions.has(entry.attachedSessionId)) {
+        const attachedSessionId = (entry.attachedSessionId && sessions.has(entry.attachedSessionId))
+          ? entry.attachedSessionId
+          : findAttachedSessionIdByThreadId(entry.threadId);
+        if (attachedSessionId && sessions.has(attachedSessionId)) {
           clearPendingSessionLoad();
-          setActiveSession(entry.attachedSessionId, { persistSelection: true, reason: "sidebar_session_click_already_attached" });
+          setActiveSession(attachedSessionId, { persistSelection: true, reason: "sidebar_session_click_already_attached" });
           return;
         }
 
@@ -8599,16 +8613,20 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     ? activeIdFromServer
     : null;
   const serverActiveState = serverActiveId ? sessions.get(serverActiveId) || null : null;
+  const pendingAttachedSessionId = getPendingSessionLoadAttachedSessionId();
+  const hasPendingSelectionIntent = !!pendingSessionLoadThreadId;
   const pendingThreadMatch = !!serverActiveState && isPendingSessionLoadForThread(serverActiveState.threadId || "");
-  const preferServerActive = options.preferServerActive === true || pendingThreadMatch;
+  const preferServerActive = options.preferServerActive === true || pendingThreadMatch || !!pendingAttachedSessionId;
   const pinnedActiveSessionId =
+    !hasPendingSelectionIntent &&
     activeSessionId &&
     sessions.has(activeSessionId) &&
     (isTurnInFlight(activeSessionId) || isTurnStartGraceActive(activeSessionId))
       ? activeSessionId
       : null;
   const firstVisibleSessionId = visibleIds.length > 0 ? visibleIds[0] : null;
-  const toSelect = pinnedActiveSessionId ||
+  const toSelect = pendingAttachedSessionId ||
+    pinnedActiveSessionId ||
     (preferServerActive
     ? (serverActiveId ||
       activeSessionId ||
@@ -8621,7 +8639,9 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
       firstVisibleSessionId ||
       null));
   let selectionReason = "none";
-  if (pinnedActiveSessionId && toSelect === pinnedActiveSessionId) {
+  if (pendingAttachedSessionId && toSelect === pendingAttachedSessionId) {
+    selectionReason = "pending_thread_intent_attached";
+  } else if (pinnedActiveSessionId && toSelect === pinnedActiveSessionId) {
     selectionReason = "keep_inflight_or_pending";
   } else if (pendingThreadMatch && toSelect === serverActiveId) {
     selectionReason = "pending_thread_match_server_active";
@@ -9539,7 +9559,6 @@ function handleServerEvent(frame) {
       lastSessionListViewKey = nextSessionListViewKey;
       const next = new Map();
       const nextProcessingByThread = new Map();
-      let matchedPendingThread = false;
       let persistedPreferenceUpdated = false;
       let persistedPermissionPreferenceUpdated = false;
       for (const s of list) {
@@ -9646,10 +9665,6 @@ function handleServerEvent(frame) {
         }
         st.createdAtTick = st.createdAtTick || Date.now();
         st.lastActivityTick = Number.isFinite(st.lastActivityTick) ? st.lastActivityTick : st.createdAtTick;
-        if (isPendingSessionLoadForThread(st.threadId)) {
-          matchedPendingThread = true;
-        }
-
         const pending =
           s.pendingApproval && typeof s.pendingApproval === "object" && !Array.isArray(s.pendingApproval) ? s.pendingApproval : null;
         st.pendingApproval = pending && typeof pending.approvalId === "string" && pending.approvalId.trim() ? pending : null;
@@ -9689,9 +9704,6 @@ function handleServerEvent(frame) {
       if (persistedPermissionPreferenceUpdated) {
         persistThreadPermissionState();
       }
-      if (matchedPendingThread) {
-        clearPendingSessionLoad();
-      }
       sessions = next;
       prunePendingSessionModelSync(Array.from(next.keys()));
       prunePendingSessionPermissionSync(Array.from(next.keys()));
@@ -9699,7 +9711,7 @@ function handleServerEvent(frame) {
       pruneRateLimitState(Array.from(next.keys()));
       applyProcessingByThread(nextProcessingByThread);
       prunePromptState();
-      if (shouldRefreshSessionViews) {
+      if (shouldRefreshSessionViews || !!pendingSessionLoadThreadId) {
         updateSessionSelect(payload.activeSessionId || null);
         uiAuditLog("in.session_list_applied", {
           activeFromServer: payload.activeSessionId || null,
