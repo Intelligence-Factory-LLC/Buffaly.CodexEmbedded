@@ -9885,6 +9885,185 @@ function handleSessionStoppedEvent(payload) {
   updateSessionSelect(payload.activeSessionId || null);
 }
 
+function handleAssistantDoneEvent(payload) {
+  refreshReviewCatalogsForEvent(payload, { force: true }).catch(() => { });
+}
+
+function handleTurnCompleteEvent(payload) {
+  const sessionId = payload.sessionId || null;
+  const status = payload.status || "unknown";
+  const isPlanTurn = payload.isPlanTurn === true || normalizeCollaborationMode(payload.collaborationMode || "") === "plan";
+  let sidebarStateChanged = false;
+  if (sessionId) {
+    touchSessionActivity(sessionId);
+    const state = sessions.get(sessionId) || null;
+    const threadId = normalizeThreadId(state?.threadId || "");
+    if (threadId) {
+      const wasProcessing = processingByThread.get(threadId) === true;
+      processingByThread.delete(threadId);
+      if (wasProcessing) {
+        sidebarStateChanged = true;
+      }
+      if (status === "completed") {
+        sidebarStateChanged = markThreadCompletionUnread(threadId, { requireAttached: true }) || sidebarStateChanged;
+      }
+    }
+    setTurnInFlight(sessionId, false);
+    finalizePlanTurn(sessionId, status, isPlanTurn);
+  }
+
+  const errorMessage = payload.errorMessage || null;
+  uiAuditLog("in.turn_complete", {
+    sessionId: sessionId || null,
+    status,
+    hasError: !!errorMessage
+  });
+  appendLog(`[turn] session=${payload.sessionId || "unknown"} status=${status}${errorMessage ? " error=" + errorMessage : ""}`);
+  if (sidebarStateChanged) {
+    renderProjectSidebar();
+  }
+  refreshReviewCatalogsForEvent(payload, { force: true }).catch(() => { });
+  renderPromptQueue();
+}
+
+function handleTurnStartedEvent(payload) {
+  const sessionId = payload.sessionId || null;
+  const isPlanTurn = payload.isPlanTurn === true || normalizeCollaborationMode(payload.collaborationMode || "") === "plan";
+  let sidebarStateChanged = false;
+  if (sessionId) {
+    touchSessionActivity(sessionId);
+    const state = sessions.get(sessionId) || null;
+    const threadId = normalizeThreadId(state?.threadId || "");
+    if (threadId) {
+      if (processingByThread.get(threadId) !== true) {
+        sidebarStateChanged = true;
+      }
+      processingByThread.set(threadId, true);
+      sidebarStateChanged = completedUnreadThreadIds.delete(threadId) || sidebarStateChanged;
+    }
+    setTurnStartGrace(sessionId, false);
+    setTurnInFlight(sessionId, true);
+    markPlanTurnStarted(sessionId, isPlanTurn);
+  }
+
+  if (sidebarStateChanged) {
+    renderProjectSidebar();
+  }
+  refreshReviewCatalogsForEvent(payload, { force: true }).catch(() => { });
+  uiAuditLog("in.turn_started", {
+    sessionId: sessionId || null,
+    isPlanTurn
+  });
+}
+
+function handleTurnCancelRequestedEvent(payload) {
+  const sessionId = payload.sessionId || null;
+  if (sessionId) {
+    setTurnStartGrace(sessionId, false);
+    if (payload.forcedReset === true || payload.hadTurnInFlight === true) {
+      applyTurnOverrideReset(sessionId, { renderSidebar: false });
+    }
+    send("session_list");
+  }
+
+  appendLog(
+    `[turn] cancel requested for session=${sessionId || "unknown"} interruptSent=${payload.interruptSent === true ? "true" : "false"} forcedReset=${payload.forcedReset === true ? "true" : "false"} clearedQueued=${Number.isFinite(payload.clearedQueuedTurnCount) ? payload.clearedQueuedTurnCount : 0}`);
+  uiAuditLog("in.turn_cancel_requested", {
+    sessionId: sessionId || null,
+    interruptSent: payload.interruptSent === true,
+    forcedReset: payload.forcedReset === true,
+    clearedQueued: Number.isFinite(payload.clearedQueuedTurnCount) ? payload.clearedQueuedTurnCount : 0
+  });
+}
+
+function handleSessionRecoveryStateEvent(payload) {
+  const sessionId = payload.sessionId || null;
+  if (!sessionId) {
+    return;
+  }
+
+  const state = ensureSessionState(sessionId);
+  const recoveryState = typeof payload.state === "string" ? payload.state.trim().toLowerCase() : "";
+  state.isAppServerRecovering = recoveryState === "recovering";
+  if (recoveryState === "recovering" || recoveryState === "recovered" || recoveryState === "failed") {
+    state.pendingRecoveryOffer = null;
+  }
+  if (recoveryState === "failed") {
+    state.pendingTurnRetryOffer = null;
+  }
+  if (sessionId === activeSessionId) {
+    updatePromptActionState();
+  }
+
+  const errorSuffix = payload.errorMessage ? ` error=${payload.errorMessage}` : "";
+  uiAuditLog("in.session_recovery_state", {
+    sessionId,
+    state: recoveryState || "unknown",
+    errorMessage: payload.errorMessage || null
+  });
+  appendLog(`[session_recovery] session=${sessionId} state=${recoveryState || "unknown"}${errorSuffix}`);
+  syncSessionRecoveryModal();
+  if (recoveryState === "recovered" || recoveryState === "failed") {
+    send("session_list");
+  }
+}
+
+function handleSessionRecoveryOfferEvent(payload) {
+  const sessionId = payload.sessionId || null;
+  if (!sessionId) {
+    return;
+  }
+
+  const state = ensureSessionState(sessionId);
+  const offerState = typeof payload.state === "string" ? payload.state.trim().toLowerCase() : "";
+  const offered = normalizeRecoveryOffer(payload);
+  if (offerState === "dismissed") {
+    state.pendingRecoveryOffer = null;
+  } else if (offered) {
+    state.pendingRecoveryOffer = offered;
+    state.pendingTurnRetryOffer = null;
+  } else {
+    state.pendingRecoveryOffer = null;
+  }
+
+  uiAuditLog("in.session_recovery_offer", {
+    sessionId,
+    offerId: offered ? offered.offerId : null,
+    reason: offered ? offered.reason : null,
+    state: offerState || null
+  });
+  syncSessionRecoveryModal();
+  renderProjectSidebar();
+}
+
+function handleTurnRetryOfferEvent(payload) {
+  const sessionId = payload.sessionId || null;
+  if (!sessionId) {
+    return;
+  }
+
+  const state = ensureSessionState(sessionId);
+  const offerState = typeof payload.state === "string" ? payload.state.trim().toLowerCase() : "";
+  const offered = normalizeTurnRetryOffer(payload);
+  if (offerState === "dismissed") {
+    state.pendingTurnRetryOffer = null;
+  } else if (offered) {
+    state.pendingTurnRetryOffer = offered;
+  } else {
+    state.pendingTurnRetryOffer = null;
+  }
+
+  uiAuditLog("in.turn_retry_offer", {
+    sessionId,
+    offerId: offered ? offered.offerId : null,
+    state: offerState || null,
+    textChars: offered ? offered.textChars : null,
+    imageCount: offered ? offered.imageCount : null
+  });
+  syncSessionRecoveryModal();
+  renderProjectSidebar();
+}
+
 function handleServerEvent(frame) {
   const type = frame.type;
   const payload = frame.payload || {};
@@ -9922,195 +10101,39 @@ function handleServerEvent(frame) {
       handleSessionStoppedEvent(payload);
       return;
 
-    case "assistant_delta": {
+    case "assistant_delta":
       return;
-    }
 
-    case "assistant_response_started": {
+    case "assistant_response_started":
       return;
-    }
 
-    case "assistant_done": {
-      refreshReviewCatalogsForEvent(payload, { force: true }).catch(() => { });
+    case "assistant_done":
+      handleAssistantDoneEvent(payload);
       return;
-    }
 
-    case "turn_complete": {
-      const sessionId = payload.sessionId || null;
-      const status = payload.status || "unknown";
-      const isPlanTurn = payload.isPlanTurn === true || normalizeCollaborationMode(payload.collaborationMode || "") === "plan";
-      let sidebarStateChanged = false;
-      if (sessionId) {
-        touchSessionActivity(sessionId);
-        const state = sessions.get(sessionId) || null;
-        const threadId = normalizeThreadId(state?.threadId || "");
-        if (threadId) {
-          const wasProcessing = processingByThread.get(threadId) === true;
-          processingByThread.delete(threadId);
-          if (wasProcessing) {
-            sidebarStateChanged = true;
-          }
-          if (status === "completed") {
-            sidebarStateChanged = markThreadCompletionUnread(threadId, { requireAttached: true }) || sidebarStateChanged;
-          }
-        }
-        setTurnInFlight(sessionId, false);
-        finalizePlanTurn(sessionId, status, isPlanTurn);
-      }
-      const errorMessage = payload.errorMessage || null;
-      uiAuditLog("in.turn_complete", {
-        sessionId: sessionId || null,
-        status,
-        hasError: !!errorMessage
-      });
-      appendLog(`[turn] session=${payload.sessionId || "unknown"} status=${status}${errorMessage ? " error=" + errorMessage : ""}`);
-      if (sidebarStateChanged) {
-        renderProjectSidebar();
-      }
-      refreshReviewCatalogsForEvent(payload, { force: true }).catch(() => { });
-      renderPromptQueue();
+    case "turn_complete":
+      handleTurnCompleteEvent(payload);
       return;
-    }
 
-    case "turn_started": {
-      const sessionId = payload.sessionId || null;
-      const isPlanTurn = payload.isPlanTurn === true || normalizeCollaborationMode(payload.collaborationMode || "") === "plan";
-      let sidebarStateChanged = false;
-      if (sessionId) {
-        touchSessionActivity(sessionId);
-        const state = sessions.get(sessionId) || null;
-        const threadId = normalizeThreadId(state?.threadId || "");
-        if (threadId) {
-          if (processingByThread.get(threadId) !== true) {
-            sidebarStateChanged = true;
-          }
-          processingByThread.set(threadId, true);
-          sidebarStateChanged = completedUnreadThreadIds.delete(threadId) || sidebarStateChanged;
-        }
-        setTurnStartGrace(sessionId, false);
-        setTurnInFlight(sessionId, true);
-        markPlanTurnStarted(sessionId, isPlanTurn);
-      }
-      if (sidebarStateChanged) {
-        renderProjectSidebar();
-      }
-      refreshReviewCatalogsForEvent(payload, { force: true }).catch(() => { });
-      uiAuditLog("in.turn_started", {
-        sessionId: sessionId || null,
-        isPlanTurn
-      });
+    case "turn_started":
+      handleTurnStartedEvent(payload);
       return;
-    }
 
-    case "turn_cancel_requested": {
-      const sessionId = payload.sessionId || null;
-      if (sessionId) {
-        setTurnStartGrace(sessionId, false);
-        if (payload.forcedReset === true || payload.hadTurnInFlight === true) {
-          applyTurnOverrideReset(sessionId, { renderSidebar: false });
-        }
-        send("session_list");
-      }
-      appendLog(
-        `[turn] cancel requested for session=${sessionId || "unknown"} interruptSent=${payload.interruptSent === true ? "true" : "false"} forcedReset=${payload.forcedReset === true ? "true" : "false"} clearedQueued=${Number.isFinite(payload.clearedQueuedTurnCount) ? payload.clearedQueuedTurnCount : 0}`);
-      uiAuditLog("in.turn_cancel_requested", {
-        sessionId: sessionId || null,
-        interruptSent: payload.interruptSent === true,
-        forcedReset: payload.forcedReset === true,
-        clearedQueued: Number.isFinite(payload.clearedQueuedTurnCount) ? payload.clearedQueuedTurnCount : 0
-      });
+    case "turn_cancel_requested":
+      handleTurnCancelRequestedEvent(payload);
       return;
-    }
 
-    case "session_recovery_state": {
-      const sessionId = payload.sessionId || null;
-      if (!sessionId) {
-        return;
-      }
-
-      const state = ensureSessionState(sessionId);
-      const recoveryState = typeof payload.state === "string" ? payload.state.trim().toLowerCase() : "";
-      state.isAppServerRecovering = recoveryState === "recovering";
-      if (recoveryState === "recovering" || recoveryState === "recovered" || recoveryState === "failed") {
-        state.pendingRecoveryOffer = null;
-      }
-      if (recoveryState === "failed") {
-        state.pendingTurnRetryOffer = null;
-      }
-      if (sessionId === activeSessionId) {
-        updatePromptActionState();
-      }
-      const errorSuffix = payload.errorMessage ? ` error=${payload.errorMessage}` : "";
-      uiAuditLog("in.session_recovery_state", {
-        sessionId,
-        state: recoveryState || "unknown",
-        errorMessage: payload.errorMessage || null
-      });
-      appendLog(`[session_recovery] session=${sessionId} state=${recoveryState || "unknown"}${errorSuffix}`);
-      syncSessionRecoveryModal();
-      if (recoveryState === "recovered" || recoveryState === "failed") {
-        send("session_list");
-      }
+    case "session_recovery_state":
+      handleSessionRecoveryStateEvent(payload);
       return;
-    }
 
-    case "session_recovery_offer": {
-      const sessionId = payload.sessionId || null;
-      if (!sessionId) {
-        return;
-      }
-
-      const state = ensureSessionState(sessionId);
-      const offerState = typeof payload.state === "string" ? payload.state.trim().toLowerCase() : "";
-      const offered = normalizeRecoveryOffer(payload);
-      if (offerState === "dismissed") {
-        state.pendingRecoveryOffer = null;
-      } else if (offered) {
-        state.pendingRecoveryOffer = offered;
-        state.pendingTurnRetryOffer = null;
-      } else {
-        state.pendingRecoveryOffer = null;
-      }
-
-      uiAuditLog("in.session_recovery_offer", {
-        sessionId,
-        offerId: offered ? offered.offerId : null,
-        reason: offered ? offered.reason : null,
-        state: offerState || null
-      });
-      syncSessionRecoveryModal();
-      renderProjectSidebar();
+    case "session_recovery_offer":
+      handleSessionRecoveryOfferEvent(payload);
       return;
-    }
 
-    case "turn_retry_offer": {
-      const sessionId = payload.sessionId || null;
-      if (!sessionId) {
-        return;
-      }
-
-      const state = ensureSessionState(sessionId);
-      const offerState = typeof payload.state === "string" ? payload.state.trim().toLowerCase() : "";
-      const offered = normalizeTurnRetryOffer(payload);
-      if (offerState === "dismissed") {
-        state.pendingTurnRetryOffer = null;
-      } else if (offered) {
-        state.pendingTurnRetryOffer = offered;
-      } else {
-        state.pendingTurnRetryOffer = null;
-      }
-
-      uiAuditLog("in.turn_retry_offer", {
-        sessionId,
-        offerId: offered ? offered.offerId : null,
-        state: offerState || null,
-        textChars: offered ? offered.textChars : null,
-        imageCount: offered ? offered.imageCount : null
-      });
-      syncSessionRecoveryModal();
-      renderProjectSidebar();
+    case "turn_retry_offer":
+      handleTurnRetryOfferEvent(payload);
       return;
-    }
 
     case "turn_queue_edit_item": {
       const sessionId = payload.sessionId || null;
