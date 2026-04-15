@@ -345,6 +345,18 @@ function renderPlanMarkdownIntoBody(container, markdownText) {
     paragraphLines = [];
   };
 
+  const appendParagraphToListItem = (parent, text) => {
+    if (!parent || !text) {
+      return;
+    }
+
+    const paragraph = document.createElement("p");
+    appendPlanInlineMarkdown(paragraph, text);
+    parent.appendChild(paragraph);
+  };
+
+  const getCurrentOrderedListItem = () => listType === "ol" && lastListItem ? lastListItem : null;
+
   const clearList = () => {
     listElement = null;
     listType = "";
@@ -366,11 +378,16 @@ function renderPlanMarkdownIntoBody(container, markdownText) {
 
   if (trimmed.startsWith("```")) {
     flushParagraph();
-    clearList();
     const pre = document.createElement("pre");
       const code = document.createElement("code");
       pre.appendChild(code);
-      fragment.appendChild(pre);
+      const currentListItem = getCurrentOrderedListItem();
+      if (currentListItem) {
+        currentListItem.appendChild(pre);
+      } else {
+        clearList();
+        fragment.appendChild(pre);
+      }
       codeBlock = code;
       continue;
     }
@@ -383,11 +400,16 @@ function renderPlanMarkdownIntoBody(container, markdownText) {
     const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
   if (headingMatch) {
     flushParagraph();
-    clearList();
     const level = Math.min(6, headingMatch[1].length);
       const heading = document.createElement(`h${level}`);
       appendPlanInlineMarkdown(heading, headingMatch[2]);
-      fragment.appendChild(heading);
+      const currentListItem = getCurrentOrderedListItem();
+      if (currentListItem) {
+        currentListItem.appendChild(heading);
+      } else {
+        clearList();
+        fragment.appendChild(heading);
+      }
       continue;
     }
 
@@ -429,6 +451,11 @@ function renderPlanMarkdownIntoBody(container, markdownText) {
       appendPlanInlineMarkdown(item, orderedMatch[1]);
       listElement.appendChild(item);
       lastListItem = item;
+      continue;
+    }
+
+    if (listType === "ol" && lastListItem) {
+      appendParagraphToListItem(lastListItem, trimmed);
       continue;
     }
 

@@ -15,93 +15,39 @@
 			<span id="connectionStatusText"></span>
 			<button id="connectionReconnectBtn" class="connection-reconnect-btn hidden" type="button">Reconnect now</button>
 		</div>
-		<main class="main codex-main">
-			<section class="panel chat-panel">
-				<header class="review-detail-page-header" aria-label="Code review detail header">
-					<div class="review-detail-page-header-main">
-						<div class="review-detail-page-eyebrow">Code Reviews</div>
-						<h1 class="review-detail-page-title">Review Detail</h1>
-						<div class="review-detail-page-subtitle">Dedicated page for commit review, findings, and fixes.</div>
-					</div>
-					<a class="review-detail-page-back-link" href="./?tab=code_reviews">Back to review list</a>
-				</header>
-
-				<section id="worktreeDiffPanel" class="worktree-diff-panel worktree-diff-dedicated-workspace worktree-diff-review-detail" aria-label="Repository diff">
-					<div class="worktree-diff-header">
-						<div class="worktree-diff-title-wrap">
-							<span class="worktree-diff-title">Repository Diff</span>
-							<span id="worktreeDiffSummary" class="worktree-diff-summary">No active session</span>
-						</div>
-						<div class="worktree-diff-toolbar">
-							<div class="worktree-diff-mode-group" role="group" aria-label="Diff source">
-								<button id="worktreeDiffModeWorktreeBtn" class="worktree-diff-mode-btn" type="button" aria-pressed="false">Working Tree</button>
-								<button id="worktreeDiffModeCommitBtn" class="worktree-diff-mode-btn active" type="button" aria-pressed="true">Recent Commit</button>
-							</div>
-							<select id="worktreeDiffCommitSelect" class="worktree-diff-commit-select" aria-label="Select recent commit"></select>
-							<select id="worktreeDiffContextSelect" class="worktree-diff-context-select" aria-label="Diff context lines">
-								<option value="3">Context +3</option>
-								<option value="10">Context +10</option>
-								<option value="30">Context +30</option>
-								<option value="full">Full Context</option>
-							</select>
-							<div class="worktree-diff-actions">
-								<button id="worktreeDiffIndicatorBtn" class="worktree-diff-refresh-btn hidden" type="button" aria-label="Open repository diff">
-									<i class="bi bi-file-earmark-diff" aria-hidden="true"></i>
-									<span id="worktreeDiffIndicatorCount" class="worktree-diff-indicator-count">0</span>
-								</button>
-								<button id="worktreeDiffSendNotesBtn" class="worktree-diff-refresh-btn" type="button">Send Notes</button>
-								<button id="worktreeDiffQueueReviewBtn" class="worktree-diff-refresh-btn" type="button">Start Review</button>
-								<button id="worktreeDiffApproveBtn" class="worktree-diff-refresh-btn" type="button">Approve</button>
-								<button id="worktreeDiffRunReviewBtn" class="worktree-diff-refresh-btn hidden" type="button" aria-hidden="true">Review Now</button>
-								<button id="worktreeDiffToggleBtn" class="worktree-diff-refresh-btn" type="button">Close</button>
-								<button id="worktreeDiffRefreshBtn" class="worktree-diff-refresh-btn" type="button">Refresh</button>
-							</div>
-						</div>
-					</div>
-					<div id="worktreeDiffCommitReviewSummary" class="diff-commit-review-summary hidden" role="status" aria-live="polite"></div>
-					<div id="diffReviewFindings" class="diff-review-findings hidden" role="status" aria-live="polite"></div>
-					<div id="worktreeDiffList" class="worktree-diff-list"></div>
-				</section>
-
-				<div id="chatMessages" class="watcher-timeline hidden"></div>
-				<div id="promptQueue" class="prompt-queue hidden"></div>
-				<div id="composerImages" class="composer-images hidden"></div>
-				<div id="promptTimelineSelectionIndicator" class="prompt-timeline-selection-indicator hidden" role="status" aria-live="polite"></div>
-				<div id="promptSelectionIndicator" class="prompt-selection-indicator hidden" role="status" aria-live="polite"></div>
-				<div id="promptBuildFixIndicator" class="prompt-build-fix-indicator hidden" role="status" aria-live="polite"></div>
-				<div id="diffNotesComposer" class="diff-notes-composer hidden" role="status" aria-live="polite"></div>
-				<form id="promptForm" class="prompt-form">
-					<textarea id="promptInput" autocomplete="off" rows="4" placeholder="Type a prompt..."></textarea>
-					<div class="prompt-actions">
-						<input id="imageUploadInput" type="file" accept="image/*" multiple class="hidden">
-						<button id="imageUploadBtn" class="prompt-upload-btn" type="button" title="Attach image" aria-label="Attach image">
-							<i class="bi bi-plus-lg" aria-hidden="true"></i>
-							<span class="visually-hidden">Attach image</span>
-						</button>
-						<button id="speechToTextBtn" class="prompt-speech-btn" type="button" data-scribe-target="promptInput" title="Record speech to text" aria-label="Record speech to text">
-							<i class="bi bi-mic-fill" aria-hidden="true"></i>
-							<span class="visually-hidden">Speech to text</span>
-						</button>
-						<button id="planTurnToggleBtn" class="prompt-plan-btn" type="button" title="Enable plan mode for next turn" aria-label="Enable plan mode for next turn" aria-pressed="false">
-							<i class="bi bi-diagram-3" aria-hidden="true"></i>
-							<span class="visually-hidden">Plan mode</span>
-						</button>
-						<button id="queuePromptBtn" class="prompt-queue-btn hidden" type="button" title="Queue this instruction" aria-label="Queue this instruction">
-							<i class="bi bi-list-task" aria-hidden="true"></i>
-							<span class="visually-hidden">Queue</span>
-						</button>
-						<button id="cancelTurnBtn" class="prompt-cancel-btn hidden" type="button" title="Stop running turn" aria-label="Stop running turn">
-							<i class="bi bi-stop-fill" aria-hidden="true"></i>
-							<span class="visually-hidden">Stop</span>
-						</button>
-						<button id="sendPromptBtn" class="prompt-send-btn" type="submit" aria-label="Send prompt">
-							<i class="bi bi-arrow-up" aria-hidden="true"></i>
-							<span class="visually-hidden">Send</span>
-						</button>
-					</div>
-				</form>
-			</section>
-		</main>
+		<div id="reviewDetailComposerHost">
+			<div id="diffNotesComposer" class="diff-notes-composer hidden" role="status" aria-live="polite"></div>
+			<form id="promptForm" class="prompt-form">
+				<textarea id="promptInput" autocomplete="off" rows="4" placeholder="Type a prompt..."></textarea>
+				<div class="prompt-actions">
+					<input id="imageUploadInput" type="file" accept="image/*" multiple class="hidden">
+					<button id="imageUploadBtn" class="prompt-upload-btn" type="button" title="Attach image" aria-label="Attach image">
+						<i class="bi bi-plus-lg" aria-hidden="true"></i>
+						<span class="visually-hidden">Attach image</span>
+					</button>
+					<button id="speechToTextBtn" class="prompt-speech-btn" type="button" data-scribe-target="promptInput" title="Record speech to text" aria-label="Record speech to text">
+						<i class="bi bi-mic-fill" aria-hidden="true"></i>
+						<span class="visually-hidden">Speech to text</span>
+					</button>
+					<button id="planTurnToggleBtn" class="prompt-plan-btn" type="button" title="Enable plan mode for next turn" aria-label="Enable plan mode for next turn" aria-pressed="false">
+						<i class="bi bi-diagram-3" aria-hidden="true"></i>
+						<span class="visually-hidden">Plan mode</span>
+					</button>
+					<button id="queuePromptBtn" class="prompt-queue-btn hidden" type="button" title="Queue this instruction" aria-label="Queue this instruction">
+						<i class="bi bi-list-task" aria-hidden="true"></i>
+						<span class="visually-hidden">Queue</span>
+					</button>
+					<button id="cancelTurnBtn" class="prompt-cancel-btn hidden" type="button" title="Stop running turn" aria-label="Stop running turn">
+						<i class="bi bi-stop-fill" aria-hidden="true"></i>
+						<span class="visually-hidden">Stop</span>
+					</button>
+					<button id="sendPromptBtn" class="prompt-send-btn" type="submit" aria-label="Send prompt">
+						<i class="bi bi-arrow-up" aria-hidden="true"></i>
+						<span class="visually-hidden">Send</span>
+					</button>
+				</div>
+			</form>
+		</div>
 
 		<div id="diffNoteModal" class="command-modal hidden" role="dialog" aria-modal="true" aria-labelledby="diffNoteModalTitle">
 			<div class="command-modal-card diff-note-modal-card">
@@ -127,6 +73,12 @@
 							<select id="diffFullFilePathSelect" aria-label="Select file"></select>
 							<select id="diffFullFileClassSelect" aria-label="Jump to class"></select>
 							<select id="diffFullFileMethodSelect" aria-label="Jump to method"></select>
+							<select id="diffFullFileContextSelect" aria-label="Diff context lines">
+								<option value="3">Context +3</option>
+								<option value="10">Context +10</option>
+								<option value="30">Context +30</option>
+								<option value="full">Full Context</option>
+							</select>
 						</div>
 						<div class="diff-full-window-controls-row diff-full-window-controls-row-actions">
 							<button id="diffFullFileApproveBtn" class="diff-full-window-action-btn diff-full-window-action-btn-primary" type="button" title="Approve commit" aria-label="Approve commit">
@@ -145,7 +97,7 @@
 								<i class="bi bi-x-lg" aria-hidden="true"></i>
 								<span>Close</span>
 							</button>
-							<button id="diffFullFileReviewPanelToggleBtn" class="diff-full-window-action-btn" type="button" title="Hide or show review sidebar" aria-label="Hide or show review sidebar">
+							<button id="diffFullFileReviewPanelToggleBtn" class="diff-full-window-action-btn diff-full-window-action-btn-toggle" type="button" title="Hide or show review sidebar" aria-label="Hide or show review sidebar">
 								<i class="bi bi-layout-sidebar-inset" aria-hidden="true"></i>
 								<span>Hide Review</span>
 							</button>
@@ -159,12 +111,22 @@
 					</div>
 					<aside id="diffFullFileReviewPanel" class="diff-full-window-side" aria-label="Review context and notes">
 						<div class="diff-full-window-side-header">
-							<div id="diffFullFileReviewTitle" class="diff-full-window-side-title">Review Context</div>
+							<div class="diff-full-window-side-title-row">
+								<div id="diffFullFileReviewTitle" class="diff-full-window-side-title">Review Context</div>
+								<button id="diffFullFileSideCollapseBtn" class="diff-full-window-side-collapse-btn" type="button" title="Hide review sidebar" aria-label="Hide review sidebar" aria-pressed="false">
+									<i class="bi bi-chevron-right" aria-hidden="true"></i>
+									<span class="visually-hidden">Hide review sidebar</span>
+								</button>
+							</div>
 							<div id="diffFullFileReviewMeta" class="diff-full-window-side-meta">Select a review link or code line to annotate.</div>
 							<div class="diff-full-window-side-actions">
 								<button id="diffFullFilePrevIssueBtn" type="button">Prev Issue</button>
 								<button id="diffFullFileNextIssueBtn" type="button">Next Issue</button>
-								<button id="diffFullFileFixBtn" type="button">Fix</button>
+							</div>
+							<div id="diffFullFileReviewTabs" class="diff-review-tabs" role="tablist" aria-label="Review detail views">
+								<button type="button" class="diff-review-tab active" data-full-file-review-tab="rendered" role="tab" aria-selected="true">Issues</button>
+								<button type="button" class="diff-review-tab" data-full-file-review-tab="raw" role="tab" aria-selected="false">Raw JSON</button>
+								<button type="button" class="diff-review-copy-json" data-full-file-copy-json="1">Copy JSON</button>
 							</div>
 						</div>
 						<div id="diffFullFileIssueList" class="diff-full-window-issue-list"></div>

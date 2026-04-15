@@ -2355,6 +2355,18 @@
         paragraphLines = [];
       };
 
+      const appendParagraphToListItem = (parent, text) => {
+        if (!parent || !text) {
+          return;
+        }
+
+        const paragraph = document.createElement("p");
+        this.appendPlanInlineMarkdown(paragraph, text);
+        parent.appendChild(paragraph);
+      };
+
+      const getCurrentOrderedListItem = () => listType === "ol" && lastListItem ? lastListItem : null;
+
       const clearList = () => {
         listElement = null;
         listType = "";
@@ -2381,11 +2393,16 @@
 
         if (trimmed.startsWith("```")) {
           flushParagraph();
-          clearList();
           const pre = document.createElement("pre");
           const code = document.createElement("code");
           pre.appendChild(code);
-          fragment.appendChild(pre);
+          const currentListItem = getCurrentOrderedListItem();
+          if (currentListItem) {
+            currentListItem.appendChild(pre);
+          } else {
+            clearList();
+            fragment.appendChild(pre);
+          }
           codeBlock = code;
           codeBlockLines = [];
           index += 1;
@@ -2403,7 +2420,10 @@
           const divider = lines[index + 1].replace(/\s+$/, "").trim();
           if (this.isMarkdownTableDivider(divider, tableHeaderCells.length)) {
             flushParagraph();
-            clearList();
+            const currentListItem = getCurrentOrderedListItem();
+            if (!currentListItem) {
+              clearList();
+            }
 
             const bodyRows = [];
             index += 2;
@@ -2419,7 +2439,11 @@
               index += 1;
             }
 
-            this.appendMarkdownTable(fragment, tableHeaderCells, bodyRows);
+            if (currentListItem) {
+              this.appendMarkdownTable(currentListItem, tableHeaderCells, bodyRows);
+            } else {
+              this.appendMarkdownTable(fragment, tableHeaderCells, bodyRows);
+            }
             continue;
           }
         }
@@ -2427,11 +2451,16 @@
         const headingMatch = trimmed.match(/^(#{1,6})\s+(.*)$/);
         if (headingMatch) {
           flushParagraph();
-          clearList();
           const level = Math.min(6, headingMatch[1].length);
           const heading = document.createElement(`h${level}`);
           this.appendPlanInlineMarkdown(heading, headingMatch[2]);
-          fragment.appendChild(heading);
+          const currentListItem = getCurrentOrderedListItem();
+          if (currentListItem) {
+            currentListItem.appendChild(heading);
+          } else {
+            clearList();
+            fragment.appendChild(heading);
+          }
           index += 1;
           continue;
         }
@@ -2476,6 +2505,12 @@
           this.appendPlanInlineMarkdown(item, orderedMatch[1]);
           listElement.appendChild(item);
           lastListItem = item;
+          index += 1;
+          continue;
+        }
+
+        if (listType === "ol" && lastListItem) {
+          appendParagraphToListItem(lastListItem, trimmed);
           index += 1;
           continue;
         }

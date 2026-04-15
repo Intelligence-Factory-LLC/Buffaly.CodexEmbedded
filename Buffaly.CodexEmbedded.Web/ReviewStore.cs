@@ -5,6 +5,9 @@ internal sealed class ReviewStore
 {
 	private const string ReviewMetadataHeader = "[Review metadata]";
 	private const string ReviewMetadataFooter = "[/Review metadata]";
+	private const string ReviewContractRepairHeader = "[Review contract repair request]";
+	private const string ReviewContractRepairFooter = "[/Review contract repair request]";
+	private const int MaxCodeReviewsGuidanceChars = 12000;
 	private static readonly TimeSpan RunningStaleAfter = TimeSpan.FromMinutes(8);
 	private static readonly TimeSpan QueuedStaleAfter = TimeSpan.FromMinutes(20);
 	private readonly object _sync = new();
@@ -191,6 +194,61 @@ internal sealed class ReviewStore
 				resultStatus,
 				assistantText,
 				DateTimeOffset.UtcNow);
+		}
+	}
+
+	public ContractRepairPromptRequest? TryBuildContractRepairPromptFromPromptText(
+		string? promptText,
+		string? assistantText,
+		string? sessionId,
+		string? threadId,
+		string? turnId)
+	{
+		var metadata = ParseReviewMetadata(promptText);
+		if (metadata is null)
+		{
+			return null;
+		}
+
+		lock (_sync)
+		{
+			var record = _records.FirstOrDefault(x => string.Equals(x.ReviewId, metadata.ReviewId, StringComparison.Ordinal));
+			if (record is null)
+			{
+				return null;
+			}
+
+			if (record.ContractRepairAttempts >= 1)
+			{
+				return null;
+			}
+
+			var reviewText = assistantText ?? string.Empty;
+			if (!ShouldRequestContractRepair(reviewText, record.Cwd))
+			{
+				return null;
+			}
+
+			record.ContractRepairAttempts += 1;
+			record.Status = "queued";
+			record.CompletedAtUtc = null;
+			SaveNoLock();
+
+			var prompt = BuildContractRepairPromptText(record, reviewText);
+			if (string.IsNullOrWhiteSpace(prompt))
+			{
+				return null;
+			}
+
+			var effectiveSessionId = string.IsNullOrWhiteSpace(sessionId) ? record.SessionId : sessionId.Trim();
+			var effectiveThreadId = string.IsNullOrWhiteSpace(threadId) ? record.ThreadId : threadId.Trim();
+			return new ContractRepairPromptRequest(
+				record.ReviewId,
+				effectiveSessionId,
+				effectiveThreadId,
+				record.Cwd,
+				turnId?.Trim() ?? string.Empty,
+				prompt);
 		}
 	}
 
@@ -999,7 +1057,24 @@ internal sealed class ReviewStore
 		{
 			"Run a code review for the current repository state.",
 			"Focus on bugs, regressions, risky behavior changes, and missing tests.",
-			"Report findings first, ordered by severity, with file paths and line references when possible."
+			"Report findings first, ordered by severity, with file paths and line references when possible.",
+			"Return your final response in a JSON code block using this contract:",
+			"```json",
+			"{",
+			"  \"findings\": [",
+			"    {",
+			"      \"severity\": \"critical|high|medium|low\",",
+			"      \"detail\": \"string\",",
+			"      \"references\": [",
+			"        { \"path\": \"relative/or/absolute/file\", \"lineStart\": 1, \"lineEnd\": 1, \"label\": \"optional\" }",
+			"      ]",
+			"    }",
+			"  ],",
+			"  \"openQuestions\": [\"string\"],",
+			"  \"residualRisks\": [\"string\"]",
+			"}",
+			"```",
+			"If there are no findings, return an empty array for findings."
 		};
 
 		if (string.Equals(request.TargetType, "commit", StringComparison.Ordinal))
@@ -1016,6 +1091,14 @@ internal sealed class ReviewStore
 		if (!string.IsNullOrWhiteSpace(request.NoteText))
 		{
 			lines.Add($"Additional review note: {request.NoteText}");
+		}
+		if (TryReadCodeReviewsGuidance(request.Cwd, out var guidance))
+		{
+			lines.Add(string.Empty);
+			lines.Add("[Additional review guidance]");
+			lines.Add("The following guidance comes from codereviews.md in the working directory. Follow it in addition to the default review instructions.");
+			lines.Add(guidance);
+			lines.Add("[/Additional review guidance]");
 		}
 
 		lines.Add(string.Empty);
@@ -1035,6 +1118,109 @@ internal sealed class ReviewStore
 		lines.Add($"hidden_binary_files={request.HiddenBinaryFiles}");
 		lines.Add(ReviewMetadataFooter);
 		return string.Join("\n", lines);
+	}
+
+	private static string BuildContractRepairPromptText(ReviewRecord record, string assistantText)
+	{
+		var lines = new List<string>
+		{
+			"Your previous review response did not conform to the required JSON findings contract.",
+			"Re-emit the same review conclusions using only the required JSON contract in a single ```json block.",
+			"Do not run a new review and do not add prose outside the JSON block.",
+			"Required contract:",
+			"```json",
+			"{",
+			"  \"findings\": [",
+			"    {",
+			"      \"severity\": \"critical|high|medium|low\",",
+			"      \"detail\": \"string\",",
+			"      \"references\": [",
+			"        { \"path\": \"relative/or/absolute/file\", \"lineStart\": 1, \"lineEnd\": 1, \"label\": \"optional\" }",
+			"      ]",
+			"    }",
+			"  ],",
+			"  \"openQuestions\": [\"string\"],",
+			"  \"residualRisks\": [\"string\"]",
+			"}",
+			"```",
+			string.Empty,
+			"Prior response to normalize:",
+			"```text",
+			assistantText ?? string.Empty,
+			"```",
+			string.Empty,
+			ReviewContractRepairHeader,
+			$"review_id={record.ReviewId}",
+			ReviewContractRepairFooter,
+			string.Empty,
+			ReviewMetadataHeader,
+			$"review_id={record.ReviewId}",
+			$"thread_id={record.ThreadId}",
+			$"session_id={record.SessionId}",
+			$"cwd={record.Cwd}",
+			$"target_type={record.TargetType}"
+		};
+		if (!string.IsNullOrWhiteSpace(record.CommitSha))
+		{
+			lines.Add($"commit_sha={record.CommitSha}");
+		}
+		lines.Add($"context_label={record.ContextLabel}");
+		lines.Add($"visible_files={record.VisibleFiles}");
+		lines.Add($"total_files={record.TotalFiles}");
+		lines.Add($"hidden_binary_files={record.HiddenBinaryFiles}");
+		lines.Add(ReviewMetadataFooter);
+		return string.Join("\n", lines);
+	}
+
+	private static bool TryReadCodeReviewsGuidance(string cwd, out string guidance)
+	{
+		guidance = string.Empty;
+		if (string.IsNullOrWhiteSpace(cwd))
+		{
+			return false;
+		}
+
+		string normalizedRoot;
+		try
+		{
+			normalizedRoot = Path.GetFullPath(cwd.Trim());
+		}
+		catch
+		{
+			return false;
+		}
+
+		if (!Directory.Exists(normalizedRoot))
+		{
+			return false;
+		}
+
+		var filePath = Path.Combine(normalizedRoot, "codereviews.md");
+		if (!File.Exists(filePath))
+		{
+			return false;
+		}
+
+		try
+		{
+			var text = File.ReadAllText(filePath);
+			var trimmed = (text ?? string.Empty).Trim();
+			if (string.IsNullOrWhiteSpace(trimmed))
+			{
+				return false;
+			}
+
+			if (trimmed.Length > MaxCodeReviewsGuidanceChars)
+			{
+				trimmed = trimmed[..MaxCodeReviewsGuidanceChars].TrimEnd();
+			}
+			guidance = trimmed;
+			return true;
+		}
+		catch
+		{
+			return false;
+		}
 	}
 
 	private static ReviewMetadata? ParseReviewMetadata(string? text)
@@ -1099,6 +1285,10 @@ internal sealed class ReviewStore
 		IReadOnlyList<string> dismissedFindingKeys)
 	{
 		var dismissed = dismissedFindingKeys.ToHashSet(StringComparer.Ordinal);
+		if (TryExtractFindingsFromContractJson(assistantText, cwd, dismissed, out var contractFindings))
+		{
+			return contractFindings;
+		}
 		var findings = new List<ReviewFindingRecord>();
 		var seen = new HashSet<string>(StringComparer.Ordinal);
 		var currentBlock = new List<string>();
@@ -1146,8 +1336,273 @@ internal sealed class ReviewStore
 			}
 		}
 		CommitFindingBlock(currentBlock, cwd, dismissed, seen, findings);
+		if (findings.Count == 0)
+		{
+			ExtractResidualRiskFindings(assistantText ?? string.Empty, cwd, dismissed, seen, findings);
+		}
 
 		return findings;
+	}
+
+	private static void ExtractResidualRiskFindings(
+		string assistantText,
+		string cwd,
+		HashSet<string> dismissed,
+		HashSet<string> seen,
+		List<ReviewFindingRecord> findings)
+	{
+		var lines = (assistantText ?? string.Empty).Split('\n');
+		var currentBlock = new List<string>();
+		var inResidualSection = false;
+		foreach (var rawLine in lines)
+		{
+			var line = rawLine?.Trim() ?? string.Empty;
+			if (string.IsNullOrWhiteSpace(line))
+			{
+				if (inResidualSection && currentBlock.Count > 0)
+				{
+					CommitResidualRiskBlock(currentBlock, cwd, dismissed, seen, findings);
+					currentBlock.Clear();
+				}
+				continue;
+			}
+
+			var heading = NormalizeSectionHeading(line);
+			if (IsResidualRiskSectionHeading(heading))
+			{
+				if (currentBlock.Count > 0)
+				{
+					CommitResidualRiskBlock(currentBlock, cwd, dismissed, seen, findings);
+					currentBlock.Clear();
+				}
+				inResidualSection = true;
+				continue;
+			}
+			if (inResidualSection && IsTerminalReviewSectionHeading(heading))
+			{
+				CommitResidualRiskBlock(currentBlock, cwd, dismissed, seen, findings);
+				currentBlock.Clear();
+				inResidualSection = false;
+				continue;
+			}
+			if (!inResidualSection)
+			{
+				continue;
+			}
+
+			if (Regex.IsMatch(line, @"^-\s+", RegexOptions.CultureInvariant) && currentBlock.Count > 0)
+			{
+				CommitResidualRiskBlock(currentBlock, cwd, dismissed, seen, findings);
+				currentBlock.Clear();
+			}
+			currentBlock.Add(line);
+		}
+
+		if (currentBlock.Count > 0)
+		{
+			CommitResidualRiskBlock(currentBlock, cwd, dismissed, seen, findings);
+		}
+	}
+
+	private static void CommitResidualRiskBlock(
+		List<string> blockLines,
+		string cwd,
+		HashSet<string> dismissed,
+		HashSet<string> seen,
+		List<ReviewFindingRecord> findings)
+	{
+		if (blockLines is null || blockLines.Count == 0)
+		{
+			return;
+		}
+
+		var normalizedLines = blockLines
+			.Select(line => Regex.Replace(line ?? string.Empty, @"^-\s+", string.Empty, RegexOptions.CultureInvariant).Trim())
+			.Where(line => !string.IsNullOrWhiteSpace(line))
+			.ToList();
+		if (normalizedLines.Count == 0)
+		{
+			return;
+		}
+
+		var detail = string.Join(" ", normalizedLines).Trim();
+		if (string.IsNullOrWhiteSpace(detail))
+		{
+			return;
+		}
+
+		var references = ExtractFileReferences(blockLines, cwd)
+			.Where(x => !string.IsNullOrWhiteSpace(x.Path))
+			.ToArray();
+		var firstLineReference = references.FirstOrDefault(x => x.LineStart > 0);
+		var path = firstLineReference is null ? string.Empty : firstLineReference.Path;
+		var lineNo = firstLineReference is null ? 0 : firstLineReference.LineStart;
+		var key = !string.IsNullOrWhiteSpace(path) && lineNo > 0
+			? $"{path}|{lineNo}|{detail}"
+			: $"summary||{detail}";
+		if (!seen.Add(key))
+		{
+			return;
+		}
+
+		findings.Add(new ReviewFindingRecord(
+			key,
+			path,
+			lineNo,
+			"low",
+			detail,
+			dismissed.Contains(key),
+			references));
+	}
+
+	private static bool TryExtractFindingsFromContractJson(
+		string assistantText,
+		string cwd,
+		HashSet<string> dismissed,
+		out IReadOnlyList<ReviewFindingRecord> findings)
+	{
+		findings = Array.Empty<ReviewFindingRecord>();
+		var source = assistantText ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(source))
+		{
+			return false;
+		}
+
+		var jsonBody = ExtractJsonContractBody(source);
+		if (string.IsNullOrWhiteSpace(jsonBody))
+		{
+			return false;
+		}
+
+		try
+		{
+			using var doc = JsonDocument.Parse(jsonBody);
+			if (doc.RootElement.ValueKind != JsonValueKind.Object)
+			{
+				return false;
+			}
+			if (!doc.RootElement.TryGetProperty("findings", out var findingsNode) || findingsNode.ValueKind != JsonValueKind.Array)
+			{
+				return false;
+			}
+
+			var parsed = new List<ReviewFindingRecord>();
+			var seen = new HashSet<string>(StringComparer.Ordinal);
+			foreach (var item in findingsNode.EnumerateArray())
+			{
+				if (item.ValueKind != JsonValueKind.Object)
+				{
+					continue;
+				}
+
+				var severity = item.TryGetProperty("severity", out var severityNode) ? NormalizeSeverity(severityNode.GetString() ?? string.Empty) : string.Empty;
+				var detail = item.TryGetProperty("detail", out var detailNode) ? (detailNode.GetString() ?? string.Empty).Trim() : string.Empty;
+				if (string.IsNullOrWhiteSpace(detail))
+				{
+					continue;
+				}
+
+				var refs = new List<ReviewReferenceRecord>();
+				if (item.TryGetProperty("references", out var refsNode) && refsNode.ValueKind == JsonValueKind.Array)
+				{
+					foreach (var refItem in refsNode.EnumerateArray())
+					{
+						if (refItem.ValueKind != JsonValueKind.Object)
+						{
+							continue;
+						}
+						var rawPath = refItem.TryGetProperty("path", out var pathNode) ? (pathNode.GetString() ?? string.Empty) : string.Empty;
+						var lineStart = refItem.TryGetProperty("lineStart", out var lineStartNode) && lineStartNode.TryGetInt32(out var ls) ? ls : 0;
+						var lineEnd = refItem.TryGetProperty("lineEnd", out var lineEndNode) && lineEndNode.TryGetInt32(out var le) ? le : lineStart;
+						var label = refItem.TryGetProperty("label", out var labelNode) ? (labelNode.GetString() ?? string.Empty) : string.Empty;
+						var normalizedPath = NormalizeFindingPath(rawPath, cwd);
+						if (string.IsNullOrWhiteSpace(normalizedPath))
+						{
+							continue;
+						}
+						refs.Add(new ReviewReferenceRecord(normalizedPath, lineStart, lineEnd, label));
+					}
+				}
+
+				var primary = refs.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.Path) && x.LineStart > 0);
+				var path = primary is null ? string.Empty : primary.Path;
+				var lineNo = primary is null ? 0 : primary.LineStart;
+				var key = !string.IsNullOrWhiteSpace(path) && lineNo > 0
+					? $"{path}|{lineNo}|{detail}"
+					: $"summary||{detail}";
+				if (!seen.Add(key))
+				{
+					continue;
+				}
+				parsed.Add(new ReviewFindingRecord(
+					key,
+					path,
+					lineNo,
+					severity,
+					detail,
+					dismissed.Contains(key),
+					refs));
+			}
+
+			findings = parsed;
+			return true;
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	private static string ExtractJsonContractBody(string source)
+	{
+		var fenced = Regex.Match(
+			source ?? string.Empty,
+			@"```json\s*(?<body>[\s\S]*?)```",
+			RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+		if (fenced.Success)
+		{
+			return fenced.Groups["body"].Value.Trim();
+		}
+
+		var trimmed = (source ?? string.Empty).Trim();
+		if (trimmed.StartsWith("{", StringComparison.Ordinal) && trimmed.EndsWith("}", StringComparison.Ordinal))
+		{
+			return trimmed;
+		}
+		return string.Empty;
+	}
+
+	private static bool ShouldRequestContractRepair(string assistantText, string cwd)
+	{
+		var source = assistantText ?? string.Empty;
+		if (string.IsNullOrWhiteSpace(source))
+		{
+			return false;
+		}
+		if (source.Contains(ReviewContractRepairHeader, StringComparison.OrdinalIgnoreCase))
+		{
+			return false;
+		}
+
+		if (TryExtractFindingsFromContractJson(source, cwd, new HashSet<string>(StringComparer.Ordinal), out _))
+		{
+			return false;
+		}
+
+		var hasResidualRiskContent =
+			Regex.IsMatch(source, @"\b(residual\s+risks?|testing\s+gaps?|missing\s+tests?)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+			&& Regex.IsMatch(source, @"(?m)^\s*-\s+", RegexOptions.CultureInvariant);
+		var hasNoFindingsClaim =
+			Regex.IsMatch(source, @"\bno\s+findings?\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) ||
+			Regex.IsMatch(source, @"\bno\s+additional\s+functional\s+regressions?\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant) ||
+			Regex.IsMatch(source, @"\bno\s+issues?\s+found\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+		if (hasNoFindingsClaim && !hasResidualRiskContent)
+		{
+			return false;
+		}
+
+		return Regex.IsMatch(source, @"\b(critical|high|medium|low)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+			|| Regex.IsMatch(source, @"\bfindings?\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 	}
 
 	private static void CommitFindingBlock(
@@ -1349,8 +1804,25 @@ internal sealed class ReviewStore
 			string.Equals(heading, "open questions", StringComparison.OrdinalIgnoreCase) ||
 			string.Equals(heading, "residual risks / regressions to watch", StringComparison.OrdinalIgnoreCase) ||
 			string.Equals(heading, "residual risks", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(heading, "testing gaps", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(heading, "residual risks / testing gaps", StringComparison.OrdinalIgnoreCase) ||
 			string.Equals(heading, "notes", StringComparison.OrdinalIgnoreCase) ||
 			string.Equals(heading, "change summary", StringComparison.OrdinalIgnoreCase);
+	}
+
+	private static bool IsResidualRiskSectionHeading(string heading)
+	{
+		if (string.IsNullOrWhiteSpace(heading))
+		{
+			return false;
+		}
+
+		return
+			string.Equals(heading, "residual risks / regressions to watch", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(heading, "residual risks", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(heading, "testing gaps", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(heading, "residual risks / testing gaps", StringComparison.OrdinalIgnoreCase) ||
+			string.Equals(heading, "missing tests", StringComparison.OrdinalIgnoreCase);
 	}
 
 	private static (string Path, int LineStart, int LineEnd)? ParseFileLink(string? href)
@@ -1577,6 +2049,13 @@ internal sealed class ReviewStore
 		string InitialStatus);
 
 	internal sealed record ReviewCreateResult(ReviewRecord Record, string PromptText);
+	internal sealed record ContractRepairPromptRequest(
+		string ReviewId,
+		string SessionId,
+		string ThreadId,
+		string Cwd,
+		string TurnId,
+		string PromptText);
 
 	internal sealed record ReviewCatalogSnapshot(
 		string Cwd,
@@ -1662,6 +2141,7 @@ internal sealed class ReviewStore
 		public string AssistantText { get; set; } = string.Empty;
 		public List<ReviewFindingRecord> Findings { get; set; } = new();
 		public List<string> DismissedFindingKeys { get; set; } = new();
+		public int ContractRepairAttempts { get; set; } = 0;
 
 		public ReviewRecord Clone()
 		{
@@ -1687,7 +2167,8 @@ internal sealed class ReviewStore
 				TurnId = TurnId,
 				AssistantText = AssistantText,
 				Findings = Findings.Select(x => x with { }).ToList(),
-				DismissedFindingKeys = DismissedFindingKeys.ToList()
+				DismissedFindingKeys = DismissedFindingKeys.ToList(),
+				ContractRepairAttempts = ContractRepairAttempts
 			};
 		}
 	}

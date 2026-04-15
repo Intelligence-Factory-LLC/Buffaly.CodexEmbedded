@@ -381,10 +381,11 @@ app.MapPost("/api/transcribe", async (
 		var statusCode = (ex.StatusCode >= 400 && ex.StatusCode <= 599)
 			? ex.StatusCode
 			: StatusCodes.Status502BadGateway;
+		var detail = GetFriendlyTranscriptionErrorDetail(ex);
 		return Results.Problem(
 			statusCode: statusCode,
 			title: "Transcription request failed.",
-			detail: ex.Message);
+			detail: detail);
 	}
 	catch (OperationCanceledException)
 	{
@@ -960,6 +961,33 @@ static bool ShouldPersistFailedTranscriptionPayload(OpenAiTranscriptionException
 		|| message.Contains("corrupted")
 		|| message.Contains("unsupported")
 		|| message.Contains("\"param\": \"file\"");
+}
+
+static string GetFriendlyTranscriptionErrorDetail(OpenAiTranscriptionException ex)
+{
+	if (ex is null)
+	{
+		return "The transcription request failed.";
+	}
+
+	var message = ex.Message ?? string.Empty;
+	var normalized = message.ToLowerInvariant();
+	if (normalized.Contains("no such host is known") || normalized.Contains("name or service not known"))
+	{
+		return "Cannot reach api.openai.com from this machine. Check DNS, network access, VPN, proxy, or firewall settings.";
+	}
+
+	if (normalized.Contains("timed out"))
+	{
+		return "The transcription request to OpenAI timed out. Check network stability and retry.";
+	}
+
+	if (normalized.Contains("actively refused") || normalized.Contains("connection refused"))
+	{
+		return "The connection to OpenAI was refused. Check proxy, firewall, or outbound HTTPS restrictions.";
+	}
+
+	return message;
 }
 
 static string? TryPersistFailedTranscriptionPayload(

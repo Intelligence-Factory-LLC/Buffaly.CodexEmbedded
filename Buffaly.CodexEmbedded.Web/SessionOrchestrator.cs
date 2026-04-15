@@ -2043,6 +2043,12 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 				result.TurnId,
 				result.Status,
 				result.Text);
+			TryEnqueueReviewContractRepairPrompt(
+				sessionId,
+				session,
+				request,
+				result.Text,
+				result.TurnId);
 			completionPublished = TryPublishTurnComplete(
 				sessionId,
 				session,
@@ -3093,6 +3099,73 @@ internal sealed class SessionOrchestrator : IAsyncDisposable
 		SessionsChanged?.Invoke();
 		EnsureQueueDispatcher(sessionId, session);
 		return true;
+	}
+
+	private void TryEnqueueReviewContractRepairPrompt(
+		string sessionId,
+		ManagedSession session,
+		TurnExecutionRequest request,
+		string? assistantText,
+		string? turnId)
+	{
+		ReviewStore.ContractRepairPromptRequest? repairPrompt;
+		try
+		{
+			repairPrompt = _reviewStore.TryBuildContractRepairPromptFromPromptText(
+				request.Text,
+				assistantText,
+				sessionId,
+				session.Session.ThreadId,
+				turnId);
+		}
+		catch (Exception ex)
+		{
+			WriteOrchestratorAudit($"event=review_contract_repair_prepare_failed sessionId={sessionId} error={ex.Message}");
+			return;
+		}
+
+		if (repairPrompt is null || string.IsNullOrWhiteSpace(repairPrompt.PromptText))
+		{
+			return;
+		}
+
+		var targetSessionId = string.IsNullOrWhiteSpace(repairPrompt.SessionId) ? sessionId : repairPrompt.SessionId;
+		if (!string.Equals(targetSessionId, sessionId, StringComparison.Ordinal))
+		{
+			WriteOrchestratorAudit($"event=review_contract_repair_skipped sessionId={sessionId} reason=session_mismatch targetSessionId={targetSessionId}");
+			return;
+		}
+
+		var queued = TryEnqueueTurn(
+			targetSessionId,
+			repairPrompt.PromptText,
+			string.IsNullOrWhiteSpace(repairPrompt.Cwd) ? request.Cwd : repairPrompt.Cwd,
+			normalizedModel: null,
+			normalizedEffort: null,
+			normalizedApprovalPolicy: null,
+			normalizedSandboxPolicy: null,
+			normalizedCollaborationMode: request.CollaborationMode,
+			hasModelOverride: false,
+			hasEffortOverride: false,
+			hasApprovalOverride: false,
+			hasSandboxOverride: false,
+			images: null,
+			out var queueItemId,
+			out var queueError);
+		if (!queued)
+		{
+			WriteOrchestratorAudit(
+				$"event=review_contract_repair_enqueue_failed sessionId={sessionId} reviewId={repairPrompt.ReviewId} error={queueError ?? "unknown"}");
+			return;
+		}
+
+		WriteOrchestratorAudit(
+			$"event=review_contract_repair_enqueued sessionId={sessionId} reviewId={repairPrompt.ReviewId} queueItemId={queueItemId ?? "(none)"}");
+		Broadcast?.Invoke("status", new
+		{
+			sessionId,
+			message = "Review response format was invalid. Requested corrected structured findings."
+		});
 	}
 
 	private void HandleSessionConfiguredSignal(string sessionId, ManagedSession managed, CoreSessionConfiguredSignal signal)

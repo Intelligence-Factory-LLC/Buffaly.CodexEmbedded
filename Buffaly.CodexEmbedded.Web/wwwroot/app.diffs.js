@@ -205,6 +205,14 @@
   function buildReviewDetailPageUrl(commitSha, path, lineNo, context = null) {
     const url = new URL("code-review-detail.html", document.baseURI);
     url.searchParams.set("tab", "code_reviews");
+    try {
+      const currentUrl = new URL(window.location.href || "", document.baseURI);
+      if (currentUrl.origin === url.origin) {
+        url.searchParams.set("return_url", currentUrl.toString());
+      }
+    } catch {
+      // no-op
+    }
     const normalizedCommit = typeof commitSha === "string" ? commitSha.trim() : "";
     const normalizedPath = typeof path === "string" ? path.trim() : "";
     if (normalizedCommit) {
@@ -277,6 +285,13 @@
   async function openCodeReviewCommitDetail(sha) {
     const normalizedSha = typeof sha === "string" ? sha.trim() : "";
     if (!normalizedSha) {
+      return;
+    }
+
+    if (isCodeReviewsWorkspace()) {
+      const context = getActiveContext();
+      const href = buildReviewDetailPageUrl(normalizedSha, "", null, context);
+      window.location.assign(href);
       return;
     }
 
@@ -634,11 +649,16 @@
     const summary = getScopeReviewSummary(scopeKey);
     const records = Array.isArray(summary.records) ? summary.records : [];
     const primaryRecord = summary && typeof summary.primaryRecord === "object" ? summary.primaryRecord : (records[0] || null);
+    const summaryStatus = typeof summary.status === "string" ? summary.status : "not_started";
     const statusRaw = primaryRecord && typeof primaryRecord.status === "string"
       ? primaryRecord.status
-      : (typeof summary.status === "string" ? summary.status : "not_started");
-    const activeRunning = statusRaw === "running" ? 1 : 0;
-    const activeQueued = statusRaw === "queued" ? 1 : 0;
+      : summaryStatus;
+    const activeRunning = Number.isFinite(summary.runningCount)
+      ? Math.max(0, Math.floor(summary.runningCount))
+      : (summaryStatus === "running" ? 1 : 0);
+    const activeQueued = Number.isFinite(summary.queuedCount)
+      ? Math.max(0, Math.floor(summary.queuedCount))
+      : (summaryStatus === "queued" ? 1 : 0);
     const hasActive = activeRunning > 0 || activeQueued > 0;
     const hasCompleted = (Number.isFinite(summary.completedCount) && summary.completedCount > 0)
       || records.some((x) => x && (x.status === "completed" || x.status === "dismissed" || x.status === "reviewed"));
@@ -667,7 +687,7 @@
       };
     }
 
-    if (statusRaw === "stale") {
+    if (summaryStatus === "stale" || statusRaw === "stale") {
       return {
         key: "stale",
         label: "Pending Sync",
@@ -1262,6 +1282,8 @@
     }
 
     renderCommitModeBadge();
+    const previousListNode = commitReviewSummaryNode.querySelector(".diff-commit-review-list");
+    const previousScrollTop = previousListNode ? previousListNode.scrollTop : 0;
     if (!Array.isArray(availableCommits) || availableCommits.length === 0) {
       const prefix = isCodeReviewsWorkspace()
         ? "Code Reviews"
@@ -1356,6 +1378,12 @@
       ? "<div class=\"diff-commit-review-collapsed-note\">Commit review list hidden.</div>"
       : `<div class="diff-commit-review-list">${rows.join("") || "<span class=\"diff-commit-review-empty\">No commits loaded.</span>"}</div>`}`;
     commitReviewSummaryNode.classList.remove("hidden");
+    if (!commitReviewSummaryCollapsed && previousListNode && previousScrollTop > 0) {
+      const nextListNode = commitReviewSummaryNode.querySelector(".diff-commit-review-list");
+      if (nextListNode) {
+        nextListNode.scrollTop = previousScrollTop;
+      }
+    }
   }
 
   function renderInlineReviewMarkdown(text) {
@@ -1782,16 +1810,9 @@
     renderFullFileReviewPanel();
     rerenderFullFileWindowIfOpen();
 
-    if (options.appendToPrompt === false) {
-      return;
+    if (options.focus === true && promptInputNode) {
+      promptInputNode.focus();
     }
-
-    const lineLabel = noteLineLabel(normalizedTarget.startLine, normalizedTarget.endLine, "file");
-    const snippet = normalizedTarget.snippet ? `\nsnippet:\n${normalizedTarget.snippet}` : "";
-    appendTextToDetailComposer(
-      `[Code annotation]\nfile=${normalizedTarget.path}\n${lineLabel}${snippet}\n\nRequested change: `,
-      { focus: true }
-    );
   }
 
   function setFullFileReviewContext(context) {
@@ -1839,7 +1860,7 @@
       ? reviewContext.title
       : "Review Context";
     if (target) {
-      fullFileReviewMeta.textContent = `${target.path} (${noteLineLabel(target.startLine, target.endLine, "file")}) selected. Annotation appended to prompt.`;
+      fullFileReviewMeta.textContent = `${target.path} (${noteLineLabel(target.startLine, target.endLine, "file")}) selected. Add a note to include it in review notes.`;
     } else if (canFixFinding) {
       fullFileReviewMeta.textContent = "Click Fix to append this finding to the prompt.";
     } else {
@@ -3503,7 +3524,15 @@
       if (!file || typeof file.path !== "string" || !file.path.trim()) {
         continue;
       }
-      options.push(file.path.trim());
+      const path = file.path.trim();
+      const stat = getFileDiffStat(file);
+      const statLabel = file.isBinary === true
+        ? "binary"
+        : `+${Number.isFinite(stat.added) ? stat.added : 0} -${Number.isFinite(stat.removed) ? stat.removed : 0}`;
+      options.push({
+        path,
+        label: `${path} (${statLabel})`
+      });
     }
 
     if (options.length === 0) {
@@ -3515,11 +3544,14 @@
       return;
     }
 
-    const preferred = selectedPath && options.includes(selectedPath)
+    const optionPaths = options.map((item) => item.path);
+    const preferred = selectedPath && optionPaths.includes(selectedPath)
       ? selectedPath
-      : (options.includes(fullFileViewerState.path) ? fullFileViewerState.path : options[0]);
+      : (optionPaths.includes(fullFileViewerState.path) ? fullFileViewerState.path : optionPaths[0]);
 
-    const optionMarkup = options.map((path) => `<option value="${escapeAttribute(path)}">${escapeHtml(path)}</option>`).join("");
+    const optionMarkup = options
+      .map((item) => `<option value="${escapeAttribute(item.path)}">${escapeHtml(item.label)}</option>`)
+      .join("");
     fullFilePathSelectSyncing = true;
     fullFilePathSelect.innerHTML = optionMarkup;
     fullFilePathSelect.value = preferred;
@@ -4304,6 +4336,44 @@
   }
 
   function getFullFileIssueEntries() {
+    const scopeKey = getCurrentScopeKey();
+    if (scopeKey) {
+      const flattened = scopeKey === currentReviewStateScopeKey
+        ? flattenReviewFindingsForScope(scopeKey, reviewFindingStateByKey)
+        : flattenReviewFindingsForScope(scopeKey, loadReviewFindingState(scopeKey));
+      if (Array.isArray(flattened) && flattened.length > 0) {
+        return flattened
+          .filter((finding) => finding && typeof finding === "object")
+          .map((finding, index) => {
+            const detail = typeof finding.detail === "string" ? finding.detail.trim() : "";
+            const severity = normalizeReviewSeverity(typeof finding.severity === "string" ? finding.severity : "");
+            const firstLine = detail.split(/\r?\n/).find((line) => typeof line === "string" && line.trim()) || "";
+            const cleanFirstLine = firstLine.replace(/^\*\*([^*]+)\*\*:?\s*/g, "$1: ").trim();
+            const titleBase = cleanFirstLine || detail || `Finding ${index + 1}`;
+            const titlePrefix = severity ? `${severity.charAt(0).toUpperCase()}${severity.slice(1)}: ` : "";
+            const title = `${titlePrefix}${titleBase}`.slice(0, 220);
+            const references = getFindingReferences(finding)
+              .map((reference) => ({
+                path: typeof reference?.path === "string" ? reference.path : "",
+                lineNo: Number.isFinite(reference?.lineStart) && reference.lineStart > 0 ? Math.floor(reference.lineStart) : 1
+              }))
+              .filter((reference) => !!reference.path);
+            const html = detail
+              ? detail.split(/\r?\n/).filter((line) => typeof line === "string" && line.trim()).map((line) =>
+                `<div class="diff-review-md-paragraph">${renderInlineReviewMarkdown(line)}</div>`
+              ).join("")
+              : "";
+            return {
+              index,
+              title,
+              text: detail,
+              html,
+              references
+            };
+          });
+      }
+    }
+
     if (!Array.isArray(renderedReviewMarkdownFindings) || renderedReviewMarkdownFindings.length === 0) {
       return [];
     }
@@ -5277,7 +5347,8 @@
         endLine: lineNo,
         snippet: (lineText || "").trim(),
         origin: "file"
-      }, { appendToPrompt: true });
+      }, { appendToPrompt: false });
+      openNoteModal(fullFileViewerState.path, lineNo, lineNo, (lineText || "").trim(), "file");
     });
 
     fullFileBody.addEventListener("mouseup", () => {
@@ -5287,7 +5358,8 @@
       }
 
       ignoreNextFullFileLineClick = true;
-      setFullFileNoteTarget(targets[0], { appendToPrompt: true });
+      setFullFileNoteTarget(targets[0], { appendToPrompt: false });
+      openNoteModalForTargets(targets);
       const selection = window.getSelection ? window.getSelection() : null;
       if (selection && typeof selection.removeAllRanges === "function") {
         selection.removeAllRanges();

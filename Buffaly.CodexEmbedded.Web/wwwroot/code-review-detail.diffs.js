@@ -1,25 +1,34 @@
 (function () {
-  const panel = document.getElementById("worktreeDiffPanel");
-  const summaryNode = document.getElementById("worktreeDiffSummary");
-  const listNode = document.getElementById("worktreeDiffList");
-  const refreshBtn = document.getElementById("worktreeDiffRefreshBtn");
-  const toggleBtn = document.getElementById("worktreeDiffToggleBtn");
-  const indicatorBtn = document.getElementById("worktreeDiffIndicatorBtn");
-  const indicatorCountNode = document.getElementById("worktreeDiffIndicatorCount");
-  const modeWorktreeBtn = document.getElementById("worktreeDiffModeWorktreeBtn");
-  const modeCommitBtn = document.getElementById("worktreeDiffModeCommitBtn");
-  const commitSelect = document.getElementById("worktreeDiffCommitSelect");
-  const contextSelect = document.getElementById("worktreeDiffContextSelect");
-  const sendNotesBtn = document.getElementById("worktreeDiffSendNotesBtn");
-  const queueReviewBtn = document.getElementById("worktreeDiffQueueReviewBtn");
-  const approveBtn = document.getElementById("worktreeDiffApproveBtn");
-  const runReviewBtn = document.getElementById("worktreeDiffRunReviewBtn");
-  const commitReviewSummaryNode = document.getElementById("worktreeDiffCommitReviewSummary");
-  const reviewFindingsNode = document.getElementById("diffReviewFindings");
+  function getElementOrFallback(id, tagName = "div") {
+    const element = document.getElementById(id);
+    if (element) {
+      return element;
+    }
+    return document.createElement(tagName);
+  }
+
+  const panel = getElementOrFallback("worktreeDiffPanel", "section");
+  const summaryNode = getElementOrFallback("worktreeDiffSummary", "span");
+  const listNode = getElementOrFallback("worktreeDiffList", "div");
+  const refreshBtn = getElementOrFallback("worktreeDiffRefreshBtn", "button");
+  const toggleBtn = getElementOrFallback("worktreeDiffToggleBtn", "button");
+  const indicatorBtn = getElementOrFallback("worktreeDiffIndicatorBtn", "button");
+  const indicatorCountNode = getElementOrFallback("worktreeDiffIndicatorCount", "span");
+  const modeWorktreeBtn = getElementOrFallback("worktreeDiffModeWorktreeBtn", "button");
+  const modeCommitBtn = getElementOrFallback("worktreeDiffModeCommitBtn", "button");
+  const commitSelect = getElementOrFallback("worktreeDiffCommitSelect", "select");
+  const contextSelect = getElementOrFallback("worktreeDiffContextSelect", "select");
+  const sendNotesBtn = getElementOrFallback("worktreeDiffSendNotesBtn", "button");
+  const queueReviewBtn = getElementOrFallback("worktreeDiffQueueReviewBtn", "button");
+  const approveBtn = getElementOrFallback("worktreeDiffApproveBtn", "button");
+  const runReviewBtn = getElementOrFallback("worktreeDiffRunReviewBtn", "button");
+  const commitReviewSummaryNode = getElementOrFallback("worktreeDiffCommitReviewSummary", "div");
+  const reviewFindingsNode = getElementOrFallback("diffReviewFindings", "div");
   const fullFileWindow = document.getElementById("diffFullFileWindow");
   const fullFilePathSelect = document.getElementById("diffFullFilePathSelect");
   const fullFileClassSelect = document.getElementById("diffFullFileClassSelect");
   const fullFileMethodSelect = document.getElementById("diffFullFileMethodSelect");
+  const fullFileContextSelect = document.getElementById("diffFullFileContextSelect");
   const fullFileApproveBtn = document.getElementById("diffFullFileApproveBtn");
   const fullFileRefreshBtn = document.getElementById("diffFullFileRefreshBtn");
   const fullFileBackBtn = document.getElementById("diffFullFileBackBtn");
@@ -29,13 +38,14 @@
   const fullFileWorkspace = fullFileWindow ? fullFileWindow.querySelector(".diff-full-window-workspace") : null;
   const fullFileBody = document.getElementById("diffFullFileBody");
   const fullFileReviewPanel = document.getElementById("diffFullFileReviewPanel");
+  const fullFileSideCollapseBtn = document.getElementById("diffFullFileSideCollapseBtn");
   const fullFileReviewTitle = document.getElementById("diffFullFileReviewTitle");
   const fullFileReviewMeta = document.getElementById("diffFullFileReviewMeta");
+  const fullFileReviewTabs = document.getElementById("diffFullFileReviewTabs");
   const fullFileIssueList = document.getElementById("diffFullFileIssueList");
   const fullFilePrevIssueBtn = document.getElementById("diffFullFilePrevIssueBtn");
   const fullFileNextIssueBtn = document.getElementById("diffFullFileNextIssueBtn");
   const fullFileReviewContext = document.getElementById("diffFullFileReviewContext");
-  const fullFileFixBtn = document.getElementById("diffFullFileFixBtn");
   const promptInputNode = document.getElementById("promptInput");
   const composerNotesNode = document.getElementById("diffNotesComposer");
   const noteModal = document.getElementById("diffNoteModal");
@@ -57,9 +67,18 @@
     ? (urlSearchParams.get("review_path") || "").trim()
     : "";
   const requestedReviewLine = Number.parseInt(urlSearchParams.get("review_line") || "", 10);
+  const requestedReviewSessionId = typeof urlSearchParams.get("review_session") === "string"
+    ? (urlSearchParams.get("review_session") || "").trim()
+    : "";
+  const requestedReviewThreadId = typeof urlSearchParams.get("review_thread") === "string"
+    ? (urlSearchParams.get("review_thread") || "").trim()
+    : "";
+  const requestedReviewCwd = typeof urlSearchParams.get("review_cwd") === "string"
+    ? (urlSearchParams.get("review_cwd") || "").trim()
+    : "";
   let requestedReviewOpenAttempted = false;
 
-  if (!panel || !summaryNode || !listNode || !refreshBtn || !toggleBtn || !indicatorBtn || !indicatorCountNode || !modeWorktreeBtn || !modeCommitBtn || !commitSelect || !contextSelect || !sendNotesBtn || !queueReviewBtn || !approveBtn || !runReviewBtn || !commitReviewSummaryNode || !reviewFindingsNode || !composerNotesNode) {
+  if (!composerNotesNode) {
     return;
   }
 
@@ -68,6 +87,7 @@
     && fullFilePathSelect
     && fullFileClassSelect
     && fullFileMethodSelect
+    && fullFileContextSelect
     && fullFileApproveBtn
     && fullFileRefreshBtn
     && fullFileBackBtn
@@ -76,13 +96,14 @@
     && fullFileStatus
     && fullFileBody
     && fullFileReviewPanel
+    && fullFileSideCollapseBtn
     && fullFileReviewTitle
     && fullFileReviewMeta
+    && fullFileReviewTabs
     && fullFileIssueList
     && fullFilePrevIssueBtn
     && fullFileNextIssueBtn
-    && fullFileReviewContext
-    && fullFileFixBtn);
+    && fullFileReviewContext);
 
   const REFRESH_DEBOUNCE_MS = 120;
   const MAX_LINES_PER_FILE = 280;
@@ -189,11 +210,17 @@
     currentMode = "commit";
   }
 
+  const activeRefreshBtn = refreshBtn || fullFileRefreshBtn;
+  const activeApproveBtn = approveBtn || fullFileApproveBtn;
+  const activeContextSelect = contextSelect || fullFileContextSelect;
+
   function createEmptyFullFileViewerState() {
     return {
       path: "",
       content: "",
       changedLines: new Set(),
+      addedLines: new Set(),
+      removedLines: new Set(),
       firstChangedLine: 1,
       requestedLineNo: null,
       classes: [],
@@ -230,7 +257,64 @@
   function buildCodeReviewsListUrl() {
     const url = new URL("index.html", document.baseURI);
     url.searchParams.set("tab", "code_reviews");
+    if (requestedReviewSessionId) {
+      url.searchParams.set("review_session", requestedReviewSessionId);
+    }
+    if (requestedReviewThreadId) {
+      url.searchParams.set("review_thread", requestedReviewThreadId);
+    }
+    if (requestedReviewCwd) {
+      url.searchParams.set("review_cwd", requestedReviewCwd);
+    }
     return url.toString();
+  }
+
+  function tryBuildReturnUrlFromQueryParam() {
+    const raw = typeof urlSearchParams.get("return_url") === "string"
+      ? (urlSearchParams.get("return_url") || "").trim()
+      : "";
+    if (!raw) {
+      return "";
+    }
+    let returnUrl;
+    try {
+      returnUrl = new URL(raw, document.baseURI);
+    } catch {
+      return "";
+    }
+    const currentOrigin = typeof window.location.origin === "string" ? window.location.origin : "";
+    if (!returnUrl || returnUrl.origin !== currentOrigin) {
+      return "";
+    }
+    return returnUrl.toString();
+  }
+
+  function tryBuildReturnUrlFromReferrer() {
+    const referrer = typeof document.referrer === "string" ? document.referrer.trim() : "";
+    if (!referrer) {
+      return "";
+    }
+    let refUrl;
+    try {
+      refUrl = new URL(referrer, document.baseURI);
+    } catch {
+      return "";
+    }
+    const currentOrigin = typeof window.location.origin === "string" ? window.location.origin : "";
+    if (!refUrl || refUrl.origin !== currentOrigin) {
+      return "";
+    }
+    const tab = (refUrl.searchParams.get("tab") || "").trim().toLowerCase();
+    if (tab !== "code_reviews") {
+      return "";
+    }
+    return refUrl.toString();
+  }
+
+  function navigateBackToCodeReviews() {
+    const explicitReturnUrl = tryBuildReturnUrlFromQueryParam();
+    const referrerReturnUrl = tryBuildReturnUrlFromReferrer();
+    window.location.assign(explicitReturnUrl || buildCodeReviewsListUrl() || referrerReturnUrl || "index.html?tab=code_reviews");
   }
 
   function appendTextToDetailComposer(rawText, options = {}) {
@@ -615,11 +699,16 @@
     const summary = getScopeReviewSummary(scopeKey);
     const records = Array.isArray(summary.records) ? summary.records : [];
     const primaryRecord = summary && typeof summary.primaryRecord === "object" ? summary.primaryRecord : (records[0] || null);
+    const summaryStatus = typeof summary.status === "string" ? summary.status : "not_started";
     const statusRaw = primaryRecord && typeof primaryRecord.status === "string"
       ? primaryRecord.status
-      : (typeof summary.status === "string" ? summary.status : "not_started");
-    const activeRunning = statusRaw === "running" ? 1 : 0;
-    const activeQueued = statusRaw === "queued" ? 1 : 0;
+      : summaryStatus;
+    const activeRunning = Number.isFinite(summary.runningCount)
+      ? Math.max(0, Math.floor(summary.runningCount))
+      : (summaryStatus === "running" ? 1 : 0);
+    const activeQueued = Number.isFinite(summary.queuedCount)
+      ? Math.max(0, Math.floor(summary.queuedCount))
+      : (summaryStatus === "queued" ? 1 : 0);
     const hasActive = activeRunning > 0 || activeQueued > 0;
     const hasCompleted = (Number.isFinite(summary.completedCount) && summary.completedCount > 0)
       || records.some((x) => x && (x.status === "completed" || x.status === "dismissed" || x.status === "reviewed"));
@@ -648,7 +737,7 @@
       };
     }
 
-    if (statusRaw === "stale") {
+    if (summaryStatus === "stale" || statusRaw === "stale") {
       return {
         key: "stale",
         label: "Pending Sync",
@@ -1249,6 +1338,15 @@
       fullFileReviewPanelToggleBtn.title = toggleLabel;
       fullFileReviewPanelToggleBtn.setAttribute("aria-label", toggleLabel);
     }
+    if (fullFileSideCollapseBtn) {
+      fullFileSideCollapseBtn.title = toggleLabel;
+      fullFileSideCollapseBtn.setAttribute("aria-label", toggleLabel);
+      fullFileSideCollapseBtn.setAttribute("aria-pressed", fullFileReviewPanelCollapsed ? "true" : "false");
+      const sideIconNode = fullFileSideCollapseBtn.querySelector("i");
+      if (sideIconNode) {
+        sideIconNode.className = `bi ${fullFileReviewPanelCollapsed ? "bi-chevron-left" : "bi-chevron-right"}`;
+      }
+    }
   }
 
   function setFullFileReviewPanelCollapsed(nextCollapsed) {
@@ -1267,6 +1365,7 @@
     } catch {
     }
     renderReviewFindingsPanel();
+    renderFullFileReviewPanel();
   }
 
   function renderCommitReviewSummary() {
@@ -1277,6 +1376,8 @@
     }
 
     renderCommitModeBadge();
+    const previousListNode = commitReviewSummaryNode.querySelector(".diff-commit-review-list");
+    const previousScrollTop = previousListNode ? previousListNode.scrollTop : 0;
     if (!Array.isArray(availableCommits) || availableCommits.length === 0) {
       const prefix = isCodeReviewsWorkspace()
         ? "Code Reviews"
@@ -1371,6 +1472,12 @@
       ? "<div class=\"diff-commit-review-collapsed-note\">Commit review list hidden.</div>"
       : `<div class="diff-commit-review-list">${rows.join("") || "<span class=\"diff-commit-review-empty\">No commits loaded.</span>"}</div>`}`;
     commitReviewSummaryNode.classList.remove("hidden");
+    if (!commitReviewSummaryCollapsed && previousListNode && previousScrollTop > 0) {
+      const nextListNode = commitReviewSummaryNode.querySelector(".diff-commit-review-list");
+      if (nextListNode) {
+        nextListNode.scrollTop = previousScrollTop;
+      }
+    }
   }
 
   function renderInlineReviewMarkdown(text) {
@@ -1797,16 +1904,9 @@
     renderFullFileReviewPanel();
     rerenderFullFileWindowIfOpen();
 
-    if (options.appendToPrompt === false) {
-      return;
+    if (options.focus === true && promptInputNode) {
+      promptInputNode.focus();
     }
-
-    const lineLabel = noteLineLabel(normalizedTarget.startLine, normalizedTarget.endLine, "file");
-    const snippet = normalizedTarget.snippet ? `\nsnippet:\n${normalizedTarget.snippet}` : "";
-    appendTextToDetailComposer(
-      `[Code annotation]\nfile=${normalizedTarget.path}\n${lineLabel}${snippet}\n\nRequested change: `,
-      { focus: true }
-    );
   }
 
   function setFullFileReviewContext(context) {
@@ -1842,34 +1942,33 @@
     const target = fullFileViewerState.selectedNoteTarget;
     const reviewContext = fullFileViewerState.reviewContext || buildScopeReviewContextForFullFile();
     const hasContext = !!(reviewContext && (reviewContext.html || reviewContext.text));
-    const findingIndex = Number.parseInt(String(reviewContext?.findingIndex ?? ""), 10);
-    const selectedFinding = Number.isFinite(findingIndex) && findingIndex >= 0
-      ? renderedReviewMarkdownFindings.find((item) => item && item.index === findingIndex) || null
-      : null;
-    const canFixFinding = !!selectedFinding;
     const issueEntries = getFullFileIssueEntries();
+    const scopeSummary = getScopeReviewSummary(getCurrentScopeKey());
+    const openIssueCount = Number.isFinite(scopeSummary?.openFindingCount) ? scopeSummary.openFindingCount : issueEntries.length;
+    const foundIssueCount = issueEntries.length;
     const noReviewState = !hasContext && issueEntries.length === 0;
     applyFullFileReviewPanelState();
 
-    fullFileReviewTitle.textContent = reviewContext && reviewContext.title
-      ? reviewContext.title
-      : "Review Context";
-    if (target) {
-      fullFileReviewMeta.textContent = `${target.path} (${noteLineLabel(target.startLine, target.endLine, "file")}) selected. Annotation appended to prompt.`;
-    } else if (canFixFinding) {
-      fullFileReviewMeta.textContent = "Click Fix to append this finding to the prompt.";
+    if (foundIssueCount > 0) {
+      fullFileReviewTitle.textContent = `${foundIssueCount} issue${foundIssueCount === 1 ? "" : "s"} found`;
+      fullFileReviewMeta.textContent = `${openIssueCount} open${target ? ` | ${target.path} (${noteLineLabel(target.startLine, target.endLine, "file")}) selected` : ""}`;
+    } else if (target) {
+      fullFileReviewTitle.textContent = "No issues found";
+      fullFileReviewMeta.textContent = `${target.path} (${noteLineLabel(target.startLine, target.endLine, "file")}) selected. Add a note to include it in review notes.`;
     } else {
-      fullFileReviewMeta.textContent = hasContext
-        ? "Select a review link or code line to annotate."
-        : "No code review yet. Start one if you want review findings.";
+      fullFileReviewTitle.textContent = "No issues found";
+      fullFileReviewMeta.textContent = "Run review to generate findings.";
     }
 
-    if (reviewContext && reviewContext.html) {
-      fullFileReviewContext.innerHTML = `<div class="diff-full-window-review-card">${reviewContext.html}</div>`;
-    } else if (reviewContext && reviewContext.text) {
-      fullFileReviewContext.innerHTML = `<div class="diff-full-window-review-card"><div class="diff-review-md-paragraph">${escapeHtml(reviewContext.text)}</div></div>`;
-    } else {
-      fullFileReviewContext.innerHTML = "";
+    if (fullFileReviewTabs) {
+      const tabButtons = fullFileReviewTabs.querySelectorAll("[data-full-file-review-tab]");
+      tabButtons.forEach((button) => {
+        const mode = (button.getAttribute("data-full-file-review-tab") || "").trim();
+        const isActive = mode === reviewPanelTab;
+        button.classList.toggle("active", isActive);
+        button.setAttribute("aria-selected", isActive ? "true" : "false");
+      });
+      fullFileReviewTabs.classList.toggle("hidden", noReviewState);
     }
 
     if (noReviewState) {
@@ -1881,11 +1980,9 @@
       }
       fullFilePrevIssueBtn.classList.add("hidden");
       fullFileNextIssueBtn.classList.add("hidden");
-      fullFileFixBtn.textContent = "Start Review";
-      fullFileFixBtn.title = "Start review for this file/commit";
-      fullFileFixBtn.disabled = false;
       fullFileIssueList.innerHTML = "";
-      fullFileReviewContext.innerHTML = "<div class=\"diff-full-window-review-empty\">No review findings yet. Click Start Review to generate findings.</div>";
+      fullFileReviewContext.innerHTML = "<div class=\"diff-full-window-review-empty\">No review findings yet.</div>";
+      fullFileReviewContext.classList.remove("hidden");
       return;
     }
 
@@ -1896,13 +1993,20 @@
     if (fullFileWorkspace) {
       fullFileWorkspace.classList.remove("diff-full-window-workspace-no-review");
     }
-    if (!noReviewState) {
-      fullFilePrevIssueBtn.classList.remove("hidden");
-      fullFileNextIssueBtn.classList.remove("hidden");
-      fullFileFixBtn.textContent = "Fix";
-      fullFileFixBtn.title = "Append selected finding to composer";
-      fullFileFixBtn.disabled = !canFixFinding;
+    if (reviewPanelTab === "raw") {
+      fullFilePrevIssueBtn.classList.add("hidden");
+      fullFileNextIssueBtn.classList.add("hidden");
+      const scopeKey = getCurrentScopeKey();
+      const summary = getScopeReviewSummary(scopeKey);
+      const record = getActiveDetailReviewRecord(summary);
+      fullFileIssueList.classList.add("hidden");
+      fullFileReviewContext.classList.remove("hidden");
+      fullFileReviewContext.innerHTML = renderReviewRawJson(scopeKey, record, summary);
+      return;
     }
+    fullFileReviewContext.classList.add("hidden");
+    fullFileReviewContext.innerHTML = "";
+    fullFileIssueList.classList.remove("hidden");
     renderFullFileIssueList();
   }
 
@@ -1914,24 +2018,51 @@
     return;
   }
 
-  async function queueFixFromFullFilePanel() {
-    const scopeKey = getCurrentScopeKey();
-    const summary = getScopeReviewSummary(scopeKey);
-    const record = getActiveDetailReviewRecord(summary);
-    const reviewContext = fullFileViewerState.reviewContext || buildScopeReviewContextForFullFile();
-    const findingIndex = Number.parseInt(String(reviewContext?.findingIndex ?? ""), 10);
-    if (!record || !Number.isFinite(findingIndex) || findingIndex < 0) {
+  function addFindingAsComposerAnnotation(finding, options = {}) {
+    if (!finding || typeof finding !== "object") {
+      return;
+    }
+    const references = getFindingReferences(finding);
+    let targetPath = "";
+    let startLine = 1;
+    let endLine = 1;
+    for (const reference of references) {
+      const candidatePath = resolveDiffPathFromReviewReference(reference?.path || "");
+      if (!candidatePath) {
+        continue;
+      }
+      targetPath = candidatePath;
+      startLine = Number.isFinite(reference?.lineStart) && reference.lineStart > 0 ? Math.floor(reference.lineStart) : 1;
+      endLine = Number.isFinite(reference?.lineEnd) && reference.lineEnd >= startLine ? Math.floor(reference.lineEnd) : startLine;
+      break;
+    }
+
+    if (!targetPath) {
+      targetPath = fullFileViewerState.path || "";
+    }
+    if (!targetPath) {
       return;
     }
 
-    const finding = renderedReviewMarkdownFindings.find((item) => item && item.index === findingIndex);
-    if (!finding) {
-      return;
+    const findingTitle = typeof finding.title === "string" ? finding.title.trim() : "";
+    const findingText = typeof finding.text === "string" ? finding.text.trim() : "";
+    const noteBody = (findingTitle || findingText || "Address review finding").slice(0, MAX_REVIEW_NOTE_CHARS);
+    const snippet = targetPath === fullFileViewerState.path
+      ? deriveFullFileSnippet({ path: targetPath, startLine, endLine })
+      : "";
+    applyNoteToState(targetPath, startLine, endLine, noteBody, snippet, "file");
+    saveNotesForScope(currentNotesScopeKey);
+    updateSummary(currentTotalChangeCount);
+    rerenderFilesPreserveView();
+    rerenderFullFileWindowIfOpen();
+    renderComposerNotes();
+    updateReviewActionAvailability();
+    if (fullFileReviewMeta) {
+      fullFileReviewMeta.textContent = `Added annotation for ${targetPath} (${noteLineLabel(startLine, endLine, "file")}).`;
     }
-
-    const fixPrompt = buildFixPromptForReviewFinding(record, finding);
-    appendTextToDetailComposer(fixPrompt, { focus: true });
-    renderFullFileReviewPanel();
+    if (options.focus !== false && promptInputNode) {
+      promptInputNode.focus();
+    }
   }
 
   function sendCurrentNotesToPrompt() {
@@ -2392,8 +2523,31 @@
     commitSelect.classList.toggle("hidden", !showCommitSelect);
     modeWorktreeBtn.classList.toggle("hidden", isCodeReviewsWorkspace());
     contextSelect.value = normalizeContextMode(currentContextMode);
+    if (fullFileContextSelect) {
+      fullFileContextSelect.value = normalizeContextMode(currentContextMode);
+    }
     renderCommitModeBadge();
     renderCommitReviewSummary();
+  }
+
+  function applyContextMode(nextMode) {
+    const normalizedMode = normalizeContextMode(nextMode);
+    if (normalizedMode === currentContextMode) {
+      return;
+    }
+
+    currentContextMode = normalizedMode;
+    contextSelect.value = currentContextMode;
+    if (fullFileContextSelect) {
+      fullFileContextSelect.value = currentContextMode;
+    }
+    try {
+      window.localStorage.setItem(STORAGE_CONTEXT_MODE_KEY, currentContextMode);
+    } catch {
+    }
+    rerenderFullFileWindowIfOpen();
+    lastRenderKey = "";
+    queueRefresh({ force: true });
   }
 
   function getActiveCommitLabel() {
@@ -2512,6 +2666,9 @@
     rerenderFullFileWindowIfOpen();
     updateSummary(currentTotalChangeCount);
     updateReviewActionAvailability();
+    if (isDedicatedReviewDetailPage) {
+      navigateBackToCodeReviews();
+    }
   }
 
   function updateReviewActionAvailability() {
@@ -3252,6 +3409,8 @@
 
   function collectChangedLinesFromPatch(patchText) {
     const changed = new Set();
+    const added = new Set();
+    const removed = new Set();
     if (typeof patchText !== "string" || !patchText) {
       return { changed, first: 1 };
     }
@@ -3271,13 +3430,16 @@
       }
 
       if (line.startsWith("+") && !line.startsWith("+++")) {
+        added.add(currentNewLine);
         changed.add(currentNewLine);
         currentNewLine += 1;
         continue;
       }
 
       if (line.startsWith("-") && !line.startsWith("---")) {
-        changed.add(Math.max(currentNewLine, 1));
+        const targetLine = Math.max(currentNewLine, 1);
+        removed.add(targetLine);
+        changed.add(targetLine);
         continue;
       }
 
@@ -3289,6 +3451,8 @@
     const ordered = Array.from(changed.values()).filter((x) => Number.isFinite(x) && x > 0).sort((a, b) => a - b);
     return {
       changed,
+      added,
+      removed,
       first: ordered.length > 0 ? ordered[0] : 1
     };
   }
@@ -3375,7 +3539,7 @@
     lineNode.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
-  function renderFullFileWindowBody(content, changedLines) {
+  function renderFullFileWindowBody(content, changedLines, addedLines, removedLines) {
     if (!fullFileWindowReady) {
       return;
     }
@@ -3386,13 +3550,65 @@
       return;
     }
 
-    const html = lines.map((line, index) => {
-      const lineNo = index + 1;
+    const sortedChangedLines = changedLines instanceof Set
+      ? Array.from(changedLines.values()).filter((x) => Number.isFinite(x) && x > 0).sort((a, b) => a - b)
+      : [];
+    const contextLines = contextLinesForMode(currentContextMode);
+    const useContextWindow = Number.isFinite(contextLines) && contextLines >= 0 && contextLines < Number.MAX_SAFE_INTEGER && sortedChangedLines.length > 0;
+    const entries = [];
+    if (!useContextWindow) {
+      for (let lineNo = 1; lineNo <= lines.length; lineNo += 1) {
+        entries.push({ type: "line", lineNo });
+      }
+    } else {
+      const ranges = [];
+      for (const changedLine of sortedChangedLines) {
+        const start = Math.max(1, changedLine - contextLines);
+        const end = Math.min(lines.length, changedLine + contextLines);
+        const last = ranges.length > 0 ? ranges[ranges.length - 1] : null;
+        if (last && start <= (last.end + 1)) {
+          last.end = Math.max(last.end, end);
+        } else {
+          ranges.push({ start, end });
+        }
+      }
+
+      let cursor = 1;
+      for (const range of ranges) {
+        if (range.start > cursor) {
+          entries.push({ type: "gap", from: cursor, to: range.start - 1 });
+        }
+        for (let lineNo = range.start; lineNo <= range.end; lineNo += 1) {
+          entries.push({ type: "line", lineNo });
+        }
+        cursor = range.end + 1;
+      }
+      if (cursor <= lines.length) {
+        entries.push({ type: "gap", from: cursor, to: lines.length });
+      }
+    }
+
+    const html = entries.map((entry) => {
+      if (entry.type === "gap") {
+        const hiddenCount = Math.max(0, (entry.to - entry.from) + 1);
+        const label = `${hiddenCount} line${hiddenCount === 1 ? "" : "s"} hidden`;
+        return `<div class="diff-full-window-gap" data-full-window-gap="1">${escapeHtml(label)}</div>`;
+      }
+
+      const lineNo = entry.lineNo;
+      const line = lines[lineNo - 1] || "";
       const classes = ["diff-full-window-line", "diff-full-window-line-clickable"];
       const reviewTitle = getLineReviewTitle(fullFileViewerState.path, lineNo);
       const selectedTarget = fullFileViewerState.selectedNoteTarget;
       if (changedLines && changedLines.has(lineNo)) {
         classes.push("diff-full-window-line-changed");
+      }
+      const isAddedLine = !!(addedLines && addedLines.has(lineNo));
+      const isRemovedLine = !!(removedLines && removedLines.has(lineNo));
+      if (isAddedLine) {
+        classes.push("diff-full-window-line-added");
+      } else if (isRemovedLine) {
+        classes.push("diff-full-window-line-removed");
       }
       if (Number.isFinite(fullFileViewerState.requestedLineNo) && fullFileViewerState.requestedLineNo === lineNo) {
         classes.push("diff-full-window-line-requested");
@@ -3409,7 +3625,9 @@
       const title = reviewTitle
         ? `Click to add note. Shift-select lines to annotate a range. Review: ${reviewTitle}`
         : "Click to add note. Shift-select lines to annotate a range.";
+      const marker = isAddedLine ? "+" : (isRemovedLine ? "-" : " ");
       return `<div class="${classes.join(" ")}" data-full-window-line="${lineNo}" data-full-window-line-text="${escapeHtml(line)}" title="${escapeAttribute(title)}">
+        <span class="diff-full-window-line-marker" aria-hidden="true">${marker}</span>
         <span class="diff-full-window-line-no">${lineNo}</span>
         <span class="diff-full-window-line-text">${escapeHtml(line)}</span>
       </div>`;
@@ -3421,7 +3639,12 @@
     if (!fullFileWindowReady || fullFileWindow.classList.contains("hidden")) {
       return;
     }
-    renderFullFileWindowBody(fullFileViewerState.content, fullFileViewerState.changedLines);
+    renderFullFileWindowBody(
+      fullFileViewerState.content,
+      fullFileViewerState.changedLines,
+      fullFileViewerState.addedLines,
+      fullFileViewerState.removedLines
+    );
   }
 
   function renderFullFileWindowMethodOptions() {
@@ -3541,7 +3764,15 @@
       if (!file || typeof file.path !== "string" || !file.path.trim()) {
         continue;
       }
-      options.push(file.path.trim());
+      const path = file.path.trim();
+      const stat = getFileDiffStat(file);
+      const statLabel = file.isBinary === true
+        ? "binary"
+        : `+${Number.isFinite(stat.added) ? stat.added : 0} -${Number.isFinite(stat.removed) ? stat.removed : 0}`;
+      options.push({
+        path,
+        label: `${path} (${statLabel})`
+      });
     }
 
     if (options.length === 0) {
@@ -3553,11 +3784,14 @@
       return;
     }
 
-    const preferred = selectedPath && options.includes(selectedPath)
+    const optionPaths = options.map((item) => item.path);
+    const preferred = selectedPath && optionPaths.includes(selectedPath)
       ? selectedPath
-      : (options.includes(fullFileViewerState.path) ? fullFileViewerState.path : options[0]);
+      : (optionPaths.includes(fullFileViewerState.path) ? fullFileViewerState.path : optionPaths[0]);
 
-    const optionMarkup = options.map((path) => `<option value="${escapeAttribute(path)}">${escapeHtml(path)}</option>`).join("");
+    const optionMarkup = options
+      .map((item) => `<option value="${escapeAttribute(item.path)}">${escapeHtml(item.label)}</option>`)
+      .join("");
     fullFilePathSelectSyncing = true;
     fullFilePathSelect.innerHTML = optionMarkup;
     fullFilePathSelect.value = preferred;
@@ -3575,6 +3809,7 @@
     fullFileCloseBtn.classList.remove("hidden");
     fullFileRefreshBtn.disabled = pollInFlight === true;
     fullFileApproveBtn.disabled = !canApproveCurrentCommit();
+    fullFileContextSelect.disabled = pollInFlight === true;
   }
 
   function buildScopeReviewContextForFullFile() {
@@ -3605,7 +3840,12 @@
     }
 
     persistPendingNoteDraft();
-    fullFileWindow.classList.add("hidden");
+    if (!isDedicatedReviewDetailPage) {
+      fullFileWindow.classList.add("hidden");
+    } else {
+      fullFileWindow.classList.remove("hidden");
+      fullFileStatus.textContent = fullFileStatus.textContent || "Select a file to view full diff.";
+    }
     if (bodyNode) {
       bodyNode.classList.remove("diff-full-window-active");
     }
@@ -4315,6 +4555,15 @@
       if (!normalizedPath) {
         return;
       }
+      if (Array.isArray(currentFiles) && currentFiles.length > 0) {
+        const inScope = currentFiles.some((file) => {
+          const filePath = typeof file?.path === "string" ? file.path : "";
+          return filePath && normalizePathCaseInsensitive(filePath) === normalizePathCaseInsensitive(normalizedPath);
+        });
+        if (!inScope) {
+          return;
+        }
+      }
       const key = `${normalizedPath}::${lineNo}`;
       if (seen.has(key)) {
         return;
@@ -4333,17 +4582,57 @@
       match = markdownLinkRegex.exec(source);
     }
 
-    const plainRefRegex = /([A-Za-z0-9_.\/\\-]+\.[A-Za-z0-9_]+):(\d+)/g;
-    match = plainRefRegex.exec(source);
+    // Avoid re-parsing full markdown links as plain refs, which can create noisy /C:/... duplicates.
+    const sourceWithoutMarkdownLinks = source.replace(/\[[^\]]+\]\([^)]+\)/g, " ");
+    const plainRefRegex = /(?:^|[\s(])([A-Za-z0-9_.\/\\-]+\.[A-Za-z0-9_]+):(\d+)(?=$|[\s),])/g;
+    match = plainRefRegex.exec(sourceWithoutMarkdownLinks);
     while (match) {
       addRef(match[1] || "", Number.parseInt(match[2] || "", 10));
-      match = plainRefRegex.exec(source);
+      match = plainRefRegex.exec(sourceWithoutMarkdownLinks);
     }
 
     return refs;
   }
 
   function getFullFileIssueEntries() {
+    const scopeKey = getCurrentScopeKey();
+    if (scopeKey) {
+      const flattened = scopeKey === currentReviewStateScopeKey
+        ? flattenReviewFindingsForScope(scopeKey, reviewFindingStateByKey)
+        : flattenReviewFindingsForScope(scopeKey, loadReviewFindingState(scopeKey));
+      if (Array.isArray(flattened) && flattened.length > 0) {
+        return flattened
+          .filter((finding) => finding && typeof finding === "object")
+          .map((finding, index) => {
+            const detail = typeof finding.detail === "string" ? finding.detail.trim() : "";
+            const severity = normalizeReviewSeverity(typeof finding.severity === "string" ? finding.severity : "");
+            const firstLine = detail.split(/\r?\n/).find((line) => typeof line === "string" && line.trim()) || "";
+            const cleanFirstLine = firstLine.replace(/^\*\*([^*]+)\*\*:?\s*/g, "$1: ").trim();
+            const titleBase = cleanFirstLine || detail || `Finding ${index + 1}`;
+            const titlePrefix = severity ? `${severity.charAt(0).toUpperCase()}${severity.slice(1)}: ` : "";
+            const title = `${titlePrefix}${titleBase}`.slice(0, 220);
+            const references = getFindingReferences(finding)
+              .map((reference) => ({
+                path: typeof reference?.path === "string" ? reference.path : "",
+                lineNo: Number.isFinite(reference?.lineStart) && reference.lineStart > 0 ? Math.floor(reference.lineStart) : 1
+              }))
+              .filter((reference) => !!reference.path);
+            const html = detail
+              ? detail.split(/\r?\n/).filter((line) => typeof line === "string" && line.trim()).map((line) =>
+                `<div class="diff-review-md-paragraph">${renderInlineReviewMarkdown(line)}</div>`
+              ).join("")
+              : "";
+            return {
+              index,
+              title,
+              text: detail,
+              html,
+              references
+            };
+          });
+      }
+    }
+
     if (!Array.isArray(renderedReviewMarkdownFindings) || renderedReviewMarkdownFindings.length === 0) {
       return [];
     }
@@ -4409,7 +4698,7 @@
     } else {
       listIndex = (listIndex + delta + issues.length) % issues.length;
     }
-    selectIssueEntry(issues[listIndex], { jump: true, focus: true });
+    selectIssueEntry(issues[listIndex], { jump: false, focus: true });
   }
 
   function renderFullFileIssueList() {
@@ -4431,14 +4720,31 @@
     const rows = issues.map((issue) => {
       const refCount = Array.isArray(issue.references) ? issue.references.length : 0;
       const meta = refCount > 0 ? `${refCount} linked location${refCount === 1 ? "" : "s"}` : "no linked file";
-      return `<button type="button" class="diff-full-window-issue-item${issue.index === selectedIndex ? " active" : ""}" data-full-file-issue-index="${issue.index}">
-        <span class="diff-full-window-issue-item-title">${escapeHtml(issue.title)}</span>
-        <span class="diff-full-window-issue-item-meta">${escapeHtml(meta)}</span>
-      </button>`;
+      const refsMarkup = refCount > 0
+        ? issue.references.map((ref) => {
+          const lineNo = Number.isFinite(ref?.lineNo) ? ref.lineNo : 1;
+          const label = `${ref.path}:${lineNo}`;
+          return `<button type="button" class="diff-review-ref-link" data-review-jump-path="${escapeAttribute(ref.path)}" data-review-jump-line="${lineNo}" data-review-jump-end="${lineNo}" data-review-md-link="1">${escapeHtml(label)}</button>`;
+        }).join("")
+        : "<span class=\"diff-review-refs-empty\">No linked file locations</span>";
+      const detailsMarkup = issue.html
+        ? `<div class="diff-full-window-issue-item-body diff-review-md-body">${issue.html}</div>`
+        : `<div class="diff-full-window-issue-item-body diff-review-md-paragraph">${escapeHtml(issue.text || "")}</div>`;
+      return `<div class="diff-full-window-issue-item${issue.index === selectedIndex ? " active" : ""}" data-full-file-issue-index="${issue.index}">
+        <button type="button" class="diff-full-window-issue-item-head" data-full-file-issue-index="${issue.index}">
+          <span class="diff-full-window-issue-item-title">${escapeHtml(issue.title)}</span>
+          <span class="diff-full-window-issue-item-meta">${escapeHtml(meta)}</span>
+        </button>
+        ${detailsMarkup}
+        <div class="diff-full-window-issue-item-actions">
+          <button type="button" class="diff-full-window-issue-fix-btn" data-full-file-issue-fix="${issue.index}">Fix</button>
+        </div>
+        <div class="diff-full-window-issue-item-links">${refsMarkup}</div>
+      </div>`;
     });
     fullFileIssueList.innerHTML = rows.join("");
-    fullFilePrevIssueBtn.disabled = issues.length <= 1;
-    fullFileNextIssueBtn.disabled = issues.length <= 1;
+    fullFilePrevIssueBtn.disabled = true;
+    fullFileNextIssueBtn.disabled = true;
   }
 
   function maybeOpenRequestedReviewDetailFromUrl() {
@@ -4517,6 +4823,8 @@
       ...createEmptyFullFileViewerState(),
       path: normalizedPath,
       changedLines: changed.changed,
+      addedLines: changed.added,
+      removedLines: changed.removed,
       firstChangedLine: requestedLineNo || changed.first,
       requestedLineNo,
       selectedNoteTarget: selectedTarget
@@ -4540,7 +4848,7 @@
     fullFileMethodSelect.innerHTML = "<option value=\"\">Methods</option>";
     fullFileMethodSelect.disabled = true;
     fullFileWindow.classList.remove("hidden");
-    if (bodyNode) {
+    if (!isDedicatedReviewDetailPage && bodyNode) {
       bodyNode.classList.add("diff-full-window-active");
     }
     updateFullFileWindowControls();
@@ -4591,7 +4899,12 @@
       fullFileStatus.textContent = data.isTruncated === true
         ? "Showing truncated file content."
         : "Use Classes and Methods dropdowns to jump.";
-      renderFullFileWindowBody(content, fullFileViewerState.changedLines);
+      renderFullFileWindowBody(
+        content,
+        fullFileViewerState.changedLines,
+        fullFileViewerState.addedLines,
+        fullFileViewerState.removedLines
+      );
       renderFullFileReviewPanel();
       renderFullFileWindowClassOptions();
       window.setTimeout(() => {
@@ -4974,6 +5287,12 @@
       updateSummary(currentTotalChangeCount);
       applyPanelState();
       maybeOpenRequestedReviewDetailFromUrl();
+      if (isDedicatedReviewDetailPage && fullFileWindowReady && currentFiles.length > 0 && !fullFileViewerState.path) {
+        const firstPath = typeof currentFiles[0]?.path === "string" ? currentFiles[0].path : "";
+        if (firstPath) {
+          openFullFileWindow(firstPath, { allowNavigation: false }).catch(() => { });
+        }
+      }
       renderComposerNotes();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -4997,6 +5316,10 @@
       pollInFlight = false;
       commitSelect.disabled = currentMode !== "commit" || availableCommits.length === 0;
       contextSelect.disabled = false;
+      if (fullFileContextSelect) {
+        fullFileContextSelect.disabled = false;
+      }
+      updateFullFileWindowControls();
     }
   }
 
@@ -5217,18 +5540,7 @@
   });
 
   contextSelect.addEventListener("change", () => {
-    const nextMode = normalizeContextMode(contextSelect.value);
-    if (nextMode === currentContextMode) {
-      return;
-    }
-
-    currentContextMode = nextMode;
-    try {
-      window.localStorage.setItem(STORAGE_CONTEXT_MODE_KEY, currentContextMode);
-    } catch {
-    }
-    lastRenderKey = "";
-    queueRefresh({ force: true });
+    applyContextMode(contextSelect.value);
   });
 
   queueReviewBtn.addEventListener("click", () => {
@@ -5248,6 +5560,10 @@
   });
 
   if (fullFileWindowReady) {
+    fullFileContextSelect.addEventListener("change", () => {
+      applyContextMode(fullFileContextSelect.value);
+    });
+
     fullFilePathSelect.addEventListener("change", () => {
       if (fullFilePathSelectSyncing) {
         return;
@@ -5268,6 +5584,45 @@
     });
 
     fullFileIssueList.addEventListener("click", (event) => {
+      const fixBtn = event.target instanceof Element ? event.target.closest("[data-full-file-issue-fix]") : null;
+      if (fixBtn) {
+        const findingIndex = Number.parseInt(fixBtn.getAttribute("data-full-file-issue-fix") || "", 10);
+        if (!Number.isFinite(findingIndex) || findingIndex < 0) {
+          return;
+        }
+        const issues = getFullFileIssueEntries();
+        const issue = issues.find((x) => x && x.index === findingIndex) || null;
+        const finding = renderedReviewMarkdownFindings.find((x) => x && x.index === findingIndex) || null;
+        if (!finding && !issue) {
+          return;
+        }
+        if (finding) {
+          addFindingAsComposerAnnotation(finding, { focus: true });
+          return;
+        }
+        const fallbackFinding = issue
+          ? {
+            title: issue.title || "",
+            text: issue.text || "",
+            path: issue.references[0]?.path || "",
+            lineNo: issue.references[0]?.lineNo || null,
+            lineEnd: issue.references[0]?.lineNo || null,
+            references: Array.isArray(issue.references)
+              ? issue.references.map((ref) => ({
+                path: ref.path,
+                lineStart: ref.lineNo,
+                lineEnd: ref.lineNo
+              }))
+              : []
+          }
+          : null;
+        if (!fallbackFinding) {
+          return;
+        }
+        addFindingAsComposerAnnotation(fallbackFinding, { focus: true });
+        return;
+      }
+
       const item = event.target instanceof Element ? event.target.closest("[data-full-file-issue-index]") : null;
       if (!item) {
         return;
@@ -5281,7 +5636,7 @@
       if (!targetIssue) {
         return;
       }
-      selectIssueEntry(targetIssue, { jump: true, focus: true });
+      selectIssueEntry(targetIssue, { jump: false, focus: true });
     });
 
     fullFileApproveBtn.addEventListener("click", () => {
@@ -5293,11 +5648,11 @@
     });
 
     fullFileBackBtn.addEventListener("click", () => {
-      window.location.assign(buildCodeReviewsListUrl());
+      navigateBackToCodeReviews();
     });
 
     fullFileCloseBtn.addEventListener("click", () => {
-      window.location.assign(buildCodeReviewsListUrl());
+      navigateBackToCodeReviews();
     });
 
     fullFileClassSelect.addEventListener("change", () => {
@@ -5343,7 +5698,8 @@
         endLine: lineNo,
         snippet: (lineText || "").trim(),
         origin: "file"
-      }, { appendToPrompt: true });
+      }, { appendToPrompt: false });
+      openNoteModal(fullFileViewerState.path, lineNo, lineNo, (lineText || "").trim(), "file");
     });
 
     fullFileBody.addEventListener("mouseup", () => {
@@ -5353,25 +5709,30 @@
       }
 
       ignoreNextFullFileLineClick = true;
-      setFullFileNoteTarget(targets[0], { appendToPrompt: true });
+      setFullFileNoteTarget(targets[0], { appendToPrompt: false });
+      openNoteModalForTargets(targets);
       const selection = window.getSelection ? window.getSelection() : null;
       if (selection && typeof selection.removeAllRanges === "function") {
         selection.removeAllRanges();
       }
     });
 
-    fullFileFixBtn.addEventListener("click", () => {
-      const reviewContext = fullFileViewerState.reviewContext || buildScopeReviewContextForFullFile();
-      const hasContext = !!(reviewContext && (reviewContext.html || reviewContext.text));
-      const issueEntries = getFullFileIssueEntries();
-      if (!hasContext && issueEntries.length === 0) {
-        startReviewFromComposer().catch(() => { });
+    fullFileReviewPanel.addEventListener("click", (event) => {
+      const tabBtn = event.target instanceof Element ? event.target.closest("[data-full-file-review-tab]") : null;
+      if (tabBtn) {
+        const nextTab = (tabBtn.getAttribute("data-full-file-review-tab") || "").trim();
+        setReviewPanelTab(nextTab);
         return;
       }
-      queueFixFromFullFilePanel().catch(() => { });
-    });
-
-    fullFileReviewPanel.addEventListener("click", (event) => {
+      const copyJsonBtn = event.target instanceof Element ? event.target.closest("[data-full-file-copy-json='1']") : null;
+      if (copyJsonBtn) {
+        const scopeKey = getCurrentScopeKey();
+        const summary = getScopeReviewSummary(scopeKey);
+        const record = getActiveDetailReviewRecord(summary);
+        const rawText = buildReviewRawJsonText(scopeKey, record, summary);
+        copyTextToClipboard(rawText).catch(() => { });
+        return;
+      }
       handleReviewJumpFromEvent(event);
     });
 
@@ -5379,9 +5740,13 @@
       setFullFileReviewPanelCollapsed(!fullFileReviewPanelCollapsed);
     });
 
+    fullFileSideCollapseBtn.addEventListener("click", () => {
+      setFullFileReviewPanelCollapsed(!fullFileReviewPanelCollapsed);
+    });
+
     window.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !fullFileWindow.classList.contains("hidden")) {
-        window.location.assign(buildCodeReviewsListUrl());
+        navigateBackToCodeReviews();
       }
     });
   }
