@@ -4826,28 +4826,34 @@ function submitSessionRecoveryDecision(recover) {
   return true;
 }
 
+function createEmptySessionState(now = Date.now()) {
+  return {
+    threadId: null,
+    cwd: null,
+    model: null,
+    reasoningEffort: null,
+    approvalPolicy: null,
+    sandboxPolicy: null,
+    isAppServerRecovering: false,
+    isPlanTurn: false,
+    planStatus: "idle",
+    planText: "",
+    planDraftText: "",
+    planUpdatedAt: null,
+    pendingApproval: null,
+    pendingRecoveryOffer: null,
+    pendingTurnRetryOffer: null,
+    queuedTurns: [],
+    queuedTurnCount: 0,
+    turnCountInMemory: 0,
+    createdAtTick: now,
+    lastActivityTick: now
+  };
+}
+
 function ensureSessionState(sessionId) {
   if (!sessions.has(sessionId)) {
-    const now = Date.now();
-    sessions.set(sessionId, {
-      threadId: null,
-      cwd: null,
-      model: null,
-      reasoningEffort: null,
-      approvalPolicy: null,
-      sandboxPolicy: null,
-      isAppServerRecovering: false,
-      isPlanTurn: false,
-      planStatus: "idle",
-      planText: "",
-      planDraftText: "",
-      planUpdatedAt: null,
-      pendingApproval: null,
-      pendingRecoveryOffer: null,
-      pendingTurnRetryOffer: null,
-      createdAtTick: now,
-      lastActivityTick: now,
-    });
+    sessions.set(sessionId, createEmptySessionState());
   }
   return sessions.get(sessionId);
 }
@@ -9400,6 +9406,485 @@ function applySessionLifecyclePayload(sessionId, payload) {
   return { state, pendingCreate };
 }
 
+function handleAppServerErrorEvent(payload) {
+  const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : null;
+  const code = typeof payload.code === "string" ? payload.code : "unknown";
+  const severity = typeof payload.severity === "string" ? payload.severity : "error";
+  const message = typeof payload.message === "string" && payload.message.trim()
+    ? payload.message.trim()
+    : "Codex app-server reported an error.";
+  const detail = typeof payload.detail === "string" ? payload.detail.trim() : "";
+  const recommendedAction = typeof payload.recommendedAction === "string" ? payload.recommendedAction.trim() : "";
+  const isAuthError = payload.isAuthError === true;
+  const shouldSurfaceBanner = isAuthError || !sessionId || sessionId === activeSessionId;
+
+  uiAuditLog("in.appserver_error", {
+    sessionId: sessionId || null,
+    code,
+    severity,
+    isAuthError
+  }, severity === "warn" ? "warn" : "error");
+  appendLog(
+    `[appserver_error] session=${sessionId || "unknown"} code=${code} severity=${severity} message=${message}${detail ? ` detail=${detail}` : ""}`);
+
+  if (!shouldSurfaceBanner) {
+    return;
+  }
+
+  const bannerMessage = recommendedAction
+    ? `${message} ${recommendedAction}`
+    : message;
+  showAppServerErrorBanner(bannerMessage, {
+    detail,
+    recommendedAction,
+    sticky: isAuthError
+  });
+}
+
+function handlePendingRenameAfterAttach(sessionId, threadId) {
+  if (!threadId || !pendingRenameOnAttach.has(threadId)) {
+    return;
+  }
+
+  const requestedName = pendingRenameOnAttach.get(threadId) || "";
+  pendingRenameOnAttach.delete(threadId);
+  if (!requestedName) {
+    return;
+  }
+
+  send("session_rename", { sessionId, threadName: requestedName });
+  send("session_catalog_list");
+}
+
+function handleSessionCreatedEvent(payload) {
+  const sessionId = payload.sessionId;
+  if (!sessionId) {
+    return;
+  }
+
+  const { state, pendingCreate } = applySessionLifecyclePayload(sessionId, payload);
+  touchSessionActivity(sessionId);
+  setTurnInFlight(sessionId, false);
+  uiAuditLog("in.session_created", {
+    sessionId,
+    threadId: state.threadId || null,
+    activeSessionId
+  });
+  appendLog(`[session] created id=${sessionId} thread=${state.threadId || "unknown"} log=${payload.logPath || "n/a"}`);
+
+  if (pendingCreate && pendingCreate.threadName) {
+    send("session_rename", { sessionId, threadName: pendingCreate.threadName });
+    send("session_catalog_list");
+  }
+
+  setActiveSession(sessionId, { persistSelection: true, reason: "session_created" });
+}
+
+function handleSessionAttachedEvent(payload) {
+  const sessionId = payload.sessionId;
+  if (!sessionId) {
+    return;
+  }
+
+  const { state } = applySessionLifecyclePayload(sessionId, payload);
+  const pendingThreadId = getPendingSessionLoadThreadId();
+  const matchedPendingSessionLoad = isPendingSessionLoadForThread(state.threadId);
+  const shouldFocusAttachedSession =
+    matchedPendingSessionLoad ||
+    (!pendingThreadId &&
+      (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS ||
+        !activeSessionId ||
+        !sessions.has(activeSessionId)));
+
+  if (matchedPendingSessionLoad) {
+    clearPendingSessionLoad();
+  }
+
+  setTurnInFlight(sessionId, false);
+  uiAuditLog("in.session_attached", {
+    sessionId,
+    threadId: state.threadId || null,
+    activeSessionId
+  });
+  appendLog(`[session] attached id=${sessionId} thread=${state.threadId || "unknown"} log=${payload.logPath || "n/a"}`);
+  handlePendingRenameAfterAttach(sessionId, state.threadId);
+
+  uiAuditLog("in.session_attached_focus_decision", {
+    sessionId,
+    threadId: state.threadId || null,
+    pendingThreadId: pendingThreadId || null,
+    matchedPendingSessionLoad,
+    hadActiveSession: !!activeSessionId,
+    activeSessionExists: !!(activeSessionId && sessions.has(activeSessionId)),
+    preferAttachedSession: shouldFocusAttachedSession
+  });
+
+  if (shouldFocusAttachedSession) {
+    setActiveSession(sessionId, {
+      persistSelection: true,
+      reason: matchedPendingSessionLoad ? "session_attached_pending_selection" : "session_attached"
+    });
+    return;
+  }
+
+  updateSessionSelect(activeSessionId || null);
+}
+
+function handleSessionAttachFailedEvent(payload) {
+  const threadId = normalizeThreadId(payload.threadId || "");
+  const message = typeof payload.message === "string" && payload.message.trim()
+    ? payload.message.trim()
+    : "Attach failed.";
+  const matchedPendingSessionLoad = isPendingSessionLoadForThread(threadId);
+  uiAuditLog("in.session_attach_failed", {
+    threadId: threadId || null,
+    matchedPendingSessionLoad,
+    pendingThreadId: getPendingSessionLoadThreadId() || null
+  }, "warn");
+  appendLog(`[session_attach_failed] thread=${threadId || "unknown"} message=${message}`);
+  if (matchedPendingSessionLoad) {
+    handlePendingSessionLoadFailure();
+  }
+}
+
+function applySessionListEntry(existingState, sessionSummary, flags) {
+  const state = existingState || createEmptySessionState();
+  ensurePlanStateShape(state);
+  state.threadId = sessionSummary.threadId || state.threadId || null;
+  state.threadName = sessionSummary.threadName || state.threadName || "";
+  state.cwd = sessionSummary.cwd || state.cwd || null;
+  const serverModel = normalizeModelValue(sessionSummary.model);
+  const serverEffort = normalizeReasoningEffort(sessionSummary.reasoningEffort ?? sessionSummary.effort ?? "");
+
+  if (state.threadId) {
+    const preferred = getPreferredModelForThread(state.threadId);
+    const preferredEffort = getPreferredReasoningForThread(state.threadId);
+    const targetModel = preferred.found ? preferred.model : serverModel;
+    const targetEffort = preferredEffort.found ? preferredEffort.effort : serverEffort;
+    acknowledgeSessionModelSync(sessionSummary.sessionId, serverModel, serverEffort);
+
+    state.model = targetModel || state.model || null;
+    state.reasoningEffort = targetEffort || state.reasoningEffort || null;
+
+    if (preferred.found) {
+      state.model = preferred.model || null;
+    } else {
+      state.model = serverModel || state.model || null;
+      if (sessionSummary.model !== undefined) {
+        flags.persistedPreferenceUpdated =
+          ensureThreadModelPreference(state.threadId, serverModel, { persist: false })
+          || flags.persistedPreferenceUpdated;
+      }
+    }
+
+    if (preferredEffort.found) {
+      state.reasoningEffort = preferredEffort.effort || null;
+    } else if (sessionSummary.reasoningEffort !== undefined || sessionSummary.effort !== undefined) {
+      flags.persistedPreferenceUpdated =
+        ensureThreadReasoningPreference(state.threadId, serverEffort, { persist: false })
+        || flags.persistedPreferenceUpdated;
+    }
+
+    const serverPermission = readPermissionInfoFromPayload(sessionSummary);
+    const preferredPermission = getPreferredPermissionForThread(state.threadId);
+    const hasPermissionFromPayload = hasAnyPermissionField(sessionSummary);
+    if (preferredPermission.found || hasPermissionFromPayload) {
+      const targetApproval = preferredPermission.found
+        ? preferredPermission.approval
+        : (serverPermission?.approval || "");
+      const targetSandbox = preferredPermission.found
+        ? preferredPermission.sandbox
+        : (serverPermission?.sandbox || "");
+      acknowledgeSessionPermissionSync(
+        sessionSummary.sessionId,
+        serverPermission?.approval || "",
+        serverPermission?.sandbox || "");
+      state.approvalPolicy = targetApproval || null;
+      state.sandboxPolicy = targetSandbox || null;
+      replacePermissionLevelForThread(state.threadId, {
+        approval: state.approvalPolicy || "",
+        sandbox: state.sandboxPolicy || ""
+      });
+    }
+    if (!preferredPermission.found && hasPermissionFromPayload) {
+      flags.persistedPermissionPreferenceUpdated =
+        ensureThreadPermissionPreference(
+          state.threadId,
+          {
+            approval: serverPermission?.approval || "",
+            sandbox: serverPermission?.sandbox || ""
+          },
+          { persist: false })
+        || flags.persistedPermissionPreferenceUpdated;
+    }
+  } else {
+    state.model = serverModel || state.model || null;
+    state.reasoningEffort = serverEffort || state.reasoningEffort || null;
+    if (hasApprovalPolicyField(sessionSummary)) {
+      state.approvalPolicy = normalizeApprovalPolicy(sessionSummary.approvalPolicy ?? sessionSummary.approval_policy ?? "") || null;
+    }
+    if (hasSandboxPolicyField(sessionSummary)) {
+      state.sandboxPolicy = normalizeSandboxMode(sessionSummary.sandboxPolicy ?? sessionSummary.sandbox_policy ?? sessionSummary.sandbox ?? "") || null;
+    }
+    acknowledgeSessionPermissionSync(
+      sessionSummary.sessionId,
+      state.approvalPolicy || "",
+      state.sandboxPolicy || "");
+  }
+
+  state.createdAtTick = state.createdAtTick || Date.now();
+  state.lastActivityTick = Number.isFinite(state.lastActivityTick) ? state.lastActivityTick : state.createdAtTick;
+
+  const pending =
+    sessionSummary.pendingApproval && typeof sessionSummary.pendingApproval === "object" && !Array.isArray(sessionSummary.pendingApproval)
+      ? sessionSummary.pendingApproval
+      : null;
+  state.pendingApproval = pending && typeof pending.approvalId === "string" && pending.approvalId.trim() ? pending : null;
+  state.pendingRecoveryOffer = normalizeRecoveryOffer(sessionSummary.pendingRecoveryOffer);
+  state.pendingTurnRetryOffer = normalizeTurnRetryOffer(sessionSummary.pendingTurnRetryOffer);
+  state.queuedTurns = normalizeQueuedTurnSummaryList(sessionSummary.queuedTurns || sessionSummary.queuedMessages || []);
+  state.queuedTurnCount = Number.isFinite(sessionSummary.queuedTurnCount)
+    ? Math.max(0, Math.floor(sessionSummary.queuedTurnCount))
+    : state.queuedTurns.length;
+  state.turnCountInMemory = Number.isFinite(sessionSummary.turnCountInMemory)
+    ? Math.max(0, Math.floor(sessionSummary.turnCountInMemory))
+    : Number.isFinite(state.turnCountInMemory) ? state.turnCountInMemory : 0;
+  state.isAppServerRecovering = sessionSummary.isAppServerRecovering === true;
+
+  return state;
+}
+
+function syncPendingApprovalFromActiveSession() {
+  const activeState = getActiveSessionState();
+  const activePending = activeState && activeState.pendingApproval ? activeState.pendingApproval : null;
+  if (activeSessionId && activePending && typeof activePending.approvalId === "string" && activePending.approvalId.trim()) {
+    const approvalId = activePending.approvalId.trim();
+    if (!pendingApproval || pendingApproval.sessionId !== activeSessionId || pendingApproval.approvalId !== approvalId) {
+      pendingApproval = { sessionId: activeSessionId, approvalId };
+      approvalSummary.textContent = activePending.summary || "Approval requested";
+      const lines = [];
+      if (activePending.reason) lines.push(`Reason: ${activePending.reason}`);
+      if (activePending.cwd) lines.push(`CWD: ${activePending.cwd}`);
+      if (Array.isArray(activePending.actions) && activePending.actions.length > 0) lines.push(`Actions: ${activePending.actions.join("; ")}`);
+      approvalDetails.textContent = lines.join("\n");
+      setApprovalVisible(true);
+      appendLog(`[approval] pending session=${activeSessionId} approvalId=${approvalId}`);
+    }
+    return;
+  }
+
+  if (!pendingApproval) {
+    return;
+  }
+
+  const priorState = pendingApproval.sessionId ? sessions.get(pendingApproval.sessionId) : null;
+  const stillPending =
+    priorState &&
+    priorState.pendingApproval &&
+    typeof priorState.pendingApproval.approvalId === "string" &&
+    priorState.pendingApproval.approvalId === pendingApproval.approvalId;
+  if (!stillPending) {
+    pendingApproval = null;
+    setApprovalVisible(false);
+  }
+}
+
+function handleSessionListEvent(payload) {
+  syncCodexAccountFromPayload(payload.codexAccount, "session_list");
+  const list = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const nextSessionListViewKey = buildSessionListViewKey(
+    payload.activeSessionId || null,
+    list,
+    payload.processingByThread);
+  const shouldRefreshSessionViews = nextSessionListViewKey !== lastSessionListViewKey;
+  lastSessionListViewKey = nextSessionListViewKey;
+
+  const next = new Map();
+  const nextProcessingByThread = new Map();
+  const flags = {
+    persistedPreferenceUpdated: false,
+    persistedPermissionPreferenceUpdated: false
+  };
+
+  for (const sessionSummary of list) {
+    const state = applySessionListEntry(sessions.get(sessionSummary.sessionId), sessionSummary, flags);
+    const inFlightFromServer = sessionSummary.isTurnInFlight === true || sessionSummary.turnInFlight === true;
+    const inFlight = resolveTurnInFlightFromServer(sessionSummary.sessionId, inFlightFromServer);
+    setTurnInFlight(sessionSummary.sessionId, inFlight);
+    if (inFlight && state.threadId) {
+      nextProcessingByThread.set(state.threadId, true);
+    }
+    next.set(sessionSummary.sessionId, state);
+  }
+
+  if (payload.processingByThread && typeof payload.processingByThread === "object" && !Array.isArray(payload.processingByThread)) {
+    for (const [threadId, processing] of Object.entries(payload.processingByThread)) {
+      const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+      if (!normalizedThreadId || processing !== true) {
+        continue;
+      }
+
+      nextProcessingByThread.set(normalizedThreadId, true);
+    }
+  }
+
+  if (flags.persistedPreferenceUpdated) {
+    persistThreadModelState();
+    persistThreadReasoningState();
+  }
+  if (flags.persistedPermissionPreferenceUpdated) {
+    persistThreadPermissionState();
+  }
+
+  sessions = next;
+  prunePendingSessionModelSync(Array.from(next.keys()));
+  prunePendingSessionPermissionSync(Array.from(next.keys()));
+  pruneTurnActivityState(Array.from(next.keys()));
+  pruneRateLimitState(Array.from(next.keys()));
+  applyProcessingByThread(nextProcessingByThread);
+  prunePromptState();
+
+  if (shouldRefreshSessionViews || !!getPendingSessionLoadThreadId()) {
+    updateSessionSelect(payload.activeSessionId || null);
+    uiAuditLog("in.session_list_applied", {
+      activeFromServer: payload.activeSessionId || null,
+      activeLocal: activeSessionId || null,
+      sessionCount: list.length,
+      processingThreads: nextProcessingByThread.size
+    });
+  } else {
+    updatePromptActionState();
+  }
+
+  syncPendingApprovalFromActiveSession();
+  syncSessionRecoveryModal();
+}
+
+function handleSessionCatalogEvent(payload) {
+  syncCodexAccountFromPayload(payload.codexAccount, "session_catalog");
+  sessionCatalogLoadedOnce = true;
+  const list = Array.isArray(payload.sessions) ? payload.sessions : [];
+  const nextProcessingByThread = new Map();
+  for (const [sessionId, state] of sessions.entries()) {
+    if (!sessionId || !state || !state.threadId) {
+      continue;
+    }
+
+    if (isTurnInFlight(sessionId)) {
+      const normalizedThreadId = normalizeThreadId(state.threadId);
+      if (normalizedThreadId) {
+        nextProcessingByThread.set(normalizedThreadId, true);
+      }
+    }
+  }
+
+  let persistedPreferenceUpdated = false;
+  const normalizedCatalog = list
+    .filter((entry) => entry && entry.threadId)
+    .map((entry) => {
+      const normalizedThreadId = typeof entry.threadId === "string" ? entry.threadId.trim() : "";
+      if (normalizedThreadId) {
+        if (entry.isProcessing === true) {
+          nextProcessingByThread.set(normalizedThreadId, true);
+        } else if (entry.isProcessing === false) {
+          nextProcessingByThread.delete(normalizedThreadId);
+        }
+      }
+
+      const preferred = getPreferredModelForThread(entry.threadId);
+      const preferredEffort = getPreferredReasoningForThread(entry.threadId);
+      if (preferred.found) {
+        return {
+          ...entry,
+          cwd: getEffectiveProjectCwd(entry.cwd || ""),
+          model: preferred.model,
+          reasoningEffort: preferredEffort.found ? preferredEffort.effort : normalizeReasoningEffort(entry.reasoningEffort ?? entry.effort ?? "")
+        };
+      }
+
+      const normalizedServerModel = normalizeModelValue(entry.model);
+      const normalizedServerEffort = normalizeReasoningEffort(entry.reasoningEffort ?? entry.effort ?? "");
+      if (ensureThreadModelPreference(entry.threadId, normalizedServerModel, { persist: false })) {
+        persistedPreferenceUpdated = true;
+      }
+      if (ensureThreadReasoningPreference(entry.threadId, normalizedServerEffort, { persist: false })) {
+        persistedPreferenceUpdated = true;
+      }
+      return {
+        ...entry,
+        cwd: getEffectiveProjectCwd(entry.cwd || ""),
+        model: normalizedServerModel,
+        reasoningEffort: preferredEffort.found ? preferredEffort.effort : normalizedServerEffort
+      };
+    })
+    .sort((a, b) => (b.updatedAtUtc || "").localeCompare(a.updatedAtUtc || ""));
+
+  const perProjectCounts = new Map();
+  sessionCatalog = normalizedCatalog.filter((entry) => {
+    const projectKey = getProjectKeyFromCwd(entry.cwd || "");
+    const count = perProjectCounts.get(projectKey) || 0;
+    if (count >= MAX_PROJECT_SESSIONS_LOADED) {
+      return false;
+    }
+
+    perProjectCounts.set(projectKey, count + 1);
+    return true;
+  });
+
+  if (payload.processingByThread && typeof payload.processingByThread === "object" && !Array.isArray(payload.processingByThread)) {
+    nextProcessingByThread.clear();
+    for (const [threadId, processing] of Object.entries(payload.processingByThread)) {
+      const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
+      if (!normalizedThreadId || processing !== true) {
+        continue;
+      }
+
+      nextProcessingByThread.set(normalizedThreadId, true);
+    }
+  }
+
+  applyProcessingByThread(nextProcessingByThread);
+  uiAuditLog("in.session_catalog", {
+    sessionCount: sessionCatalog.length,
+    processingThreads: nextProcessingByThread.size
+  });
+  if (persistedPreferenceUpdated) {
+    persistThreadModelState();
+    persistThreadReasoningState();
+  }
+  updateExistingSessionSelect();
+  refreshSessionMeta();
+  appendLog(`[catalog] loaded ${sessionCatalog.length} existing sessions from ${payload.codexHomePath || "default CODEX_HOME"}`);
+}
+
+function handleSessionStoppedEvent(payload) {
+  const sessionId = payload.sessionId;
+  if (sessionId && sessions.has(sessionId)) {
+    sessions.delete(sessionId);
+    pendingSessionModelSyncBySession.delete(sessionId);
+    lastConfirmedSessionModelSyncBySession.delete(sessionId);
+    pendingSessionPermissionSyncBySession.delete(sessionId);
+    lastConfirmedSessionPermissionSyncBySession.delete(sessionId);
+  }
+  if (sessionId) {
+    turnInFlightBySession.delete(sessionId);
+    turnStartedAtBySession.delete(sessionId);
+    turnStartGraceUntilBySession.delete(sessionId);
+    lastSentPromptBySession.delete(sessionId);
+    rateLimitBySession.delete(sessionId);
+    if (pendingToolUserInput && pendingToolUserInput.sessionId === sessionId) {
+      pendingToolUserInput = null;
+      closeToolUserInputModal();
+    }
+  }
+  uiAuditLog("in.session_stopped", {
+    sessionId: sessionId || null,
+    activeSessionId
+  });
+  appendLog(`[session] stopped id=${sessionId || "unknown"}`);
+  updateSessionSelect(payload.activeSessionId || null);
+}
+
 function handleServerEvent(frame) {
   const type = frame.type;
   const payload = frame.payload || {};
@@ -9409,467 +9894,33 @@ function handleServerEvent(frame) {
       appendLog(`[status] ${payload.message || ""}`);
       return;
 
-    case "appserver_error": {
-      const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : null;
-      const code = typeof payload.code === "string" ? payload.code : "unknown";
-      const severity = typeof payload.severity === "string" ? payload.severity : "error";
-      const message = typeof payload.message === "string" && payload.message.trim()
-        ? payload.message.trim()
-        : "Codex app-server reported an error.";
-      const detail = typeof payload.detail === "string" ? payload.detail.trim() : "";
-      const recommendedAction = typeof payload.recommendedAction === "string" ? payload.recommendedAction.trim() : "";
-      const isAuthError = payload.isAuthError === true;
-      const shouldSurfaceBanner = isAuthError || !sessionId || sessionId === activeSessionId;
-
-      uiAuditLog("in.appserver_error", {
-        sessionId: sessionId || null,
-        code,
-        severity,
-        isAuthError
-      }, severity === "warn" ? "warn" : "error");
-      appendLog(
-        `[appserver_error] session=${sessionId || "unknown"} code=${code} severity=${severity} message=${message}${detail ? ` detail=${detail}` : ""}`);
-
-      if (shouldSurfaceBanner) {
-        const bannerMessage = recommendedAction
-          ? `${message} ${recommendedAction}`
-          : message;
-        showAppServerErrorBanner(bannerMessage, {
-          detail,
-          recommendedAction,
-          sticky: isAuthError
-        });
-      }
+    case "appserver_error":
+      handleAppServerErrorEvent(payload);
       return;
-    }
 
-    case "session_created": {
-      const sessionId = payload.sessionId;
-      if (!sessionId) return;
-
-      const { state, pendingCreate } = applySessionLifecyclePayload(sessionId, payload);
-      touchSessionActivity(sessionId);
-      setTurnInFlight(sessionId, false);
-      uiAuditLog("in.session_created", {
-        sessionId,
-        threadId: state.threadId || null,
-        activeSessionId
-      });
-      appendLog(`[session] created id=${sessionId} thread=${state.threadId || "unknown"} log=${payload.logPath || "n/a"}`);
-
-      if (pendingCreate && pendingCreate.threadName) {
-        send("session_rename", { sessionId, threadName: pendingCreate.threadName });
-        send("session_catalog_list");
-      }
-
-      setActiveSession(sessionId, { persistSelection: true, reason: "session_created" });
+    case "session_created":
+      handleSessionCreatedEvent(payload);
       return;
-    }
 
-    case "session_attached": {
-      const sessionId = payload.sessionId;
-      if (!sessionId) return;
-
-      const { state } = applySessionLifecyclePayload(sessionId, payload);
-      const pendingThreadId = getPendingSessionLoadThreadId();
-      const matchedPendingSessionLoad = isPendingSessionLoadForThread(state.threadId);
-      // Ignore stale attach completions while a newer thread selection is still pending.
-      const shouldFocusAttachedSession =
-        matchedPendingSessionLoad ||
-        (!pendingThreadId &&
-          (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS ||
-            !activeSessionId ||
-            !sessions.has(activeSessionId)));
-
-      if (matchedPendingSessionLoad) {
-        clearPendingSessionLoad();
-      }
-
-      setTurnInFlight(sessionId, false);
-      uiAuditLog("in.session_attached", {
-        sessionId,
-        threadId: state.threadId || null,
-        activeSessionId
-      });
-      appendLog(`[session] attached id=${sessionId} thread=${state.threadId || "unknown"} log=${payload.logPath || "n/a"}`);
-
-      if (state.threadId && pendingRenameOnAttach.has(state.threadId)) {
-        const requestedName = pendingRenameOnAttach.get(state.threadId) || "";
-        pendingRenameOnAttach.delete(state.threadId);
-        if (requestedName) {
-          send("session_rename", { sessionId, threadName: requestedName });
-          send("session_catalog_list");
-        }
-      }
-
-      uiAuditLog("in.session_attached_focus_decision", {
-        sessionId,
-        threadId: state.threadId || null,
-        pendingThreadId: pendingThreadId || null,
-        matchedPendingSessionLoad,
-        hadActiveSession: !!activeSessionId,
-        activeSessionExists: !!(activeSessionId && sessions.has(activeSessionId)),
-        preferAttachedSession: shouldFocusAttachedSession
-      });
-      if (shouldFocusAttachedSession) {
-        setActiveSession(sessionId, {
-          persistSelection: true,
-          reason: matchedPendingSessionLoad ? "session_attached_pending_selection" : "session_attached"
-        });
-      } else {
-        updateSessionSelect(activeSessionId || null);
-      }
+    case "session_attached":
+      handleSessionAttachedEvent(payload);
       return;
-    }
 
-    case "session_attach_failed": {
-      const threadId = normalizeThreadId(payload.threadId || "");
-      const message = typeof payload.message === "string" && payload.message.trim()
-        ? payload.message.trim()
-        : "Attach failed.";
-      const matchedPendingSessionLoad = isPendingSessionLoadForThread(threadId);
-      uiAuditLog("in.session_attach_failed", {
-        threadId: threadId || null,
-        matchedPendingSessionLoad,
-        pendingThreadId: getPendingSessionLoadThreadId() || null
-      }, "warn");
-      appendLog(`[session_attach_failed] thread=${threadId || "unknown"} message=${message}`);
-      if (matchedPendingSessionLoad) {
-        handlePendingSessionLoadFailure();
-      }
+    case "session_attach_failed":
+      handleSessionAttachFailedEvent(payload);
       return;
-    }
 
-    case "session_list": {
-      syncCodexAccountFromPayload(payload.codexAccount, "session_list");
-      const list = Array.isArray(payload.sessions) ? payload.sessions : [];
-      const nextSessionListViewKey = buildSessionListViewKey(
-        payload.activeSessionId || null,
-        list,
-        payload.processingByThread);
-      const shouldRefreshSessionViews = nextSessionListViewKey !== lastSessionListViewKey;
-      lastSessionListViewKey = nextSessionListViewKey;
-      const next = new Map();
-      const nextProcessingByThread = new Map();
-      let persistedPreferenceUpdated = false;
-      let persistedPermissionPreferenceUpdated = false;
-      for (const s of list) {
-        const existing = sessions.get(s.sessionId);
-        const st =
-          existing || {
-            threadId: null,
-            cwd: null,
-            model: null,
-            reasoningEffort: null,
-            approvalPolicy: null,
-            sandboxPolicy: null,
-            isAppServerRecovering: false,
-            isPlanTurn: false,
-            planStatus: "idle",
-            planText: "",
-            planDraftText: "",
-            planUpdatedAt: null,
-            pendingApproval: null,
-            pendingRecoveryOffer: null,
-            pendingTurnRetryOffer: null,
-            queuedTurns: [],
-            queuedTurnCount: 0,
-            turnCountInMemory: 0,
-            createdAtTick: Date.now(),
-            lastActivityTick: 0
-          };
-        ensurePlanStateShape(st);
-        st.threadId = s.threadId || st.threadId || null;
-        st.threadName = s.threadName || st.threadName || "";
-        st.cwd = s.cwd || st.cwd || null;
-        const serverModel = normalizeModelValue(s.model);
-        const serverEffort = normalizeReasoningEffort(s.reasoningEffort ?? s.effort ?? "");
-        if (st.threadId) {
-          const preferred = getPreferredModelForThread(st.threadId);
-          const preferredEffort = getPreferredReasoningForThread(st.threadId);
-          const targetModel = preferred.found ? preferred.model : serverModel;
-          const targetEffort = preferredEffort.found ? preferredEffort.effort : serverEffort;
-          acknowledgeSessionModelSync(s.sessionId, serverModel, serverEffort);
-
-          st.model = targetModel || st.model || null;
-          st.reasoningEffort = targetEffort || st.reasoningEffort || null;
-
-          if (preferred.found) {
-            st.model = preferred.model || null;
-          } else {
-            st.model = serverModel || st.model || null;
-            if (s.model !== undefined) {
-              persistedPreferenceUpdated = ensureThreadModelPreference(st.threadId, serverModel, { persist: false }) || persistedPreferenceUpdated;
-            }
-          }
-
-          if (preferredEffort.found) {
-            st.reasoningEffort = preferredEffort.effort || null;
-          } else if (s.reasoningEffort !== undefined || s.effort !== undefined) {
-            persistedPreferenceUpdated = ensureThreadReasoningPreference(st.threadId, serverEffort, { persist: false }) || persistedPreferenceUpdated;
-          }
-
-          const serverPermission = readPermissionInfoFromPayload(s);
-          const preferredPermission = getPreferredPermissionForThread(st.threadId);
-          const hasPermissionFromPayload = hasAnyPermissionField(s);
-          if (preferredPermission.found || hasPermissionFromPayload) {
-            const targetApproval = preferredPermission.found
-              ? preferredPermission.approval
-              : (serverPermission?.approval || "");
-            const targetSandbox = preferredPermission.found
-              ? preferredPermission.sandbox
-              : (serverPermission?.sandbox || "");
-            acknowledgeSessionPermissionSync(
-              s.sessionId,
-              serverPermission?.approval || "",
-              serverPermission?.sandbox || "");
-            st.approvalPolicy = targetApproval || null;
-            st.sandboxPolicy = targetSandbox || null;
-            replacePermissionLevelForThread(st.threadId, {
-              approval: st.approvalPolicy || "",
-              sandbox: st.sandboxPolicy || ""
-            });
-          }
-          if (!preferredPermission.found && hasPermissionFromPayload) {
-            persistedPermissionPreferenceUpdated =
-              ensureThreadPermissionPreference(
-                st.threadId,
-                {
-                  approval: serverPermission?.approval || "",
-                  sandbox: serverPermission?.sandbox || ""
-                },
-                { persist: false })
-              || persistedPermissionPreferenceUpdated;
-          }
-        } else {
-          st.model = serverModel || st.model || null;
-          st.reasoningEffort = serverEffort || st.reasoningEffort || null;
-          if (hasApprovalPolicyField(s)) {
-            st.approvalPolicy = normalizeApprovalPolicy(s.approvalPolicy ?? s.approval_policy ?? "") || null;
-          }
-          if (hasSandboxPolicyField(s)) {
-            st.sandboxPolicy = normalizeSandboxMode(s.sandboxPolicy ?? s.sandbox_policy ?? s.sandbox ?? "") || null;
-          }
-          acknowledgeSessionPermissionSync(
-            s.sessionId,
-            st.approvalPolicy || "",
-            st.sandboxPolicy || "");
-        }
-        st.createdAtTick = st.createdAtTick || Date.now();
-        st.lastActivityTick = Number.isFinite(st.lastActivityTick) ? st.lastActivityTick : st.createdAtTick;
-        const pending =
-          s.pendingApproval && typeof s.pendingApproval === "object" && !Array.isArray(s.pendingApproval) ? s.pendingApproval : null;
-        st.pendingApproval = pending && typeof pending.approvalId === "string" && pending.approvalId.trim() ? pending : null;
-        st.pendingRecoveryOffer = normalizeRecoveryOffer(s.pendingRecoveryOffer);
-        st.pendingTurnRetryOffer = normalizeTurnRetryOffer(s.pendingTurnRetryOffer);
-        st.queuedTurns = normalizeQueuedTurnSummaryList(s.queuedTurns || s.queuedMessages || []);
-        st.queuedTurnCount = Number.isFinite(s.queuedTurnCount)
-          ? Math.max(0, Math.floor(s.queuedTurnCount))
-          : st.queuedTurns.length;
-        st.turnCountInMemory = Number.isFinite(s.turnCountInMemory)
-          ? Math.max(0, Math.floor(s.turnCountInMemory))
-          : Number.isFinite(st.turnCountInMemory) ? st.turnCountInMemory : 0;
-        st.isAppServerRecovering = s.isAppServerRecovering === true;
-
-        const inFlightFromServer = s.isTurnInFlight === true || s.turnInFlight === true;
-        const inFlight = resolveTurnInFlightFromServer(s.sessionId, inFlightFromServer);
-        setTurnInFlight(s.sessionId, inFlight);
-        if (inFlight && st.threadId) {
-          nextProcessingByThread.set(st.threadId, true);
-        }
-        next.set(s.sessionId, st);
-      }
-      if (payload.processingByThread && typeof payload.processingByThread === "object" && !Array.isArray(payload.processingByThread)) {
-        for (const [threadId, processing] of Object.entries(payload.processingByThread)) {
-          const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
-          if (!normalizedThreadId || processing !== true) {
-            continue;
-          }
-
-          nextProcessingByThread.set(normalizedThreadId, true);
-        }
-      }
-      if (persistedPreferenceUpdated) {
-        persistThreadModelState();
-        persistThreadReasoningState();
-      }
-      if (persistedPermissionPreferenceUpdated) {
-        persistThreadPermissionState();
-      }
-      sessions = next;
-      prunePendingSessionModelSync(Array.from(next.keys()));
-      prunePendingSessionPermissionSync(Array.from(next.keys()));
-      pruneTurnActivityState(Array.from(next.keys()));
-      pruneRateLimitState(Array.from(next.keys()));
-      applyProcessingByThread(nextProcessingByThread);
-      prunePromptState();
-      if (shouldRefreshSessionViews || !!getPendingSessionLoadThreadId()) {
-        updateSessionSelect(payload.activeSessionId || null);
-        uiAuditLog("in.session_list_applied", {
-          activeFromServer: payload.activeSessionId || null,
-          activeLocal: activeSessionId || null,
-          sessionCount: list.length,
-          processingThreads: nextProcessingByThread.size
-        });
-      } else {
-        updatePromptActionState();
-      }
-
-      const activeState = getActiveSessionState();
-      const activePending = activeState && activeState.pendingApproval ? activeState.pendingApproval : null;
-      if (activeSessionId && activePending && typeof activePending.approvalId === "string" && activePending.approvalId.trim()) {
-        const approvalId = activePending.approvalId.trim();
-        if (!pendingApproval || pendingApproval.sessionId !== activeSessionId || pendingApproval.approvalId !== approvalId) {
-          pendingApproval = { sessionId: activeSessionId, approvalId };
-          approvalSummary.textContent = activePending.summary || "Approval requested";
-          const lines = [];
-          if (activePending.reason) lines.push(`Reason: ${activePending.reason}`);
-          if (activePending.cwd) lines.push(`CWD: ${activePending.cwd}`);
-          if (Array.isArray(activePending.actions) && activePending.actions.length > 0) lines.push(`Actions: ${activePending.actions.join("; ")}`);
-          approvalDetails.textContent = lines.join("\n");
-          setApprovalVisible(true);
-          appendLog(`[approval] pending session=${activeSessionId} approvalId=${approvalId}`);
-        }
-      } else if (pendingApproval) {
-        const priorState = pendingApproval.sessionId ? sessions.get(pendingApproval.sessionId) : null;
-        const stillPending =
-          priorState &&
-          priorState.pendingApproval &&
-          typeof priorState.pendingApproval.approvalId === "string" &&
-          priorState.pendingApproval.approvalId === pendingApproval.approvalId;
-        if (!stillPending) {
-          pendingApproval = null;
-          setApprovalVisible(false);
-        }
-      }
-
-      syncSessionRecoveryModal();
-
+    case "session_list":
+      handleSessionListEvent(payload);
       return;
-    }
 
-    case "session_catalog": {
-      syncCodexAccountFromPayload(payload.codexAccount, "session_catalog");
-      sessionCatalogLoadedOnce = true;
-      const list = Array.isArray(payload.sessions) ? payload.sessions : [];
-      const nextProcessingByThread = new Map();
-      for (const [sessionId, state] of sessions.entries()) {
-        if (!sessionId || !state || !state.threadId) {
-          continue;
-        }
-
-        if (isTurnInFlight(sessionId)) {
-          const normalizedThreadId = normalizeThreadId(state.threadId);
-          if (normalizedThreadId) {
-            nextProcessingByThread.set(normalizedThreadId, true);
-          }
-        }
-      }
-      let persistedPreferenceUpdated = false;
-      const normalizedCatalog = list
-        .filter((s) => s && s.threadId)
-        .map((s) => {
-          const normalizedThreadId = typeof s.threadId === "string" ? s.threadId.trim() : "";
-          if (normalizedThreadId) {
-            if (s.isProcessing === true) {
-              nextProcessingByThread.set(normalizedThreadId, true);
-            } else if (s.isProcessing === false) {
-              nextProcessingByThread.delete(normalizedThreadId);
-            }
-          }
-
-          const preferred = getPreferredModelForThread(s.threadId);
-          const preferredEffort = getPreferredReasoningForThread(s.threadId);
-          if (preferred.found) {
-            return {
-              ...s,
-              cwd: getEffectiveProjectCwd(s.cwd || ""),
-              model: preferred.model,
-              reasoningEffort: preferredEffort.found ? preferredEffort.effort : normalizeReasoningEffort(s.reasoningEffort ?? s.effort ?? "")
-            };
-          }
-
-          const normalizedServerModel = normalizeModelValue(s.model);
-          const normalizedServerEffort = normalizeReasoningEffort(s.reasoningEffort ?? s.effort ?? "");
-          if (ensureThreadModelPreference(s.threadId, normalizedServerModel, { persist: false })) {
-            persistedPreferenceUpdated = true;
-          }
-          if (ensureThreadReasoningPreference(s.threadId, normalizedServerEffort, { persist: false })) {
-            persistedPreferenceUpdated = true;
-          }
-          return {
-            ...s,
-            cwd: getEffectiveProjectCwd(s.cwd || ""),
-            model: normalizedServerModel,
-            reasoningEffort: preferredEffort.found ? preferredEffort.effort : normalizedServerEffort
-          };
-        })
-        .sort((a, b) => (b.updatedAtUtc || "").localeCompare(a.updatedAtUtc || ""));
-      const perProjectCounts = new Map();
-      sessionCatalog = normalizedCatalog.filter((entry) => {
-        const projectKey = getProjectKeyFromCwd(entry.cwd || "");
-        const count = perProjectCounts.get(projectKey) || 0;
-        if (count >= MAX_PROJECT_SESSIONS_LOADED) {
-          return false;
-        }
-
-        perProjectCounts.set(projectKey, count + 1);
-        return true;
-      });
-      if (payload.processingByThread && typeof payload.processingByThread === "object" && !Array.isArray(payload.processingByThread)) {
-        nextProcessingByThread.clear();
-        for (const [threadId, processing] of Object.entries(payload.processingByThread)) {
-          const normalizedThreadId = typeof threadId === "string" ? threadId.trim() : "";
-          if (!normalizedThreadId || processing !== true) {
-            continue;
-          }
-
-          nextProcessingByThread.set(normalizedThreadId, true);
-        }
-      }
-      applyProcessingByThread(nextProcessingByThread);
-      uiAuditLog("in.session_catalog", {
-        sessionCount: sessionCatalog.length,
-        processingThreads: nextProcessingByThread.size
-      });
-      if (persistedPreferenceUpdated) {
-        persistThreadModelState();
-        persistThreadReasoningState();
-      }
-      updateExistingSessionSelect();
-      refreshSessionMeta();
-      appendLog(`[catalog] loaded ${sessionCatalog.length} existing sessions from ${payload.codexHomePath || "default CODEX_HOME"}`);
+    case "session_catalog":
+      handleSessionCatalogEvent(payload);
       return;
-    }
 
-    case "session_stopped": {
-      const sessionId = payload.sessionId;
-      if (sessionId && sessions.has(sessionId)) {
-        sessions.delete(sessionId);
-        pendingSessionModelSyncBySession.delete(sessionId);
-        lastConfirmedSessionModelSyncBySession.delete(sessionId);
-        pendingSessionPermissionSyncBySession.delete(sessionId);
-        lastConfirmedSessionPermissionSyncBySession.delete(sessionId);
-      }
-      if (sessionId) {
-        turnInFlightBySession.delete(sessionId);
-        turnStartedAtBySession.delete(sessionId);
-        turnStartGraceUntilBySession.delete(sessionId);
-        lastSentPromptBySession.delete(sessionId);
-        rateLimitBySession.delete(sessionId);
-        if (pendingToolUserInput && pendingToolUserInput.sessionId === sessionId) {
-          pendingToolUserInput = null;
-          closeToolUserInputModal();
-        }
-      }
-      uiAuditLog("in.session_stopped", {
-        sessionId: sessionId || null,
-        activeSessionId
-      });
-      appendLog(`[session] stopped id=${sessionId || "unknown"}`);
-      updateSessionSelect(payload.activeSessionId || null);
+    case "session_stopped":
+      handleSessionStoppedEvent(payload);
       return;
-    }
 
     case "assistant_delta": {
       return;
