@@ -45,7 +45,7 @@ let nextProjectOrderIndex = 0;
 let projectOrderInitialized = false;
 let pendingCreateRequests = new Map(); // requestId -> { threadName, cwd }
 let pendingRenameOnAttach = new Map(); // threadId -> threadName
-let pendingSessionLoad = null; // { threadId, previousSessionId, displayName }
+let pendingSessionLoad = null; // { threadId, previousSessionId }
 
 let timelineCursor = null;
 let timelinePollTimer = null;
@@ -2272,8 +2272,7 @@ function beginPendingSessionLoad(threadId, displayName = "") {
 
   pendingSessionLoad = {
     threadId: normalizedThreadId,
-    previousSessionId: activeSessionId || null,
-    displayName: String(displayName || "").trim()
+    previousSessionId: activeSessionId || null
   };
   if (chatPanel) {
     chatPanel.classList.add("session-loading");
@@ -2907,7 +2906,6 @@ async function createSessionForCwd(cwd, options = {}) {
 
   send("session_create", payload);
   send("session_catalog_list");
-  return requestId;
 }
 
 async function attachSessionByThreadId(threadId, cwd, options = {}) {
@@ -9367,10 +9365,10 @@ function applySessionLifecyclePayload(sessionId, payload) {
   }
 
   let pendingCreate = null;
-  const requestId = payload.requestId || null;
-  if (requestId && pendingCreateRequests.has(requestId)) {
-    pendingCreate = pendingCreateRequests.get(requestId) || null;
-    pendingCreateRequests.delete(requestId);
+  const createRequestId = payload.requestId || null;
+  if (createRequestId && pendingCreateRequests.has(createRequestId)) {
+    pendingCreate = pendingCreateRequests.get(createRequestId) || null;
+    pendingCreateRequests.delete(createRequestId);
   }
 
   if (!normalizeProjectCwd(state.cwd || "") && pendingCreate?.cwd) {
@@ -9399,7 +9397,7 @@ function applySessionLifecyclePayload(sessionId, payload) {
     persistThreadPermissionState();
   }
 
-  return { state, pendingCreate, requestId };
+  return { state, pendingCreate };
 }
 
 function handleServerEvent(frame) {
@@ -9472,7 +9470,7 @@ function handleServerEvent(frame) {
       const sessionId = payload.sessionId;
       if (!sessionId) return;
 
-      const { state, requestId } = applySessionLifecyclePayload(sessionId, payload);
+      const { state } = applySessionLifecyclePayload(sessionId, payload);
       const pendingThreadId = getPendingSessionLoadThreadId();
       const matchedPendingSessionLoad = isPendingSessionLoadForThread(state.threadId);
       // Ignore stale attach completions while a newer thread selection is still pending.
@@ -9506,7 +9504,6 @@ function handleServerEvent(frame) {
 
       uiAuditLog("in.session_attached_focus_decision", {
         sessionId,
-        requestId,
         threadId: state.threadId || null,
         pendingThreadId: pendingThreadId || null,
         matchedPendingSessionLoad,

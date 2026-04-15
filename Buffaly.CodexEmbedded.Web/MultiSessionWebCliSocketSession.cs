@@ -505,7 +505,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 	private async Task AttachSessionAsync(JsonElement request, CancellationToken cancellationToken)
 	{
-		var requestId = TryGetString(request, "requestId");
 		var threadId = (TryGetString(request, "threadId") ?? TryGetString(request, "id"))?.Trim();
 		if (string.IsNullOrWhiteSpace(threadId))
 		{
@@ -521,7 +520,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		var cwd = TryGetString(request, "cwd") ?? _defaults.DefaultCwd;
 		var codexPath = TryGetString(request, "codexPath") ?? _defaults.CodexPath;
 		await AttachToThreadAsync(
-			requestId,
 			threadId,
 			model,
 			effort,
@@ -569,7 +567,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			{
 				WriteAuditEvent($"action=session_ensure_named_reuse threadId={existing.ThreadId} cwd={normalizedCwd} threadName={normalizedThreadName}");
 				await AttachToThreadAsync(
-					requestId,
 					existing.ThreadId,
 					model,
 					effort,
@@ -653,7 +650,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	}
 
 	private async Task AttachToThreadAsync(
-		string? requestId,
 		string threadId,
 		string? model,
 		string? effort,
@@ -672,7 +668,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				: "(none)";
 			var message = $"Attach is ambiguous: multiple loaded sessions match thread {threadId}. Candidates: {candidateList}. Stop duplicate sessions and retry.";
 			WriteAuditEvent($"action=session_attach_rejected reason=ambiguous threadId={threadId} candidates={candidateList}");
-			await SendAttachFailureEventAsync(requestId, threadId, message, cancellationToken);
+			await SendAttachFailureEventAsync(threadId, message, cancellationToken);
 			await SendEventAsync(
 				"error",
 				new
@@ -690,7 +686,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 				: loadedResolution.Reason;
 			var message = $"Attach failed: {reason}";
 			WriteAuditEvent($"action=session_attach_rejected reason=unavailable threadId={threadId} detail={reason}");
-			await SendAttachFailureEventAsync(requestId, threadId, message, cancellationToken);
+			await SendAttachFailureEventAsync(threadId, message, cancellationToken);
 			await SendEventAsync("error", new { message }, cancellationToken);
 			return;
 		}
@@ -702,7 +698,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			{
 				var message = $"Attach failed: loaded session state for thread {threadId} is no longer available.";
 				WriteAuditEvent($"action=session_attach_rejected reason=resolved_missing_session threadId={threadId}");
-				await SendAttachFailureEventAsync(requestId, threadId, message, cancellationToken);
+				await SendAttachFailureEventAsync(threadId, message, cancellationToken);
 				await SendEventAsync(
 					"error",
 					new
@@ -724,7 +720,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			// for both fresh attach and already-loaded attach paths.
 			await SendAttachCompletionEventsAsync(
 				existingSessionId,
-				requestId,
 				loadedResolution.ThreadId,
 				threadName ?? TryGetStoredThreadName(loadedResolution.ThreadId),
 				loadedResolution.Model,
@@ -758,7 +753,7 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 			var message = $"Failed to attach session: {ex.Message}";
 			WriteAuditEvent($"action=session_attach_failed sessionId={sessionId} threadId={threadId} error={ex.Message}");
 			await WriteConnectionLogAsync($"[session] failed to attach id={sessionId} threadId={threadId} error={ex.Message}", cancellationToken);
-			await SendAttachFailureEventAsync(requestId, threadId, message, cancellationToken);
+			await SendAttachFailureEventAsync(threadId, message, cancellationToken);
 			await SendEventAsync("error", new { message }, cancellationToken);
 			return;
 		}
@@ -767,7 +762,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 		await SendAttachCompletionEventsAsync(
 			sessionId,
-			requestId,
 			attached.threadId,
 			threadName ?? TryGetStoredThreadName(attached.threadId),
 			attached.model,
@@ -783,7 +777,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 
 	private async Task SendAttachCompletionEventsAsync(
 		string sessionId,
-		string? requestId,
 		string? threadId,
 		string? threadName,
 		string? model,
@@ -799,7 +792,6 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 		await SendEventAsync("session_attached", new
 		{
 			sessionId,
-			requestId,
 			threadId,
 			threadName,
 			model,
@@ -812,14 +804,12 @@ internal sealed class MultiSessionWebCliSocketSession : IAsyncDisposable
 	}
 
 	private async Task SendAttachFailureEventAsync(
-		string? requestId,
 		string threadId,
 		string message,
 		CancellationToken cancellationToken)
 	{
 		await SendEventAsync("session_attach_failed", new
 		{
-			requestId,
 			threadId,
 			message
 		}, cancellationToken);
