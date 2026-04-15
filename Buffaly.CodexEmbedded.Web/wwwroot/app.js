@@ -10064,6 +10064,164 @@ function handleTurnRetryOfferEvent(payload) {
   renderProjectSidebar();
 }
 
+function normalizeQueuedEditImages(images) {
+  return Array.isArray(images)
+    ? images
+        .filter((image) => image && typeof image.url === "string" && image.url.trim().length > 0)
+        .map((image) => ({
+          url: image.url,
+          name: typeof image.name === "string" ? image.name : "image",
+          mimeType: typeof image.mimeType === "string" ? image.mimeType : "image/*",
+          size: typeof image.size === "number" ? image.size : 0
+        }))
+    : [];
+}
+
+function handleTurnQueueEditItemEvent(payload) {
+  const sessionId = payload.sessionId || null;
+  if (!sessionId || !activeSessionId || sessionId !== activeSessionId) {
+    return;
+  }
+
+  const images = normalizeQueuedEditImages(payload.images);
+  restoreQueuedPromptForEditing(payload.text || "", images);
+  appendLog(`[queue] restored queued prompt ${payload.queueItemId || ""} for editing`);
+}
+
+function handleRateLimitsUpdatedEvent(payload) {
+  const sessionId = payload.sessionId || null;
+  latestRateLimitSnapshot = payload && typeof payload === "object" ? payload : latestRateLimitSnapshot;
+  if (sessionId) {
+    rateLimitBySession.set(sessionId, payload);
+    if (sessionId === activeSessionId) {
+      refreshSessionMetaUsage();
+    }
+  }
+
+  const summary = typeof payload.summary === "string" && payload.summary.trim()
+    ? payload.summary.trim()
+    : "Rate limits updated";
+  appendLog(`[rate_limit] session=${sessionId || "unknown"} ${summary}`);
+  refreshLatestRateLimitSnapshot();
+}
+
+function handlePlanDeltaEvent(payload) {
+  const sessionId = payload.sessionId || null;
+  const text = typeof payload.text === "string" ? payload.text : "";
+  if (!sessionId || !text) {
+    return;
+  }
+
+  appendPlanDeltaToSession(sessionId, text);
+}
+
+function handlePlanUpdatedEvent(payload) {
+  const sessionId = payload.sessionId || null;
+  if (!sessionId) {
+    return;
+  }
+
+  const text = typeof payload.text === "string" ? payload.text : "";
+  applyPlanUpdatedToSession(sessionId, text);
+}
+
+function buildSessionConfiguredSummary(payload) {
+  const summaryParts = [];
+  if (payload.model) summaryParts.push(`model=${payload.model}`);
+  if (payload.reasoningEffort || payload.effort) summaryParts.push(`effort=${payload.reasoningEffort || payload.effort}`);
+  if (payload.approvalPolicy || payload.approval_policy) summaryParts.push(`approval=${payload.approvalPolicy || payload.approval_policy}`);
+  if (payload.sandboxPolicy || payload.sandbox_policy) summaryParts.push(`sandbox=${payload.sandboxPolicy || payload.sandbox_policy}`);
+  return summaryParts.length > 0 ? summaryParts.join(" | ") : "Session configured";
+}
+
+function handleSessionConfiguredEvent(payload) {
+  const sessionId = payload.sessionId || null;
+  let sidebarStateChanged = false;
+  let sessionConfigChanged = false;
+  if (sessionId && sessions.has(sessionId)) {
+    const state = sessions.get(sessionId);
+    if (state) {
+      if (typeof payload.threadId === "string" && payload.threadId.trim()) {
+        const nextThreadId = payload.threadId.trim();
+        if ((state.threadId || "") !== nextThreadId) {
+          state.threadId = nextThreadId;
+          sidebarStateChanged = true;
+          sessionConfigChanged = true;
+        }
+      }
+      if (typeof payload.cwd === "string" && payload.cwd.trim()) {
+        const nextCwd = payload.cwd.trim();
+        if ((state.cwd || "") !== nextCwd) {
+          state.cwd = nextCwd;
+          sidebarStateChanged = true;
+          sessionConfigChanged = true;
+          if (sessionId === activeSessionId) {
+            syncCwdInputFromSessionState(state, { force: true });
+          }
+        }
+      }
+
+      const configuredModel = normalizeModelValue(payload.model);
+      const configuredEffort = normalizeReasoningEffort(payload.reasoningEffort ?? payload.effort ?? "");
+      if (payload.model !== undefined) {
+        if ((state.model || "") !== configuredModel) {
+          sidebarStateChanged = true;
+          sessionConfigChanged = true;
+        }
+        state.model = configuredModel || null;
+      }
+      if (payload.reasoningEffort !== undefined || payload.effort !== undefined) {
+        if ((state.reasoningEffort || "") !== configuredEffort) {
+          sidebarStateChanged = true;
+          sessionConfigChanged = true;
+        }
+        state.reasoningEffort = configuredEffort || null;
+      }
+
+      if (payload.model !== undefined || payload.reasoningEffort !== undefined || payload.effort !== undefined) {
+        acknowledgeSessionModelSync(sessionId, state.model || "", state.reasoningEffort || "");
+      }
+
+      const hasApprovalOverride = hasApprovalPolicyField(payload);
+      const hasSandboxOverride = hasSandboxPolicyField(payload);
+      if (hasApprovalOverride || hasSandboxOverride) {
+        const configuredPermission = readPermissionInfoFromPayload(payload);
+        const nextApproval = hasApprovalOverride
+          ? (configuredPermission?.approval || "")
+          : normalizeApprovalPolicy(state.approvalPolicy || "");
+        const nextSandbox = hasSandboxOverride
+          ? (configuredPermission?.sandbox || "")
+          : normalizeSandboxMode(state.sandboxPolicy || "");
+        if ((state.approvalPolicy || "") !== nextApproval || (state.sandboxPolicy || "") !== nextSandbox) {
+          sidebarStateChanged = true;
+          sessionConfigChanged = true;
+        }
+        state.approvalPolicy = nextApproval || null;
+        state.sandboxPolicy = nextSandbox || null;
+        acknowledgeSessionPermissionSync(sessionId, state.approvalPolicy || "", state.sandboxPolicy || "");
+        if (state.threadId) {
+          replacePermissionLevelForThread(state.threadId, {
+            approval: state.approvalPolicy || "",
+            sandbox: state.sandboxPolicy || ""
+          });
+        }
+      }
+    }
+  }
+
+  if (sessionId && sessionConfigChanged) {
+    touchSessionActivity(sessionId);
+  }
+
+  appendLog(`[session_configured] session=${sessionId || "unknown"} ${buildSessionConfiguredSummary(payload)}`);
+  if (sessionId && activeSessionId === sessionId) {
+    refreshSessionMeta();
+  }
+  if (sidebarStateChanged) {
+    renderProjectSidebar();
+  }
+}
+
 function handleServerEvent(frame) {
   const type = frame.type;
   const payload = frame.payload || {};
@@ -10135,162 +10293,25 @@ function handleServerEvent(frame) {
       handleTurnRetryOfferEvent(payload);
       return;
 
-    case "turn_queue_edit_item": {
-      const sessionId = payload.sessionId || null;
-      if (!sessionId || !activeSessionId || sessionId !== activeSessionId) {
-        return;
-      }
-
-      const images = Array.isArray(payload.images)
-        ? payload.images
-            .filter((x) => x && typeof x.url === "string" && x.url.trim().length > 0)
-            .map((x) => ({
-              url: x.url,
-              name: typeof x.name === "string" ? x.name : "image",
-              mimeType: typeof x.mimeType === "string" ? x.mimeType : "image/*",
-              size: typeof x.size === "number" ? x.size : 0
-            }))
-        : [];
-      restoreQueuedPromptForEditing(payload.text || "", images);
-      appendLog(`[queue] restored queued prompt ${payload.queueItemId || ""} for editing`);
+    case "turn_queue_edit_item":
+      handleTurnQueueEditItemEvent(payload);
       return;
-    }
 
-    case "rate_limits_updated": {
-      const sessionId = payload.sessionId || null;
-      latestRateLimitSnapshot = payload && typeof payload === "object" ? payload : latestRateLimitSnapshot;
-      if (sessionId) {
-        rateLimitBySession.set(sessionId, payload);
-        if (sessionId === activeSessionId) {
-          refreshSessionMetaUsage();
-        }
-      }
-
-      const summary = typeof payload.summary === "string" && payload.summary.trim()
-        ? payload.summary.trim()
-        : "Rate limits updated";
-      appendLog(`[rate_limit] session=${sessionId || "unknown"} ${summary}`);
-      refreshLatestRateLimitSnapshot();
+    case "rate_limits_updated":
+      handleRateLimitsUpdatedEvent(payload);
       return;
-    }
 
-    case "plan_delta": {
-      const sessionId = payload.sessionId || null;
-      const text = typeof payload.text === "string" ? payload.text : "";
-      if (!sessionId || !text) {
-        return;
-      }
-
-      appendPlanDeltaToSession(sessionId, text);
+    case "plan_delta":
+      handlePlanDeltaEvent(payload);
       return;
-    }
 
-    case "plan_updated": {
-      const sessionId = payload.sessionId || null;
-      if (!sessionId) {
-        return;
-      }
-
-      const text = typeof payload.text === "string" ? payload.text : "";
-      applyPlanUpdatedToSession(sessionId, text);
+    case "plan_updated":
+      handlePlanUpdatedEvent(payload);
       return;
-    }
 
-    case "session_configured": {
-      const sessionId = payload.sessionId || null;
-      let sidebarStateChanged = false;
-      let sessionConfigChanged = false;
-      if (sessionId && sessions.has(sessionId)) {
-        const state = sessions.get(sessionId);
-        if (state) {
-          if (typeof payload.threadId === "string" && payload.threadId.trim()) {
-            const nextThreadId = payload.threadId.trim();
-            if ((state.threadId || "") !== nextThreadId) {
-              state.threadId = nextThreadId;
-              sidebarStateChanged = true;
-              sessionConfigChanged = true;
-            }
-          }
-          if (typeof payload.cwd === "string" && payload.cwd.trim()) {
-            const nextCwd = payload.cwd.trim();
-            if ((state.cwd || "") !== nextCwd) {
-              state.cwd = nextCwd;
-              sidebarStateChanged = true;
-              sessionConfigChanged = true;
-              if (sessionId === activeSessionId) {
-                syncCwdInputFromSessionState(state, { force: true });
-              }
-            }
-          }
-
-          const configuredModel = normalizeModelValue(payload.model);
-          const configuredEffort = normalizeReasoningEffort(payload.reasoningEffort ?? payload.effort ?? "");
-          if (payload.model !== undefined) {
-            if ((state.model || "") !== configuredModel) {
-              sidebarStateChanged = true;
-              sessionConfigChanged = true;
-            }
-            state.model = configuredModel || null;
-          }
-          if (payload.reasoningEffort !== undefined || payload.effort !== undefined) {
-            if ((state.reasoningEffort || "") !== configuredEffort) {
-              sidebarStateChanged = true;
-              sessionConfigChanged = true;
-            }
-            state.reasoningEffort = configuredEffort || null;
-          }
-
-          if (payload.model !== undefined || payload.reasoningEffort !== undefined || payload.effort !== undefined) {
-            acknowledgeSessionModelSync(sessionId, state.model || "", state.reasoningEffort || "");
-          }
-
-          const hasApprovalOverride = hasApprovalPolicyField(payload);
-          const hasSandboxOverride = hasSandboxPolicyField(payload);
-          if (hasApprovalOverride || hasSandboxOverride) {
-            const configuredPermission = readPermissionInfoFromPayload(payload);
-            const nextApproval = hasApprovalOverride
-              ? (configuredPermission?.approval || "")
-              : normalizeApprovalPolicy(state.approvalPolicy || "");
-            const nextSandbox = hasSandboxOverride
-              ? (configuredPermission?.sandbox || "")
-              : normalizeSandboxMode(state.sandboxPolicy || "");
-            if ((state.approvalPolicy || "") !== nextApproval || (state.sandboxPolicy || "") !== nextSandbox) {
-              sidebarStateChanged = true;
-              sessionConfigChanged = true;
-            }
-            state.approvalPolicy = nextApproval || null;
-            state.sandboxPolicy = nextSandbox || null;
-            acknowledgeSessionPermissionSync(sessionId, state.approvalPolicy || "", state.sandboxPolicy || "");
-            if (state.threadId) {
-              replacePermissionLevelForThread(state.threadId, {
-                approval: state.approvalPolicy || "",
-                sandbox: state.sandboxPolicy || ""
-              });
-            }
-          }
-        }
-      }
-
-      if (sessionId && sessionConfigChanged) {
-        touchSessionActivity(sessionId);
-      }
-
-      const summaryParts = [];
-      if (payload.model) summaryParts.push(`model=${payload.model}`);
-      if (payload.reasoningEffort || payload.effort) summaryParts.push(`effort=${payload.reasoningEffort || payload.effort}`);
-      if (payload.approvalPolicy || payload.approval_policy) summaryParts.push(`approval=${payload.approvalPolicy || payload.approval_policy}`);
-      if (payload.sandboxPolicy || payload.sandbox_policy) summaryParts.push(`sandbox=${payload.sandboxPolicy || payload.sandbox_policy}`);
-      const summary = summaryParts.length > 0 ? summaryParts.join(" | ") : "Session configured";
-
-      appendLog(`[session_configured] session=${sessionId || "unknown"} ${summary}`);
-      if (sessionId && activeSessionId === sessionId) {
-        refreshSessionMeta();
-      }
-      if (sidebarStateChanged) {
-        renderProjectSidebar();
-      }
+    case "session_configured":
+      handleSessionConfiguredEvent(payload);
       return;
-    }
 
     case "thread_compacted": {
       const sessionId = payload.sessionId || null;
