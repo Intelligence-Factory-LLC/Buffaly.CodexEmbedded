@@ -547,6 +547,7 @@
     let liveRetranscribeTimer = null;
     let liveRetranscribeInFlight = false;
     let liveRetranscribeRequestId = 0;
+    let lastAppliedLiveTranscript = "";
 
     function log(message) {
       if (onLog) {
@@ -753,7 +754,12 @@
         if (requestId !== liveRetranscribeRequestId) {
           log(`[voice] live retranscription ignored stale result requestId=${requestId}`);
         } else if (normalized && isRecording && !stopRequested && !disposed) {
-          if (applyScopedTranscript(normalized)) {
+          if (!shouldApplyLiveTranscript(normalized)) {
+            log(
+              `[voice] live retranscription ignored regressive result requestId=${requestId} ` +
+              `chars=${normalized.length} previousChars=${lastAppliedLiveTranscript.length}`);
+          } else if (applyScopedTranscript(normalized)) {
+            lastAppliedLiveTranscript = normalized;
             log("[voice] live retranscription replaced current recording slice");
           } else {
             log("[voice] live retranscription apply skipped");
@@ -818,13 +824,38 @@
       const selectionEnd = Number.isFinite(target.selectionEnd) ? Math.floor(target.selectionEnd) : selectionStart;
       const boundedStart = Math.max(0, Math.min(current.length, selectionStart));
       const boundedEnd = Math.max(boundedStart, Math.min(current.length, selectionEnd));
-      const insertionStart = Math.min(boundedStart, boundedEnd);
+      // Starting voice capture should not wipe a pre-selected prompt. Treat any active
+      // selection as an insertion point at its trailing edge so only dictated text is replaced.
+      const insertionStart = boundedEnd > boundedStart ? boundedEnd : boundedStart;
       return {
         start: insertionStart,
-        end: boundedEnd,
+        end: insertionStart,
         separator: insertionStart > 0 && !/\s$/.test(current.slice(0, insertionStart)) ? "\n" : "",
         segmentTexts: []
       };
+    }
+
+    function shouldApplyLiveTranscript(normalizedText) {
+      const normalized = String(normalizedText || "").trim();
+      if (!normalized) {
+        return false;
+      }
+
+      const previous = String(lastAppliedLiveTranscript || "").trim();
+      if (!previous) {
+        return true;
+      }
+
+      if (normalized.length >= previous.length) {
+        return true;
+      }
+
+      // Live results are provisional. Do not replace a fuller in-progress transcript with
+      // a much shorter fragment; the final full transcription is still authoritative.
+      const minimumAcceptedLength = previous.length < 32
+        ? Math.max(1, previous.length - 8)
+        : Math.floor(previous.length * 0.75);
+      return normalized.length >= minimumAcceptedLength;
     }
 
     function applyScopedTranscript(normalizedText) {
@@ -1106,6 +1137,7 @@
       pcmChunks = [];
       pcmSampleCount = 0;
       recordingContext = createRecordingContext();
+      lastAppliedLiveTranscript = "";
       liveRetranscribeInFlight = false;
       liveRetranscribeRequestId = 0;
 
@@ -1335,6 +1367,7 @@
           if (!normalized) {
             log("[voice] final transcription returned no text");
           } else if (applyFinalTranscript(fullText)) {
+            lastAppliedLiveTranscript = normalized;
             log("[voice] final transcription replaced this recording slice");
           } else {
             log("[voice] final transcription append skipped");
@@ -1349,6 +1382,7 @@
       }
 
       isProcessing = false;
+      lastAppliedLiveTranscript = "";
       recordingContext = null;
       setState("idle");
       syncDebugUi();
@@ -1391,6 +1425,7 @@
         if (!normalized) {
           log("[voice] retranscription returned no text");
         } else if (applyFinalTranscript(fullText)) {
+          lastAppliedLiveTranscript = normalized;
           log("[voice] retranscription replaced this recording slice");
         } else {
           log("[voice] retranscription append skipped");
