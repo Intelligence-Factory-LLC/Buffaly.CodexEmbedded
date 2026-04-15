@@ -44,10 +44,8 @@ let projectOrderIndexByKey = new Map(); // projectKey -> stable display order in
 let nextProjectOrderIndex = 0;
 let projectOrderInitialized = false;
 let pendingCreateRequests = new Map(); // requestId -> { threadName, cwd }
-let pendingAttachRequests = new Map(); // requestId -> { threadId, requestedAtMs }
 let pendingRenameOnAttach = new Map(); // threadId -> threadName
-let pendingSessionLoadThreadId = null;
-let pendingSessionLoadPreviousActiveId = null;
+let pendingSessionLoad = null; // { threadId, previousSessionId, displayName }
 
 let timelineCursor = null;
 let timelinePollTimer = null;
@@ -2255,11 +2253,12 @@ function touchSessionActivity(sessionId, tick = Date.now()) {
   }
 }
 
-function clearPendingSessionLoad(options = {}) {
-  pendingSessionLoadThreadId = null;
-  if (!options.keepPrevious) {
-    pendingSessionLoadPreviousActiveId = null;
-  }
+function getPendingSessionLoadThreadId() {
+  return normalizeThreadId(pendingSessionLoad?.threadId || "");
+}
+
+function clearPendingSessionLoad() {
+  pendingSessionLoad = null;
   if (chatPanel) {
     chatPanel.classList.remove("session-loading");
   }
@@ -2271,8 +2270,11 @@ function beginPendingSessionLoad(threadId, displayName = "") {
     return;
   }
 
-  pendingSessionLoadThreadId = normalizedThreadId;
-  pendingSessionLoadPreviousActiveId = activeSessionId || null;
+  pendingSessionLoad = {
+    threadId: normalizedThreadId,
+    previousSessionId: activeSessionId || null,
+    displayName: String(displayName || "").trim()
+  };
   if (chatPanel) {
     chatPanel.classList.add("session-loading");
   }
@@ -2295,11 +2297,12 @@ function beginPendingSessionLoad(threadId, displayName = "") {
 }
 
 function handlePendingSessionLoadFailure() {
-  if (!pendingSessionLoadThreadId) {
+  const pending = pendingSessionLoad;
+  if (!pending) {
     return;
   }
 
-  const prior = pendingSessionLoadPreviousActiveId;
+  const prior = pending.previousSessionId || null;
   clearPendingSessionLoad();
   if (prior && sessions.has(prior)) {
     setActiveSession(prior, { restartTimeline: true, reason: "pending_load_failed_restore_previous" });
@@ -2347,16 +2350,17 @@ function findAttachedSessionIdByThreadId(threadId) {
 function isPendingSessionLoadForThread(threadId) {
   const normalizedThreadId = normalizeThreadId(threadId || "");
   return !!normalizedThreadId &&
-    !!pendingSessionLoadThreadId &&
-    normalizedThreadId === normalizeThreadId(pendingSessionLoadThreadId);
+    !!getPendingSessionLoadThreadId() &&
+    normalizedThreadId === getPendingSessionLoadThreadId();
 }
 
 function getPendingSessionLoadAttachedSessionId() {
-  if (!pendingSessionLoadThreadId) {
+  const pendingThreadId = getPendingSessionLoadThreadId();
+  if (!pendingThreadId) {
     return null;
   }
 
-  const attachedSessionId = findAttachedSessionIdByThreadId(pendingSessionLoadThreadId);
+  const attachedSessionId = findAttachedSessionIdByThreadId(pendingThreadId);
   return attachedSessionId && sessions.has(attachedSessionId)
     ? attachedSessionId
     : null;
@@ -2762,6 +2766,32 @@ function rememberTaskThreadForSessionState(sessionId, state) {
   }
 }
 
+async function selectThreadById(threadId, cwd, options = {}) {
+  const targetThreadId = normalizeThreadId(threadId || "");
+  if (!targetThreadId) {
+    return false;
+  }
+
+  const attachedSessionId = findAttachedSessionIdByThreadId(targetThreadId);
+  if (attachedSessionId && sessions.has(attachedSessionId)) {
+    clearPendingSessionLoad();
+    setActiveSession(attachedSessionId, {
+      persistSelection: options.persistSelection === true,
+      reason: options.reason || "thread_select_already_attached"
+    });
+    return true;
+  }
+
+  beginPendingSessionLoad(targetThreadId, options.displayName || targetThreadId);
+  const attached = await attachSessionByThreadId(targetThreadId, cwd, options);
+  if (!attached) {
+    handlePendingSessionLoadFailure();
+    return false;
+  }
+
+  return true;
+}
+
 async function restoreTaskSessionForCurrentProject(reason = "workspace_tab_tasks") {
   const cwd = getWorkspaceProjectCwd();
   if (!cwd) {
@@ -2788,14 +2818,11 @@ async function restoreTaskSessionForCurrentProject(reason = "workspace_tab_tasks
     return true;
   }
 
-  beginPendingSessionLoad(targetThreadId, targetThreadId);
-  const attached = await attachSessionByThreadId(targetThreadId, cwd, { persistSelection: true });
-  if (!attached) {
-    handlePendingSessionLoadFailure();
-    return false;
-  }
-
-  return true;
+  return selectThreadById(targetThreadId, cwd, {
+    displayName: targetThreadId,
+    persistSelection: true,
+    reason
+  });
 }
 
 function formatSessionSubtitle(entry) {
@@ -2900,12 +2927,6 @@ async function attachSessionByThreadId(threadId, cwd, options = {}) {
   }
 
   const payload = { threadId };
-  const requestId = createRequestId();
-  payload.requestId = requestId;
-  pendingAttachRequests.set(requestId, {
-    threadId: String(threadId || "").trim(),
-    requestedAtMs: Date.now()
-  });
   const preferred = getPreferredModelForThread(threadId);
   const preferredPermission = getPreferredPermissionForThread(threadId);
   const model = preferred.found
@@ -2930,11 +2951,7 @@ async function attachSessionByThreadId(threadId, cwd, options = {}) {
     localStorage.setItem(STORAGE_CWD_KEY, normalizedCwd);
   }
 
-  const sent = send("session_attach", payload);
-  if (!sent) {
-    pendingAttachRequests.delete(requestId);
-  }
-  return sent;
+  return send("session_attach", payload);
 }
 
 async function renameSessionFromSidebar(entry) {
@@ -3554,7 +3571,7 @@ function renderProjectSidebarNow() {
       const row = document.createElement("div");
       row.className = "session-row";
       const isPendingLoad = isPendingSessionLoadForThread(entry.threadId);
-      const showOnlyPendingAsActive = !!pendingSessionLoadThreadId;
+      const showOnlyPendingAsActive = !!getPendingSessionLoadThreadId();
       if (!showOnlyPendingAsActive && entry.attachedSessionId && entry.attachedSessionId === activeSessionId) {
         row.classList.add("active");
       }
@@ -3571,21 +3588,11 @@ function renderProjectSidebarNow() {
       openBtn.title = entry.threadId;
       openBtn.addEventListener("click", async () => {
         selectProject(group.key, group.cwd);
-
-        const attachedSessionId = (entry.attachedSessionId && sessions.has(entry.attachedSessionId))
-          ? entry.attachedSessionId
-          : findAttachedSessionIdByThreadId(entry.threadId);
-        if (attachedSessionId && sessions.has(attachedSessionId)) {
-          clearPendingSessionLoad();
-          setActiveSession(attachedSessionId, { persistSelection: true, reason: "sidebar_session_click_already_attached" });
-          return;
-        }
-
-        beginPendingSessionLoad(entry.threadId, entry.threadName || entry.threadId);
-        const attached = await attachSessionByThreadId(entry.threadId, entry.cwd || group.cwd, { persistSelection: true });
-        if (!attached) {
-          handlePendingSessionLoadFailure();
-        }
+        await selectThreadById(entry.threadId, entry.cwd || group.cwd, {
+          displayName: entry.threadName || entry.threadId,
+          persistSelection: true,
+          reason: "sidebar_session_click_already_attached"
+        });
       });
 
       const title = document.createElement("div");
@@ -7558,16 +7565,13 @@ async function tryAutoAttachStoredThread() {
 
   autoAttachAttempted = true;
 
-  try {
-    await ensureSocket();
-  } catch (error) {
-    appendLog(`[session] auto-attach connect failed: ${error}`);
-    return;
-  }
-
   appendLog(`[session] auto-attaching previous thread=${threadId}`);
   const catalogEntry = getCatalogEntryByThreadId(threadId);
-  await attachSessionByThreadId(threadId, catalogEntry?.cwd || cwdInput.value.trim());
+  await selectThreadById(threadId, catalogEntry?.cwd || cwdInput.value.trim(), {
+    displayName: catalogEntry?.threadName || threadId,
+    persistSelection: true,
+    reason: "auto_attach_previous_thread"
+  });
 }
 
 function syncConversationModelOptions(preferredValue = null) {
@@ -8587,7 +8591,7 @@ function clearActiveSession() {
   updateScrollToBottomButton();
 }
 
-function updateSessionSelect(activeIdFromServer, options = {}) {
+function updateSessionSelect(activeIdFromServer = null) {
   const current = sessionSelect ? sessionSelect.value : "";
   if (sessionSelect) {
     sessionSelect.textContent = "";
@@ -8609,14 +8613,11 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
     }
   }
 
-  const serverActiveId = typeof activeIdFromServer === "string" && sessions.has(activeIdFromServer)
+  const preferredSessionId = typeof activeIdFromServer === "string" && sessions.has(activeIdFromServer)
     ? activeIdFromServer
     : null;
-  const serverActiveState = serverActiveId ? sessions.get(serverActiveId) || null : null;
   const pendingAttachedSessionId = getPendingSessionLoadAttachedSessionId();
-  const hasPendingSelectionIntent = !!pendingSessionLoadThreadId;
-  const pendingThreadMatch = !!serverActiveState && isPendingSessionLoadForThread(serverActiveState.threadId || "");
-  const preferServerActive = options.preferServerActive === true || pendingThreadMatch || !!pendingAttachedSessionId;
+  const hasPendingSelectionIntent = !!getPendingSessionLoadThreadId();
   const pinnedActiveSessionId =
     !hasPendingSelectionIntent &&
     activeSessionId &&
@@ -8627,26 +8628,18 @@ function updateSessionSelect(activeIdFromServer, options = {}) {
   const firstVisibleSessionId = visibleIds.length > 0 ? visibleIds[0] : null;
   const toSelect = pendingAttachedSessionId ||
     pinnedActiveSessionId ||
-    (preferServerActive
-    ? (serverActiveId ||
-      activeSessionId ||
-      current ||
-      firstVisibleSessionId ||
-      null)
-    : (activeSessionId ||
-      current ||
-      serverActiveId ||
-      firstVisibleSessionId ||
-      null));
+    preferredSessionId ||
+    activeSessionId ||
+    current ||
+    firstVisibleSessionId ||
+    null;
   let selectionReason = "none";
   if (pendingAttachedSessionId && toSelect === pendingAttachedSessionId) {
     selectionReason = "pending_thread_intent_attached";
   } else if (pinnedActiveSessionId && toSelect === pinnedActiveSessionId) {
     selectionReason = "keep_inflight_or_pending";
-  } else if (pendingThreadMatch && toSelect === serverActiveId) {
-    selectionReason = "pending_thread_match_server_active";
-  } else if (preferServerActive && toSelect === serverActiveId) {
-    selectionReason = "prefer_server_active";
+  } else if (preferredSessionId && toSelect === preferredSessionId) {
+    selectionReason = "prefer_explicit_session";
   } else if (toSelect && toSelect === activeSessionId) {
     selectionReason = "preserve_current_active";
   } else if (toSelect && toSelect === current) {
@@ -9305,48 +9298,108 @@ function pruneRateLimitState(validSessionIds) {
   }
 }
 
-function prunePendingAttachRequests() {
-  const expireBefore = Date.now() - 3 * 60 * 1000;
-  for (const [requestId, value] of Array.from(pendingAttachRequests.entries())) {
-    const requestedAtMs = Number.isFinite(value?.requestedAtMs) ? value.requestedAtMs : 0;
-    if (requestedAtMs <= 0 || requestedAtMs < expireBefore) {
-      pendingAttachRequests.delete(requestId);
-    }
-  }
-}
+function applySessionLifecyclePayload(sessionId, payload) {
+  const state = ensureSessionState(sessionId);
+  ensurePlanStateShape(state);
+  state.threadId = payload.threadId || state.threadId;
+  state.threadName = payload.threadName || state.threadName || "";
+  state.cwd = payload.cwd || state.cwd;
+  state.isAppServerRecovering = false;
 
-function consumePendingAttachRequest(requestId, threadId) {
-  const normalizedRequestId = typeof requestId === "string" && requestId.trim()
-    ? requestId.trim()
-    : "";
-  if (normalizedRequestId && pendingAttachRequests.has(normalizedRequestId)) {
-    const pendingAttach = pendingAttachRequests.get(normalizedRequestId) || null;
-    pendingAttachRequests.delete(normalizedRequestId);
-    return pendingAttach;
-  }
+  let persistedPreferenceUpdated = false;
+  let persistedPermissionPreferenceUpdated = false;
+  if (state.threadId) {
+    const serverModel = normalizeModelValue(payload.model || "");
+    const serverEffort = normalizeReasoningEffort(payload.reasoningEffort ?? payload.effort ?? "");
+    const preferred = getPreferredModelForThread(state.threadId);
+    const preferredEffort = getPreferredReasoningForThread(state.threadId);
+    const targetModel = preferred.found ? preferred.model : serverModel;
+    const targetEffort = preferredEffort.found ? preferredEffort.effort : serverEffort;
+    acknowledgeSessionModelSync(sessionId, serverModel, serverEffort);
 
-  const normalizedThreadId = normalizeThreadId(threadId || "");
-  if (!normalizedThreadId) {
-    return null;
-  }
+    state.model = targetModel || null;
+    state.reasoningEffort = targetEffort || null;
 
-  // Some attach confirmations do not round-trip the client requestId. Fall back to the
-  // requested thread so explicit user selection still wins over stale active-session state.
-  for (const [pendingRequestId, value] of Array.from(pendingAttachRequests.entries())) {
-    const pendingThreadId = normalizeThreadId(value?.threadId || "");
-    if (!pendingThreadId || pendingThreadId !== normalizedThreadId) {
-      continue;
+    if (preferred.found) {
+      state.model = preferred.model || null;
+    } else if (payload.model !== undefined) {
+      persistedPreferenceUpdated = ensureThreadModelPreference(state.threadId, serverModel, { persist: false }) || persistedPreferenceUpdated;
     }
 
-    pendingAttachRequests.delete(pendingRequestId);
-    return {
-      ...value,
-      requestId: pendingRequestId,
-      matchedByThreadId: true
-    };
+    if (preferredEffort.found) {
+      state.reasoningEffort = preferredEffort.effort || null;
+    } else if (payload.reasoningEffort !== undefined || payload.effort !== undefined) {
+      persistedPreferenceUpdated = ensureThreadReasoningPreference(state.threadId, serverEffort, { persist: false }) || persistedPreferenceUpdated;
+    }
+
+    const serverPermission = readPermissionInfoFromPayload(payload);
+    const preferredPermission = getPreferredPermissionForThread(state.threadId);
+    const hasPermissionFromPayload = hasAnyPermissionField(payload);
+    if (preferredPermission.found || hasPermissionFromPayload) {
+      const targetApproval = preferredPermission.found
+        ? preferredPermission.approval
+        : (serverPermission?.approval || "");
+      const targetSandbox = preferredPermission.found
+        ? preferredPermission.sandbox
+        : (serverPermission?.sandbox || "");
+      acknowledgeSessionPermissionSync(
+        sessionId,
+        serverPermission?.approval || "",
+        serverPermission?.sandbox || "");
+      state.approvalPolicy = targetApproval || null;
+      state.sandboxPolicy = targetSandbox || null;
+      replacePermissionLevelForThread(state.threadId, {
+        approval: state.approvalPolicy || "",
+        sandbox: state.sandboxPolicy || ""
+      });
+    }
+    if (!preferredPermission.found && hasPermissionFromPayload) {
+      persistedPermissionPreferenceUpdated =
+        ensureThreadPermissionPreference(
+          state.threadId,
+          {
+            approval: serverPermission?.approval || "",
+            sandbox: serverPermission?.sandbox || ""
+          },
+          { persist: false })
+        || persistedPermissionPreferenceUpdated;
+    }
   }
 
-  return null;
+  let pendingCreate = null;
+  const requestId = payload.requestId || null;
+  if (requestId && pendingCreateRequests.has(requestId)) {
+    pendingCreate = pendingCreateRequests.get(requestId) || null;
+    pendingCreateRequests.delete(requestId);
+  }
+
+  if (!normalizeProjectCwd(state.cwd || "") && pendingCreate?.cwd) {
+    state.cwd = pendingCreate.cwd;
+  }
+  if (!state.createdAtTick) {
+    state.createdAtTick = Date.now();
+  }
+  if (state.threadId && state.threadName) {
+    setLocalThreadName(state.threadId, state.threadName);
+  }
+  if (state.threadId && normalizeProjectCwd(state.cwd || "")) {
+    const entry = getCatalogEntryByThreadId(state.threadId);
+    if (entry && !normalizeProjectCwd(entry.cwd || "")) {
+      entry.cwd = state.cwd;
+    }
+    if (entry && state.model !== null && state.model !== undefined) {
+      entry.model = state.model;
+    }
+  }
+  if (persistedPreferenceUpdated) {
+    persistThreadModelState();
+    persistThreadReasoningState();
+  }
+  if (persistedPermissionPreferenceUpdated) {
+    persistThreadPermissionState();
+  }
+
+  return { state, pendingCreate, requestId };
 }
 
 function handleServerEvent(frame) {
@@ -9392,129 +9445,55 @@ function handleServerEvent(frame) {
       return;
     }
 
-    case "session_created":
-    case "session_attached": {
+    case "session_created": {
       const sessionId = payload.sessionId;
       if (!sessionId) return;
-      const state = ensureSessionState(sessionId);
-      ensurePlanStateShape(state);
-      state.threadId = payload.threadId || state.threadId;
-      state.threadName = payload.threadName || state.threadName || "";
-      state.cwd = payload.cwd || state.cwd;
-      state.isAppServerRecovering = false;
-      let persistedPreferenceUpdated = false;
-      let persistedPermissionPreferenceUpdated = false;
-      if (state.threadId) {
-        const serverModel = normalizeModelValue(payload.model || "");
-        const serverEffort = normalizeReasoningEffort(payload.reasoningEffort ?? payload.effort ?? "");
-        const preferred = getPreferredModelForThread(state.threadId);
-        const preferredEffort = getPreferredReasoningForThread(state.threadId);
-        const targetModel = preferred.found ? preferred.model : serverModel;
-        const targetEffort = preferredEffort.found ? preferredEffort.effort : serverEffort;
-        acknowledgeSessionModelSync(sessionId, serverModel, serverEffort);
 
-        state.model = targetModel || null;
-        state.reasoningEffort = targetEffort || null;
-
-        if (preferred.found) {
-          state.model = preferred.model || null;
-        } else if (payload.model !== undefined) {
-          persistedPreferenceUpdated = ensureThreadModelPreference(state.threadId, serverModel, { persist: false }) || persistedPreferenceUpdated;
-        }
-
-        if (preferredEffort.found) {
-          state.reasoningEffort = preferredEffort.effort || null;
-        } else if (payload.reasoningEffort !== undefined || payload.effort !== undefined) {
-          persistedPreferenceUpdated = ensureThreadReasoningPreference(state.threadId, serverEffort, { persist: false }) || persistedPreferenceUpdated;
-        }
-
-        const serverPermission = readPermissionInfoFromPayload(payload);
-        const preferredPermission = getPreferredPermissionForThread(state.threadId);
-        const hasPermissionFromPayload = hasAnyPermissionField(payload);
-        if (preferredPermission.found || hasPermissionFromPayload) {
-          const targetApproval = preferredPermission.found
-            ? preferredPermission.approval
-            : (serverPermission?.approval || "");
-          const targetSandbox = preferredPermission.found
-            ? preferredPermission.sandbox
-            : (serverPermission?.sandbox || "");
-          acknowledgeSessionPermissionSync(
-            sessionId,
-            serverPermission?.approval || "",
-            serverPermission?.sandbox || "");
-          state.approvalPolicy = targetApproval || null;
-          state.sandboxPolicy = targetSandbox || null;
-          replacePermissionLevelForThread(state.threadId, {
-            approval: state.approvalPolicy || "",
-            sandbox: state.sandboxPolicy || ""
-          });
-        }
-        if (!preferredPermission.found && hasPermissionFromPayload) {
-          persistedPermissionPreferenceUpdated =
-            ensureThreadPermissionPreference(
-              state.threadId,
-              {
-                approval: serverPermission?.approval || "",
-                sandbox: serverPermission?.sandbox || ""
-              },
-              { persist: false })
-            || persistedPermissionPreferenceUpdated;
-        }
-      }
-      let pendingCreate = null;
-      const requestId = payload.requestId || null;
-      if (requestId && pendingCreateRequests.has(requestId)) {
-        pendingCreate = pendingCreateRequests.get(requestId) || null;
-        pendingCreateRequests.delete(requestId);
-      }
-      prunePendingAttachRequests();
-      const pendingAttach = consumePendingAttachRequest(requestId, state.threadId);
-      const matchedPendingSessionLoad = isPendingSessionLoadForThread(state.threadId);
-      if (!normalizeProjectCwd(state.cwd || "") && pendingCreate?.cwd) {
-        state.cwd = pendingCreate.cwd;
-      }
-      if (!state.createdAtTick) {
-        state.createdAtTick = Date.now();
-      }
-      if (state.threadId && state.threadName) {
-        setLocalThreadName(state.threadId, state.threadName);
-      }
-      if (state.threadId && normalizeProjectCwd(state.cwd || "")) {
-        const entry = getCatalogEntryByThreadId(state.threadId);
-        if (entry && !normalizeProjectCwd(entry.cwd || "")) {
-          entry.cwd = state.cwd;
-        }
-        if (entry && state.model !== null && state.model !== undefined) {
-          entry.model = state.model;
-        }
-      }
-      if (persistedPreferenceUpdated) {
-        persistThreadModelState();
-        persistThreadReasoningState();
-      }
-      if (persistedPermissionPreferenceUpdated) {
-        persistThreadPermissionState();
-      }
-      const attachedMode = payload.attached === true || type === "session_attached";
-      if (!attachedMode) {
-        touchSessionActivity(sessionId);
-      }
-      if (matchedPendingSessionLoad) {
-        clearPendingSessionLoad();
-      }
+      const { state, pendingCreate } = applySessionLifecyclePayload(sessionId, payload);
+      touchSessionActivity(sessionId);
       setTurnInFlight(sessionId, false);
-      const mode = attachedMode ? "attached" : "created";
-      uiAuditLog(`in.session_${mode}`, {
+      uiAuditLog("in.session_created", {
         sessionId,
         threadId: state.threadId || null,
         activeSessionId
       });
-      appendLog(`[session] ${mode} id=${sessionId} thread=${state.threadId || "unknown"} log=${payload.logPath || "n/a"}`);
+      appendLog(`[session] created id=${sessionId} thread=${state.threadId || "unknown"} log=${payload.logPath || "n/a"}`);
 
       if (pendingCreate && pendingCreate.threadName) {
         send("session_rename", { sessionId, threadName: pendingCreate.threadName });
         send("session_catalog_list");
       }
+
+      setActiveSession(sessionId, { persistSelection: true, reason: "session_created" });
+      return;
+    }
+
+    case "session_attached": {
+      const sessionId = payload.sessionId;
+      if (!sessionId) return;
+
+      const { state, requestId } = applySessionLifecyclePayload(sessionId, payload);
+      const pendingThreadId = getPendingSessionLoadThreadId();
+      const matchedPendingSessionLoad = isPendingSessionLoadForThread(state.threadId);
+      // Ignore stale attach completions while a newer thread selection is still pending.
+      const shouldFocusAttachedSession =
+        matchedPendingSessionLoad ||
+        (!pendingThreadId &&
+          (currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS ||
+            !activeSessionId ||
+            !sessions.has(activeSessionId)));
+
+      if (matchedPendingSessionLoad) {
+        clearPendingSessionLoad();
+      }
+
+      setTurnInFlight(sessionId, false);
+      uiAuditLog("in.session_attached", {
+        sessionId,
+        threadId: state.threadId || null,
+        activeSessionId
+      });
+      appendLog(`[session] attached id=${sessionId} thread=${state.threadId || "unknown"} log=${payload.logPath || "n/a"}`);
 
       if (state.threadId && pendingRenameOnAttach.has(state.threadId)) {
         const requestedName = pendingRenameOnAttach.get(state.threadId) || "";
@@ -9525,26 +9504,42 @@ function handleServerEvent(frame) {
         }
       }
 
-      const shouldPreferAttachedSession =
-        currentWorkspaceTab === WORKSPACE_TAB_CODE_REVIEWS ||
-        !attachedMode ||
-        !!pendingAttach ||
-        matchedPendingSessionLoad ||
-        !activeSessionId ||
-        !sessions.has(activeSessionId);
       uiAuditLog("in.session_attached_focus_decision", {
         sessionId,
         requestId,
-        mode,
-        initiatedByClient: !!pendingAttach,
-        initiatedByThreadMatch: pendingAttach?.matchedByThreadId === true,
+        threadId: state.threadId || null,
+        pendingThreadId: pendingThreadId || null,
+        matchedPendingSessionLoad,
         hadActiveSession: !!activeSessionId,
         activeSessionExists: !!(activeSessionId && sessions.has(activeSessionId)),
-        preferAttachedSession: shouldPreferAttachedSession
+        preferAttachedSession: shouldFocusAttachedSession
       });
-      updateSessionSelect(
-        shouldPreferAttachedSession ? sessionId : null,
-        { preferServerActive: shouldPreferAttachedSession });
+      if (shouldFocusAttachedSession) {
+        setActiveSession(sessionId, {
+          persistSelection: true,
+          reason: matchedPendingSessionLoad ? "session_attached_pending_selection" : "session_attached"
+        });
+      } else {
+        updateSessionSelect(activeSessionId || null);
+      }
+      return;
+    }
+
+    case "session_attach_failed": {
+      const threadId = normalizeThreadId(payload.threadId || "");
+      const message = typeof payload.message === "string" && payload.message.trim()
+        ? payload.message.trim()
+        : "Attach failed.";
+      const matchedPendingSessionLoad = isPendingSessionLoadForThread(threadId);
+      uiAuditLog("in.session_attach_failed", {
+        threadId: threadId || null,
+        matchedPendingSessionLoad,
+        pendingThreadId: getPendingSessionLoadThreadId() || null
+      }, "warn");
+      appendLog(`[session_attach_failed] thread=${threadId || "unknown"} message=${message}`);
+      if (matchedPendingSessionLoad) {
+        handlePendingSessionLoadFailure();
+      }
       return;
     }
 
@@ -9711,7 +9706,7 @@ function handleServerEvent(frame) {
       pruneRateLimitState(Array.from(next.keys()));
       applyProcessingByThread(nextProcessingByThread);
       prunePromptState();
-      if (shouldRefreshSessionViews || !!pendingSessionLoadThreadId) {
+      if (shouldRefreshSessionViews || !!getPendingSessionLoadThreadId()) {
         updateSessionSelect(payload.activeSessionId || null);
         uiAuditLog("in.session_list_applied", {
           activeFromServer: payload.activeSessionId || null,
@@ -9875,7 +9870,7 @@ function handleServerEvent(frame) {
         activeSessionId
       });
       appendLog(`[session] stopped id=${sessionId || "unknown"}`);
-      updateSessionSelect(payload.activeSessionId || null, { preferServerActive: true });
+      updateSessionSelect(payload.activeSessionId || null);
       return;
     }
 
@@ -10407,9 +10402,6 @@ function handleServerEvent(frame) {
     }
 
     case "error":
-      if (pendingSessionLoadThreadId) {
-        handlePendingSessionLoadFailure();
-      }
       uiAuditLog("in.error", { message: payload.message || "unknown error" }, "warn");
       appendLog(`[error] ${payload.message || "unknown error"}`);
       return;
@@ -10464,7 +10456,11 @@ if (attachSessionBtn) {
     }
 
     const catalogEntry = getCatalogEntryByThreadId(threadId);
-    await attachSessionByThreadId(threadId, catalogEntry?.cwd || cwdInput.value.trim(), { persistSelection: true });
+    await selectThreadById(threadId, catalogEntry?.cwd || cwdInput.value.trim(), {
+      displayName: catalogEntry?.threadName || threadId,
+      persistSelection: true,
+      reason: "session_attach_button"
+    });
   });
 }
 
